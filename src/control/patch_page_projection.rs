@@ -482,19 +482,32 @@ impl PatchPageParameterRow {
         })
     }
 
-    pub(crate) fn selected_effect_text(
+    pub(crate) fn selected_instrument_detail_text(
+        descriptor: &crate::synth::CapabilityDescriptor,
+        config: &crate::synth::InstrumentConfig,
+        parameter_id: &ParameterId,
+    ) -> Result<String, PatchPageProjectionError> {
+        let sections = detail_sections(
+            descriptor.sections(),
+            &|id| config.value(id),
+            &|id| config.asset_reference(id),
+            &|id| PatchControlId::Capability(id.clone()),
+        )?;
+        selected_detail_parameter_text(&sections, parameter_id)
+    }
+
+    pub(crate) fn selected_effect_detail_text(
         descriptor: &EffectCapabilityDescriptor,
         config: &PostEffectConfig,
         parameter_id: &ParameterId,
-        active_graph_revision: GraphRevision,
     ) -> Result<String, PatchPageProjectionError> {
-        let spec = descriptor
-            .parameter(parameter_id)
-            .ok_or(PatchPageProjectionError::InvalidEffectConfig)?;
-        let row = Self::for_effect_parameter(descriptor, config, spec, active_graph_revision)?;
-        serde_json::to_string(&row)
-            .map(|row| format!("> EFFECT_PARAMETER {row}"))
-            .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)
+        let sections = detail_sections(
+            descriptor.sections(),
+            &|id| config.value(id),
+            &|id| config.asset_reference(id),
+            &|id| PatchControlId::Effect(config.slot_id(), id.clone()),
+        )?;
+        selected_detail_parameter_text(&sections, parameter_id)
     }
 
     pub fn control_id(&self) -> Option<PatchControlId> {
@@ -596,6 +609,20 @@ impl PatchPageParameterRow {
     pub const fn editable(&self) -> bool {
         self.editable
     }
+}
+
+fn selected_detail_parameter_text(
+    sections: &[PatchPageSection],
+    parameter_id: &ParameterId,
+) -> Result<String, PatchPageProjectionError> {
+    let row = sections
+        .iter()
+        .flat_map(PatchPageSection::parameters)
+        .find(|row| row.id() == parameter_id)
+        .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
+    serde_json::to_string(row)
+        .map(|row| format!("> DETAIL_PARAMETER {row}"))
+        .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)
 }
 
 /// One active capability section and its descriptor-ordered rows.
@@ -1176,12 +1203,20 @@ impl PatchPageProjection {
             detail
                 .as_ref()
                 .map(|detail| {
-                    detail
+                    let mut controls = detail
                         .sections()
                         .iter()
                         .flat_map(|section| section.parameters())
                         .filter_map(PatchPageParameterRow::control_id)
-                        .collect::<Vec<_>>()
+                        .collect::<Vec<_>>();
+                    if matches!(detail.subject(), PatchDetailSubject::Instrument { .. }) {
+                        controls.extend(
+                            crate::synth::VoiceEnvelope::surface_descriptor()
+                                .iter()
+                                .map(|spec| PatchControlId::Envelope(spec.parameter())),
+                        );
+                    }
+                    controls
                 })
                 .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?
         } else if focused_control_id.is_utility() {
@@ -1646,7 +1681,7 @@ mod tests {
         production_chorus_config, production_effect_registry,
     };
     use crate::adapter::production_instruments::production_capability_registry;
-    use crate::control::{AppEvent, AppState, StateProjector, TopLevelContext};
+    use crate::control::{AppEvent, AppState, StateProjector, SurfaceId, TopLevelContext};
     use crate::kernel::{MidiChannel, PatchId};
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_track_id::MixerTrackId;
@@ -2027,8 +2062,20 @@ mod tests {
         assert_eq!(selected_row_count(&engine_ready), 1);
 
         state
-            .apply(AppEvent::Navigate(crate::control::Direction::Down))
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
             .unwrap();
+        for _ in 0..32 {
+            if state.interaction().patch_control_focus()
+                == Some(PatchControlId::Envelope(
+                    crate::synth::VoiceEnvelopeParameter::AttackMilliseconds,
+                ))
+            {
+                break;
+            }
+            state
+                .apply(AppEvent::Navigate(crate::control::Direction::Down))
+                .unwrap();
+        }
         let attack_ready = project(&state);
         assert_eq!(
             attack_ready.focused_control_id(),
@@ -2037,9 +2084,7 @@ mod tests {
         assert!(attack_ready.engine().editable());
         assert_eq!(selected_row_count(&attack_ready), 1);
 
-        state
-            .apply(AppEvent::Navigate(crate::control::Direction::Up))
-            .unwrap();
+        state.apply(AppEvent::Return).unwrap();
         state
             .apply(AppEvent::Adjust(crate::control::Direction::Right))
             .unwrap();
@@ -2052,8 +2097,20 @@ mod tests {
         assert_eq!(selected_row_count(&engine_preparing), 1);
 
         state
-            .apply(AppEvent::Navigate(crate::control::Direction::Down))
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
             .unwrap();
+        for _ in 0..32 {
+            if state.interaction().patch_control_focus()
+                == Some(PatchControlId::Envelope(
+                    crate::synth::VoiceEnvelopeParameter::AttackMilliseconds,
+                ))
+            {
+                break;
+            }
+            state
+                .apply(AppEvent::Navigate(crate::control::Direction::Down))
+                .unwrap();
+        }
         let attack_preparing = project(&state);
         assert_eq!(
             attack_preparing.focused_control_id(),

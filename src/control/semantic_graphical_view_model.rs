@@ -466,16 +466,17 @@ pub struct SemanticRoutedPatch {
     patch_name: String,
 }
 
-/// One descriptor-owned detail section in authored order.
+/// One semantic surface section in authored order.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct SemanticDetailSectionViewModel {
+pub struct SemanticSurfaceSectionViewModel {
     id: String,
     label: String,
     control_paths: Vec<FocusPath>,
+    control_summaries: Vec<SemanticSurfaceControlSummaryViewModel>,
 }
 
-impl SemanticDetailSectionViewModel {
+impl SemanticSurfaceSectionViewModel {
     pub fn id(&self) -> &str {
         &self.id
     }
@@ -484,6 +485,29 @@ impl SemanticDetailSectionViewModel {
     }
     pub fn control_paths(&self) -> &[FocusPath] {
         &self.control_paths
+    }
+
+    pub fn control_summaries(&self) -> &[SemanticSurfaceControlSummaryViewModel] {
+        &self.control_summaries
+    }
+}
+
+/// Descriptor-derived, non-focusable summary data attached to one canonical
+/// section control. The control path remains the identity authority.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticSurfaceControlSummaryViewModel {
+    control_path: FocusPath,
+    parameter_count: Option<usize>,
+}
+
+impl SemanticSurfaceControlSummaryViewModel {
+    pub const fn control_path(&self) -> &FocusPath {
+        &self.control_path
+    }
+
+    pub const fn parameter_count(&self) -> Option<usize> {
+        self.parameter_count
     }
 }
 
@@ -573,7 +597,7 @@ pub struct SemanticSurfaceViewModel {
     label: String,
     role: SemanticSurfaceRole,
     controls: Vec<SemanticControlViewModel>,
-    sections: Vec<SemanticDetailSectionViewModel>,
+    sections: Vec<SemanticSurfaceSectionViewModel>,
     visualizations: Vec<SemanticVisualizationViewModel>,
     summary: SemanticSurfaceSummary,
 }
@@ -595,7 +619,7 @@ impl SemanticSurfaceViewModel {
         &self.controls
     }
 
-    pub fn sections(&self) -> &[SemanticDetailSectionViewModel] {
+    pub fn sections(&self) -> &[SemanticSurfaceSectionViewModel] {
         &self.sections
     }
 
@@ -822,6 +846,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].id",
         "surfaces[].label",
         "surfaces[].role",
+        "surfaces[].sections[].controlPaths[].capabilityId",
         "surfaces[].sections[].controlPaths[].capabilityId.id",
         "surfaces[].sections[].controlPaths[].capabilityId.kind",
         "surfaces[].sections[].controlPaths[].context",
@@ -830,6 +855,14 @@ impl SemanticGraphicalViewModel {
         "surfaces[].sections[].controlPaths[].modalId",
         "surfaces[].sections[].controlPaths[].patchId",
         "surfaces[].sections[].controlPaths[].surface",
+        "surfaces[].sections[].controlSummaries[].controlPath.capabilityId",
+        "surfaces[].sections[].controlSummaries[].controlPath.context",
+        "surfaces[].sections[].controlSummaries[].controlPath.controlId.id",
+        "surfaces[].sections[].controlSummaries[].controlPath.controlId.kind",
+        "surfaces[].sections[].controlSummaries[].controlPath.modalId",
+        "surfaces[].sections[].controlSummaries[].controlPath.patchId",
+        "surfaces[].sections[].controlSummaries[].controlPath.surface",
+        "surfaces[].sections[].controlSummaries[].parameterCount",
         "surfaces[].sections[].id",
         "surfaces[].sections[].label",
         "surfaces[].summary.capabilityId",
@@ -1499,32 +1532,29 @@ fn project_errors(
         crate::control::StructuralEditIntent::SetReturnOccupancy { bus, .. } => {
             Some(FocusPath::mixer_return_occupancy(*bus))
         }
-        crate::control::StructuralEditIntent::ReplaceCapability { .. }
-        | crate::control::StructuralEditIntent::ReplaceParameterChoice { .. } => {
+        crate::control::StructuralEditIntent::ReplaceCapability { .. } => {
             let source_paths = match correlation.patch_id() {
                 Some(patch_id) => resolver
                     .patch_main_paths(patch_id)
                     .map_err(map_resolver_error)?,
                 None => Vec::new(),
             };
-            source_paths
-                .into_iter()
-                .find(|path| match (path.control_id(), correlation.intent()) {
-                    (
-                        crate::control::SemanticControlId::Patch(PatchControlId::Engine),
-                        crate::control::StructuralEditIntent::ReplaceCapability { .. },
-                    ) => true,
-                    (
-                        crate::control::SemanticControlId::Patch(PatchControlId::Capability(
-                            path_id,
-                        )),
-                        crate::control::StructuralEditIntent::ReplaceParameterChoice {
-                            parameter_id,
-                            ..
-                        },
-                    ) => path_id == parameter_id,
-                    _ => false,
-                })
+            source_paths.into_iter().find(|path| {
+                matches!(
+                    path.control_id(),
+                    crate::control::SemanticControlId::Patch(PatchControlId::Engine)
+                )
+            })
+        }
+        crate::control::StructuralEditIntent::ReplaceParameterChoice { parameter_id, .. } => {
+            match (correlation.patch_id(), correlation.source_capability_id()) {
+                (Some(patch_id), Some(capability_id)) => Some(FocusPath::patch_detail(
+                    patch_id,
+                    crate::control::FocusCapabilityId::Instrument(capability_id.clone()),
+                    PatchControlId::Capability(parameter_id.clone()),
+                )),
+                _ => None,
+            }
         }
         crate::control::StructuralEditIntent::ReplaceAsset { parameter_id, .. }
         | crate::control::StructuralEditIntent::PrepareAudition { parameter_id, .. } => {
@@ -1597,72 +1627,8 @@ fn project_patch_surfaces(
         valid_actions: Vec::new(),
     });
 
-    for envelope in crate::synth::VoiceEnvelope::surface_descriptor() {
-        let control_id = PatchControlId::Envelope(envelope.parameter());
-        let path = FocusPath::patch_main(patch_id, None, control_id);
-        controls.push(SemanticControlViewModel {
-            path: path.clone(),
-            label: envelope.label().to_owned(),
-            kind: SemanticControlKind::Continuous,
-            value: SemanticControlValue::Scalar(
-                patch.envelope().value(envelope.parameter()) as f64,
-            ),
-            numeric_range: Some(SemanticNumericRange::new(
-                envelope.minimum() as f64,
-                envelope.maximum() as f64,
-                envelope.fine_step() as f64,
-                envelope.coarse_step() as f64,
-            )),
-            unit: envelope.unit().map(str::to_owned),
-            browser_metadata: None,
-            enabled: true,
-            visible: true,
-            focusable: true,
-            editable: true,
-            focused: active == &path,
-            status: None,
-            error: None,
-            requested_value: None,
-            requested_label: None,
-            patch_interaction: None,
-            selected_label: None,
-            valid_actions: Vec::new(),
-        });
-    }
-
-    for spec in descriptor.parameters() {
-        let path = FocusPath::patch_main(
-            patch_id,
-            Some(FocusCapabilityId::Instrument(descriptor.id().clone())),
-            PatchControlId::Capability(spec.id().clone()),
-        );
-        let (enabled, visible) = parameter_availability(spec, patch.instrument_config());
-        let focusable = focusable_paths.contains(&path);
-        let targeted = state
-            .engine_selection()
-            .correlation()
-            .is_some_and(|correlation| {
-                correlation.patch_id() == Some(patch_id)
-                    && correlation.intent().parameter_id() == Some(spec.id())
-            });
-        controls.push(control_from_parameter(
-            path,
-            spec,
-            parameter_value(spec, patch.instrument_config())?,
-            ParameterControlProjection {
-                enabled,
-                visible,
-                focusable,
-                editable: spec.patch_interaction() == PatchInteraction::StructuralChoice
-                    && focusable
-                    && lifecycle_editable,
-                active,
-                status: targeted.then(|| status.clone()),
-                errors,
-            },
-        ));
-    }
-
+    let mut effect_paths = Vec::with_capacity(crate::synth::effect_slot_id::MAX_EFFECT_SLOTS);
+    let mut effect_summaries = Vec::with_capacity(crate::synth::effect_slot_id::MAX_EFFECT_SLOTS);
     for slot_index in crate::synth::effect_slot_id::EffectSlotIndex::ALL {
         let occupant = patch.effect_slot(slot_index);
         let occupancy_path =
@@ -1711,38 +1677,42 @@ fn project_patch_surfaces(
             selected_label: None,
             valid_actions: Vec::new(),
         });
-
-        let Some(effect) = occupant else {
-            continue;
-        };
-        let effect_descriptor = state
-            .effects()
-            .descriptor(effect.capability_id())
-            .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)?;
-        for spec in effect_descriptor.parameters() {
-            let path = FocusPath::patch_main(
-                patch_id,
-                Some(FocusCapabilityId::Effect(effect_descriptor.id().clone())),
-                PatchControlId::Effect(effect.slot_id(), spec.id().clone()),
-            );
-            let (enabled, visible) = effect_parameter_availability(spec, effect);
-            let focusable = focusable_paths.contains(&path);
-            controls.push(control_from_parameter(
-                path,
-                spec,
-                effect_parameter_value(spec, effect)?,
-                ParameterControlProjection {
-                    enabled,
-                    visible,
-                    focusable,
-                    editable: spec.patch_interaction() == PatchInteraction::ScalarEdit && focusable,
-                    active,
-                    status: None,
-                    errors,
-                },
-            ));
-        }
+        effect_paths.push(occupancy_path.clone());
+        let parameter_count = occupant
+            .map(|effect| {
+                state
+                    .effects()
+                    .descriptor(effect.capability_id())
+                    .map(|effect_descriptor| effect_descriptor.parameters().count())
+                    .ok_or(SemanticGraphicalViewModelError::InvalidEffectConfig)
+            })
+            .transpose()?;
+        effect_summaries.push(SemanticSurfaceControlSummaryViewModel {
+            control_path: occupancy_path,
+            parameter_count,
+        });
     }
+
+    debug_assert!(focusable_paths
+        .iter()
+        .all(|path| controls.iter().any(|control| control.path() == path)));
+    let sections = vec![
+        SemanticSurfaceSectionViewModel {
+            id: "overview.engine".to_owned(),
+            label: "Engine".to_owned(),
+            control_paths: vec![engine_path.clone()],
+            control_summaries: vec![SemanticSurfaceControlSummaryViewModel {
+                control_path: engine_path,
+                parameter_count: Some(descriptor.parameters().count()),
+            }],
+        },
+        SemanticSurfaceSectionViewModel {
+            id: "overview.effects".to_owned(),
+            label: "Post FX".to_owned(),
+            control_paths: effect_paths,
+            control_summaries: effect_summaries,
+        },
+    ];
 
     // The summary counts configured effects: occupied positions of the
     // per-position chain, wherever they sit. Empty positions never count.
@@ -1885,7 +1855,7 @@ fn project_patch_surfaces(
             label: SurfaceId::PatchMain.label().to_owned(),
             role: SemanticSurfaceRole::Main,
             controls,
-            sections: Vec::new(),
+            sections,
             visualizations: Vec::new(),
             summary,
         },
@@ -2336,7 +2306,7 @@ fn project_detail_structure(
     controls: &[SemanticControlViewModel],
 ) -> Result<
     (
-        Vec<SemanticDetailSectionViewModel>,
+        Vec<SemanticSurfaceSectionViewModel>,
         Vec<SemanticVisualizationViewModel>,
     ),
     SemanticGraphicalViewModelError,
@@ -2357,10 +2327,11 @@ fn project_detail_structure(
                     .map(|control| control.path().clone())
             })
             .collect();
-        SemanticDetailSectionViewModel {
+        SemanticSurfaceSectionViewModel {
             id: id.to_owned(),
             label: label.to_owned(),
             control_paths,
+            control_summaries: Vec::new(),
         }
     };
     match subject {
@@ -2374,7 +2345,7 @@ fn project_detail_structure(
                 .iter()
                 .map(|value| section(value.id(), value.label(), value.parameters()))
                 .collect::<Vec<_>>();
-            sections.push(SemanticDetailSectionViewModel {
+            sections.push(SemanticSurfaceSectionViewModel {
                 id: "shared.envelope".to_owned(),
                 label: "Envelope".to_owned(),
                 control_paths: controls
@@ -2387,6 +2358,7 @@ fn project_detail_structure(
                     })
                     .map(|control| control.path().clone())
                     .collect(),
+                control_summaries: Vec::new(),
             });
             let visualizations = project_visualizations(
                 state,
@@ -3067,6 +3039,26 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
         .iter()
         .flat_map(|surface| surface.controls.iter())
         .collect::<Vec<_>>();
+    for surface in &data.surfaces {
+        let surface_paths = surface
+            .controls
+            .iter()
+            .map(|control| &control.path)
+            .collect::<HashSet<_>>();
+        for section in &surface.sections {
+            if section
+                .control_paths
+                .iter()
+                .any(|path| !surface_paths.contains(path))
+                || section.control_summaries.iter().any(|summary| {
+                    !section.control_paths.contains(&summary.control_path)
+                        || !surface_paths.contains(&summary.control_path)
+                })
+            {
+                return Err(SemanticGraphicalViewModelError::IncoherentSurface);
+            }
+        }
+    }
     let unique_paths = controls
         .iter()
         .map(|control| &control.path)
@@ -3220,6 +3212,65 @@ mod tests {
             slot_value(2),
             Some(SemanticControlValue::Identity("Empty".to_owned()))
         );
+
+        assert_eq!(
+            patch_surface.controls().len(),
+            4,
+            "Patch Overview projects Engine and three slot controls only"
+        );
+        assert_eq!(
+            patch_surface
+                .sections()
+                .iter()
+                .map(|section| section.id())
+                .collect::<Vec<_>>(),
+            vec!["overview.engine", "overview.effects"],
+            "Patch Overview carries canonical ordered section anatomy"
+        );
+        let projected_paths = patch_surface
+            .controls()
+            .iter()
+            .map(|control| control.path())
+            .collect::<HashSet<_>>();
+        assert!(patch_surface.sections().iter().all(|section| section
+            .control_paths()
+            .iter()
+            .all(|path| projected_paths.contains(path))));
+
+        let engine_summary = patch_surface.sections()[0].control_summaries()[0]
+            .parameter_count()
+            .expect("the installed engine descriptor supplies a count");
+        let engine_descriptor = state
+            .capabilities()
+            .descriptor(state.patches()[0].instrument_config().capability_id())
+            .unwrap();
+        assert_eq!(engine_summary, engine_descriptor.parameters().count());
+
+        let effect_counts = patch_surface.sections()[1]
+            .control_summaries()
+            .iter()
+            .map(SemanticSurfaceControlSummaryViewModel::parameter_count)
+            .collect::<Vec<_>>();
+        assert_eq!(effect_counts[0], None);
+        assert_eq!(
+            effect_counts[1],
+            Some(
+                state
+                    .effects()
+                    .descriptor(
+                        state.patches()[0]
+                            .effect_slot(
+                                crate::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap()
+                            )
+                            .unwrap()
+                            .capability_id(),
+                    )
+                    .unwrap()
+                    .parameters()
+                    .count()
+            )
+        );
+        assert_eq!(effect_counts[2], None);
     }
 }
 
@@ -3361,7 +3412,7 @@ mod projection_enrichment_tests {
 
     /// The discriminating half: an unfocused row's list is *its own*. Entering
     /// the detail surface is accepted only from a row that resolves a subject,
-    /// so the engine row offers it and an envelope row does not — and neither
+    /// so the engine row offers it and an empty slot does not — and neither
     /// of those rows is the focused one in the same projection.
     #[test]
     fn each_rows_action_list_reflects_that_row_rather_than_the_focus() {
@@ -3389,19 +3440,20 @@ mod projection_enrichment_tests {
             "the engine row resolves an instrument subject, so it offers entry"
         );
 
-        let envelope = controls(&model)
+        let empty_slot = controls(&model)
             .into_iter()
             .find(|control| {
                 matches!(
                     control.path().control_id(),
-                    SemanticControlId::Patch(PatchControlId::Envelope(_))
+                    SemanticControlId::Patch(PatchControlId::EffectSlot(slot))
+                        if *slot == EffectSlotIndex::ALL[1]
                 )
             })
-            .expect("the ADSR rows are projected");
-        assert!(!envelope.focused());
+            .expect("the empty Overview slot is projected");
+        assert!(!empty_slot.focused());
         assert!(
-            !offers_detail(envelope),
-            "an envelope row resolves no subject, so it must not offer entry"
+            !offers_detail(empty_slot),
+            "an empty slot resolves no subject, so it must not offer entry"
         );
 
         // A Utility row is on another surface entirely: its counterfactual is
@@ -3827,15 +3879,15 @@ mod projection_enrichment_tests {
     #[test]
     fn a_mid_preparation_subject_projects_its_lifecycle_and_keeps_its_sections() {
         let mut state = patch_state();
+        state
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
         navigate_until(&mut state, |path| {
             matches!(
                 path.control_id(),
                 SemanticControlId::Patch(PatchControlId::Capability(_))
             )
         });
-        state
-            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
-            .unwrap();
         let settled = project(&state);
         let settled_rows = settled
             .surface(SurfaceId::PatchDetail)
@@ -3850,17 +3902,13 @@ mod projection_enrichment_tests {
             .iter()
             .all(|control| control.status().is_none()));
 
-        // Request a structural choice from PATCH Main under the open entry.
-        state.apply_semantic_action(SemanticAction::Return).unwrap();
+        // Request the structural choice from its descriptor-owned Detail row.
         state
             .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
             .unwrap();
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
         state
             .apply(AppEvent::SetInteractionMode(InteractionMode::Navigate))
-            .unwrap();
-        state
-            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
             .unwrap();
         assert!(state.engine_selection().is_in_flight());
 

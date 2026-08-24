@@ -9,7 +9,7 @@ use crate::control::text_projection::TextProjection;
 use crate::control::{
     Direction, EngineSelectionEffectKind, EngineSelectionRequestId, EngineSelectionStatusKind,
     FocusPath, GraphicalShellProjection, PatchControlId, SemanticResolver, StructuralEditIntent,
-    TopLevelContext,
+    SurfaceId, TopLevelContext,
 };
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_boundary::ControlAudioBoundary;
@@ -665,22 +665,57 @@ where
                 let target = transition.focused_control_id();
                 if page.focused_control_id() == target {
                     self.engine_phase = LiveEnginePhase::Request;
+                } else if app_loop.state().interaction().active_surface() == SurfaceId::PatchDetail
+                {
+                    if matches!(target, PatchControlId::Capability(_)) {
+                        let paths = SemanticResolver::new(app_loop.state())
+                            .ordered_paths(SurfaceId::PatchDetail)?;
+                        let current = paths
+                            .iter()
+                            .position(|path| {
+                                path.control_id()
+                                    == app_loop.state().interaction().focus_path().control_id()
+                            })
+                            .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+                        let target_index = paths
+                            .iter()
+                            .position(|path| {
+                                path.control_id()
+                                    == &crate::control::SemanticControlId::Patch(target.clone())
+                            })
+                            .ok_or(LiveDemoError::EngineProjectionMismatch)?;
+                        let direction = if current < target_index {
+                            Direction::Down
+                        } else {
+                            Direction::Up
+                        };
+                        dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+                    } else {
+                        dispatch_engine_event(app_loop, AppEvent::Return)?;
+                    }
                 } else {
                     let controls = app_loop.state().focused_patch_controls()?;
                     let current = controls
                         .iter()
                         .position(|control| control == &page.focused_control_id())
                         .ok_or(LiveDemoError::EngineProjectionMismatch)?;
-                    let target_index = controls
-                        .iter()
-                        .position(|control| control == &target)
-                        .ok_or(LiveDemoError::EngineProjectionMismatch)?;
-                    let direction = if current < target_index {
-                        Direction::Down
+                    if matches!(target, PatchControlId::Capability(_)) && current == 0 {
+                        dispatch_engine_event(
+                            app_loop,
+                            AppEvent::EnterSurface(SurfaceId::PatchDetail),
+                        )?;
                     } else {
-                        Direction::Up
-                    };
-                    dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+                        let target_index = controls
+                            .iter()
+                            .position(|control| control == &target)
+                            .unwrap_or(0);
+                        let direction = if current < target_index {
+                            Direction::Down
+                        } else {
+                            Direction::Up
+                        };
+                        dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+                    }
                 }
                 self.mark_progress();
                 Ok(None)
@@ -793,32 +828,10 @@ where
                 ) {
                     let old_order = SemanticResolver::new(app_loop.state())
                         .patch_main_paths(transition.patch_id())?;
-                    let target = app_loop
-                        .capabilities()
-                        .descriptor(transition.target_capability_id())
-                        .ok_or(LiveDemoError::EngineProjectionMismatch)?;
-                    let disappearing = old_order
-                        .iter()
-                        .find(|path| {
-                            matches!(
-                                path.control_id(),
-                                crate::control::SemanticControlId::Patch(
-                                    PatchControlId::Capability(parameter_id)
-                                ) if target.parameter(parameter_id).is_none()
-                            )
-                        })
-                        .cloned();
-                    if let Some(disappearing) = disappearing {
-                        let mut navigated = 0usize;
-                        while app_loop.state().interaction().focus_path() != &disappearing {
-                            dispatch_engine_event(app_loop, AppEvent::Navigate(Direction::Down))?;
-                            navigated = navigated.saturating_add(1);
-                            if navigated >= old_order.len() {
-                                return Err(LiveDemoError::EngineProjectionMismatch);
-                            }
-                        }
-                        self.pending_focus_recovery = Some((disappearing, old_order));
-                    }
+                    self.pending_focus_recovery = Some((
+                        app_loop.state().interaction().focus_path().clone(),
+                        old_order,
+                    ));
                 }
                 self.engine_phase = LiveEnginePhase::AwaitActivating {
                     request_id,
@@ -852,8 +865,7 @@ where
                                 SemanticResolver::recover(&removed, &old_order, &new_order)
                                     .ok_or(LiveDemoError::EngineProjectionMismatch)?;
                             let projected = app_loop.current_graphical_shell();
-                            if expected == removed
-                                || app_loop.state().interaction().focus_path() != &expected
+                            if app_loop.state().interaction().focus_path() != &expected
                                 || projected.semantic_model().focus_path() != &expected
                                 || projected.generation()
                                     != app_loop.current_state_tree().generation()
@@ -2071,21 +2083,73 @@ where
             if page.focused_control_id() == *control {
                 return Ok(true);
             }
+            let surface = app_loop.state().interaction().active_surface();
+            if matches!(surface, SurfaceId::PatchDetail | SurfaceId::PatchUtility) {
+                let paths = SemanticResolver::new(app_loop.state()).ordered_paths(surface)?;
+                let current_path = app_loop.state().interaction().focus_path();
+                let current = paths
+                    .iter()
+                    .position(|path| path == current_path)
+                    .ok_or(LiveDemoError::TopologySupportMismatch)?;
+                if let Some(target) = paths.iter().position(|path| {
+                    path.control_id() == &crate::control::SemanticControlId::Patch(control.clone())
+                }) {
+                    let direction = if current < target {
+                        Direction::Down
+                    } else {
+                        Direction::Up
+                    };
+                    dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+                } else {
+                    dispatch_engine_event(app_loop, AppEvent::Return)?;
+                }
+                return Ok(false);
+            }
+
             let controls = app_loop.state().focused_patch_controls()?;
             let current = controls
                 .iter()
                 .position(|candidate| candidate == &page.focused_control_id())
                 .ok_or(LiveDemoError::TopologySupportMismatch)?;
-            let target = controls
-                .iter()
-                .position(|candidate| candidate == control)
-                .ok_or(LiveDemoError::TopologySupportMismatch)?;
-            let direction = if current < target {
-                Direction::Down
-            } else {
-                Direction::Up
+            let direct_target = controls.iter().position(|candidate| candidate == control);
+            let detail_origin = match control {
+                PatchControlId::Capability(_) => Some(PatchControlId::Engine),
+                PatchControlId::Effect(slot_id, _) => app_loop
+                    .patches()
+                    .iter()
+                    .find(|patch| patch.id() == page.patch().id())
+                    .and_then(|patch| {
+                        patch
+                            .effect_slots()
+                            .iter()
+                            .position(|occupancy| {
+                                occupancy
+                                    .as_ref()
+                                    .is_some_and(|effect| effect.slot_id() == *slot_id)
+                            })
+                            .and_then(|index| {
+                                crate::synth::effect_slot_id::EffectSlotIndex::new(index).ok()
+                            })
+                    })
+                    .map(PatchControlId::EffectSlot),
+                _ => None,
             };
-            dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+            let target = direct_target.or_else(|| {
+                detail_origin
+                    .as_ref()
+                    .and_then(|origin| controls.iter().position(|candidate| candidate == origin))
+            });
+            let target = target.ok_or(LiveDemoError::TopologySupportMismatch)?;
+            if direct_target.is_none() && current == target {
+                dispatch_engine_event(app_loop, AppEvent::EnterSurface(SurfaceId::PatchDetail))?;
+            } else {
+                let direction = if current < target {
+                    Direction::Down
+                } else {
+                    Direction::Up
+                };
+                dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
+            }
             Ok(false)
         }
         LiveTopologySupport::FocusInspectorControl { track_id, control } => {

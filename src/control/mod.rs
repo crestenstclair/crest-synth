@@ -58,11 +58,12 @@ pub use semantic_focus::{
 };
 pub use semantic_graphical_view_model::{
     SemanticBrowserMetadata, SemanticBrowserMetadataStatus, SemanticControlKind,
-    SemanticControlValue, SemanticControlViewModel, SemanticDetailSectionViewModel, SemanticError,
-    SemanticErrorCode, SemanticGraphicalViewModel, SemanticGraphicalViewModelError,
-    SemanticLifecycleStatus, SemanticNumericRange, SemanticSurfaceRole, SemanticSurfaceSummary,
-    SemanticSurfaceViewModel, SemanticVisualizationData, SemanticVisualizationViewModel,
-    SemanticWaveformLandmark, SemanticWaveformPair,
+    SemanticControlValue, SemanticControlViewModel, SemanticError, SemanticErrorCode,
+    SemanticGraphicalViewModel, SemanticGraphicalViewModelError, SemanticLifecycleStatus,
+    SemanticNumericRange, SemanticSurfaceControlSummaryViewModel, SemanticSurfaceRole,
+    SemanticSurfaceSectionViewModel, SemanticSurfaceSummary, SemanticSurfaceViewModel,
+    SemanticVisualizationData, SemanticVisualizationViewModel, SemanticWaveformLandmark,
+    SemanticWaveformPair,
 };
 pub use semantic_resolver::{ResolvedChoiceOption, ResolvedChoiceSource, SemanticResolver};
 pub use state_projector::{StateProjectionError, StateProjector};

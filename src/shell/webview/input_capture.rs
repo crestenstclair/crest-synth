@@ -165,6 +165,22 @@ mod platform {
     /// and the event's own timestamp bit pattern.
     type DeliveredSignature = (bool, u16, u64);
 
+    /// Reads AppKit's repeat flag only for a real key-down event.
+    ///
+    /// Keeping the read lazy is material: `FlagsChanged` is how Shift enters
+    /// the monitor, and querying a key-only property from that event aborts at
+    /// the Objective-C callback boundary before Rust can unwind.
+    pub(super) fn repeat_for_event(
+        event_type: NSEventType,
+        read_key_repeat: impl FnOnce() -> bool,
+    ) -> bool {
+        match event_type {
+            NSEventType::KeyDown => read_key_repeat(),
+            NSEventType::KeyUp | NSEventType::FlagsChanged => false,
+            _ => false,
+        }
+    }
+
     /// Owns the installed local monitor; dropping it removes the monitor.
     pub struct InputCaptureHandle {
         monitor: Retained<AnyObject>,
@@ -232,7 +248,12 @@ mod platform {
             let raw = RawKeyEvent::new(
                 window_key_from_macos_key_code(observed.keyCode()),
                 pressed,
-                pressed && observed.isARepeat(),
+                // `isARepeat` is a key-event property. Shift reaches this
+                // monitor as `FlagsChanged`, not `KeyDown`; asking AppKit for
+                // the key-repeat property on that event panics inside the
+                // Objective-C callback and the process must abort because the
+                // callback cannot unwind. Modifier transitions never repeat.
+                repeat_for_event(event_type, || observed.isARepeat()),
             );
             (sink.borrow_mut())(raw);
             // Pass the event through untouched.
@@ -300,5 +321,24 @@ mod tests {
         assert_eq!(event.key(), WindowKey::W);
         assert!(event.pressed());
         assert!(!event.repeat());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn modifier_transitions_never_query_the_key_repeat_property() {
+        use objc2_app_kit::NSEventType;
+
+        assert!(!super::platform::repeat_for_event(
+            NSEventType::FlagsChanged,
+            || panic!("modifier input must not query key repeat")
+        ));
+        assert!(super::platform::repeat_for_event(
+            NSEventType::KeyDown,
+            || true
+        ));
+        assert!(!super::platform::repeat_for_event(
+            NSEventType::KeyUp,
+            || panic!("key release must not query key repeat")
+        ));
     }
 }

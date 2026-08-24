@@ -990,7 +990,7 @@ where
             && row.control_id() == Some(control.clone())
             && text.context() == TopLevelContext::Patch
             && text.state_hash() == tree.state_hash()
-            && selected_text.starts_with("> PARAMETER ")
+            && selected_text.starts_with("> DETAIL_PARAMETER ")
             && selected_text.contains(expected.selected_label())
             && tree_json
                 .pointer("/interaction/activeFocus/controlId/id")
@@ -1174,7 +1174,25 @@ where
             untargeted_patches_exact,
             run.audio_measurement.is_finite(),
         )
-        .map_err(ExhaustiveGuiDemoError::from)
+        .map_err(|_| ExhaustiveGuiDemoError::EngineCheckpoint {
+            step: step.to_owned(),
+            reason: format!(
+                "ADSR evidence mismatch: expected={} state={} page={} snapshot={} renderer={} revisions={}/{}/{} focus={} envelopes={} scalarOnly={} untargeted={} audioFinite={}",
+                expected.expected_value(),
+                patch.envelope().value(expected.parameter()),
+                page_row.value(),
+                snapshot.envelope().value(expected.parameter()),
+                renderer_snapshot.envelope().value(expected.parameter()),
+                self.app_loop.graph_revision(),
+                self.app_loop.current_parameters().graph_revision(),
+                self.renderer.active_revision(),
+                focus_projection_exact,
+                all_envelope_values_exact,
+                scalar_only,
+                untargeted_patches_exact,
+                run.audio_measurement.is_finite(),
+            ),
+        })
     }
 
     fn dispatch_semantic<Input>(

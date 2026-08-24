@@ -37,13 +37,23 @@ or workflow parity.
 
 The authored screens contain substantially more composition, hierarchy,
 spacing, typography, state treatment, and workflow detail than the current UI.
-The native 1920×1080 comparison, native 1280×800 reflow comparison, complete
-native input/window witness, and clean native visual acceptance were not
-completed. The last native projection attempt passed serialized checks but
-timed out before the first `animation-frame-ready` acknowledgement. There is no
-authored compact Figma frame; the current 1280×800 policy is derived from the
-desktop design and declared minimums. Mixer multi-select has a type/state name
-but no defined product semantics and is truthfully reported as not implemented.
+The Figma responsive contract defines fluid, content-driven Wide, Standard,
+and Compact compositions; its large frames are visual references, not fixed
+canvases. Layout uses bounded tracks, intrinsic sizing, wrapping, and ordered
+stacking while semantic focus and projection remain unchanged. The native
+responsive witness has measured the Patch Overview at 1920×1080, 1440 px,
+1280×800, 900 px, and 1280×800 with 1.25 text scale through the shipped
+webview. Those observations passed structural-mode, target-floor, overflow,
+overlap, scroll-reachability, focus-identity, paint-acknowledgement, and
+repeat-render checks without changing the accepted reducer projection. Native
+visual acceptance is still incomplete: macOS screen captures from that run
+were black, a repeat run timed out before its first animation-frame signal,
+and the bounded physical Patch-editor demo later stalled waiting for a paint
+confirmation. The native input witness observed 52 key transitions and 17
+mapped actions but could not observe the focus-loss edge because the test
+window never acquired key focus. These are environment-dependent exclusions,
+not interface acceptance. Mixer multi-select has a type/state name but no
+defined product semantics and is truthfully reported as not implemented.
 
 The old phase/spec system recorded 73 of 79 implementation tasks complete when
 it was retired. The six incomplete items were the two native viewport
@@ -58,7 +68,8 @@ The normative visual/workflow reference is the live
 [Crest Synth — Controller-First UI Redesign](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=0-1).
 The primary authored nodes are:
 
-- [Patch Strip — 36:3](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=36-3)
+- [Responsive Front-End Contract — 98:2](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=98-2)
+- [Patch Overview — 95:202](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=95-202)
 - [Instrument Detail — 37:7](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=37-7)
 - [FX Detail — 38:60](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=38-60)
 - [Sample Detail — 39:92](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=39-92)
@@ -95,7 +106,7 @@ The application currently provides:
 - Chorus, Reverb, and Delay in one effect registry;
 - three ordered Patch post-effect slots and eight bus returns;
 - one fixed bank of sixteen persistent Mixer tracks, T00 through T0F;
-- descriptor-driven Patch rows, Detail, generic Choice, Sample Browser,
+- descriptor-driven Patch Overview, Detail, generic Choice, Sample Browser,
   waveform/playhead projection, persistent Utility, and persistent Mixer
   Inspector surfaces;
 - level, pan, mute, solo, indexed sends, return occupancy/parameters/levels,
@@ -175,7 +186,7 @@ audio buffers.
 - Focus uses stable semantic IDs, never rectangle coordinates, DOM positions,
   collection indices, or labels.
 - Exactly one target is focused.
-- Presentation density dispatches no action and cannot change track, row,
+- Presentation reflow dispatches no action and cannot change track, row,
   Patch, subordinate subject, or return identity.
 - PATCH and MIXER remember their prior semantic roots.
 - One `PatchSubordinateSession` union owns Detail, Choice, or Sample Browser;
@@ -354,10 +365,20 @@ Physical bindings normalize to semantic actions before product logic:
 | Select | multi-select only when reducer semantics exist; currently unavailable |
 | Start press/release | hold-to-preview in Sample Browser; reserved elsewhere |
 
-PATCH focus is descriptor-driven and non-wrapping: Engine, Attack, Decay,
-Sustain, Release, visible instrument structural choices, then each effect-slot
-occupancy and the configured effect's scalar rows. PATCH Utility contains
+PATCH Main is the non-wrapping Overview order: Engine, then the three canonical
+effect-slot occupancy controls. The visual reading order is the same single
+vertical sequence at every viewport width; wider compositions expand the row
+interiors and the persistent Utility region rather than turning focus movement
+into a horizontal card scan. Instrument, envelope, and configured-effect
+parameters remain on descriptor-driven Detail surfaces. PATCH Utility contains
 exactly master volume, Patch volume, MIDI input, output track, and voice limit.
+Main and Utility remain mutually reachable, and subordinate return restores the
+stable semantic origin or the nearest enabled sibling after schema change.
+
+On macOS, Shift arrives through AppKit's `FlagsChanged` event rather than a key
+down/up pair. The native input adapter treats modifier transitions as
+non-repeatable and never queries key-repeat state from a modifier event; a UI
+input callback must not unwind through the Objective-C event boundary.
 
 MIXER Main uses one stable `(MixerTrackId, MixerTrackParameter)` path. Left/Right
 changes T00–T0F while preserving Level/Pan/Mute/Solo row; Up/Down changes row
@@ -418,19 +439,39 @@ halo radius/1 px spread/0.28 opacity, and a 3 px amber adjustment keyline. The
 Mixer fader specimen is a 14 px track, 8 px fill, 3 px bottom shoulder, 34×6 px
 cap, and 2 px rounding.
 
-The authored 1920×1080 shell is 48 px context line, 72 px identity header, 896
-px workspace split 1500/420 between main and persistent Utility/Inspector, and
-a 64 px path/action footer. This is a reference geometry, not a statement that
-the current output matches it.
+Shell geometry is a bounded responsive contract rather than a pair of fixed
+canvases. Rust owns the minimum, preferred, and maximum track/spacing tokens
+and the ordered Wide, Standard, and Compact thresholds; generated CSS exposes
+them to one Grid/Flex DOM. Wide and Standard use a flexible main track with a
+bounded persistent Utility/Inspector track. Compact stacks those same regions
+in document order. `minmax()`, `clamp()`, intrinsic sizing, wrapping, and
+scroll-to-focus keep required content reachable, and every interactive target
+retains the 48 px floor. The 1920×1080 and 1280×800 sizes are representative
+witness fixtures only and do not select product state or authorize fixed
+coordinates.
 
 ## Evidence retained in code
 
 The repository's tests and live-scene report types are the surviving detailed
-evidence. At the documentation reset:
+evidence. At the documentation reset and the 2026-08-21 responsive Patch
+Overview slice:
 
-- formatting, Clippy with warnings denied, and all-target tests had passed;
+- formatting, Clippy with warnings denied, JavaScript syntax validation, and
+  `cargo test --all-targets` passed; the library aggregate reported 743 passed
+  and two measurement-only tests ignored, and every integration target
+  completed without a deterministic failure;
 - exact selector, no-name-enumeration, graph/callback, reducer/projection,
   Sample, and headless webview witnesses existed in the production path;
+- the production webview witness measured Wide, Standard, Intermediate,
+  Compact, and scaled-text Patch Overview compositions with one serialized
+  projection, stable focus, all three slot controls, persistent Utility,
+  48 px target floors, bounded independent scrolling, no required-content
+  overlap, no document-level horizontal overflow, and deterministic repeated
+  rendering;
+- the same witness kept all sixteen Mixer tracks and Inspector reachable under
+  responsive composition and retained projection-to-paint identity and meter
+  correlation; the Mixer remains a functional blockout pending its own visual
+  composition slice;
 - the 2026-08-20 Patch-editor live report recorded 15 focused Patches, 105/105
   editable parameters, all three engine transitions, nonzero isolated audio,
   zero callback allocations/destructions, and clean note/stream/graph teardown;
@@ -442,6 +483,11 @@ evidence. At the documentation reset:
   negative tests, and its interactive audio path was manually heard and
   verified, but the required native visual comparisons and structured final
   acceptance were not completed.
+
+The next vertical visual slices are Instrument and FX Detail, Sample Detail
+and Browser/option states, Mixer responsive composition, then native scaling
+and visual polish. Their existing functional surfaces are not evidence that
+those visual slices are complete.
 
 These measurements are historical observations, not a roadmap and not a
 waiver for missing Figma fidelity. A test that only constructs objects, prints

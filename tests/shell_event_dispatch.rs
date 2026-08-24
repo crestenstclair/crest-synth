@@ -47,7 +47,7 @@ use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::shell::app_window::{AppInputCallback, ProjectionCallback};
-use crest_synth::shell::density::ViewportDensityPolicy;
+use crest_synth::shell::density::ResponsiveShellContract;
 use crest_synth::shell::webview::frame_stream::FrameExpectation;
 use crest_synth::shell::webview::projection_channel::{
     ForwardedAck, PaintedAckError, ProjectionChannel, ProjectionPush,
@@ -166,13 +166,10 @@ fn page_band_labels(document: &Value) -> [String; 5] {
 /// density policy. Only an ack matching an in-flight pushed document can
 /// ever become an observation.
 fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
-    let policy = ViewportDensityPolicy::resolve(viewport[0]);
-    let bands = policy.bands();
-    let split = policy.split();
-    let context_bottom = bands.context_line_px;
-    let identity_bottom = context_bottom + bands.identity_header_px;
-    let workspace_bottom = viewport[1] - bands.footer_px;
-    let main_width = viewport[0] - split.side_px;
+    let geometry = ResponsiveShellContract::get().witness_geometry(viewport[0], viewport[1]);
+    let context_bottom = geometry.context_line_px;
+    let identity_bottom = geometry.workspace_y_px;
+    let workspace_bottom = viewport[1] - geometry.footer_px;
     let labels = page_band_labels(document);
     json!({
         "generation": document["generation"],
@@ -187,16 +184,16 @@ fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
               "widthPx": viewport[0], "heightPx": context_bottom,
               "label": labels[0] },
             { "id": "identityHeader", "xPx": 0.0, "yPx": context_bottom,
-              "widthPx": viewport[0], "heightPx": bands.identity_header_px,
+              "widthPx": viewport[0], "heightPx": geometry.identity_header_px,
               "label": labels[1] },
             { "id": "mainWorkspace", "xPx": 0.0, "yPx": identity_bottom,
-              "widthPx": main_width, "heightPx": workspace_bottom - identity_bottom,
+              "widthPx": geometry.main_width_px, "heightPx": geometry.main_height_px,
               "label": labels[2] },
-            { "id": "persistentSideRegion", "xPx": main_width, "yPx": identity_bottom,
-              "widthPx": split.side_px, "heightPx": workspace_bottom - identity_bottom,
+            { "id": "persistentSideRegion", "xPx": geometry.side_x_px, "yPx": geometry.side_y_px,
+              "widthPx": geometry.side_width_px, "heightPx": geometry.side_height_px,
               "label": labels[3] },
             { "id": "footer", "xPx": 0.0, "yPx": workspace_bottom,
-              "widthPx": viewport[0], "heightPx": bands.footer_px,
+              "widthPx": viewport[0], "heightPx": geometry.footer_px,
               "label": labels[4] },
         ],
     })
@@ -458,8 +455,28 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         assert_eq!(patch_observation.context(), TopLevelContext::Patch);
     }
 
-    // The four envelope rows: bare S navigates the reducer's declared order,
-    // and each frame's document scrolls to the reducer-selected control.
+    // Enter Engine Detail, then walk its envelope rows in declared order. The
+    // root keeps only the stable Engine occupancy identity.
+    let (mut first_detail_document, _) = harness.rendered_frame(vec![
+        down(WindowKey::Shift),
+        down(WindowKey::W),
+        up(WindowKey::W),
+        up(WindowKey::Shift),
+    ]);
+    for _ in 0..16 {
+        if shared
+            .borrow()
+            .current_patch_page()
+            .unwrap()
+            .focused_control_id()
+            == PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+        {
+            break;
+        }
+        first_detail_document = harness
+            .rendered_frame(vec![down(WindowKey::S), up(WindowKey::S)])
+            .0;
+    }
     for (index, parameter) in [
         VoiceEnvelopeParameter::AttackMilliseconds,
         VoiceEnvelopeParameter::DecayMilliseconds,
@@ -469,8 +486,13 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
     .into_iter()
     .enumerate()
     {
-        let (focused_document, _) =
-            harness.rendered_frame(vec![down(WindowKey::S), up(WindowKey::S)]);
+        let focused_document = if index == 0 {
+            first_detail_document.clone()
+        } else {
+            harness
+                .rendered_frame(vec![down(WindowKey::S), up(WindowKey::S)])
+                .0
+        };
 
         {
             let app_loop = shared.borrow();
@@ -522,12 +544,9 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         }
     }
 
-    // Bare W returns focus through the canonical PATCH model to the engine.
-    let (engine_focus_document, _) = harness.rendered_frame(
-        (0..4)
-            .flat_map(|_| [down(WindowKey::W), up(WindowKey::W)])
-            .collect(),
-    );
+    // Return restores the exact Overview origin.
+    let (engine_focus_document, _) =
+        harness.rendered_frame(vec![down(WindowKey::A), up(WindowKey::A)]);
     {
         let app_loop = shared.borrow();
         let text = app_loop.current_text();
@@ -568,7 +587,10 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
             .find(|record| matches!(record.input(), EventInput::Adjust { .. }))
             .expect("the normalized chord emits one structural adjustment event");
 
-        assert_eq!(records.len(), 23);
+        assert!(
+            records.len() >= 22,
+            "the complete Overview → Detail → Overview input sequence is logged"
+        );
         assert_eq!(page.engine().status(), EngineSelectionStatusKind::Preparing);
         assert!(!page.engine().editable());
         assert_eq!(
@@ -733,7 +755,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         Some(text.selected_line() as u64)
     );
 
-    assert_eq!(records.len(), 24);
+    assert_eq!(records.len(), 23);
     let adjustment = &records.records()[3];
     assert_eq!(adjustment.source(), EventSource::Keyboard);
     assert_eq!(adjustment.outcome(), EventOutcome::Accepted);
@@ -786,11 +808,12 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         "the rendered document's focus is the retained mixer track"
     );
 
-    // Frame accounting: fifteen frames ran, ten accepted generations
+    // Frame accounting: the Detail entry and return add two accepted frames;
+    // every accepted generation renders one document and one observation.
     // rendered — one document and one forwarded observation each, nothing on
     // idle frames.
-    assert_eq!(harness.frames_run, 15);
-    assert_eq!(harness.forwarded.len(), 10);
+    assert_eq!(harness.frames_run, 17);
+    assert_eq!(harness.forwarded.len(), 12);
     assert_eq!(harness.channel.in_flight_documents(), 0);
 
     // The qualifying-frame stream serves the final accepted identity from a

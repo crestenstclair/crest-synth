@@ -15,7 +15,8 @@ use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_providers,
 };
 use crest_synth::control::{
-    AppEvent, AppLoop, AppState, Direction, PatchControlId, StateProjector, TopLevelContext,
+    AppEvent, AppLoop, AppState, Direction, PatchControlId, StateProjector, SurfaceId,
+    TopLevelContext,
 };
 use crest_synth::kernel::{midi_message::MidiMessage, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
@@ -489,31 +490,32 @@ fn static_patch_effect() {
         .iter()
         .position(|control| control == &depth_control)
         .unwrap();
-    // The occupied slot's occupancy row precedes its scalars, and the two
-    // empty slots still contribute their occupancy rows at the end.
+    // The descriptor keeps the occupant's scalar order, while the overview
+    // keeps all three position identities independently reachable.
     let page = app_loop.current_patch_page().unwrap();
     let patch_focus_order_exact = depth_index == amount_index + 1
-        && focus_order[amount_index - 1]
-            == PatchControlId::EffectSlot(
-                crest_synth::synth::effect_slot_id::EffectSlotIndex::new(0).unwrap(),
-            )
-        && depth_index + 3 == focus_order.len()
-        && focus_order[depth_index + 1..]
-            == [
-                PatchControlId::EffectSlot(
-                    crest_synth::synth::effect_slot_id::EffectSlotIndex::new(1).unwrap(),
-                ),
-                PatchControlId::EffectSlot(
-                    crest_synth::synth::effect_slot_id::EffectSlotIndex::new(2).unwrap(),
-                ),
-            ]
         && page.effects().len() == 3
         && page.effects()[0].occupancy().capability_id().is_some()
         && page.effects()[1].occupancy().capability_id().is_none()
         && page.effects()[2].occupancy().capability_id().is_none();
     assert!(patch_focus_order_exact);
 
-    for _ in 0..amount_index {
+    app_loop
+        .dispatch(AppEvent::Navigate(Direction::Down))
+        .unwrap();
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().focused_control_id(),
+        PatchControlId::EffectSlot(
+            crest_synth::synth::effect_slot_id::EffectSlotIndex::new(0).unwrap(),
+        )
+    );
+    app_loop
+        .dispatch(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    for _ in 0..64 {
+        if app_loop.current_patch_page().unwrap().focused_control_id() == amount_control {
+            break;
+        }
         app_loop
             .dispatch(AppEvent::Navigate(Direction::Down))
             .unwrap();

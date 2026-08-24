@@ -689,16 +689,6 @@ fn page_strip_groups(controls: &[Value]) -> Vec<StripGroup> {
     groups
 }
 
-/// `groupHeadControlId` — the row whose projected value names what a group
-/// holds.
-fn page_group_head_control_id(key: &str) -> Option<String> {
-    if key == "instrument" || key == "capability" {
-        return Some("patch.engine".to_owned());
-    }
-    key.strip_prefix("slot.")
-        .map(|index| format!("patch.effectSlot.{index}"))
-}
-
 fn surface_of<'a>(document: &'a Value, id: &str) -> Option<&'a Value> {
     document
         .get("surfaces")?
@@ -963,24 +953,19 @@ fn projected_screen_strings(state: &AppState) -> Vec<(String, String)> {
             }
         }
     }
-    // The strip's group titles: an authored legend, or the projected value of
-    // the row that heads the group. The instrument group's title is the engine
-    // row's value and a slot group's is its occupancy row's, so a capability
-    // identity reverted into either value becomes a group title.
-    let main = surface_controls(&document, "patchMain");
-    for group in page_strip_groups(&main) {
-        let title = group.legend.clone().or_else(|| {
-            page_group_head_control_id(&group.key)
-                .and_then(|head| {
-                    main.iter()
-                        .find(|control| page_control_id(control) == head)
-                        .cloned()
-                })
-                .as_ref()
-                .map(page_value_text)
-        });
-        if let Some(title) = title {
-            strings.push((format!("strip group {} title", group.key), title));
+    if let Some(main) = surface_of(&document, "patchMain") {
+        for section in main
+            .get("sections")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let (Some(id), Some(label)) = (
+                section.get("id").and_then(Value::as_str),
+                section.get("label").and_then(Value::as_str),
+            ) {
+                strings.push((format!("Overview section {id} title"), label.to_owned()));
+            }
         }
     }
     for segment in shell.footer().path_label().split(" / ") {
@@ -1150,6 +1135,9 @@ fn screen_string_fixtures() -> Vec<(&'static str, AppState)> {
 /// the active and the requested value on the one row that carries them.
 fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
     let mut state = fixture_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("the engine root opens its descriptor-backed detail surface");
     let preset = state
         .capabilities()
         .descriptor(focused_patch(&state).instrument_config().capability_id())
@@ -1214,7 +1202,8 @@ fn preset_swap_in_flight() -> (AppState, SemanticControlId) {
 /// `data-role="row-range"`, found in cycle 1's review the same way, matching
 /// both the painting site and a `renderObservation` selector. Requiring exactly
 /// one occurrence makes the next blind anchor fail the moment it is added.
-fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
+#[allow(dead_code)]
+fn check_legacy_transcribed_page_rules_match_the_committed_script() -> usize {
     let script = page_source("page.js");
     let unavailable_mark = format!("var UNAVAILABLE_MARK = \"{UNAVAILABLE_MARK}\"");
     // The designed group table as one array literal, rebuilt from the constant
@@ -1351,6 +1340,77 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
         }
     }
     check_every_line_of_a_transcribed_page_rule_carries_a_pin(&script, &required);
+    required.len()
+}
+
+/// Pins the production renderer rules the headless acceptance transcribes.
+///
+/// The live DOM twin proves the resulting structure and geometry. This check
+/// keeps the deterministic headless proof coupled to the same path: projected
+/// sections select controls by complete semantic path, summaries correlate by
+/// that path, Utility follows projected order, and reflow only reveals focus.
+fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
+    let script = page_source("page.js");
+    let required = [
+        (
+            "complete-path control lookup",
+            "    var wanted = JSON.stringify(path || null);",
+        ),
+        (
+            "projected summary lookup",
+            "    var summaries = (section && section.controlSummaries) || [];",
+        ),
+        (
+            "projected section iteration",
+            "    var sections = (main && main.sections) || [];",
+        ),
+        (
+            "projected section path iteration",
+            "      var paths = section.controlPaths || [];",
+        ),
+        (
+            "section path resolution",
+            "        var control = controlByPath(main, paths[pathIndex]);",
+        ),
+        (
+            "section summary correlation",
+            "          overviewSummaryForControl(section, control),",
+        ),
+        (
+            "root Overview selection",
+            "        : patchOverviewHtml(model);",
+        ),
+        (
+            "projected Utility order",
+            "  function patchUtilityHtml(model, surface, summary) {",
+        ),
+        (
+            "semantic focus lookup after paint",
+            "    var wanted = JSON.stringify(model.focusPath || null);",
+        ),
+        (
+            "presentation-only focus reveal",
+            "        rows[i].scrollIntoView({ block: \"nearest\", inline: \"nearest\" });",
+        ),
+        (
+            "requested option label",
+            "            selectedLabel: control.requestedLabel,",
+        ),
+        (
+            "continuous range precision",
+            "    return control.kind === \"continuous\"\n      ? Number(value).toFixed(3)\n      : String(value);",
+        ),
+        (
+            "read-only discriminator",
+            "control.patchInteraction === \"readOnly\"",
+        ),
+    ];
+    for (what, fragment) in required {
+        assert!(
+            script.contains(fragment),
+            "webview-page/page.js no longer contains {what}: {fragment:?}"
+        );
+    }
     required.len()
 }
 
@@ -1864,8 +1924,12 @@ fn check_the_fixture_spans_more_than_two_patches_across_both_engines() {
     // destination's own schema" is unfalsifiable here.
     let resolver = SemanticResolver::new(&state);
     let rows = |id: u32| {
+        let patch_id = PatchId::new(id).unwrap();
+        let patch = patch_of(&state, patch_id);
+        let subject =
+            PatchDetailSubject::instrument(patch.instrument_config().capability_id().clone());
         resolver
-            .patch_main_paths(PatchId::new(id).unwrap())
+            .patch_detail_paths(patch_id, &subject)
             .unwrap()
             .into_iter()
             .map(|path| path.control_id().clone())
@@ -1873,19 +1937,23 @@ fn check_the_fixture_spans_more_than_two_patches_across_both_engines() {
     };
     let soundfont = rows(1);
     let braids = rows(2);
-    assert!(
-        soundfont.len() > braids.len(),
-        "the fixture's two engines must declare different row counts, got {} and {}",
+    assert_ne!(
         soundfont.len(),
-        braids.len()
+        braids.len(),
+        "the fixture's two engines must declare different row counts"
     );
     assert!(
-        soundfont.iter().any(|control| !braids.contains(control)
-            && matches!(
-                control,
-                SemanticControlId::Patch(PatchControlId::Capability(_))
-            )),
-        "the wider schema must host a capability row the narrower one does not"
+        soundfont
+            .iter()
+            .chain(&braids)
+            .any(
+                |control| (soundfont.contains(control) != braids.contains(control))
+                    && matches!(
+                        control,
+                        SemanticControlId::Patch(PatchControlId::Capability(_))
+                    )
+            ),
+        "the two detail schemas must differ by a capability-owned control"
     );
 }
 
@@ -1989,34 +2057,14 @@ fn patch_identities(document: &Value) -> BTreeSet<u64> {
     found
 }
 
-/// Focus recovers against the **destination's own** descriptor schema.
-///
-/// The cursor is parked on a row only the wider engine hosts, so recovery
-/// cannot succeed by the identity surviving. Falsified by making
-/// `select_patch` recover to the destination's first row: the recovered
-/// control is then `Engine`, which this refuses.
+/// A Patch switch preserves the stable root identity when the destination
+/// hosts it, while rebinding the complete path to the destination Patch.
 fn check_focus_recovers_against_the_destination_schema() {
     let mut state = fixture_state();
-    let preset = SemanticControlId::Patch(PatchControlId::Capability(
-        state
-            .capabilities()
-            .descriptor(focused_patch(&state).instrument_config().capability_id())
-            .unwrap()
-            .parameters()
-            .find(|spec| spec.patch_interaction() == PatchInteraction::StructuralChoice)
-            .unwrap()
-            .id()
-            .clone(),
-    ));
-    navigate_to(&mut state, |path| path.control_id() == &preset);
-
-    let source_order = SemanticResolver::new(&state)
-        .patch_main_paths(PatchId::new(1).unwrap())
-        .unwrap();
-    let held = source_order
-        .iter()
-        .position(|path| path.control_id() == &preset)
-        .expect("the cursor is parked on a row of the source order");
+    let stable_control =
+        SemanticControlId::Patch(PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]));
+    navigate_to(&mut state, |path| path.control_id() == &stable_control);
+    let source = state.interaction().focus_path().clone();
 
     state
         .apply(AppEvent::SelectPatch(Direction::Right))
@@ -2031,30 +2079,13 @@ fn check_focus_recovers_against_the_destination_schema() {
         hosted.contains(&recovered),
         "focus recovered to {recovered:?}, which the destination does not host"
     );
-    assert_ne!(
-        recovered.control_id(),
-        &preset,
-        "the destination cannot host the row only the source declares"
-    );
-    assert_ne!(
-        recovered.control_id(),
-        &SemanticControlId::Patch(PatchControlId::Engine),
-        "recovery is the sibling rule, not a jump to the destination's first row"
-    );
-    // The sibling rule exactly: next-before-previous, walking outward from the
-    // held index through the source order for the nearest control the
-    // destination also hosts.
-    let expected = source_order
-        .iter()
-        .skip(held + 1)
-        .map(FocusPath::control_id)
-        .find(|control| hosted.iter().any(|path| path.control_id() == *control))
-        .expect("the source order continues past the held row");
     assert_eq!(
         recovered.control_id(),
-        expected,
-        "recovery must be the one deterministic next-before-previous sibling rule"
+        &stable_control,
+        "the stable root identity must survive the Patch switch"
     );
+    assert_ne!(recovered.patch_id(), source.patch_id());
+    assert_eq!(recovered.patch_id(), Some(destination));
     // And the projection agrees with the reducer.
     assert_eq!(
         semantic(&state)
@@ -2107,9 +2138,7 @@ fn check_an_in_flight_edit_stays_correlated_and_a_subordinate_surface_is_left() 
         state.engine_selection().correlation().unwrap().patch_id(),
         Some(origin)
     );
-    state
-        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
-        .expect("the detail surface opens on the row the swap rides");
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
     assert!(state.interaction().detail_subject().is_some());
 
     let switched = state.apply(AppEvent::SelectPatch(Direction::Right));
@@ -2230,6 +2259,7 @@ fn grouped_strip_shape(controls: &[Value]) -> Result<Vec<StripGroup>, String> {
 /// The PATCH workspace is the `PatchStrip` composition: an identity-and-routing
 /// header, then ordered groups — instrument selector, envelope group, and one
 /// group per ordered effect slot with its occupant rows nested.
+#[allow(dead_code)]
 fn check_the_strip_is_grouped_structure() -> usize {
     let state = fixture_state();
     let document = document(&state);
@@ -2311,6 +2341,7 @@ fn check_the_strip_is_grouped_structure() -> usize {
 /// designed group claims, then driving the *same* page grouping the production
 /// document goes through — so what is observed is the real arranger refusing a
 /// real flat run, not a hand-built object refusing a hand-built assertion.
+#[allow(dead_code)]
 fn check_a_flat_run_fails_the_grouped_check() -> String {
     let state = fixture_state();
     let document = document(&state);
@@ -2343,6 +2374,7 @@ fn check_a_flat_run_fails_the_grouped_check() -> String {
 /// exactly why SC-003 counts zero. A check that only looked at the production
 /// document would report "no group is unavailable" without ever establishing
 /// that the arranger can say so.
+#[allow(dead_code)]
 fn check_an_absent_group_and_an_unfocused_workspace_mark_themselves() {
     let document = document(&fixture_state());
     let controls = surface_controls(&document, "patchMain");
@@ -2479,15 +2511,6 @@ fn check_the_whole_patch_surface_marks_nothing_unavailable() -> usize {
                 );
             }
         }
-        // Every designed strip group has view data, so none of them marks
-        // itself unavailable.
-        for group in page_strip_groups(&surface_controls(&document, "patchMain")) {
-            assert!(
-                !group.rows.is_empty(),
-                "{fixture}: the strip group {} marks itself unavailable",
-                group.key
-            );
-        }
         // And the Utility panel's five designed entries each have a driver row.
         let utility: BTreeSet<String> = surface_controls(&document, "patchUtility")
             .iter()
@@ -2502,10 +2525,142 @@ fn check_the_whole_patch_surface_marks_nothing_unavailable() -> usize {
         }
     }
     assert!(
-        walked > 60,
+        walked > 40,
         "only {walked} PATCH rows walked — the SC-003 sweep stopped seeing the surface"
     );
     walked
+}
+
+/// Validates the serialized Overview as projected section structure.
+///
+/// The controls remain one canonical ordered list. Sections reference those
+/// controls by complete semantic path and carry correlated descriptor summary
+/// data; the renderer never reconstructs either relationship from id prefixes.
+fn overview_shape(document: &Value) -> Result<usize, String> {
+    let main = surface_of(document, "patchMain")
+        .ok_or_else(|| "the document has no PATCH main surface".to_owned())?;
+    let controls = main
+        .get("controls")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "PATCH main has no control list".to_owned())?;
+    let ids = controls.iter().map(page_control_id).collect::<Vec<_>>();
+    let expected = vec![
+        "patch.engine".to_owned(),
+        "patch.effectSlot.0".to_owned(),
+        "patch.effectSlot.1".to_owned(),
+        "patch.effectSlot.2".to_owned(),
+    ];
+    if ids != expected {
+        return Err(format!("PATCH root identities are {ids:?}"));
+    }
+
+    let sections = main
+        .get("sections")
+        .and_then(Value::as_array)
+        .ok_or_else(|| "PATCH main has no section list".to_owned())?;
+    let section_ids = sections
+        .iter()
+        .filter_map(|section| section.get("id").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    if section_ids != ["overview.engine", "overview.effects"] {
+        return Err(format!("Overview section identities are {section_ids:?}"));
+    }
+
+    let mut arranged_paths = Vec::new();
+    for section in sections {
+        let paths = section
+            .get("controlPaths")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "an Overview section has no control paths".to_owned())?;
+        let summaries = section
+            .get("controlSummaries")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "an Overview section has no control summaries".to_owned())?;
+        if summaries.len() != paths.len() {
+            return Err("an Overview section's paths and summaries differ in length".to_owned());
+        }
+        for (path, summary) in paths.iter().zip(summaries) {
+            if !controls
+                .iter()
+                .any(|control| control.get("path") == Some(path))
+            {
+                return Err(format!("section path {path} resolves no root control"));
+            }
+            if summary.get("controlPath") != Some(path) {
+                return Err(format!("section summary does not correlate to {path}"));
+            }
+            arranged_paths.push(path.clone());
+        }
+    }
+    let control_paths = controls
+        .iter()
+        .filter_map(|control| control.get("path").cloned())
+        .collect::<Vec<_>>();
+    if arranged_paths != control_paths {
+        return Err("Overview sections changed canonical root order".to_owned());
+    }
+
+    let summaries = sections
+        .iter()
+        .flat_map(|section| {
+            section
+                .get("controlSummaries")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .collect::<Vec<_>>();
+    if summaries[0]
+        .get("parameterCount")
+        .and_then(Value::as_u64)
+        .is_none()
+    {
+        return Err("the engine descriptor count is absent".to_owned());
+    }
+    if summaries[1..3].iter().any(|summary| {
+        summary
+            .get("parameterCount")
+            .and_then(Value::as_u64)
+            .is_none()
+    }) {
+        return Err("an occupied effect slot has no descriptor count".to_owned());
+    }
+    if !summaries[3]
+        .get("parameterCount")
+        .is_some_and(Value::is_null)
+    {
+        return Err("the empty effect slot invented a descriptor count".to_owned());
+    }
+    if page_value_text(&controls[3]) != "Empty" {
+        return Err("the empty effect slot is not explicit".to_owned());
+    }
+    Ok(sections.len())
+}
+
+fn check_the_overview_is_projected_section_structure() -> usize {
+    let document = document(&fixture_state());
+    overview_shape(&document)
+        .unwrap_or_else(|error| panic!("the production PATCH Overview is incoherent: {error}"))
+}
+
+fn check_an_unresolved_section_path_fails_the_overview_check() -> String {
+    let mut malformed = document(&fixture_state());
+    malformed["surfaces"][0]["sections"][0]["controlPaths"][0]["controlId"]["id"] =
+        Value::String("unknown.root".to_owned());
+    let error = overview_shape(&malformed)
+        .expect_err("a section path without a canonical control must fail coherence");
+    assert!(error.contains("resolves no root control"));
+    assert!(overview_shape(&document(&fixture_state())).is_ok());
+    error
+}
+
+fn check_an_empty_slot_remains_an_explicit_root_control() {
+    let document = document(&fixture_state());
+    let controls = surface_controls(&document, "patchMain");
+    assert_eq!(page_control_id(&controls[3]), "patch.effectSlot.2");
+    assert_eq!(page_value_text(&controls[3]), "Empty");
+    assert_eq!(controls[3].get("visible"), Some(&Value::Bool(true)));
+    assert_eq!(controls[3].get("focusable"), Some(&Value::Bool(true)));
 }
 
 // ---------------------------------------------------------------------------
@@ -2916,37 +3071,47 @@ fn check_per_row_actions_agree_with_the_model_level_list() -> usize {
         "at the focused row the two lists are the same value, not two computations"
     );
 
+    let mut detail = fixture_state();
+    detail
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    let mut utility = fixture_state();
+    utility
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+        .unwrap();
+
     let mut compared = 0_usize;
-    for path in SemanticResolver::new(&state)
-        .patch_main_paths(state.interaction().patch_focus().unwrap())
-        .unwrap()
-    {
-        let advertised = control_at(&model, path.control_id())
-            .valid_actions()
-            .to_vec();
-        let mut moved = fixture_state();
-        navigate_to(&mut moved, |candidate| candidate == &path);
-        let actual = semantic(&moved).valid_actions().to_vec();
-        assert_eq!(
-            advertised,
-            actual,
-            "the row {:?} advertises an action list the reducer does not honour there",
-            path.control_id()
-        );
-        // Ordered and duplicate-free, per the declaration.
-        let kinds: Vec<_> = advertised
-            .iter()
-            .map(|action| format!("{:?}", action.action()))
-            .collect();
-        let unique: BTreeSet<_> = kinds.iter().cloned().collect();
-        assert_eq!(
-            kinds.len(),
-            unique.len(),
-            "a row's action list repeats itself"
-        );
-        compared += 1;
+    for fixture in [fixture_state(), detail, utility] {
+        let fixture_model = semantic(&fixture);
+        let surface = fixture_model
+            .surface(fixture.interaction().active_surface())
+            .expect("the active surface is projected");
+        for control in surface.controls() {
+            let path = control.path().clone();
+            let advertised = control.valid_actions().to_vec();
+            let mut moved = fixture.clone();
+            navigate_to(&mut moved, |candidate| candidate == &path);
+            let actual = semantic(&moved).valid_actions().to_vec();
+            assert_eq!(
+                advertised,
+                actual,
+                "the row {:?} advertises an action list the reducer does not honour there",
+                path.control_id()
+            );
+            let kinds = advertised
+                .iter()
+                .map(|action| format!("{:?}", action.action()))
+                .collect::<Vec<_>>();
+            let unique = kinds.iter().cloned().collect::<BTreeSet<_>>();
+            assert_eq!(
+                kinds.len(),
+                unique.len(),
+                "a row's action list repeats itself"
+            );
+            compared += 1;
+        }
     }
-    assert!(compared >= 13, "only {compared} rows compared");
+    assert!(compared >= 12, "only {compared} rows compared");
     compared
 }
 
@@ -2978,7 +3143,7 @@ fn check_requested_value_is_present_only_while_an_edit_is_in_flight() {
     let (state, control) = preset_swap_in_flight();
     let model = semantic(&state);
     let carrying: Vec<_> = model
-        .surface(SurfaceId::PatchMain)
+        .surface(SurfaceId::PatchDetail)
         .unwrap()
         .controls()
         .iter()
@@ -3501,11 +3666,8 @@ fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
 
     // A capability mid-preparation reports its typed lifecycle on its own rows
     // and keeps the section set the installed descriptor declares.
-    let (mut preparing, _) = preset_swap_in_flight();
+    let (preparing, _) = preset_swap_in_flight();
     let settled_detail = rows.len();
-    preparing
-        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
-        .expect("the detail surface opens while a swap is in flight");
     let preparing_document = document(&preparing);
     let rows = surface_controls(&preparing_document, "patchDetail");
     assert_eq!(
@@ -3930,18 +4092,18 @@ fn an_in_flight_edit_stays_correlated_and_a_subordinate_surface_is_left() {
 }
 
 #[test]
-fn the_strip_is_grouped_structure() {
-    check_the_strip_is_grouped_structure();
+fn the_overview_is_projected_section_structure() {
+    check_the_overview_is_projected_section_structure();
 }
 
 #[test]
-fn a_flat_run_fails_the_grouped_check() {
-    check_a_flat_run_fails_the_grouped_check();
+fn an_unresolved_section_path_fails_the_overview_check() {
+    check_an_unresolved_section_path_fails_the_overview_check();
 }
 
 #[test]
-fn an_absent_group_and_an_unfocused_workspace_mark_themselves() {
-    check_an_absent_group_and_an_unfocused_workspace_mark_themselves();
+fn an_empty_slot_remains_an_explicit_root_control() {
+    check_an_empty_slot_remains_an_explicit_root_control();
 }
 
 #[test]
@@ -4062,9 +4224,9 @@ fn functional_patch_editor_acceptance() {
     check_an_in_flight_edit_stays_correlated_and_a_subordinate_surface_is_left();
 
     // T030
-    let groups = check_the_strip_is_grouped_structure();
-    let flat_run_rejection = check_a_flat_run_fails_the_grouped_check();
-    check_an_absent_group_and_an_unfocused_workspace_mark_themselves();
+    let overview_sections = check_the_overview_is_projected_section_structure();
+    let unresolved_path_rejection = check_an_unresolved_section_path_fails_the_overview_check();
+    check_an_empty_slot_remains_an_explicit_root_control();
     let patch_rows = check_the_whole_patch_surface_marks_nothing_unavailable();
 
     // T031
@@ -4097,12 +4259,12 @@ fn functional_patch_editor_acceptance() {
 
     println!(
         "CREST_FUNCTIONAL_PATCH_EDITOR_OBSERVATION patches={} engines=2 switches={} \
-         strip_groups={} patch_rows={} screen_strings={} action_rows={} ranges_painted={} \
+         overview_sections={} patch_rows={} screen_strings={} action_rows={} ranges_painted={} \
          authored_strings={} detail_surface_identities={} detail_subjects_served={} \
          voice_limit_refusals={} page_rules_pinned={}",
         fixture_state().patches().len(),
         switches,
-        groups,
+        overview_sections,
         patch_rows,
         screen_strings,
         action_rows,
@@ -4113,6 +4275,6 @@ fn functional_patch_editor_acceptance() {
         refusals,
         transcriptions,
     );
-    println!("CREST_FUNCTIONAL_PATCH_EDITOR_FLAT_RUN_REJECTED {flat_run_rejection}");
+    println!("CREST_FUNCTIONAL_PATCH_EDITOR_UNRESOLVED_PATH_REJECTED {unresolved_path_rejection}");
     println!("{ACCEPTANCE_MARKER}");
 }

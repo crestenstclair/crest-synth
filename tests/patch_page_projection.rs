@@ -198,6 +198,23 @@ fn installed_state(patches: Vec<Patch>) -> AppState {
     state
 }
 
+fn enter_detail_at(state: &mut AppState, target: PatchControlId) {
+    state
+        .apply(AppEvent::EnterSurface(
+            crest_synth::control::SurfaceId::PatchDetail,
+        ))
+        .unwrap();
+    for _ in 0..32 {
+        if state.interaction().patch_control_focus() == Some(target.clone()) {
+            return;
+        }
+        state
+            .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
+            .unwrap();
+    }
+    panic!("descriptor-backed Detail did not expose {target}");
+}
+
 fn key_event(key: WindowKey) -> WindowInput {
     WindowInput::key_down(key)
 }
@@ -406,9 +423,10 @@ fn prove_patch_lifecycle_visibility() {
     state
         .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
         .unwrap();
-    state
-        .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
-        .unwrap();
+    enter_detail_at(
+        &mut state,
+        PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+    );
     let failed_correlation = state.engine_selection().correlation().unwrap().clone();
     let target_revision = GraphRevision::new(2).unwrap();
 
@@ -444,17 +462,9 @@ fn prove_patch_lifecycle_visibility() {
     );
     assert_eq!(text.selected_line(), main_row_line(&page, 1));
 
-    state
-        .apply(AppEvent::Navigate(crest_synth::control::Direction::Up))
-        .unwrap();
+    state.apply(AppEvent::Return).unwrap();
     state
         .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
-        .unwrap();
-    state
-        .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
-        .unwrap();
-    state
-        .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
         .unwrap();
     let correlation = state.engine_selection().correlation().unwrap().clone();
     state
@@ -470,6 +480,10 @@ fn prove_patch_lifecycle_visibility() {
             prepared_visualization: None,
         })
         .unwrap();
+    enter_detail_at(
+        &mut state,
+        PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds),
+    );
     let (_, page, text, parameters, _) = StateProjector::new().project_with_tree(&state).unwrap();
     let page = page.unwrap();
     assert_eq!(
@@ -675,6 +689,29 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
 
     pipeline.run_frame(vec![key_event(WindowKey::W), key_release(WindowKey::W)]);
 
+    {
+        let mut app_loop = shared.borrow_mut();
+        app_loop
+            .dispatch(AppEvent::EnterSurface(
+                crest_synth::control::SurfaceId::PatchDetail,
+            ))
+            .unwrap();
+        let target = PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds);
+        for _ in 0..32 {
+            if app_loop.current_patch_page().unwrap().focused_control_id() == target {
+                break;
+            }
+            app_loop
+                .dispatch(AppEvent::Navigate(crest_synth::control::Direction::Down))
+                .unwrap();
+        }
+        assert_eq!(
+            app_loop.current_patch_page().unwrap().focused_control_id(),
+            target
+        );
+    }
+    let detail_entry_generation = shared.borrow().current_parameters().generation();
+
     let baseline_envelope = *patches[0].envelope();
     let mut focus_parameters = None;
     for (index, parameter) in [
@@ -686,7 +723,9 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     .into_iter()
     .enumerate()
     {
-        pipeline.run_frame(vec![key_event(WindowKey::S), key_release(WindowKey::S)]);
+        if index > 0 {
+            pipeline.run_frame(vec![key_event(WindowKey::S), key_release(WindowKey::S)]);
+        }
 
         {
             let app_loop = shared.borrow();
@@ -724,7 +763,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                 .iter()
                 .all(|event| !matches!(event, EmittedEvent::EngineSelection { .. })));
             if index == 0 {
-                assert_eq!(focused.generation(), after_parameters.generation() + 1);
+                assert_eq!(focused.generation(), detail_entry_generation);
                 assert!(same_parameter_values(after_parameters, focused));
                 focus_parameters = Some(focused);
             }
@@ -828,14 +867,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     let focus_parameters = focus_parameters.unwrap();
     assert_eq!(*shared.borrow().patches()[0].envelope(), baseline_envelope);
 
-    pipeline.run_frame(vec![key_event(WindowKey::S), key_release(WindowKey::S)]);
-    pipeline.run_frame(vec![key_event(WindowKey::W), key_release(WindowKey::W)]);
-    pipeline.run_frame(vec![key_event(WindowKey::S), key_release(WindowKey::S)]);
-    pipeline.run_frame(
-        (0..5)
-            .flat_map(|_| [key_event(WindowKey::W), key_release(WindowKey::W)])
-            .collect(),
-    );
+    shared.borrow_mut().dispatch(AppEvent::Return).unwrap();
     assert_eq!(
         shared
             .borrow()

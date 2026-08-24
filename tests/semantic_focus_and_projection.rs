@@ -25,7 +25,7 @@ use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
-use crest_synth::synth::{EffectCapabilityId, EffectSlotId, Patch, PatchInteraction};
+use crest_synth::synth::{EffectCapabilityId, EffectSlotId, Patch};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 
 fn soundfont_patch(id: u32, channel: u8, track: u8) -> Patch {
@@ -100,10 +100,9 @@ fn focused_patch_control(state: &AppState) -> PatchControlId {
     state.interaction().patch_control_focus().unwrap()
 }
 
-/// The PATCH focus order contributes one occupancy row per slot
-/// whether occupied or empty, bare Up/Down never wraps, and PATCH and MIXER
-/// remain the only top-level contexts with the fixed persistent and
-/// subordinate surfaces.
+/// Patch Main is the Overview order: Engine followed by one occupancy control
+/// per canonical slot. Parameters remain reachable through Detail and cannot
+/// survive as hidden Main targets.
 #[test]
 fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     let mut state = installed_state();
@@ -111,25 +110,15 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
         .unwrap();
     let controls = state.focused_patch_controls().unwrap();
-    for slot in EffectSlotIndex::ALL {
-        assert!(
-            controls.contains(&PatchControlId::EffectSlot(slot)),
-            "slot {slot} must contribute its occupancy row"
-        );
-    }
-    // Occupied slot 0 interleaves its scalar rows after its occupancy row;
-    // empty slots 1 and 2 contribute exactly their occupancy rows.
-    let slot0 = controls
-        .iter()
-        .position(|control| control == &PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]))
-        .unwrap();
-    assert!(matches!(controls[slot0 + 1], PatchControlId::Effect(_, _)));
     assert_eq!(
-        controls[controls.len() - 2..],
-        [
+        controls,
+        vec![
+            PatchControlId::Engine,
+            PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]),
             PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]),
             PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]),
-        ]
+        ],
+        "Patch Main exposes Overview controls only"
     );
 
     // Bare Up at the top and Down past the last row are rejected unchanged.
@@ -139,7 +128,7 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
         Err(EventRejection::ActionUnavailableInContext)
     );
     assert_eq!(state, top);
-    for expected in &controls[1..] {
+    for expected in controls.iter().skip(1) {
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         assert_eq!(&focused_patch_control(&state), expected);
     }
@@ -180,6 +169,58 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     assert_eq!(
         InteractionMode::PHASE_TWO,
         [InteractionMode::Navigate, InteractionMode::Adjust]
+    );
+}
+
+#[test]
+fn overview_roots_drive_choice_detail_return_and_patch_switch_workflows() {
+    let mut state = installed_state();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    let engine_origin = state.interaction().focus_path().clone();
+
+    set_mode(&mut state, InteractionMode::Adjust);
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchChoice);
+    state.apply_semantic_action(SemanticAction::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &engine_origin);
+
+    set_mode(&mut state, InteractionMode::Navigate);
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+    state.apply_semantic_action(SemanticAction::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &engine_origin);
+
+    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    let slot_origin = state.interaction().focus_path().clone();
+    set_mode(&mut state, InteractionMode::Adjust);
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchChoice);
+    state.apply_semantic_action(SemanticAction::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &slot_origin);
+
+    set_mode(&mut state, InteractionMode::Navigate);
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+    state.apply_semantic_action(SemanticAction::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &slot_origin);
+
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .unwrap();
+    assert_eq!(
+        state.interaction().patch_focus(),
+        Some(PatchId::new(2).unwrap())
+    );
+    assert_eq!(
+        state.interaction().focus_path().control_id(),
+        slot_origin.control_id(),
+        "sibling Patch navigation preserves the canonical Overview identity"
     );
 }
 
@@ -341,13 +382,11 @@ fn return_occupancy_uses_the_same_adjacent_choice_contract() {
     );
 }
 
-/// Clearing a slot while its scalar rows hold focus resolves through
-/// the one deterministic next-before-previous rule — the first scalar falls
-/// back to its own occupancy row, the last scalar advances to the next
-/// surviving row — and two identical runs land on identical focus paths.
+/// Clearing an occupied Overview slot preserves its positional occupancy
+/// identity, and two identical runs land on the same focus path.
 #[test]
 fn clearing_a_focused_slot_recovers_focus_deterministically() {
-    let run = |scalar_offset: usize| -> (FocusPath, AppState) {
+    let run = || -> (FocusPath, AppState) {
         let mut state = installed_state();
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
@@ -357,13 +396,13 @@ fn clearing_a_focused_slot_recovers_focus_deterministically() {
             .iter()
             .position(|control| control == &PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]))
             .unwrap();
-        for _ in 0..(slot0 + scalar_offset) {
+        for _ in 0..slot0 {
             state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         }
-        assert!(matches!(
+        assert_eq!(
             focused_patch_control(&state),
-            PatchControlId::Effect(_, _)
-        ));
+            PatchControlId::EffectSlot(EffectSlotIndex::ALL[0])
+        );
         state
             .apply_semantic_action(SemanticAction::SetSlotOccupancy {
                 patch_id: PatchId::new(1).unwrap(),
@@ -375,9 +414,7 @@ fn clearing_a_focused_slot_recovers_focus_deterministically() {
         (state.interaction().focus_path().clone(), state)
     };
 
-    // First scalar of the cleared slot: the next row is its vanished sibling,
-    // so recovery lands on the previous row — the slot's own occupancy row.
-    let (first_focus, state) = run(1);
+    let (first_focus, state) = run();
     assert_eq!(
         first_focus.control_id(),
         &SemanticControlId::Patch(PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]))
@@ -388,24 +425,11 @@ fn clearing_a_focused_slot_recovers_focus_deterministically() {
         .unwrap()
         .contains(&PatchControlId::EffectSlot(EffectSlotIndex::ALL[0])));
 
-    // Last scalar of the cleared slot: the surviving next row wins —
-    // the following slot's occupancy row.
-    let (second_focus, _) = run(2);
-    assert_eq!(
-        second_focus.control_id(),
-        &SemanticControlId::Patch(PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]))
-    );
-
-    // Determinism: the same start and the same action land on the same path.
-    assert_eq!(run(1).0, first_focus);
-    assert_eq!(run(2).0, second_focus);
+    assert_eq!(run().0, first_focus);
 }
 
-/// SC-008 at the projection layer: the projected slot rows are the
-/// occupying entry's descriptor rows, generically. Installing a different
-/// registry entry changes the projected rows with zero projector changes —
-/// the projection is compared field-for-field against whichever descriptor
-/// occupies the slot.
+/// Installing any effect registry entry keeps only its occupancy identity on
+/// Overview and exposes its descriptor rows on Detail.
 #[test]
 fn slot_projection_is_descriptor_driven_for_every_registry_entry() {
     let registry = production_effect_registry().unwrap();
@@ -422,32 +446,39 @@ fn slot_projection_is_descriptor_driven_for_every_registry_entry() {
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
         let occupant = state.patches()[1]
             .effect_slot(EffectSlotIndex::ALL[2])
             .unwrap();
         assert_eq!(occupant.capability_id(), entry.id());
-        // The focus resolver lists exactly the descriptor's visible enabled
-        // ScalarEdit rows for the occupied slot, in descriptor order.
         let descriptor = registry.descriptor(entry.id()).unwrap();
         let expected_rows = descriptor
             .parameters()
-            .filter(|spec| spec.patch_interaction() == PatchInteraction::ScalarEdit)
             .map(|spec| PatchControlId::Effect(occupant.slot_id(), spec.id().clone()))
             .collect::<Vec<_>>();
-        let patch2_controls = crest_synth::control::PatchControlId::resolve(
-            state
-                .capabilities()
-                .descriptor(state.patches()[1].instrument_config().capability_id())
-                .unwrap(),
-            state.patches()[1].instrument_config(),
-            state.effects(),
-            state.patches()[1].effect_slots(),
-        );
-        let slot_row = patch2_controls
-            .iter()
-            .position(|control| control == &PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]))
+        for _ in 0..3 {
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        state
+            .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
             .unwrap();
-        assert_eq!(&patch2_controls[slot_row + 1..], expected_rows.as_slice());
+        let (_, _, _, shell, _) = StateProjector::new().project_with_shell(&state).unwrap();
+        let detail_rows = shell
+            .semantic_model()
+            .surface(SurfaceId::PatchDetail)
+            .unwrap()
+            .controls()
+            .iter()
+            .filter_map(|control| match control.path().control_id() {
+                SemanticControlId::Patch(control @ PatchControlId::Effect(_, _)) => {
+                    Some(control.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(detail_rows, expected_rows);
     }
 }
 

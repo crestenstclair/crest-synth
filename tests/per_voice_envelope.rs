@@ -36,7 +36,7 @@ use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
 use crest_synth::real_time::GraphRevision;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
-use crest_synth::synth::{InstrumentPreparer, Patch, VoiceEnvelope};
+use crest_synth::synth::{InstrumentPreparer, Patch, VoiceEnvelope, VoiceEnvelopeParameter};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde::Serialize;
 use serde_json::json;
@@ -464,9 +464,7 @@ fn prove_state_text_snapshot_projection() -> bool {
     app_loop
         .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
         .unwrap();
-    app_loop
-        .dispatch(AppEvent::Navigate(Direction::Down))
-        .unwrap();
+    enter_envelope_detail(&mut app_loop, VoiceEnvelopeParameter::AttackMilliseconds);
     app_loop.dispatch(AppEvent::Adjust(Direction::Up)).unwrap();
 
     let expected = VoiceEnvelope::new(100.0, 0.0, 1.0, 0.0).unwrap();
@@ -480,14 +478,15 @@ fn prove_state_text_snapshot_projection() -> bool {
         "releaseMilliseconds": 0.0
     });
     let selected = text.body().lines().nth(text.selected_line());
+    let expected_generation = app_loop.current_state_tree().generation();
 
     app_loop.patches()[0].envelope() == &expected
         && app_loop
             .current_parameters()
             .patch(soundfont.id())
             .is_some_and(|parameters| parameters.envelope() == &expected)
-        && tree_json["generation"] == 4
-        && tree_json["parameters"]["generation"] == 4
+        && tree_json["generation"] == expected_generation
+        && tree_json["parameters"]["generation"] == expected_generation
         && tree_json["interaction"]["activeFocus"]["patchId"] == soundfont.id().value()
         && tree_json["interaction"]["activeFocus"]["controlId"]["kind"] == "patch"
         && tree_json["interaction"]["activeFocus"]["controlId"]["id"]
@@ -541,16 +540,18 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
     app_loop
         .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
         .unwrap();
-
     let mut focus_order = vec![app_loop.current_patch_page().unwrap().focused_control_id()];
+    enter_envelope_detail(&mut app_loop, VoiceEnvelopeParameter::AttackMilliseconds);
     let mut patch_control_cases_exercised = 0;
     let mut fine_coarse_adjustment_exact = true;
     let mut scalar_only_publication = true;
 
-    for descriptor in VoiceEnvelope::surface_descriptor() {
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Down))
-            .unwrap();
+    for (index, descriptor) in VoiceEnvelope::surface_descriptor().iter().enumerate() {
+        if index > 0 {
+            app_loop
+                .dispatch(AppEvent::Navigate(Direction::Down))
+                .unwrap();
+        }
         let control_id = PatchControlId::Envelope(descriptor.parameter());
         let page = app_loop.current_patch_page().unwrap();
         focus_order.push(page.focused_control_id());
@@ -660,6 +661,29 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
         scalar_only_publication,
         target_patch_isolated,
     )
+}
+
+fn enter_envelope_detail<Boundary>(
+    app_loop: &mut AppLoop<Boundary>,
+    parameter: VoiceEnvelopeParameter,
+) where
+    Boundary: crest_synth::real_time::ControlAudioBoundary,
+{
+    app_loop
+        .dispatch(AppEvent::EnterSurface(
+            crest_synth::control::SurfaceId::PatchDetail,
+        ))
+        .unwrap();
+    let target = PatchControlId::Envelope(parameter);
+    for _ in 0..32 {
+        if app_loop.current_patch_page().unwrap().focused_control_id() == target {
+            return;
+        }
+        app_loop
+            .dispatch(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+    }
+    panic!("descriptor-backed Detail did not expose {target}");
 }
 
 fn prove_mixed_callback_contract() -> (usize, usize, bool) {

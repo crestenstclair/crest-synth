@@ -73,8 +73,9 @@ pub struct FunctionalPatchEditorObservation {
     patch_switch_schema_mismatch_projections: u32,
     patch_switch_refused_at_end: bool,
     second_patch_id_distinct: bool,
-    strip_groups_painted: u32,
-    strip_flat_control_run: bool,
+    overview_sections_projected: u32,
+    overview_root_controls_projected: u32,
+    overview_projection_mismatches: u32,
     utility_rows_projected: u32,
     utility_rows_unavailable: u32,
     utility_serialization_key_labels: u32,
@@ -142,8 +143,18 @@ impl FunctionalPatchEditorObservation {
             "patch_switch_refused_at_end",
         );
         require(self.second_patch_id_distinct, "second_patch_id_distinct");
-        require(self.strip_groups_painted > 1, "strip_groups_painted");
-        require(!self.strip_flat_control_run, "strip_flat_control_run");
+        require(
+            self.overview_sections_projected == 2,
+            "overview_sections_projected",
+        );
+        require(
+            self.overview_root_controls_projected == 4,
+            "overview_root_controls_projected",
+        );
+        require(
+            self.overview_projection_mismatches == 0,
+            "overview_projection_mismatches",
+        );
         require(
             self.utility_rows_projected == DECLARED_UTILITY_ROWS,
             "utility_rows_projected",
@@ -315,6 +326,9 @@ pub struct PatchEditorMeasurement {
     last_focused_patch: Option<PatchId>,
     switch_refused_at_end: bool,
     schema_mismatch_projections: u32,
+    overview_sections_projected: Option<u32>,
+    overview_root_controls_projected: Option<u32>,
+    overview_projection_mismatches: u32,
     utility_rows_projected: Option<u32>,
     utility_rows_unavailable: u32,
     utility_serialization_key_labels: u32,
@@ -408,6 +422,36 @@ impl PatchEditorMeasurement {
                     self.midi_input_values
                         .insert(control_value_text(control.value()));
                 }
+            }
+        }
+
+        if let Some(main) = model.surface(SurfaceId::PatchMain) {
+            self.overview_sections_projected = Some(main.sections().len() as u32);
+            self.overview_root_controls_projected = Some(main.controls().len() as u32);
+            let expected_controls = [
+                PatchControlId::Engine,
+                PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]),
+                PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]),
+                PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]),
+            ];
+            let controls_match = main
+                .controls()
+                .iter()
+                .map(|control| control.path().control_id().clone())
+                .eq(expected_controls.into_iter().map(SemanticControlId::Patch));
+            let sections_match =
+                main.sections()
+                    .iter()
+                    .map(|section| section.id())
+                    .eq(["overview.engine", "overview.effects"])
+                    && main.sections().iter().all(|section| {
+                        section.control_paths().iter().all(|path| {
+                            main.controls().iter().any(|control| control.path() == path)
+                        })
+                    });
+            if !controls_match || !sections_match {
+                self.overview_projection_mismatches =
+                    self.overview_projection_mismatches.saturating_add(1);
             }
         }
 
@@ -703,11 +747,9 @@ impl PatchEditorMeasurement {
             patch_switch_schema_mismatch_projections: self.schema_mismatch_projections,
             patch_switch_refused_at_end: self.switch_refused_at_end,
             second_patch_id_distinct: switch_reached_second,
-            strip_groups_painted: teardown.strip_groups_painted.unwrap_or(0),
-            // Absent evidence is not a measured absence of a defect: a run
-            // that never carried strip evidence reports the flat run rather
-            // than the clean state.
-            strip_flat_control_run: teardown.strip_flat_control_run.unwrap_or(true),
+            overview_sections_projected: self.overview_sections_projected.unwrap_or(0),
+            overview_root_controls_projected: self.overview_root_controls_projected.unwrap_or(0),
+            overview_projection_mismatches: self.overview_projection_mismatches,
             utility_rows_projected: self.utility_rows_projected.unwrap_or(0),
             utility_rows_unavailable: self.utility_rows_unavailable,
             utility_serialization_key_labels: self.utility_serialization_key_labels,
@@ -772,8 +814,6 @@ impl PatchEditorMeasurement {
 /// collected.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct PatchEditorTeardown {
-    pub strip_groups_painted: Option<u32>,
-    pub strip_flat_control_run: Option<bool>,
     pub voice_limit_refusals: u64,
     pub events_dropped: u64,
     pub callback_allocations: u64,
@@ -850,8 +890,6 @@ mod tests {
 
     fn teardown() -> PatchEditorTeardown {
         PatchEditorTeardown {
-            strip_groups_painted: Some(4),
-            strip_flat_control_run: Some(false),
             voice_limit_refusals: 3,
             events_dropped: 0,
             callback_allocations: 0,
@@ -887,6 +925,8 @@ mod tests {
         measurement.focus_transitions.push((first, second));
         measurement.switch_generations.push((10, 11));
         measurement.observe_switch_refused_at_end(true);
+        measurement.overview_sections_projected = Some(2);
+        measurement.overview_root_controls_projected = Some(4);
         measurement.utility_rows_projected = Some(DECLARED_UTILITY_ROWS);
         measurement.master_volume_owner_counts.insert(1);
         measurement
@@ -1077,23 +1117,6 @@ mod tests {
             .contains(&"checkpoints_correlating_switch_focus_audio"));
     }
 
-    /// Absent strip evidence is not a measured clean state.
-    #[test]
-    fn absent_strip_evidence_fails_rather_than_reading_as_grouped() {
-        let (first, second) = (patch(1), patch(2));
-        let observation = healthy(first, second).resolve(
-            &[first, second],
-            PatchEditorTeardown {
-                strip_groups_painted: None,
-                strip_flat_control_run: None,
-                ..teardown()
-            },
-        );
-        let shortfalls = observation.shortfalls();
-        assert!(shortfalls.contains(&"strip_groups_painted"));
-        assert!(shortfalls.contains(&"strip_flat_control_run"));
-    }
-
     /// A skipped generation between two sampled projections is a gap.
     #[test]
     fn projection_generation_gaps_count_skipped_generations() {
@@ -1152,15 +1175,16 @@ mod tests {
 
     /// The declared observation schema, in order. Written out so a field
     /// renamed in the serializer fails here rather than on the physical rig.
-    const ACCEPTANCE_SCHEMA_FIELDS: [&str; 42] = [
+    const ACCEPTANCE_SCHEMA_FIELDS: [&str; 43] = [
         "patches_installed",
         "patches_focused",
         "patch_switch_generations_exact",
         "patch_switch_schema_mismatch_projections",
         "patch_switch_refused_at_end",
         "second_patch_id_distinct",
-        "strip_groups_painted",
-        "strip_flat_control_run",
+        "overview_sections_projected",
+        "overview_root_controls_projected",
+        "overview_projection_mismatches",
         "utility_rows_projected",
         "utility_rows_unavailable",
         "utility_serialization_key_labels",

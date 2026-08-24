@@ -176,7 +176,8 @@ impl LiveDemoCheckpoint {
                     != Some(control_id.as_ref())
                 || !(selected_text.starts_with("> ENVELOPE ")
                     || selected_text.starts_with("> OUTPUT ")
-                    || selected_text.starts_with("> EFFECT_PARAMETER "))
+                    || selected_text.starts_with("> EFFECT_PARAMETER ")
+                    || selected_text.starts_with("> DETAIL_PARAMETER "))
             {
                 return Err(LiveDemoCheckpointError::CanonicalProjectionMismatch);
             }

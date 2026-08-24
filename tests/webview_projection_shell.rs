@@ -6,9 +6,9 @@
 //!
 //! - T022 serialized-schema fidelity: the emit path's document is
 //!   byte-identical to the projector's own serialization across distinct
-//!   reducer states in BOTH top-level contexts — three MIXER states and
-//!   three PATCH states (navigate, adjust with a focused editable control,
-//!   and a state carrying disabled controls) — so no page-facing schema fork
+//!   reducer states in BOTH top-level contexts — three MIXER states plus
+//!   PATCH root, interaction, alternate-capability, maximum-content,
+//!   lifecycle, Detail, and Browser states — so no page-facing schema fork
 //!   can hide behind generation gating across either context.
 //! - T023 token-table freshness: the committed `webview-page/tokens.css` is
 //!   byte-fresh against the authored vocabulary via WP04's
@@ -16,7 +16,7 @@
 //!   keeps the injective property-name transform; drift names its property.
 //! - T024 page render determinism: the real page in a real Tauri window
 //!   renders one document to the same declared observation twice at both
-//!   authored viewports, with the declared MIXER anatomy — and (WP01) the
+//!   representative viewports, with the declared MIXER anatomy — and (WP01) the
 //!   same double-render determinism for the PATCH fixture documents, with
 //!   the projected strip rows in declared order, the focused row carrying
 //!   the declared focus treatment, and every painted acknowledgment
@@ -47,7 +47,7 @@
 //! - T011 painted-geometry fidelity: fixtures with known level/position
 //!   values measure ACTUAL painted `.fader-fill` / `.prow-position-fill`
 //!   geometry under the shipped policy, proportional to the document value,
-//!   at both authored viewports — and the inverse guard: any element
+//!   across representative viewports — and the inverse guard: any element
 //!   carrying `data-level`/`data-position` without its CSSOM custom property
 //!   applied (the RISK-1 signature) fails by name, distinguishing
 //!   value-zero from variable-never-applied (research D4, FR-004).
@@ -110,16 +110,18 @@ use crest_synth::adapter::production_instruments::{
 };
 use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
-    AppEvent, AppState, Direction, InteractionMode, SemanticGraphicalViewModel, StateProjector,
-    SurfaceId, TopLevelContext,
+    AppEvent, AppState, Direction, EngineSelectionFailure, InteractionMode, PatchControlId,
+    SemanticGraphicalViewModel, StateProjector, SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::mixer::mix_observation::MixObservation;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
-use crest_synth::real_time::AudioObservationSnapshot;
-use crest_synth::shell::density::ViewportDensityPolicy;
+use crest_synth::real_time::{AudioObservationSnapshot, GraphRevision};
+use crest_synth::shell::density::{
+    RepresentativeViewport, ResponsiveLayoutMode, ResponsiveShellContract,
+};
 use crest_synth::shell::webview::meter_channel::{
     MeterChannel, MeterEmit, METER_EVENT, METER_INTERVAL, METER_RATE_HZ,
 };
@@ -342,8 +344,8 @@ fn production_patch_state() -> AppState {
     state
 }
 
-/// The PATCH fixture in adjust mode with an editable continuous control
-/// focused (the first envelope row, one step below the engine row).
+/// The PATCH fixture in adjust mode with the first editable slot occupancy
+/// focused one semantic step below the Engine root.
 fn production_patch_adjust_state() -> AppState {
     let mut state = production_patch_state();
     state
@@ -363,6 +365,70 @@ fn production_patch_braids_state() -> AppState {
     state
         .apply(AppEvent::SelectPatch(Direction::Right))
         .expect("selecting the next installed patch is accepted");
+    state
+}
+
+/// The complete Overview content bound with a deliberately long Patch label.
+/// The fixture uses the full production registries and occupies every
+/// canonical effect position without adding a renderer-only name or count.
+fn production_patch_maximum_content_state() -> AppState {
+    let patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Semantic Patch With A Deliberately Long Projected Identity For Compact Wrapping"
+            .to_owned(),
+        soundfont_config(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    )
+    .with_effect_slot(
+        EffectSlotIndex::ALL[0],
+        production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
+    )
+    .with_effect_slot(
+        EffectSlotIndex::ALL[1],
+        production_chorus_config(EffectSlotId::new(2).unwrap()).unwrap(),
+    )
+    .with_effect_slot(
+        EffectSlotIndex::ALL[2],
+        production_chorus_config(EffectSlotId::new(3).unwrap()).unwrap(),
+    );
+    let mut state = AppState::new_with_effects(
+        production_capability_registry().unwrap(),
+        production_effect_registry().unwrap(),
+        GlobalParameters::new(-3.0).unwrap(),
+    );
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+}
+
+/// A reducer-owned structural request whose active and requested engines are
+/// still distinct when the Overview document is projected.
+fn production_patch_loading_state() -> AppState {
+    let mut state = production_patch_state();
+    state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+    state
+}
+
+/// The same request after a typed worker failure. Canonical Patch state keeps
+/// the source engine active and projects the failure instead of substituting.
+fn production_patch_failure_state() -> AppState {
+    let mut state = production_patch_loading_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::EnginePreparationFailed {
+            request_id: correlation.request_id(),
+            patch_id: correlation.patch_id().unwrap(),
+            intent: correlation.intent().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            failure: EngineSelectionFailure::PreparationFailed,
+        })
+        .unwrap();
     state
 }
 
@@ -484,14 +550,30 @@ fn production_mixer_zero_level_state() -> AppState {
     state
 }
 
-/// The PATCH adjust fixture with the focused editable control raised a few
-/// coarse steps (WP03 T011), so the focused row's projected position
-/// fraction is deterministically nonzero and its painted
-/// `.prow-position-fill` width has something to be proportional to.
+/// The PATCH Detail fixture with the first envelope control raised a few
+/// coarse steps, so the focused row's projected position fraction is
+/// deterministically nonzero.
 fn production_patch_geometry_state() -> AppState {
-    let mut state = production_patch_adjust_state();
+    let mut state = production_patch_instrument_detail_state();
+    for _ in 0..32 {
+        if state.interaction().patch_control_focus()
+            == Some(PatchControlId::Envelope(
+                crest_synth::synth::VoiceEnvelopeParameter::AttackMilliseconds,
+            ))
+        {
+            break;
+        }
+        state
+            .apply(AppEvent::Navigate(Direction::Down))
+            .expect("the instrument Detail reaches its envelope controls");
+    }
+    state
+        .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+        .expect("the focused envelope control enters Adjust mode");
     for _ in 0..3 {
-        let _ = state.apply(AppEvent::Adjust(Direction::Up));
+        state
+            .apply(AppEvent::Adjust(Direction::Up))
+            .expect("the focused envelope control accepts a coarse increase");
     }
     state
 }
@@ -757,6 +839,26 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &production_sample_browser_state(),
         "PATCH state F (Sample Browser open)",
     );
+    let mut maximum_content_channel = ProjectionChannel::new();
+    let (patch_generation_g, patch_maximum_content) = check_state_fidelity(
+        &projector,
+        &mut maximum_content_channel,
+        &production_patch_maximum_content_state(),
+        "PATCH state G (long label and all slots occupied)",
+    );
+    let mut lifecycle_channel = ProjectionChannel::new();
+    let (patch_generation_h, patch_loading) = check_state_fidelity(
+        &projector,
+        &mut lifecycle_channel,
+        &production_patch_loading_state(),
+        "PATCH state H (engine request in flight)",
+    );
+    let (patch_generation_i, patch_failure) = check_state_fidelity(
+        &projector,
+        &mut lifecycle_channel,
+        &production_patch_failure_state(),
+        "PATCH state I (typed engine failure)",
+    );
     assert_ne!(
         patch_generation_d, patch_generation_e,
         "the two detail states must carry distinct generations so gating cannot mask one"
@@ -776,6 +878,11 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
     );
 
     assert_patch_fixture_documents(&patch_navigate, &patch_adjust, &patch_braids);
+    assert_patch_resilience_fixture_documents(
+        &patch_maximum_content,
+        &patch_loading,
+        &patch_failure,
+    );
 
     // The WP03 T011 geometry fixtures, proven through the identical emit
     // path so the live geometry section renders exactly the bytes whose
@@ -805,10 +912,11 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
 
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (12 distinct states across both contexts, MIXER generations \
+         (15 distinct states across both contexts, MIXER generations \
          {generation_a}/{generation_b}/{generation_c}, PATCH generations \
          {patch_generation_a}/{patch_generation_b}/{patch_generation_c}/\
-         {patch_generation_d}/{patch_generation_e}/{patch_generation_f}, \
+         {patch_generation_d}/{patch_generation_e}/{patch_generation_f}/\
+         {patch_generation_g}/{patch_generation_h}/{patch_generation_i}, \
          emit path byte-identical + structural round-trip + declared key surface)"
     );
     FidelityEvidence {
@@ -821,6 +929,9 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-instrument-detail", patch_instrument_detail),
             ("patch-effect-detail", patch_effect_detail),
             ("patch-sample-browser", patch_sample_browser),
+            ("patch-maximum-content", patch_maximum_content),
+            ("patch-loading", patch_loading),
+            ("patch-failure", patch_failure),
         ],
         zero_level_document,
         patch_geometry_document,
@@ -907,22 +1018,22 @@ fn track_level_fractions(document: &Value, label: &str) -> Vec<(u64, f64)> {
     fractions
 }
 
-/// The focused PATCH main-surface control's `(control id, fraction)`.
+/// The focused PATCH control's `(control id, fraction)` on its active surface.
 fn focused_patch_fraction(document: &Value, label: &str) -> (String, f64) {
     let focused = document
         .get("surfaces")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
-        .unwrap_or_else(|| panic!("{label}: the document carries the patchMain surface"))
-        .get("controls")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .into_iter()
+        .flat_map(|surface| {
+            surface
+                .get("controls")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
         .find(|control| control.get("focused").and_then(Value::as_bool) == Some(true))
-        .unwrap_or_else(|| panic!("{label}: the document carries a focused control"));
+        .unwrap_or_else(|| panic!("{label}: the document carries a focused control: {document}"));
     (
         focused
             .pointer("/path/controlId/id")
@@ -1004,10 +1115,9 @@ fn assert_geometry_fixture_documents(document_a: &str, zero_document: &str, patc
 
 /// Structural facts about the three PATCH fixture documents, asserted on the
 /// exact bytes the emit path produced: the declared context/surface/mode
-/// identities, the engine and envelope rows in declared order, the utility
-/// output rows, the focused editable control in the adjust document, and the
-/// presence of the disabled ComponentState precondition (a visible
-/// non-editable control) in the Braids document.
+/// identities, the four Overview roots and their projected section anatomy,
+/// the Utility controls, and the focused editable occupancy control in the
+/// adjust document.
 fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
     let parse = |bytes: &str, label: &str| -> Value {
         serde_json::from_str(bytes)
@@ -1060,25 +1170,18 @@ fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
             .to_owned()
     };
 
-    // The declared PATCH surface prefix: the engine row then the four
-    // envelope rows, in the reducer's declared order.
+    // The root is exactly Engine plus the three ordered slot occupancies.
     let controls = main_controls(&navigate, "PATCH navigate");
     let ids: Vec<String> = controls.iter().map(control_id).collect();
-    let declared_prefix = [
+    let declared = [
         "patch.engine",
-        "patch.envelope.attackMilliseconds",
-        "patch.envelope.decayMilliseconds",
-        "patch.envelope.sustain",
-        "patch.envelope.releaseMilliseconds",
+        "patch.effectSlot.0",
+        "patch.effectSlot.1",
+        "patch.effectSlot.2",
     ];
-    assert!(
-        ids.len() >= declared_prefix.len() && ids[..declared_prefix.len()] == declared_prefix,
-        "PATCH navigate: the main surface opens with the declared engine + envelope rows \
-         (got {ids:?})"
-    );
-    assert!(
-        ids.iter().any(|id| id.starts_with("patch.effectSlot.")),
-        "PATCH navigate: the main surface carries the effect-slot occupancy rows"
+    assert_eq!(
+        ids, declared,
+        "PATCH navigate: the main surface carries only the four stable Overview roots"
     );
     assert_eq!(
         navigate
@@ -1088,7 +1191,40 @@ fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
         "PATCH navigate: focus opens on the engine row"
     );
 
-    // The utility side surface carries the two projected output rows.
+    let main = navigate
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .unwrap();
+    let section_ids: Vec<&str> = main
+        .get("sections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|section| section.get("id").and_then(Value::as_str))
+        .collect();
+    assert_eq!(section_ids, ["overview.engine", "overview.effects"]);
+    for section in main
+        .get("sections")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        for path in section
+            .get("controlPaths")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            assert!(controls
+                .iter()
+                .any(|control| control.get("path") == Some(path)));
+        }
+    }
+
+    // The persistent Utility surface carries all five canonical controls.
     let utility_ids: Vec<String> = navigate
         .get("surfaces")
         .and_then(Value::as_array)
@@ -1103,14 +1239,9 @@ fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
         .iter()
         .map(control_id)
         .collect();
-    for driver in ["patch.output.trimGainDb", "patch.output.outputTrack"] {
-        assert!(
-            utility_ids.iter().any(|id| id == driver),
-            "PATCH navigate: the utility surface projects {driver} (got {utility_ids:?})"
-        );
-    }
+    assert_eq!(utility_ids.len(), 5);
 
-    // Adjust document: the focused control is an editable continuous row.
+    // Adjust document: the focused slot occupancy remains one editable choice.
     let adjust_controls = main_controls(&adjust, "PATCH adjust");
     let focused: Vec<&Value> = adjust_controls
         .iter()
@@ -1123,8 +1254,8 @@ fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
     );
     assert_eq!(
         focused[0].get("kind").and_then(Value::as_str),
-        Some("continuous"),
-        "PATCH adjust: the focused control is continuous"
+        Some("choice"),
+        "PATCH adjust: the focused control is a structural choice"
     );
     assert_eq!(
         focused[0].get("editable").and_then(Value::as_bool),
@@ -1132,21 +1263,119 @@ fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
         "PATCH adjust: the focused control is editable"
     );
 
-    // Braids document: at least one visible control the page must render in
-    // the declared disabled treatment (present but not editable).
+    // Descriptor parameters stay subordinate even when a different registry
+    // entry is active.
     let braids_controls = main_controls(&braids, "PATCH braids");
-    let disabled = braids_controls
-        .iter()
-        .filter(|control| {
-            control.get("visible").and_then(Value::as_bool) == Some(true)
-                && (control.get("enabled").and_then(Value::as_bool) != Some(true)
-                    || control.get("editable").and_then(Value::as_bool) != Some(true))
-        })
-        .count();
     assert!(
-        disabled > 0,
-        "PATCH braids: the document carries at least one visible control in the \
-         disabled treatment (present but not editable)"
+        braids_controls.iter().all(|control| control
+            .pointer("/path/capabilityId")
+            .is_none_or(Value::is_null)),
+        "PATCH braids: capability parameter identities remain off the Overview root"
+    );
+}
+
+/// Headless document-side facts for the native responsive stress fixtures.
+/// Every value crossed the reducer/projector/serialization channel first; the
+/// live section later renders these same bytes at every representative width.
+fn assert_patch_resilience_fixture_documents(maximum_content: &str, loading: &str, failure: &str) {
+    let parse = |bytes: &str, label: &str| -> Value {
+        serde_json::from_str(bytes)
+            .unwrap_or_else(|error| panic!("{label}: the emitted document parses: {error}"))
+    };
+    let maximum = parse(maximum_content, "PATCH maximum content");
+    let loading = parse(loading, "PATCH loading");
+    let failure = parse(failure, "PATCH failure");
+    fn main(document: &Value) -> &Value {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+            .expect("the resilience fixture carries Patch Main")
+    }
+    fn engine(document: &Value) -> &Value {
+        main(document)
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|control| {
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    == Some("patch.engine")
+            })
+            .expect("the resilience fixture carries the Engine control")
+    }
+
+    let maximum_main = main(&maximum);
+    assert!(
+        maximum_main
+            .pointer("/summary/patchName")
+            .and_then(Value::as_str)
+            .is_some_and(|label| label.len() > 64),
+        "the maximum-content fixture carries a long projected identity"
+    );
+    assert_eq!(
+        maximum_main
+            .pointer("/summary/effectCount")
+            .and_then(Value::as_u64),
+        Some(3),
+        "the maximum-content fixture occupies every canonical slot"
+    );
+    let maximum_slot_values = maximum_main
+        .get("controls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|control| {
+            control
+                .pointer("/path/controlId/id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| id.starts_with("patch.effectSlot."))
+        })
+        .filter_map(|control| control.pointer("/value/value").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    assert_eq!(maximum_slot_values.len(), 3);
+    assert!(maximum_slot_values.iter().all(|value| *value != "Empty"));
+
+    let loading_engine = engine(&loading);
+    assert_eq!(
+        loading_engine
+            .pointer("/status/kind")
+            .and_then(Value::as_str),
+        Some("preparing")
+    );
+    assert!(
+        loading_engine
+            .get("requestedValue")
+            .is_some_and(|value| !value.is_null()),
+        "the in-flight fixture keeps its requested Engine distinct"
+    );
+    assert_ne!(
+        loading_engine.get("value"),
+        loading_engine.get("requestedValue")
+    );
+
+    let failed_engine = engine(&failure);
+    assert_eq!(
+        failed_engine
+            .pointer("/status/kind")
+            .and_then(Value::as_str),
+        Some("failed")
+    );
+    assert!(
+        failed_engine
+            .pointer("/error/label")
+            .and_then(Value::as_str)
+            .is_some_and(|label| !label.is_empty()),
+        "the failed fixture carries visible typed failure text"
+    );
+    assert_eq!(
+        failed_engine.get("value"),
+        loading_engine.get("value"),
+        "the failed request keeps the active Engine instead of substituting"
     );
 }
 
@@ -1177,7 +1406,11 @@ fn prove_token_table_freshness() {
 
     // The generator's injectivity guarantee, asserted on the committed table:
     // no two authored tokens may share one custom property.
-    let properties: Vec<&str> = committed
+    let root_block = committed
+        .split_once("}\n")
+        .map(|(root, _)| root)
+        .expect("the generated root declaration block closes");
+    let properties: Vec<&str> = root_block
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim_start();
@@ -1477,7 +1710,7 @@ fn prove_protocol_policy_parity() {
 /// reports (bounds inside the viewport, a nonempty label each) and what
 /// `ShellFrameObservation::try_new_semantic` requires.
 fn painted_ack_for(document: &Value) -> Value {
-    let viewport = ViewportDensityPolicy::Desktop.authored_viewport();
+    let viewport = RepresentativeViewport::WideReference.fixture();
     let width = f64::from(viewport.width_px);
     let height = f64::from(viewport.height_px);
     let band = height / SHELL_REGION_IDS.len() as f64;
@@ -1948,7 +2181,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
     let assets = PageAssets::load(manifest);
     let index_html = String::from_utf8(assets.index_html.clone())
         .expect("the committed index document is UTF-8");
-    let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
+    let desktop = RepresentativeViewport::WideReference.fixture();
 
     let (harness_sender, harness_receiver) = mpsc::channel::<Value>();
     let (ready_sender, ready_receiver) = mpsc::channel::<()>();
@@ -2015,7 +2248,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
             .build()
             .expect("the live harness window builds");
     request_authored_desktop(&window)
-        .unwrap_or_else(|error| panic!("the live harness seats its authored viewport: {error}"));
+        .unwrap_or_else(|error| panic!("the live harness seats its witness viewport: {error}"));
 
     let handle = app.handle().clone();
     // Match the shipped window's idle cadence. The native event loop waits
@@ -2096,7 +2329,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
 /// Tauri monitor enumeration, which is empty before this harness enters its
 /// event loop on macOS.
 fn request_authored_desktop(window: &tauri::WebviewWindow) -> Result<(), String> {
-    let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
+    let desktop = RepresentativeViewport::WideReference.fixture();
     window
         .set_position(tauri::LogicalPosition::new(0.0, 0.0))
         .map_err(|error| {
@@ -2142,7 +2375,7 @@ fn receive_phase(
 }
 
 /// Asserts the page actually measures the expected CSS viewport width — the
-/// guard that the window really seated at the authored size (macOS clamps
+/// guard that the window really seated at the requested witness size (macOS clamps
 /// windows to their screen's visible frame).
 fn assert_page_viewport_width(
     window: &tauri::WebviewWindow,
@@ -2162,7 +2395,7 @@ fn assert_page_viewport_width(
     if (width - f64::from(expected_width)).abs() > 1.0 {
         return Err(format!(
             "{tag}: the page measures {width} CSS px wide, expected the authored \
-             {expected_width} — the window did not seat at the authored viewport"
+             {expected_width} — the window did not seat at the requested viewport"
         ));
     }
     Ok(())
@@ -2242,6 +2475,85 @@ fn assert_observation_structure(
             bands.get(band).and_then(Value::as_bool),
             Some(true),
             "{label}: band {band} must be painted with nonzero area"
+        );
+    }
+
+    let viewport_width = observation
+        .pointer("/viewport/widthPx")
+        .and_then(Value::as_f64)
+        .unwrap_or_else(|| panic!("{label}: the observation reports its viewport width"));
+    let expected_layout = ResponsiveLayoutMode::resolve(viewport_width as f32)
+        .canonical_name()
+        .to_ascii_lowercase();
+    assert_eq!(
+        observation.pointer("/layout/mode").and_then(Value::as_str),
+        Some(expected_layout.as_str()),
+        "{label}: the computed CSS mode follows the one Rust threshold contract"
+    );
+    assert_eq!(
+        observation
+            .pointer("/layout/workspaceInspectorOverlapPx")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: workspace and Utility never overlap"
+    );
+    assert_eq!(
+        observation
+            .pointer("/layout/horizontalOverflowPx")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: the shell introduces no document-level horizontal overflow"
+    );
+    for region in observation
+        .pointer("/layout/regions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        assert!(
+            region
+                .pointer("/bounds/widthPx")
+                .and_then(Value::as_f64)
+                .is_some_and(|value| value > 0.0)
+                && region
+                    .pointer("/bounds/heightPx")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|value| value > 0.0),
+            "{label}: every shell region has a nonempty painted bound"
+        );
+    }
+    let serialized_focus = serde_json::to_string(
+        document
+            .get("focusPath")
+            .unwrap_or_else(|| panic!("{label}: the document carries focusPath")),
+    )
+    .unwrap();
+    assert_eq!(
+        observation
+            .pointer("/focus/semanticPath")
+            .and_then(Value::as_str),
+        Some(serialized_focus.as_str()),
+        "{label}: the painted semantic identity is unchanged by reflow"
+    );
+    assert_eq!(
+        observation
+            .pointer("/focus/semanticVisible")
+            .and_then(Value::as_bool),
+        Some(true),
+        "{label}: focus reveal keeps the semantic target visible"
+    );
+    for target in observation
+        .get("targetSizes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        assert!(
+            target
+                .pointer("/bounds/heightPx")
+                .and_then(Value::as_f64)
+                .is_some_and(|height| height >= 48.0),
+            "{label}: every semantic target preserves the 48px height floor"
         );
     }
 
@@ -2685,9 +2997,8 @@ fn assert_patch_observation_structure(
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("{label}: the document names its interaction mode"));
 
-    // WP04 T024/T025/NFR-003: the painted box geometry of the workspace body,
-    // measured in the shipped window. Reported for both authored viewports and
-    // asserted where the authored band can hold the composition.
+    // The painted workspace geometry comes from the shipped window at the
+    // current responsive witness width.
     assert_patch_workspace_geometry(observation, inspector_width_at_least, label);
 
     // WP04 T028: while a detail entry is open the detail composition replaces
@@ -2719,159 +3030,163 @@ fn assert_patch_observation_structure(
         return;
     }
 
-    let expected_rows: Vec<(String, String)> = document
+    let main_surface = document
         .get("surfaces")
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
         .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
-        .unwrap_or_else(|| panic!("{label}: the document carries the patchMain surface"))
+        .unwrap_or_else(|| panic!("{label}: the document carries the patchMain surface"));
+    let expected_controls = main_surface
         .get("controls")
         .and_then(Value::as_array)
         .cloned()
-        .unwrap_or_default()
+        .unwrap_or_default();
+    let expected_sections = main_surface
+        .get("sections")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let overview = observation
+        .get("overview")
+        .filter(|value| !value.is_null())
+        .unwrap_or_else(|| panic!("{label}: Patch Main paints the Overview"));
+    assert_eq!(
+        overview.get("patchName").and_then(Value::as_str),
+        main_surface
+            .pointer("/summary/patchName")
+            .and_then(Value::as_str),
+        "{label}: the Overview heading carries the projected Patch name"
+    );
+    let painted_sections = overview
+        .get("sections")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the Overview reports its painted sections"));
+    assert_eq!(
+        painted_sections.len(),
+        expected_sections.len(),
+        "{label}: every projected Overview section is painted"
+    );
+
+    // Controller navigation is vertical, so the painted reading order must be
+    // vertical too. A wide viewport may widen the rows but must never turn the
+    // Engine/FX sequence or the three positions into side-by-side cards.
+    for pair in painted_sections.windows(2) {
+        let first_bottom = pair[0]
+            .pointer("/bounds/bottomPx")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: an Overview section reports its bottom edge"));
+        let next_top = pair[1]
+            .pointer("/bounds/yPx")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: an Overview section reports its top edge"));
+        assert!(
+            first_bottom <= next_top,
+            "{label}: Overview sections must stack vertically ({first_bottom}px > {next_top}px)"
+        );
+    }
+    for section in painted_sections {
+        let section_width = section
+            .pointer("/bounds/widthPx")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: an Overview section reports its width"));
+        let controls = section
+            .get("controls")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{label}: an Overview section reports its controls"));
+        for pair in controls.windows(2) {
+            let first_bottom = pair[0]
+                .pointer("/bounds/bottomPx")
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("{label}: an Overview control reports its bottom edge"));
+            let next_top = pair[1]
+                .pointer("/bounds/yPx")
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("{label}: an Overview control reports its top edge"));
+            assert!(
+                first_bottom <= next_top,
+                "{label}: Overview controls must follow focus order vertically \
+                 ({first_bottom}px > {next_top}px)"
+            );
+        }
+        for control in controls {
+            let width = control
+                .pointer("/bounds/widthPx")
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("{label}: an Overview control reports its width"));
+            assert!(
+                width + 1.0 >= section_width,
+                "{label}: Overview row must use its section width ({width}px of {section_width}px)"
+            );
+        }
+    }
+
+    let expected_control_order: Vec<(String, String)> = expected_sections
         .iter()
-        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .flat_map(|section| {
+            section
+                .get("controlPaths")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default()
+        })
+        .map(|path| {
+            let control = expected_controls
+                .iter()
+                .find(|control| control.get("path") == Some(&path))
+                .unwrap_or_else(|| panic!("{label}: every section path resolves to a control"));
+            let state = expected_control_state(control, mode);
+            (
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+                if state.starts_with("unknown:") {
+                    "unknown".to_owned()
+                } else {
+                    state
+                },
+            )
+        })
+        .collect();
+    let painted_control_order: Vec<(String, String)> = painted_sections
+        .iter()
+        .flat_map(|section| {
+            section
+                .get("controls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
         .map(|control| {
             (
                 control
-                    .pointer("/path/controlId/id")
+                    .get("control")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                expected_control_state(control, mode),
-            )
-        })
-        .collect();
-    assert!(
-        !expected_rows.is_empty(),
-        "{label}: the fixture document projects visible PATCH rows"
-    );
-
-    let painted_rows: Vec<(String, String)> = observation
-        .get("rows")
-        .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("{label}: the observation must carry the strip rows"))
-        .iter()
-        .map(|row| {
-            (
-                row.get("control")
-                    .and_then(Value::as_str)
-                    .unwrap_or_default()
-                    .to_owned(),
-                row.get("state")
+                control
+                    .get("state")
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
             )
-        })
-        .collect();
-    // The painted-state names for unknown states carry the raw string in the
-    // mark, not the data-state attribute, so an expected "unknown:x" compares
-    // against a painted "unknown".
-    let expected_painted: Vec<(String, String)> = expected_rows
-        .iter()
-        .map(|(id, state)| {
-            let state = if state.starts_with("unknown:") {
-                "unknown".to_owned()
-            } else {
-                state.clone()
-            };
-            (id.clone(), state)
         })
         .collect();
     assert_eq!(
-        painted_rows, expected_painted,
-        "{label}: the strip paints every visible projected control, in declared order, \
-         in its declared ComponentState treatment"
+        painted_control_order, expected_control_order,
+        "{label}: the Overview paints section controls in projected order and state"
     );
-
-    // Every painted row carries its label and value text.
-    for row in observation
-        .get("rows")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-    {
-        let text = |key: &str| {
-            row.get(key)
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_owned()
-        };
-        assert!(
-            !text("label").is_empty() && !text("value").is_empty(),
-            "{label}: every strip row paints a label and a value (got {row:?})"
-        );
-        // Disabled rows announce themselves with text beyond color, and a
-        // row the capability declared read-only says the more specific word.
-        // Both variants occur: SoundFont's `file` and all three Braids rows
-        // declare ReadOnly; the engine and slot rows are disabled without
-        // declaring one.
-        if row.get("state").and_then(Value::as_str) == Some("disabled") {
-            if row.get("interaction").and_then(Value::as_str) == Some("readOnly") {
-                assert_eq!(
-                    row.get("readOnly").and_then(Value::as_str),
-                    Some("READ-ONLY"),
-                    "{label}: a capability-declared read-only row says so in text (got {row:?})"
-                );
-                assert!(
-                    row.get("mark").is_none_or(Value::is_null),
-                    "{label}: a read-only row states its declaration once, not twice \
-                     (got {row:?})"
-                );
-            } else {
-                assert_eq!(
-                    row.get("mark").and_then(Value::as_str),
-                    Some("Locked"),
-                    "{label}: a disabled row says Locked in text"
-                );
-            }
-        }
-        // Every projected range and unit is painted, and nothing is invented
-        // for a row that carries neither (FR-013).
-        let projected = document
-            .get("surfaces")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .flat_map(|surface| {
-                surface
-                    .get("controls")
-                    .and_then(Value::as_array)
-                    .cloned()
-                    .unwrap_or_default()
-            })
-            .find(|control| {
-                control
-                    .pointer("/path/controlId/id")
-                    .and_then(Value::as_str)
-                    == row.get("control").and_then(Value::as_str)
-            })
-            .unwrap_or_else(|| panic!("{label}: every painted row names a projected control"));
-        assert_eq!(
-            projected
-                .get("numericRange")
-                .is_some_and(|range| !range.is_null()),
-            row.get("range").is_some_and(|range| !range.is_null()),
-            "{label}: a row shows its projected range and invents none (got {row:?})"
-        );
-        assert_eq!(
-            projected.get("unit").is_some_and(|unit| !unit.is_null()),
-            row.get("unit").is_some_and(|unit| !unit.is_null()),
-            "{label}: a row shows its projected unit and invents none (got {row:?})"
-        );
-    }
-
-    // Exactly one focused/adjusting row, and it is the document's focus.
-    let emphasized: Vec<&(String, String)> = painted_rows
+    assert_eq!(expected_control_order.len(), 4);
+    let emphasized: Vec<&(String, String)> = painted_control_order
         .iter()
         .filter(|(_, state)| state == "focused" || state == "adjusting")
         .collect();
     assert_eq!(
         emphasized.len(),
         1,
-        "{label}: exactly one strip row carries the focus treatment (got {emphasized:?})"
+        "{label}: exactly one Overview control carries the focus treatment"
     );
     let document_focus = document
         .pointer("/focusPath/controlId/id")
@@ -2879,8 +3194,62 @@ fn assert_patch_observation_structure(
         .unwrap_or_else(|| panic!("{label}: the document focus path names a PATCH control"));
     assert_eq!(
         emphasized[0].0, document_focus,
-        "{label}: the painted focus treatment sits on the document's focused control"
+        "{label}: the Overview focus treatment matches the document focus"
     );
+
+    for (projected, painted) in expected_sections.iter().zip(painted_sections) {
+        assert_eq!(painted.get("id"), projected.get("id"));
+        assert_eq!(painted.get("label"), projected.get("label"));
+        let summaries = projected
+            .get("controlSummaries")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default();
+        for control in painted
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            assert!(control
+                .get("label")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty()));
+            assert!(control
+                .get("value")
+                .and_then(Value::as_str)
+                .is_some_and(|text| !text.is_empty()));
+            assert!(
+                control
+                    .pointer("/bounds/heightPx")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|height| height >= 48.0),
+                "{label}: every Overview control preserves the target floor"
+            );
+            let id = control.get("control").and_then(Value::as_str).unwrap();
+            let projected_control = expected_controls
+                .iter()
+                .find(|candidate| {
+                    candidate
+                        .pointer("/path/controlId/id")
+                        .and_then(Value::as_str)
+                        == Some(id)
+                })
+                .unwrap();
+            let summary = summaries
+                .iter()
+                .find(|summary| summary.get("controlPath") == projected_control.get("path"));
+            let expected_summary = summary
+                .and_then(|summary| summary.get("parameterCount"))
+                .and_then(Value::as_u64)
+                .map(|count| format!("{count} PARAM{}", if count == 1 { "" } else { "S" }));
+            assert_eq!(
+                control.get("parameterSummary").and_then(Value::as_str),
+                expected_summary.as_deref(),
+                "{label}: parameter summaries come from the projected descriptor count"
+            );
+        }
+    }
 
     // The section annotation names the focused entry (never computed, read
     // from the document's own focused control label).
@@ -2910,116 +3279,28 @@ fn assert_patch_observation_structure(
         "{label}: the section annotation names the focused entry"
     );
 
-    // WP04 T020-T023: the workspace arranges groups, not one flat row run.
-    // The painted group order is the declared group order, every designed
-    // group is present whether it carried rows or not, and the concatenation
-    // of the groups' rows is exactly the flat painted order — so grouping
-    // cannot have reordered a row out of the reducer's focus order.
-    let groups = observation
-        .get("groups")
+    // The focused control's hint run is the model-level run. The two
+    // agree by construction; the assertion is that neither was special-cased.
+    let focused_hints = observation
+        .pointer("/overview/sections")
         .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("{label}: the observation reports the strip groups"));
-    let group_keys: Vec<&str> = groups
-        .iter()
-        .filter_map(|group| group.get("key").and_then(Value::as_str))
-        .collect();
-    for designed in ["instrument", "envelope", "slot.0", "slot.1", "slot.2"] {
-        assert!(
-            group_keys.contains(&designed),
-            "{label}: the designed group {designed} renders whether occupied or not \
-             (got {group_keys:?})"
-        );
-    }
-    assert!(
-        groups.len() >= 5,
-        "{label}: the workspace arranges groups, not one flat row run (got {group_keys:?})"
-    );
-    for group in groups {
-        let key = group.get("key").and_then(Value::as_str).unwrap_or_default();
-        let rows = group
-            .get("rows")
-            .and_then(Value::as_array)
-            .map(Vec::len)
-            .unwrap_or_default();
-        // A group with no view data marks itself inside its own group; it is
-        // neither dropped nor filled with a representative row.
-        assert_eq!(
-            rows == 0,
-            group.get("unavailable").and_then(Value::as_bool) == Some(true),
-            "{label}: group {key} marks itself unavailable exactly when it carried no row"
-        );
-        if key.starts_with("slot.") || key == "envelope" || key == "instrument" {
-            assert!(
-                group
-                    .get("title")
-                    .and_then(Value::as_str)
-                    .is_some_and(|title| !title.is_empty()),
-                "{label}: the designed group {key} carries its authored title"
-            );
-        }
-    }
-    let grouped_order: Vec<String> = groups
-        .iter()
-        .flat_map(|group| {
-            group
-                .get("rows")
+        .into_iter()
+        .flatten()
+        .flat_map(|section| {
+            section
+                .get("controls")
                 .and_then(Value::as_array)
                 .cloned()
                 .unwrap_or_default()
         })
-        .filter_map(|row| row.as_str().map(str::to_owned))
-        .collect();
-    let flat_order: Vec<String> = painted_rows.iter().map(|(id, _)| id.clone()).collect();
-    assert_eq!(
-        grouped_order, flat_order,
-        "{label}: the grouped rows are the painted rows, in the same order"
-    );
-
-    // T021: the strip's own identity-and-routing header, every value
-    // projected, allocating no interactive target.
-    let header = observation
-        .get("stripHeader")
-        .filter(|header| !header.is_null())
-        .unwrap_or_else(|| panic!("{label}: the strip paints its identity header"));
-    let patch_name = document
-        .get("surfaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
-        .and_then(|surface| surface.pointer("/summary/patchName"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("{label}: the document projects the Patch name"));
-    assert_eq!(
-        header.get("patchName").and_then(Value::as_str),
-        Some(patch_name),
-        "{label}: the strip header names the focused Patch from the projection"
-    );
-    for part in ["midiInput", "outputTrack"] {
-        assert!(
-            header
-                .get(part)
+        .find(|control| control.get("control").and_then(Value::as_str) == Some(document_focus))
+        .and_then(|control| {
+            control
+                .get("hints")
                 .and_then(Value::as_str)
-                .is_some_and(|text| !text.is_empty() && text != "--"),
-            "{label}: the strip header paints the projected {part} routing (got {header:?})"
-        );
-    }
-    assert_eq!(
-        header.get("controls").and_then(Value::as_u64),
-        Some(0),
-        "{label}: the strip header is informative — it allocates no interactive target"
-    );
-
-    // T025: the focused row's own hint run is the footer's hint run. The two
-    // agree by construction; the assertion is that neither was special-cased.
-    let focused_hints = observation
-        .get("rows")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|row| row.get("control").and_then(Value::as_str) == Some(document_focus))
-        .and_then(|row| row.get("hints").and_then(Value::as_str))
-        .unwrap_or_else(|| panic!("{label}: the focused row paints its own action hints"));
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| panic!("{label}: the focused Overview control paints its hints"));
     let footer_hints: String = document
         .get("validActions")
         .and_then(Value::as_array)
@@ -3049,7 +3330,7 @@ fn assert_patch_observation_structure(
     assert_eq!(
         focused_hints.split_whitespace().collect::<Vec<_>>(),
         footer_hints.split_whitespace().collect::<Vec<_>>(),
-        "{label}: the focused row's hints are the model-level hint run, exactly"
+        "{label}: the focused Overview hints are the model-level hint run"
     );
 
     assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
@@ -3199,14 +3480,11 @@ fn assert_patch_modal_composition(observation: &Value, modal_surface: &Value, la
 ///   the primary visual readout of a numeric parameter and it is the only
 ///   growing item on its line, so anything that shares that line takes the
 ///   rail's width rather than its own. Asserted on every painted rail, at both
-///   authored viewports, on every PATCH document — the pre-existing `rail > 5`
+///   representative viewports, on every PATCH document — the pre-existing `rail > 5`
 ///   check in T011 measures one fixture only, and this package is what put a
 ///   nine-action run on every row.
 /// - **What the workspace body got, and what it needed.** Reported at both
-///   viewports; asserted only at the desktop viewport, whose authored band is
-///   the one the composition is sized against. The compact band held less than
-///   the row set before this mission and still does, so the number is printed
-///   rather than graded here.
+///   viewports; subordinate rows may scroll inside their owning region.
 fn assert_patch_workspace_geometry(
     observation: &Value,
     inspector_width_at_least: f32,
@@ -3301,7 +3579,7 @@ fn assert_patch_workspace_geometry(
         number("bandPx"),
         number("scrollableBy"),
     );
-    let desktop_side = f64::from(ViewportDensityPolicy::Desktop.split().side_px);
+    let desktop_side = f64::from(ResponsiveShellContract::get().side_track.maximum_px);
     if f64::from(inspector_width_at_least) >= desktop_side {
         assert_eq!(
             number("scrollableBy"),
@@ -3355,10 +3633,10 @@ fn hint_label(label: &str) -> String {
 
 /// WP04 T027: the persistent Utility region — exactly the five declared rows
 /// in projected order, all with real values and none marked unavailable, the
-/// authored hint line, and no scroll affordance at either authored viewport.
+/// projected hint line and responsive scroll reachability.
 ///
-/// Asserted for the strip and for the detail surface alike: the side region
-/// is persistent, so opening a detail entry must not disturb it.
+/// Asserted for Overview, Detail, and modal surfaces alike: the side region is
+/// persistent, so opening a subordinate surface must not disturb its controls.
 fn assert_patch_utility_panel(
     observation: &Value,
     document: &Value,
@@ -3458,28 +3736,28 @@ fn assert_patch_utility_panel(
         "{label}: the Utility caption paints the projected identity and the \
          projected name — never a capability identity"
     );
-    assert!(
-        observation
-            .pointer("/inspector/hintLine")
-            .and_then(Value::as_str)
-            .is_some_and(|line| line.contains("return")),
-        "{label}: the panel paints its authored hint line \
-         (got {:?})",
-        observation.pointer("/inspector/hintLine")
+    let modal_active = matches!(
+        document.get("activeSurface").and_then(Value::as_str),
+        Some("patchChoice" | "sampleBrowser")
     );
+    if modal_active {
+        assert_eq!(
+            observation.pointer("/inspector/hintLine"),
+            Some(&Value::Null),
+            "{label}: an inactive Utility panel invents no modal action hint"
+        );
+    } else {
+        assert!(
+            observation
+                .pointer("/inspector/hintLine")
+                .and_then(Value::as_str)
+                .is_some_and(|line| line.contains("return")),
+            "{label}: the panel paints its projected hint line (got {:?})",
+            observation.pointer("/inspector/hintLine")
+        );
+    }
 
-    // The row set is bounded by declaration at five, so the region seats them
-    // with no scroll affordance. Measured, so a relaxed `overflow` fails here
-    // rather than passing as a CSS diff nobody reads.
-    assert_eq!(
-        observation
-            .pointer("/inspector/scrollableBy")
-            .and_then(Value::as_f64),
-        Some(0.0),
-        "{label}: the side region seats its entries without a scroll affordance"
-    );
-
-    // The persistent side region honors the authored floor, and the meter
+    // The persistent side region honors the responsive floor, and the meter
     // paints nothing when no mixer track is focused.
     let width = observation
         .pointer("/inspector/widthPx")
@@ -3487,7 +3765,7 @@ fn assert_patch_utility_panel(
         .unwrap_or_else(|| panic!("{label}: the observation reports the side-region width"));
     assert!(
         width >= f64::from(inspector_width_at_least) - 1.0,
-        "{label}: side-region width {width}px must be at least the authored \
+        "{label}: side-region width {width}px must be at least the responsive \
          {inspector_width_at_least}px"
     );
     assert_eq!(
@@ -3501,11 +3779,8 @@ fn assert_patch_utility_panel(
 /// the document carries — for either subject kind, through the one render
 /// path.
 ///
-/// The assertion is deliberately blind to which subject is open: it names the
-/// capability from the detail surface's own rows and their strip twins, the
-/// same way the composition does, so an instrument document and an effect
-/// document are checked by identical code. If the page had branched on
-/// subject kind, one of the two fixtures would fail here.
+/// The assertion is deliberately blind to which subject is open: the stable
+/// return origin identifies the Overview control that owns the subject.
 fn assert_patch_detail_composition(
     observation: &Value,
     document: &Value,
@@ -3577,45 +3852,12 @@ fn assert_patch_detail_composition(
         "{label}: the detail composition paints the projected rows, in projected order"
     );
 
-    // The subject's name is the projected value of the strip row that owns
-    // these rows — the capability's authored label, never its identity.
-    let owner = detail_surface
-        .pointer("/controls/0/path/controlId/id")
+    // The subject's name is the projected value of the exact stable Overview
+    // origin retained by the reducer.
+    let owner_id = document
+        .pointer("/returnPath/origin/controlId/id")
         .and_then(Value::as_str)
-        .unwrap_or_default();
-    let owner_id = if owner.starts_with("patch.capability.") {
-        "patch.engine".to_owned()
-    } else {
-        // The occupancy row of the slot whose occupant rows these are, found
-        // through the main surface's own order rather than by mapping slot
-        // instance ids to positions.
-        let main = document
-            .get("surfaces")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
-            .and_then(|surface| surface.get("controls"))
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let mut open = String::new();
-        let mut found = String::new();
-        for control in &main {
-            let id = control
-                .pointer("/path/controlId/id")
-                .and_then(Value::as_str)
-                .unwrap_or_default();
-            if id.starts_with("patch.effectSlot.") {
-                open = id.to_owned();
-            }
-            if id == owner {
-                found = open.clone();
-                break;
-            }
-        }
-        found
-    };
+        .unwrap_or_else(|| panic!("{label}: Detail retains its Overview origin"));
     let owner_value = document
         .get("surfaces")
         .and_then(Value::as_array)
@@ -3630,11 +3872,11 @@ fn assert_patch_detail_composition(
             control
                 .pointer("/path/controlId/id")
                 .and_then(Value::as_str)
-                == Some(&owner_id)
+                == Some(owner_id)
         })
         .and_then(|control| control.pointer("/value/value"))
         .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("{label}: the owning strip row projects the capability label"));
+        .unwrap_or_else(|| panic!("{label}: the owning Overview control projects the label"));
     assert_eq!(
         detail.get("subject").and_then(Value::as_str),
         Some(owner_value),
@@ -3706,7 +3948,7 @@ fn assert_patch_detail_composition(
 }
 
 /// The driver: everything the live window is asked to do, in order — T024's
-/// double-render determinism at both authored viewports for MIXER and PATCH
+/// double-render determinism across representative viewports for MIXER and PATCH
 /// documents, then WP03 T011's painted-geometry proof at both viewports,
 /// then the WP01 paint-acknowledgment identity proof, then T026's NFR
 /// measurements, and finally WP03 T012's forced page faults (after the
@@ -3734,12 +3976,12 @@ fn drive_live_window(
     let window = handle
         .get_webview_window("main")
         .ok_or_else(|| "the harness window exists".to_owned())?;
-    let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
-    let compact = ViewportDensityPolicy::SteamDeck.authored_viewport();
-    let desktop_side = ViewportDensityPolicy::Desktop.split().side_px;
-    let compact_side = ViewportDensityPolicy::SteamDeck.split().side_px;
+    let desktop = RepresentativeViewport::WideReference.fixture();
+    let standard = RepresentativeViewport::StandardReference.fixture();
+    let desktop_side = ResponsiveShellContract::get().side_track.maximum_px;
+    let standard_side = ResponsiveShellContract::get().side_track.minimum_px;
 
-    // The main thread requested the authored position and size beside window
+    // The main thread requested the initial witness position and size beside window
     // construction. Let the event loop apply that geometry before the page
     // measures the real CSS viewport.
     std::thread::sleep(Duration::from_millis(500));
@@ -3840,7 +4082,7 @@ fn drive_live_window(
         )
         .map_err(|error| format!("meter counter install failed: {error}"))?;
 
-    // ---- T024: double-render determinism at both authored viewports ------
+    // ---- T024: double-render determinism across representative widths ----
     let document: Value = serde_json::from_str(document_a)
         .map_err(|error| format!("the fidelity document parses: {error}"))?;
 
@@ -3911,25 +4153,25 @@ fn drive_live_window(
 
     window
         .set_size(tauri::LogicalSize::new(
-            f64::from(compact.width_px),
-            f64::from(compact.height_px),
+            f64::from(standard.width_px),
+            f64::from(standard.height_px),
         ))
-        .map_err(|error| format!("resize to compact failed: {error}"))?;
+        .map_err(|error| format!("resize to standard failed: {error}"))?;
     std::thread::sleep(Duration::from_millis(500));
 
-    assert_page_viewport_width(&window, receiver, compact.width_px, "viewport-compact")?;
-    let compact_first = observe_render(&window, receiver, document_a, "compact-1")?;
-    let compact_second = observe_render(&window, receiver, document_a, "compact-2")?;
+    assert_page_viewport_width(&window, receiver, standard.width_px, "viewport-standard")?;
+    let compact_first = observe_render(&window, receiver, document_a, "standard-1")?;
+    let compact_second = observe_render(&window, receiver, document_a, "standard-2")?;
     assert_eq!(
         compact_first, compact_second,
         "T024: two renders of one document at {}x{} must observe identically",
-        compact.width_px, compact.height_px
+        standard.width_px, standard.height_px
     );
     assert_observation_structure(
         &compact_first,
         &document,
-        compact_side,
-        "T024 compact 1280x800",
+        standard_side,
+        "T024 standard 1280x800",
     );
     screenshot("t024-compact-1280x800.png");
 
@@ -3952,8 +4194,8 @@ fn drive_live_window(
     assert_observation_structure(
         &inspector_compact_first,
         &inspector_document,
-        compact_side,
-        "T024 compact 1280x800 MIXER Inspector",
+        standard_side,
+        "T024 standard 1280x800 MIXER Inspector",
     );
 
     // One deterministic all-track meter correlation probe. Rendering sets
@@ -4079,7 +4321,7 @@ fn drive_live_window(
         "the Inspector numeric meter is correlated to selected T00"
     );
 
-    // The PATCH fixture documents at the compact viewport.
+    // The PATCH fixture documents at the standard reference width.
     for (patch_label, patch_bytes) in patch_documents {
         let patch_document: Value = serde_json::from_str(patch_bytes)
             .map_err(|error| format!("the {patch_label} fidelity document parses: {error}"))?;
@@ -4090,16 +4332,82 @@ fn drive_live_window(
         assert_eq!(
             first, second,
             "T024: two renders of the {patch_label} document at {}x{} must observe identically",
-            compact.width_px, compact.height_px
+            standard.width_px, standard.height_px
         );
         assert_patch_observation_structure(
             &first,
             &patch_document,
-            compact_side,
-            &format!("T024 compact 1280x800 {patch_label}"),
+            standard_side,
+            &format!("T024 standard 1280x800 {patch_label}"),
         );
         screenshot(&format!("t024-{patch_label}-compact-1280x800.png"));
     }
+
+    // Intermediate, Compact, and scaled-text witnesses reuse the exact same
+    // accepted document. Resizing and text scaling are presentation-only:
+    // generation, state hash, semantic focus, surfaces, and controls remain
+    // the serialized document's, while painted geometry and mode may change.
+    let (root_label, root_bytes) = patch_documents
+        .first()
+        .ok_or_else(|| "the fidelity run carries a PATCH root document".to_owned())?;
+    let root_document: Value = serde_json::from_str(root_bytes)
+        .map_err(|error| format!("the {root_label} fidelity document parses: {error}"))?;
+    for fixture in [
+        RepresentativeViewport::Intermediate,
+        RepresentativeViewport::Compact,
+        RepresentativeViewport::ScaledText,
+    ] {
+        let viewport = fixture.fixture();
+        window
+            .set_size(tauri::LogicalSize::new(
+                f64::from(viewport.width_px),
+                f64::from(viewport.height_px),
+            ))
+            .map_err(|error| format!("resize to {} failed: {error}", fixture.canonical_name()))?;
+        window
+            .eval(format!(
+                "document.documentElement.style.setProperty('--shell-text-scale', '{}');",
+                viewport.text_scale
+            ))
+            .map_err(|error| {
+                format!(
+                    "setting text scale for {} failed: {error}",
+                    fixture.canonical_name()
+                )
+            })?;
+        std::thread::sleep(Duration::from_millis(300));
+        assert_page_viewport_width(
+            &window,
+            receiver,
+            viewport.width_px,
+            &format!("viewport-{}", fixture.canonical_name()),
+        )?;
+        let tag_one = format!("{}-{root_label}-1", fixture.canonical_name());
+        let tag_two = format!("{}-{root_label}-2", fixture.canonical_name());
+        let first = observe_render(&window, receiver, root_bytes, &tag_one)?;
+        let second = observe_render(&window, receiver, root_bytes, &tag_two)?;
+        assert_eq!(
+            first,
+            second,
+            "{}: repeated rendering is deterministic",
+            fixture.canonical_name()
+        );
+        assert_eq!(first.get("generation"), root_document.get("generation"));
+        assert_eq!(first.get("stateHash"), root_document.get("stateHash"));
+        assert_patch_observation_structure(
+            &first,
+            &root_document,
+            ResponsiveShellContract::get().side_track.minimum_px,
+            &format!("T024 {} {root_label}", fixture.canonical_name()),
+        );
+        screenshot(&format!(
+            "t024-{root_label}-{}.png",
+            fixture.canonical_name().to_ascii_lowercase()
+        ));
+    }
+    window
+        .eval("document.documentElement.style.setProperty('--shell-text-scale', '1');")
+        .map_err(|error| format!("resetting text scale failed: {error}"))?;
 
     window
         .set_size(tauri::LogicalSize::new(
@@ -4109,10 +4417,9 @@ fn drive_live_window(
         .map_err(|error| format!("resize back to desktop failed: {error}"))?;
     std::thread::sleep(Duration::from_millis(500));
     println!(
-        "T024 page render determinism: PASS (double-render identical at both authored \
-         viewports for the MIXER document and all three PATCH documents; Inspector \
-         {}px desktop / {}px compact floors held)",
-        desktop_side, compact_side
+        "T024 page render determinism: PASS (double-render identical at Wide, Standard, \
+         Intermediate, Compact, and scaled-text witnesses; Inspector {}px / {}px floors held)",
+        desktop_side, standard_side
     );
 
     // ---- WP03 T011: painted-geometry proof under the shipped policy -------
@@ -4900,8 +5207,8 @@ fn prove_painted_geometry(
     receiver: &mpsc::Receiver<Value>,
     fidelity: &FidelityEvidence,
 ) -> Result<(), String> {
-    let desktop = ViewportDensityPolicy::Desktop.authored_viewport();
-    let compact = ViewportDensityPolicy::SteamDeck.authored_viewport();
+    let desktop = RepresentativeViewport::WideReference.fixture();
+    let compact = RepresentativeViewport::StandardReference.fixture();
     let parse = |bytes: &str, label: &str| -> Result<Value, String> {
         serde_json::from_str(bytes).map_err(|error| format!("{label} parses: {error}"))
     };

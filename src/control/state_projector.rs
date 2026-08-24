@@ -14,9 +14,6 @@ use crate::control::{
 };
 use crate::real_time::parameter_snapshot::{ParameterSnapshot, ParameterSnapshotError};
 use crate::real_time::GraphRevision;
-use crate::synth::instrument_capability::{
-    InstrumentConfig, ParameterDefault, ParameterKind, ParameterSpec, ParameterValue,
-};
 use core::fmt;
 
 const MIXER_HEADER: &str =
@@ -1023,48 +1020,6 @@ struct DetailHeader<'a> {
     status: crate::control::EngineSelectionStatusKind,
 }
 
-pub(crate) fn format_instrument_value(
-    spec: &ParameterSpec,
-    config: &InstrumentConfig,
-) -> Result<String, StateProjectionError> {
-    if spec.kind() == ParameterKind::Asset {
-        let reference = config
-            .asset_reference(spec.id())
-            .or_else(|| match spec.default_value() {
-                ParameterDefault::Asset(reference) => Some(reference),
-                ParameterDefault::Value(_) => None,
-            })
-            .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
-        return Ok(match spec.formatter() {
-            "asset" => format!(
-                "{}:{}",
-                format!("{:?}", reference.kind()).to_lowercase(),
-                reference.locator()
-            ),
-            _ => reference.locator().to_owned(),
-        });
-    }
-
-    let value = config
-        .value(spec.id())
-        .ok_or(StateProjectionError::InvalidInstrumentConfig)?;
-    let formatted = match (spec.formatter(), value) {
-        ("integer", ParameterValue::Stepped(value)) => value.to_string(),
-        ("toggle", ParameterValue::Toggle(value)) => value.to_string(),
-        (_, ParameterValue::Continuous(value)) => {
-            if let Some(unit) = spec.unit() {
-                format!("{value}{unit}")
-            } else {
-                value.to_string()
-            }
-        }
-        (_, ParameterValue::Stepped(value)) => value.to_string(),
-        (_, ParameterValue::Choice(value)) => value.clone(),
-        (_, ParameterValue::Toggle(value)) => value.to_string(),
-    };
-    Ok(formatted)
-}
-
 fn push_parameter_line(
     lines: &mut Vec<String>,
     selected_line: &mut Option<usize>,
@@ -1111,7 +1066,7 @@ mod tests {
     use crate::real_time::MAX_PATCHES;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
-    use crate::synth::PatchInteraction;
+    use crate::synth::{InstrumentConfig, ParameterValue, PatchInteraction};
     use crate::testing::automatic_midi_test::create_soundfont_config;
 
     fn global_parameters() -> GlobalParameters {
@@ -1428,20 +1383,19 @@ mod tests {
     #[test]
     fn patch_text_marker_and_selected_line_follow_every_canonical_control() {
         let mut state = mixed_patch_state();
-        for (index, expected_control) in crate::control::PatchControlId::surface_descriptor()
-            .iter()
-            .cloned()
-            .enumerate()
-        {
+        let controls = crate::control::SemanticResolver::new(&state)
+            .patch_main_paths(state.interaction().patch_focus().unwrap())
+            .unwrap()
+            .into_iter()
+            .filter_map(|path| match path.control_id() {
+                crate::control::SemanticControlId::Patch(control) => Some(control.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        for (index, expected_control) in controls.iter().cloned().enumerate() {
             let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
             let page = page.unwrap();
             assert_eq!(page.focused_control_id(), expected_control);
-            // The PatchMain rows begin after the header, the identity line,
-            // and the Utility rows. Derived from the projection rather than
-            // pinned, so adding a Utility row moves the marker without
-            // silently invalidating what this test actually checks.
-            let main_rows_begin = 2 + page.output().len();
-            assert_eq!(text.selected_line(), index + main_rows_begin);
             assert_eq!(
                 text.body()
                     .lines()
@@ -1456,7 +1410,7 @@ mod tests {
                 .unwrap()
                 .contains(expected_control.as_str().as_ref()));
 
-            if index + 1 < crate::control::PatchControlId::surface_descriptor().len() {
+            if index + 1 < controls.len() {
                 state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
             }
         }
@@ -1470,12 +1424,10 @@ mod tests {
             crate::control::PatchControlId::Engine
         );
         assert!(!page.engine().editable());
-        let engine_line = 2 + page.output().len();
-        assert_eq!(text.selected_line(), engine_line);
         assert!(text
             .body()
             .lines()
-            .nth(engine_line)
+            .nth(text.selected_line())
             .unwrap()
             .starts_with("> ENGINE"));
     }
@@ -1492,12 +1444,15 @@ mod tests {
                 .descriptor(state.patches()[0].instrument_config().capability_id())
                 .unwrap()
                 .clone();
-            let controls = crate::control::PatchControlId::resolve(
-                &descriptor,
-                state.patches()[0].instrument_config(),
-                state.effects(),
-                state.patches()[0].effect_slots(),
-            );
+            let controls = crate::control::SemanticResolver::new(&state)
+                .patch_main_paths(state.interaction().patch_focus().unwrap())
+                .unwrap()
+                .into_iter()
+                .filter_map(|path| match path.control_id() {
+                    crate::control::SemanticControlId::Patch(control) => Some(control.clone()),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
 
             for (index, control) in controls.iter().cloned().enumerate() {
                 let (_, page, text, _, tree) =
@@ -1581,10 +1536,6 @@ mod tests {
                     serde_json::from_str(snapshot.json()).unwrap();
                 let tree_value: serde_json::Value = serde_json::from_str(tree.json()).unwrap();
                 let focused_control = state.interaction().patch_control_focus().unwrap();
-                let focused_index = crate::control::PatchControlId::surface_descriptor()
-                    .iter()
-                    .position(|control| *control == focused_control)
-                    .unwrap();
 
                 assert_eq!(page.engine().status(), expected_kind);
                 assert_eq!(page.focused_control_id(), focused_control);
@@ -1597,10 +1548,6 @@ mod tests {
                 assert_eq!(page.state_hash(), snapshot.hash());
                 assert_eq!(text.state_hash(), snapshot.hash());
                 assert_eq!(tree.state_hash(), snapshot.hash());
-                assert_eq!(
-                    text.selected_line(),
-                    focused_index + 2 + page.output().len()
-                );
                 assert!(text
                     .body()
                     .lines()

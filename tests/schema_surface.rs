@@ -130,11 +130,15 @@ fn state_tree_with_first_config(
             .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
             .unwrap();
     } else if request_preset {
-        for _ in 0..PatchControlId::surface_descriptor().len() {
-            state
-                .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
-                .unwrap();
-        }
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        navigate_down_until(&mut state, |path| {
+            matches!(
+                path.control_id(),
+                crest_synth::control::SemanticControlId::Patch(PatchControlId::Capability(_))
+            )
+        });
         state
             .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
             .unwrap();
@@ -294,7 +298,12 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             state
                 .apply(AppEvent::SelectContext(TopLevelContext::Patch))
                 .unwrap();
-            navigate_down_until(state, |path| path.capability_id().is_some());
+            navigate_down_until(state, |path| {
+                matches!(
+                    path.control_id(),
+                    crest_synth::control::SemanticControlId::Patch(PatchControlId::EffectSlot(_))
+                )
+            });
             state
                 .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
                 .unwrap();
@@ -304,10 +313,9 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
     // an `Instrument` subject names a capability alone, while an `Effect`
     // subject also names its exact occupied slot. A fixture that opens only one
     // of them cannot see the other's leaf, which is how the subject leaves went
-    // undeclared in the first place. `EnterSurface(PatchDetail)` is held out of
-    // the *offered* action vocabulary until WP03 can project the surface, so
-    // these drive the reducer through `AppEvent`, which is the seam the detail
-    // transition is proved at.
+    // undeclared in the first place. These drive the same reducer event the
+    // semantic action vocabulary exposes, so the subject leaves are observed
+    // through the production transition.
     trees.push(state_tree_after(
         soundfont_config.clone(),
         braids_config.clone(),
@@ -668,7 +676,27 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     state
         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
         .unwrap();
-    for (index, control) in PatchControlId::surface_descriptor().iter().enumerate() {
+    let tree = StateProjector::new().project_with_tree(&state).unwrap().4;
+    let value: Value = serde_json::from_str(tree.json()).unwrap();
+    assert_eq!(
+        value["interaction"]["activeFocus"]["controlId"]["id"],
+        PatchControlId::Engine.as_str().as_ref()
+    );
+    assert_eq!(
+        value["patchPage"]["focusedControlId"],
+        PatchControlId::Engine.as_str().as_ref()
+    );
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    navigate_down_until(&mut state, |path| {
+        path.control_id()
+            == &crest_synth::control::SemanticControlId::Patch(PatchControlId::Envelope(
+                crest_synth::synth::VoiceEnvelopeParameter::AttackMilliseconds,
+            ))
+    });
+    for (index, descriptor) in VoiceEnvelope::surface_descriptor().iter().enumerate() {
+        let control = PatchControlId::Envelope(descriptor.parameter());
         let tree = StateProjector::new().project_with_tree(&state).unwrap().4;
         let value: Value = serde_json::from_str(tree.json()).unwrap();
         assert_eq!(
@@ -679,7 +707,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
             value["patchPage"]["focusedControlId"],
             control.as_str().as_ref()
         );
-        if index + 1 < PatchControlId::surface_descriptor().len() {
+        if index + 1 < VoiceEnvelope::surface_descriptor().len() {
             state
                 .apply(AppEvent::Navigate(crest_synth::control::Direction::Down))
                 .unwrap();

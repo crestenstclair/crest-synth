@@ -584,7 +584,12 @@ impl FocusPath {
             // rows: an instrument capability parameter, or one occupant's
             // parameter at its exact slot. The path always carries the
             // subject's capability identity, matched to the row's kind.
-            (SurfaceId::PatchDetail, SemanticControlId::Patch(PatchControlId::Capability(_))) => {
+            (
+                SurfaceId::PatchDetail,
+                SemanticControlId::Patch(
+                    PatchControlId::Capability(_) | PatchControlId::Envelope(_),
+                ),
+            ) => {
                 if self.patch_id.is_none() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }

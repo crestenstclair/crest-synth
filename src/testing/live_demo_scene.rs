@@ -4,7 +4,6 @@ use crate::control::event_record::{EmittedEvent, EventDirection, EventInput, Eve
 use crate::control::patch_page_projection::{
     PatchPageEnvelopeRow, PatchPageOutputRow, PatchPageParameterRow,
 };
-use crate::control::state_projector::format_instrument_value;
 use crate::control::state_tree::StateTree;
 use crate::control::{
     FocusPath, InteractionMode, MixerControlId, PatchControlId, SemanticControlId,
@@ -29,8 +28,8 @@ use crate::synth::instrument_capability::{
 use crate::synth::patch::{resolve_patch_editable_targets, PatchEditableTarget};
 use crate::synth::voice_envelope::VoiceEnvelope;
 use crate::synth::{
-    CapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId, PatchInteraction,
-    PostEffectConfig,
+    CapabilityId, EffectCapabilityRegistry, EffectSlotId, ParameterId, ParameterKind,
+    PatchInteraction, PostEffectConfig,
 };
 use core::fmt;
 use serde::{Deserialize, Serialize};
@@ -961,25 +960,25 @@ impl LiveDemoScene {
             .map(Some)
             .collect::<Vec<_>>();
         detail_slots.resize(crate::synth::effect_slot_id::MAX_EFFECT_SLOTS, None);
-        let detail_controls = PatchControlId::resolve(
-            detail_descriptor,
-            &detail_patch.instrument,
-            &decoded.effects,
-            &detail_slots,
-        );
-        let descriptor_choice = detail_descriptor
+        let detail_parameters = detail_descriptor
             .parameters()
-            .find(|parameter| {
+            .filter(|parameter| {
+                parameter_conditions_are_satisfied(parameter, |id| {
+                    detail_patch.instrument.value(id)
+                })
+            })
+            .collect::<Vec<_>>();
+        let descriptor_choice_index = detail_parameters
+            .iter()
+            .position(|parameter| {
                 parameter.patch_interaction() == PatchInteraction::StructuralChoice
                     && !parameter.choices().is_empty()
             })
-            .map(|parameter| PatchControlId::Capability(parameter.id().clone()))
             .ok_or(LiveDemoSceneError::PresetFixtureUnavailable)?;
         let occupied_slot = detail_slots
             .iter()
             .position(Option::is_some)
             .and_then(|index| crate::synth::effect_slot_id::EffectSlotIndex::new(index).ok())
-            .map(PatchControlId::EffectSlot)
             .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
 
         // The shared Phase 7 surfaces are exercised before the Sample-specific
@@ -993,19 +992,19 @@ impl LiveDemoScene {
         )));
         journey.push(LiveDemoStep::accepted_event(AppEvent::Return));
         push_live_choice_cancel_and_current_commit(&mut journey);
-        push_patch_navigation_between(
-            &mut journey,
-            &detail_controls,
-            &PatchControlId::Engine,
-            &descriptor_choice,
-        )?;
+        journey.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+            SurfaceId::PatchDetail,
+        )));
+        journey.extend(
+            (0..descriptor_choice_index)
+                .map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down))),
+        );
         push_live_choice_cancel_and_current_commit(&mut journey);
-        push_patch_navigation_between(
-            &mut journey,
-            &detail_controls,
-            &descriptor_choice,
-            &occupied_slot,
-        )?;
+        journey.push(LiveDemoStep::accepted_event(AppEvent::Return));
+        journey.extend(
+            (0..=occupied_slot.index())
+                .map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down))),
+        );
         journey.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
             SurfaceId::PatchDetail,
         )));
@@ -1019,19 +1018,61 @@ impl LiveDemoScene {
         );
         push_live_choice_cancel_and_current_commit(&mut journey);
         journey.push(LiveDemoStep::accepted_event(AppEvent::Return));
-        push_patch_navigation_between(
-            &mut journey,
-            &detail_controls,
-            &occupied_slot,
-            &PatchControlId::Engine,
-        )?;
+        journey.extend(
+            (0..=occupied_slot.index())
+                .map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Up))),
+        );
+
+        let sample_patch = decoded
+            .patches
+            .get(sample_index)
+            .ok_or(LiveDemoSceneError::SampleFixtureUnavailable)?;
+        let sample_descriptor = decoded
+            .capabilities
+            .descriptor(sample_patch.instrument.capability_id())
+            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+        let sample_detail_parameters = sample_descriptor
+            .parameters()
+            .filter(|parameter| {
+                parameter_conditions_are_satisfied(parameter, |id| {
+                    sample_patch.instrument.value(id)
+                })
+            })
+            .collect::<Vec<_>>();
+        let sample_asset_index = sample_detail_parameters
+            .iter()
+            .position(|parameter| {
+                parameter.kind() == ParameterKind::Asset
+                    && sample_patch
+                        .instrument
+                        .asset_references()
+                        .iter()
+                        .any(|assignment| {
+                            assignment.parameter_id() == parameter.id()
+                                && assignment.reference().kind() == crate::synth::AssetKind::Sample
+                        })
+            })
+            .ok_or(LiveDemoSceneError::SampleFixtureUnavailable)?;
+        let sample_scalar_index = sample_detail_parameters
+            .iter()
+            .enumerate()
+            .skip(sample_asset_index + 1)
+            .find(|(_, parameter)| parameter.patch_interaction() == PatchInteraction::ScalarEdit)
+            .map(|(index, _)| index)
+            .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
 
         journey.extend(
             (0..sample_index)
                 .map(|_| LiveDemoStep::accepted_event(AppEvent::SelectPatch(Direction::Right))),
         );
+        journey.extend([LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+            SurfaceId::PatchDetail,
+        ))]);
+        journey.extend(
+            (0..sample_asset_index)
+                .map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down))),
+        );
         journey.extend([
-            LiveDemoStep::accepted_event(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
             LiveDemoStep::accepted_event(AppEvent::OpenRelated),
             // Root listing: A active fixture, B alternate fixture, Z invalid
             // fixture, then CANCEL. Move to the alternate without indices in
@@ -1065,10 +1106,13 @@ impl LiveDemoScene {
         // preparation advances; later pairs audibly prove the committed
         // asset on its Patch-local route.
         push_phase7_worker_dwell(&mut journey, scene.patches[sample_index], 16);
+        journey.extend(
+            (sample_asset_index..sample_scalar_index)
+                .map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down))),
+        );
         journey.extend([
-            // Exercise one live Sample detail scalar through the same mode
-            // and reducer path as every other descriptor-owned control.
-            LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down)),
+            // Exercise one live Sample detail scalar through the same mode and
+            // reducer path as every other descriptor-owned control.
             LiveDemoStep::accepted_event(AppEvent::SetInteractionMode(InteractionMode::Adjust)),
             LiveDemoStep::accepted_event(AppEvent::Adjust(Direction::Right)),
             LiveDemoStep::accepted_event(AppEvent::SetInteractionMode(InteractionMode::Navigate)),
@@ -1628,11 +1672,28 @@ fn build_focused_patch_envelope_steps(
         .iter()
         .find(|candidate| candidate.id == patch.patch_id.value())
         .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+    let instrument_descriptor = state
+        .capabilities
+        .descriptor(decoded.instrument.capability_id())
+        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+    let instrument_row_count = instrument_descriptor
+        .parameters()
+        .filter(|parameter| {
+            parameter_conditions_are_satisfied(parameter, |id| decoded.instrument.value(id))
+        })
+        .count();
 
     steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
         TopLevelContext::Patch,
     )));
-    for descriptor in VoiceEnvelope::surface_descriptor() {
+    steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    steps.extend(
+        (0..instrument_row_count)
+            .map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Down))),
+    );
+    for (index, descriptor) in VoiceEnvelope::surface_descriptor().iter().enumerate() {
         let parameter = descriptor.parameter();
         let control = PatchControlId::Envelope(parameter);
         let before = decoded.envelope.value(parameter);
@@ -1651,9 +1712,11 @@ fn build_focused_patch_envelope_steps(
         )?;
         let selected_text = PatchPageEnvelopeRow::selected_text(parameter, after)
             .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
-            Direction::Down,
-        )));
+        if index > 0 {
+            steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+                Direction::Down,
+            )));
+        }
         push_probed_checkpoint(
             steps,
             patch,
@@ -1670,6 +1733,7 @@ fn build_focused_patch_envelope_steps(
             ),
         );
     }
+    steps.push(LiveDemoStep::accepted_event(AppEvent::Return));
     Ok(())
 }
 
@@ -1687,19 +1751,27 @@ fn build_focused_patch_instrument_steps(
         .capabilities
         .descriptor(decoded.instrument.capability_id())
         .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
-    let targets = resolve_patch_editable_targets(descriptor, &decoded.instrument)
-        .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
     let config = decoded.instrument.clone();
-    for target in targets {
-        let PatchEditableTarget::Instrument(parameter_id) = target else {
+    let detail_parameters = descriptor
+        .parameters()
+        .filter(|parameter| parameter_conditions_are_satisfied(parameter, |id| config.value(id)))
+        .collect::<Vec<_>>();
+    steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
+        TopLevelContext::Patch,
+    )));
+    steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    for (index, spec) in detail_parameters.into_iter().enumerate() {
+        if index > 0 {
+            steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+                Direction::Down,
+            )));
+        }
+        if spec.patch_interaction() != PatchInteraction::ScalarEdit {
             continue;
-        };
-        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
-            Direction::Down,
-        )));
-        let spec = descriptor
-            .parameter(&parameter_id)
-            .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
+        }
+        let parameter_id = spec.id().clone();
         let before_value = config
             .value(&parameter_id)
             .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
@@ -1723,13 +1795,12 @@ fn build_focused_patch_instrument_steps(
         let updated = config
             .with_scalar_value(descriptor, &parameter_id, next)
             .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
-        let selected_text = format!(
-            "> {} ({})={}",
-            spec.label(),
-            spec.id(),
-            format_instrument_value(spec, &updated)
-                .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?
-        );
+        let selected_text = PatchPageParameterRow::selected_instrument_detail_text(
+            descriptor,
+            &updated,
+            &parameter_id,
+        )
+        .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
         push_probed_checkpoint(
             steps,
             patch,
@@ -1746,6 +1817,7 @@ fn build_focused_patch_instrument_steps(
             ),
         );
     }
+    steps.push(LiveDemoStep::accepted_event(AppEvent::Return));
     Ok(())
 }
 
@@ -1765,10 +1837,6 @@ fn build_focused_patch_effect_steps(
         )));
         return Ok(());
     }
-    let instrument_descriptor = state
-        .capabilities
-        .descriptor(decoded.instrument.capability_id())
-        .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
     // The serialized compact effect list occupies positions 0..len in order,
     // exactly as fixture installation does; pad the remaining positions.
     let mut effect_slots = decoded
@@ -1778,66 +1846,43 @@ fn build_focused_patch_effect_steps(
         .map(Some)
         .collect::<Vec<_>>();
     effect_slots.resize(crate::synth::effect_slot_id::MAX_EFFECT_SLOTS, None);
-    let controls = PatchControlId::resolve(
-        instrument_descriptor,
-        &decoded.instrument,
-        &state.effects,
-        &effect_slots,
-    );
-    let configs = decoded.post_effects.clone();
-
-    let focused_control =
-        resolve_patch_editable_targets(instrument_descriptor, &decoded.instrument)
-            .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?
-            .into_iter()
-            .rev()
-            .map(|target| match target {
-                PatchEditableTarget::Instrument(parameter_id) => {
-                    PatchControlId::Capability(parameter_id)
-                }
-                PatchEditableTarget::Envelope(parameter) => PatchControlId::Envelope(parameter),
-            })
-            .next()
-            .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
-    let mut focused_index = controls
-        .iter()
-        .position(|control| control == &focused_control)
-        .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
-    for config in &configs {
+    steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
+        TopLevelContext::Patch,
+    )));
+    for occupancy in &effect_slots {
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
+            Direction::Down,
+        )));
+        let Some(config) = occupancy else {
+            continue;
+        };
         let descriptor = state
             .effects
             .descriptor(config.capability_id())
             .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
-        let parameter_ids = descriptor
+        let detail_parameters = descriptor
             .parameters()
-            .filter(|spec| {
-                let predicate_satisfied = |predicate: Option<&crate::synth::ParameterPredicate>| {
-                    predicate.is_none_or(|predicate| {
-                        config.value(predicate.parameter_id()) == Some(predicate.equals())
-                    })
-                };
-                spec.patch_interaction() == PatchInteraction::ScalarEdit
-                    && predicate_satisfied(spec.visible_when())
-                    && predicate_satisfied(spec.enabled_when())
+            .filter(|parameter| {
+                parameter_conditions_are_satisfied(parameter, |id| config.value(id))
             })
-            .map(|spec| spec.id().clone())
             .collect::<Vec<_>>();
-        for parameter_id in parameter_ids {
-            let spec = descriptor
-                .parameter(&parameter_id)
-                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
-            let control = PatchControlId::Effect(config.slot_id(), parameter_id.clone());
-            let target_index = controls
-                .iter()
-                .position(|candidate| candidate == &control)
-                .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
-            for _ in focused_index..target_index {
+        if detail_parameters.is_empty() {
+            continue;
+        }
+        steps.push(LiveDemoStep::accepted_event(AppEvent::EnterSurface(
+            SurfaceId::PatchDetail,
+        )));
+        for (index, spec) in detail_parameters.into_iter().enumerate() {
+            if index > 0 {
                 steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(
                     Direction::Down,
                 )));
             }
-            focused_index = target_index;
-
+            if spec.patch_interaction() != PatchInteraction::ScalarEdit {
+                continue;
+            }
+            let parameter_id = spec.id().clone();
+            let control = PatchControlId::Effect(config.slot_id(), parameter_id.clone());
             let before_value = config
                 .value(&parameter_id)
                 .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
@@ -1864,11 +1909,10 @@ fn build_focused_patch_effect_steps(
             let updated = config
                 .with_scalar_value(descriptor, &parameter_id, next)
                 .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
-            let selected_text = PatchPageParameterRow::selected_effect_text(
+            let selected_text = PatchPageParameterRow::selected_effect_detail_text(
                 descriptor,
                 &updated,
                 &parameter_id,
-                state.parameters.graph_revision,
             )
             .map_err(|_| LiveDemoSceneError::InvalidEffectConfig)?;
             push_probed_checkpoint(
@@ -1884,7 +1928,12 @@ fn build_focused_patch_effect_steps(
                 ),
             );
         }
+        steps.push(LiveDemoStep::accepted_event(AppEvent::Return));
     }
+    steps.extend(
+        (0..effect_slots.len())
+            .map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(Direction::Up))),
+    );
     steps.push(LiveDemoStep::accepted_event(AppEvent::SelectContext(
         TopLevelContext::Mixer,
     )));
@@ -1988,27 +2037,14 @@ fn push_live_choice_cancel_and_current_commit(steps: &mut Vec<LiveDemoStep>) {
     }
 }
 
-fn push_patch_navigation_between(
-    steps: &mut Vec<LiveDemoStep>,
-    controls: &[PatchControlId],
-    source: &PatchControlId,
-    target: &PatchControlId,
-) -> Result<(), LiveDemoSceneError> {
-    let source = controls
-        .iter()
-        .position(|control| control == source)
-        .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
-    let target = controls
-        .iter()
-        .position(|control| control == target)
-        .ok_or(LiveDemoSceneError::InvalidPlannedAdjustment)?;
-    let (direction, count) = if source <= target {
-        (Direction::Down, target - source)
-    } else {
-        (Direction::Up, source - target)
-    };
-    steps.extend((0..count).map(|_| LiveDemoStep::accepted_event(AppEvent::Navigate(direction))));
-    Ok(())
+fn parameter_conditions_are_satisfied<'a>(
+    parameter: &crate::synth::ParameterSpec,
+    value: impl Fn(&ParameterId) -> Option<&'a ParameterValue>,
+) -> bool {
+    [parameter.visible_when(), parameter.enabled_when()]
+        .into_iter()
+        .flatten()
+        .all(|predicate| value(predicate.parameter_id()) == Some(predicate.equals()))
 }
 
 fn push_shared_probed_checkpoint(
@@ -2553,7 +2589,8 @@ struct DecodedGlobal {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DecodedParameterSnapshot {
-    graph_revision: GraphRevision,
+    #[serde(rename = "graphRevision")]
+    _graph_revision: GraphRevision,
     pub(crate) patches: Vec<DecodedParameterPatch>,
     mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
     /// Part of the serialized snapshot shape, decoded so the return section

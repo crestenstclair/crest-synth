@@ -1,7 +1,7 @@
 use crate::control::{
-    AppState, EventRejection, FocusCapabilityId, FocusPath, MixerControlId, PatchChoiceSubject,
-    PatchControlId, PatchDetailSubject, PatchSubordinateSession, SemanticAction,
-    SemanticActionAvailability, SemanticControlId, SurfaceId, ValidAction,
+    AppState, EventRejection, FocusPath, MixerControlId, PatchChoiceSubject, PatchControlId,
+    PatchDetailSubject, PatchSubordinateSession, SemanticAction, SemanticActionAvailability,
+    SemanticControlId, SurfaceId, ValidAction,
 };
 use crate::kernel::PatchId;
 use crate::mixer::bus_id::BusId;
@@ -305,65 +305,33 @@ impl<'a> SemanticResolver<'a> {
             .iter()
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::NoPatchesInstalled)?;
-        let descriptor = self
-            .state
+        self.state
             .capabilities()
             .descriptor(patch.instrument_config().capability_id())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
-        let controls = PatchControlId::resolve(
-            descriptor,
-            patch.instrument_config(),
-            self.state.effects(),
-            patch.effect_slots(),
+        let mut paths = Vec::with_capacity(1 + crate::synth::effect_slot_id::MAX_EFFECT_SLOTS);
+        paths.push(FocusPath::patch_main(
+            patch_id,
+            None,
+            PatchControlId::Engine,
+        ));
+        paths.extend(
+            crate::synth::effect_slot_id::EffectSlotIndex::ALL
+                .into_iter()
+                .map(|slot| {
+                    FocusPath::patch_main(patch_id, None, PatchControlId::EffectSlot(slot))
+                }),
         );
-        let mut paths = Vec::with_capacity(controls.len());
-        for control in controls {
-            let capability_id = match &control {
-                // Engine, common ADSR, and positional occupancy identities
-                // survive an instrument or occupancy swap.
-                PatchControlId::Engine
-                | PatchControlId::Envelope(_)
-                | PatchControlId::EffectSlot(_) => None,
-                // The five Utility identities never enter the PatchMain order.
-                // `resolve` cannot produce one, so reaching here means a
-                // descriptor claimed a row that belongs to the other surface.
-                PatchControlId::Output(_)
-                | PatchControlId::Global(_)
-                | PatchControlId::MidiInput
-                | PatchControlId::VoiceLimit => {
-                    return Err(EventRejection::InvalidSelection);
-                }
-                PatchControlId::Capability(_) => Some(FocusCapabilityId::Instrument(
-                    patch.instrument_config().capability_id().clone(),
-                )),
-                PatchControlId::Effect(slot_id, _) => {
-                    // The occupant is found by stable instance identity over
-                    // the per-position chain; empty positions stay in place
-                    // and are simply skipped.
-                    let effect = patch
-                        .effect_slots()
-                        .iter()
-                        .flatten()
-                        .find(|effect| effect.slot_id() == *slot_id)
-                        .ok_or(EventRejection::InvalidEffectConfig)?;
-                    Some(FocusCapabilityId::Effect(effect.capability_id().clone()))
-                }
-            };
-            paths.push(FocusPath::patch_main(patch_id, capability_id, control));
-        }
         ensure_unique(&paths)?;
         Ok(paths)
     }
 
     /// Derives the detail subject one PatchMain path opens, or `None`.
     ///
-    /// The engine row and every active-instrument capability row resolve
-    /// `Instrument`; an *occupied* effect slot and its occupant's parameter
-    /// rows resolve `Effect` carrying that slot's exact identity, so two
-    /// positions holding the same registry entry are distinct subjects. Every
-    /// other path resolves `None` — an empty slot, an envelope row, and every
-    /// Utility row included — because a subject-less detail surface would be
-    /// an empty shell rather than a place to be.
+    /// The engine row resolves `Instrument`; an occupied effect slot resolves
+    /// `Effect` carrying that slot's exact identity, so two positions holding
+    /// the same registry entry are distinct subjects. Every other path resolves
+    /// `None` because a subject-less detail surface would be an empty shell.
     pub fn detail_subject(&self, path: &FocusPath) -> Option<PatchDetailSubject> {
         if path.surface() != SurfaceId::PatchMain {
             return None;
@@ -851,7 +819,7 @@ mod tests {
     use crate::kernel::PatchId;
 
     #[test]
-    fn gapped_chain_resolves_slot_rows_per_position_and_the_occupant_by_identity() {
+    fn gapped_chain_resolves_overview_rows_per_position() {
         // Slot 0 empty, slot 1 occupied: the shape a compacting view would
         // silently squeeze down to position 0.
         let mut state = crate::control::AppState::new_with_effects(
@@ -902,24 +870,7 @@ mod tests {
                 "position {index} must keep its occupancy row"
             );
         }
-        // The occupant's parameter row resolves by stable identity at its
-        // true position, with slot 0 still empty around it.
-        assert!(paths.contains(&FocusPath::patch_main(
-            patch_id,
-            Some(crate::control::FocusCapabilityId::Effect(
-                crate::synth::EffectCapabilityId::new(
-                    crate::adapter::chorus_capability::CHORUS_CAPABILITY_ID,
-                )
-                .unwrap(),
-            )),
-            PatchControlId::Effect(
-                crate::synth::EffectSlotId::new(2).unwrap(),
-                crate::synth::ParameterId::new(
-                    crate::adapter::chorus_capability::CHORUS_AMOUNT_PARAMETER_ID,
-                )
-                .unwrap(),
-            ),
-        )));
+        assert_eq!(paths.len(), 4, "parameters remain on Detail");
     }
 
     #[test]

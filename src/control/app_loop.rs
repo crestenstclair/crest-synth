@@ -1072,7 +1072,7 @@ mod tests {
     };
     use crate::control::event_record::{EmittedEvent, EventOutcome, EventSource};
     use crate::control::state_projector::StateProjector;
-    use crate::control::TopLevelContext;
+    use crate::control::{PatchControlId, SurfaceId, TopLevelContext};
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -1100,6 +1100,30 @@ mod tests {
     use crate::testing::DeterministicGraphPreparationWorker;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+
+    fn enter_detail_at<Boundary>(app_loop: &mut AppLoop<Boundary>, target: &PatchControlId)
+    where
+        Boundary: ControlAudioBoundary,
+    {
+        app_loop
+            .dispatch(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .expect("the Engine root opens instrument Detail");
+        for _ in 0..32 {
+            if app_loop
+                .state()
+                .interaction()
+                .patch_control_focus()
+                .as_ref()
+                == Some(target)
+            {
+                return;
+            }
+            app_loop
+                .dispatch(AppEvent::Navigate(Direction::Down))
+                .expect("the descriptor-backed detail order reaches the target");
+        }
+        panic!("Detail did not reach {target:?}");
+    }
 
     #[derive(Clone, Debug, Default, PartialEq)]
     struct BoundaryObservations {
@@ -1385,9 +1409,10 @@ mod tests {
         app_loop
             .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Down))
-            .unwrap();
+        enter_detail_at(
+            &mut app_loop,
+            &PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
@@ -1440,9 +1465,7 @@ mod tests {
         assert!(output.iter().all(|sample| sample.is_finite()));
         assert!(output.iter().any(|sample| sample.abs() > f32::EPSILON));
 
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Up))
-            .unwrap();
+        app_loop.dispatch(AppEvent::Return).unwrap();
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
@@ -1483,9 +1506,10 @@ mod tests {
             crate::control::PatchControlId::Engine
         );
 
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Down))
-            .unwrap();
+        enter_detail_at(
+            &mut app_loop,
+            &PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
@@ -1833,9 +1857,10 @@ mod tests {
             app_loop.state().engine_selection().kind(),
             EngineSelectionStatusKind::Preparing
         );
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Down))
-            .unwrap();
+        enter_detail_at(
+            &mut app_loop,
+            &PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
@@ -1857,18 +1882,17 @@ mod tests {
             501.0
         );
 
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Up))
-            .unwrap();
+        app_loop.dispatch(AppEvent::Return).unwrap();
         let busy_state = app_loop.current_state_tree();
         assert_eq!(
             app_loop.dispatch(AppEvent::Adjust(Direction::Right)),
             Err(EventRejection::StructuralEditBusy)
         );
         assert_eq!(app_loop.current_state_tree(), busy_state);
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Down))
-            .unwrap();
+        enter_detail_at(
+            &mut app_loop,
+            &PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
 
         app_loop
             .dispatch(AppEvent::Midi {
@@ -1905,6 +1929,10 @@ mod tests {
         assert_eq!(
             app_loop.current_parameters().graph_revision(),
             target_revision
+        );
+        enter_detail_at(
+            &mut app_loop,
+            &PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
         );
         assert_eq!(
             app_loop.current_patch_page().unwrap().focused_control_id(),
@@ -1948,16 +1976,15 @@ mod tests {
             .iter()
             .all(|event| !matches!(event, EmittedEvent::EngineSelection { .. })));
 
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Up))
-            .unwrap();
+        app_loop.dispatch(AppEvent::Return).unwrap();
         assert_eq!(
             app_loop.dispatch(AppEvent::Adjust(Direction::Left)),
             Err(EventRejection::StructuralEditBusy)
         );
-        app_loop
-            .dispatch(AppEvent::Navigate(Direction::Down))
-            .unwrap();
+        enter_detail_at(
+            &mut app_loop,
+            &PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
 
         output.fill(0.0);
         renderer.render(&mut output);

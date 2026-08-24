@@ -281,12 +281,22 @@ mod witness {
     /// Posts one synthesized key NSEvent onto this application's own queue,
     /// addressed to the witness window (a key event with no window number is
     /// held back by AppKit and re-delivered later, which would read as a
-    /// double dispatch that never happens for real key input).
+    /// double dispatch that never happens for real key input). Shift uses the
+    /// `FlagsChanged` event shape AppKit emits for the physical modifier; a
+    /// synthetic KeyDown here would miss modifier-only callback regressions.
     fn post_key(app: &NSApplication, code: u16, pressed: bool, repeat: bool) {
-        let event_type = if pressed {
+        let shift = code == code_for(WindowKey::Shift);
+        let event_type = if shift {
+            NSEventType::FlagsChanged
+        } else if pressed {
             NSEventType::KeyDown
         } else {
             NSEventType::KeyUp
+        };
+        let modifier_flags = if shift && pressed {
+            NSEventModifierFlags::Shift
+        } else {
+            NSEventModifierFlags::empty()
         };
         let window_number = app
             .windows()
@@ -299,13 +309,13 @@ mod witness {
         let event = NSEvent::keyEventWithType_location_modifierFlags_timestamp_windowNumber_context_characters_charactersIgnoringModifiers_isARepeat_keyCode(
             event_type,
             NSPoint::new(0.0, 0.0),
-            NSEventModifierFlags::empty(),
+            modifier_flags,
             timestamp,
             window_number,
             None,
             &characters,
             &characters,
-            pressed && repeat,
+            !shift && pressed && repeat,
             code,
         )
         .expect("the synthesized key event constructs");

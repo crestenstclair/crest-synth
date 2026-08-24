@@ -683,14 +683,8 @@ fn build_steps(
     push_key_press(&mut steps, WindowKey::Digit1);
 
     push_patch_output_control_steps(&mut steps, &patches[0], &mut boundary_probed);
-    push_patch_adsr_control_steps(&mut steps, &patches[0], &mut boundary_probed);
-    push_patch_effect_control_steps(
-        &mut steps,
-        capabilities,
-        effects,
-        &patches[0],
-        &mut boundary_probed,
-    );
+    push_patch_adsr_control_steps(&mut steps, capabilities, &patches[0], &mut boundary_probed);
+    push_patch_effect_control_steps(&mut steps, effects, &patches[0], &mut boundary_probed);
 
     push_mixer_control_steps(
         &mut steps,
@@ -701,8 +695,8 @@ fn build_steps(
     );
     push_checkpoint(&mut steps, DemoCheckpoint::new("selection.restored"));
 
-    push_preset_selection_steps(&mut steps, &patches[0], preset_fixture);
-    push_engine_selection_steps(&mut steps, &patches[0]);
+    push_preset_selection_steps(&mut steps, capabilities, &patches[0], preset_fixture);
+    push_engine_selection_steps(&mut steps, capabilities, &patches[0]);
     push_topology_occupancy_steps(&mut steps, effects, &patches[0]);
 
     for patch in patches {
@@ -746,6 +740,7 @@ fn build_steps(
 
 fn push_preset_selection_steps(
     steps: &mut Vec<DemoSceneStep>,
+    capabilities: &CapabilityRegistry,
     patch: &Patch,
     fixture: &DemoPresetFixture,
 ) {
@@ -763,7 +758,18 @@ fn push_preset_selection_steps(
     };
 
     push_key_press(steps, WindowKey::Digit2);
-    for _ in PatchControlId::surface_descriptor() {
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    let descriptor = capabilities
+        .descriptor(patch.instrument_config().capability_id())
+        .expect("validated preset Patch capability is installed");
+    let preset_index = descriptor
+        .parameters()
+        .filter(|parameter| parameter_is_visible_and_enabled(parameter, patch.instrument_config()))
+        .position(|parameter| parameter.id() == &fixture.parameter_id)
+        .expect("the preset fixture names one visible enabled Detail row");
+    for _ in 0..preset_index {
         push_key_press(steps, WindowKey::S);
     }
     push_single_adjustment(steps, WindowKey::S);
@@ -958,9 +964,7 @@ fn push_preset_selection_steps(
         0,
     );
 
-    for _ in PatchControlId::surface_descriptor() {
-        push_key_press(steps, WindowKey::W);
-    }
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("preset.context.restored"));
 }
@@ -1034,14 +1038,32 @@ fn push_successful_preset_transition(
 
 fn push_patch_adsr_control_steps(
     steps: &mut Vec<DemoSceneStep>,
+    capabilities: &CapabilityRegistry,
     patch: &Patch,
     boundary_probed: &mut BTreeSet<String>,
 ) {
     push_key_press(steps, WindowKey::Digit2);
-    for descriptor in crate::synth::VoiceEnvelope::surface_descriptor() {
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    let instrument = capabilities
+        .descriptor(patch.instrument_config().capability_id())
+        .expect("validated envelope Patch capability is installed");
+    for _ in instrument
+        .parameters()
+        .filter(|parameter| parameter_is_visible_and_enabled(parameter, patch.instrument_config()))
+    {
+        push_key_press(steps, WindowKey::S);
+    }
+    for (index, descriptor) in crate::synth::VoiceEnvelope::surface_descriptor()
+        .iter()
+        .enumerate()
+    {
         let parameter = descriptor.parameter();
         let initial = patch.envelope().value(parameter);
-        push_key_press(steps, WindowKey::S);
+        if index > 0 {
+            push_key_press(steps, WindowKey::S);
+        }
         if boundary_probed.insert(descriptor.name().to_owned()) {
             push_parameter_boundary_probe(
                 steps,
@@ -1071,9 +1093,7 @@ fn push_patch_adsr_control_steps(
             ),
         );
     }
-    for _ in crate::synth::VoiceEnvelope::surface_descriptor() {
-        push_key_press(steps, WindowKey::W);
-    }
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("patch.control.contextRestored"));
 }
@@ -1569,55 +1589,45 @@ fn effect_chain_is_valid(
 
 fn push_patch_effect_control_steps(
     steps: &mut Vec<DemoSceneStep>,
-    capabilities: &CapabilityRegistry,
     effects: &EffectCapabilityRegistry,
     patch: &Patch,
     boundary_probed: &mut BTreeSet<String>,
 ) {
     // Even a Patch with no configured effect visits its three occupancy rows:
     // every slot position stays reachable whether occupied or empty (FR-002).
-    let instrument = capabilities
-        .descriptor(patch.instrument_config().capability_id())
-        .expect("validated effect scene Patch instrument is installed");
-    let controls = PatchControlId::resolve(
-        instrument,
-        patch.instrument_config(),
-        effects,
-        patch.effect_slots(),
-    );
     push_key_press(steps, WindowKey::Digit2);
-    let mut current_index = 0_usize;
-    for (target_index, control) in controls.iter().enumerate() {
-        match control {
-            PatchControlId::EffectSlot(slot_index) => {
-                // Every occupancy row is reachable whether occupied or empty;
-                // the checkpoint records its stable focus identity.
-                for _ in current_index..target_index {
-                    push_key_press(steps, WindowKey::S);
-                }
-                current_index = target_index;
-                push_checkpoint(
-                    steps,
-                    DemoCheckpoint::new(format!("patch.effectSlot.{slot_index}.focused")),
-                );
+    for (slot_index, occupancy) in crate::synth::effect_slot_id::EffectSlotIndex::ALL
+        .into_iter()
+        .zip(patch.effect_slots())
+    {
+        // PATCH Main contains exactly the engine row followed by the three
+        // positional slots, so one bounded step reaches each next slot.
+        push_key_press(steps, WindowKey::S);
+        push_checkpoint(
+            steps,
+            DemoCheckpoint::new(format!("patch.effectSlot.{slot_index}.focused")),
+        );
+        let Some(config) = occupancy else {
+            continue;
+        };
+        let descriptor = effects
+            .descriptor(config.capability_id())
+            .expect("validated effect scene capability is installed");
+        let detail_parameters = descriptor
+            .parameters()
+            .filter(|parameter| parameter_is_visible_and_enabled(parameter, config))
+            .collect::<Vec<_>>();
+        if detail_parameters.is_empty() {
+            continue;
+        }
+        steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+            SurfaceId::PatchDetail,
+        )));
+        for (detail_index, spec) in detail_parameters.into_iter().enumerate() {
+            if detail_index > 0 {
+                push_key_press(steps, WindowKey::S);
             }
-            PatchControlId::Effect(slot_id, parameter_id) => {
-                let config = patch
-                    .effect_slots()
-                    .iter()
-                    .flatten()
-                    .find(|config| config.slot_id() == *slot_id)
-                    .expect("the canonical resolver only lists configured effect scalars");
-                let descriptor = effects
-                    .descriptor(config.capability_id())
-                    .expect("validated effect scene capability is installed");
-                let spec = descriptor
-                    .parameter(parameter_id)
-                    .expect("the canonical resolver only lists declared effect scalars");
-                for _ in current_index..target_index {
-                    push_key_press(steps, WindowKey::S);
-                }
-                current_index = target_index;
+            if spec.patch_interaction() == PatchInteraction::ScalarEdit {
                 let value = config
                     .value(spec.id())
                     .and_then(|value| spec.scalar_value(value).ok())
@@ -1659,17 +1669,21 @@ fn push_patch_effect_control_steps(
                 );
                 push_checkpoint(steps, DemoCheckpoint::new(format!("{identifier}.restored")));
             }
-            _ => {}
         }
+        steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
     }
-    for _ in 0..current_index {
+    for _ in crate::synth::effect_slot_id::EffectSlotIndex::ALL {
         push_key_press(steps, WindowKey::W);
     }
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("patch.effect.contextRestored"));
 }
 
-fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
+fn push_engine_selection_steps(
+    steps: &mut Vec<DemoSceneStep>,
+    capabilities: &CapabilityRegistry,
+    patch: &Patch,
+) {
     let soundfont = crate::synth::CapabilityId::new(
         crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
     )
@@ -1733,7 +1747,21 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
     let decay_initial = patch.envelope().value(decay);
     let attack_edited = attack_initial + attack.descriptor().fine_step();
     let decay_edited = decay_initial + decay.descriptor().fine_step();
-    push_key_press(steps, WindowKey::S);
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    let soundfont_descriptor = capabilities
+        .descriptor(&soundfont)
+        .expect("the production SoundFont descriptor is installed");
+    let braids_descriptor = capabilities
+        .descriptor(&braids)
+        .expect("the production Braids descriptor is installed");
+    for _ in soundfont_descriptor
+        .parameters()
+        .filter(|parameter| parameter_is_visible_and_enabled(parameter, patch.instrument_config()))
+    {
+        push_key_press(steps, WindowKey::S);
+    }
     push_single_adjustment(steps, WindowKey::D);
     push_checkpoint(
         steps,
@@ -1756,9 +1784,13 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
             parameter: decay,
             before: decay_initial,
             after: decay_edited,
+            detail_index: braids_descriptor.parameters().count() + 1,
         }),
     );
 
+    // The activating edit entered the installed Braids subject at Decay. Walk
+    // back through that same descriptor-derived Detail order while restoring
+    // both envelope values.
     push_single_adjustment(steps, WindowKey::A);
     push_key_press(steps, WindowKey::W);
     push_single_adjustment(steps, WindowKey::A);
@@ -1772,7 +1804,7 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
             Some(EngineSelectionStatusKind::Ready),
         ),
     );
-    push_key_press(steps, WindowKey::W);
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
 
     push_engine_adjustment(steps, WindowKey::A);
     push_checkpoint(
@@ -1870,6 +1902,37 @@ fn push_engine_selection_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
     push_voice_limit_restoration_steps(steps, patch);
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("engine.context.restored"));
+}
+
+fn parameter_is_visible_and_enabled<Config>(
+    spec: &crate::synth::ParameterSpec,
+    config: &Config,
+) -> bool
+where
+    Config: ParameterValueLookup + ?Sized,
+{
+    [spec.visible_when(), spec.enabled_when()]
+        .into_iter()
+        .flatten()
+        .all(|predicate| {
+            config.parameter_value(predicate.parameter_id()) == Some(predicate.equals())
+        })
+}
+
+trait ParameterValueLookup {
+    fn parameter_value(&self, id: &ParameterId) -> Option<&ParameterValue>;
+}
+
+impl ParameterValueLookup for crate::synth::InstrumentConfig {
+    fn parameter_value(&self, id: &ParameterId) -> Option<&ParameterValue> {
+        self.value(id)
+    }
+}
+
+impl ParameterValueLookup for PostEffectConfig {
+    fn parameter_value(&self, id: &ParameterId) -> Option<&ParameterValue> {
+        self.value(id)
+    }
 }
 
 /// Restores the voice limit the engine journey narrowed.
@@ -2019,6 +2082,7 @@ struct DemoTransitionAdsrEdit {
     parameter: VoiceEnvelopeParameter,
     before: f32,
     after: f32,
+    detail_index: usize,
 }
 
 fn push_successful_engine_transition(
@@ -2054,7 +2118,12 @@ fn push_successful_engine_transition(
         ),
     );
     if let Some(edit) = activating_adsr {
-        push_key_press(steps, WindowKey::S);
+        steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+            SurfaceId::PatchDetail,
+        )));
+        for _ in 0..edit.detail_index {
+            push_key_press(steps, WindowKey::S);
+        }
         push_single_adjustment(steps, WindowKey::D);
         debug_assert_eq!(
             edit.after,

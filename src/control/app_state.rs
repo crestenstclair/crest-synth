@@ -922,21 +922,17 @@ impl AppState {
             .interaction
             .patch_focus()
             .ok_or(EventRejection::NoPatchesInstalled)?;
-        let patch = self
-            .patches
-            .iter()
-            .find(|patch| patch.id() == patch_id)
-            .ok_or(EventRejection::NoPatchesInstalled)?;
-        let descriptor = self
-            .capabilities
-            .descriptor(patch.instrument_config().capability_id())
-            .ok_or(EventRejection::InvalidInstrumentConfig)?;
-        Ok(crate::control::PatchControlId::resolve(
-            descriptor,
-            patch.instrument_config(),
-            &self.effects,
-            patch.effect_slots(),
-        ))
+        SemanticResolver::new(self)
+            .patch_main_paths(patch_id)
+            .map(|paths| {
+                paths
+                    .into_iter()
+                    .filter_map(|path| match path.control_id() {
+                        SemanticControlId::Patch(control) => Some(control.clone()),
+                        _ => None,
+                    })
+                    .collect()
+            })
     }
 
     /// Applies the only permitted control-state mutation.
@@ -2540,8 +2536,7 @@ impl AppState {
             return Ok(ReducerEffects::default());
         }
         if self.interaction.active_surface() == SurfaceId::PatchDetail {
-            self.adjust_patch_detail(direction)?;
-            return Ok(ReducerEffects::default());
+            return self.adjust_patch_detail(direction);
         }
         if self.interaction.active_surface() == SurfaceId::PatchUtility {
             let SemanticControlId::Patch(control) = self.interaction.focus_path().control_id()
@@ -2775,17 +2770,34 @@ impl AppState {
         Ok(())
     }
 
-    fn adjust_patch_detail(&mut self, direction: Direction) -> Result<(), EventRejection> {
+    fn adjust_patch_detail(
+        &mut self,
+        direction: Direction,
+    ) -> Result<ReducerEffects, EventRejection> {
         let control = match self.interaction.focus_path().control_id() {
             SemanticControlId::Patch(control) => control.clone(),
             _ => return Err(EventRejection::InvalidSelection),
         };
         match control {
             crate::control::PatchControlId::Capability(parameter_id) => {
-                self.adjust_instrument_parameter(&parameter_id, direction)
+                if SemanticResolver::new(self)
+                    .choice_subject(self.interaction.focus_path())
+                    .is_some()
+                {
+                    let engine_selection_effect =
+                        self.request_parameter_choice(parameter_id, direction)?;
+                    Ok(ReducerEffects {
+                        audio_command: None,
+                        engine_selection_effect: Some(engine_selection_effect),
+                    })
+                } else {
+                    self.adjust_instrument_parameter(&parameter_id, direction)?;
+                    Ok(ReducerEffects::default())
+                }
             }
             crate::control::PatchControlId::Effect(slot_id, parameter_id) => {
-                self.adjust_patch_effect(slot_id, &parameter_id, direction)
+                self.adjust_patch_effect(slot_id, &parameter_id, direction)?;
+                Ok(ReducerEffects::default())
             }
             crate::control::PatchControlId::Envelope(parameter) => {
                 let patch_id = self
@@ -2797,7 +2809,8 @@ impl AppState {
                     .iter()
                     .position(|patch| patch.id() == patch_id)
                     .ok_or(EventRejection::NoPatchesInstalled)?;
-                self.adjust_patch_envelope(patch_index, parameter, direction)
+                self.adjust_patch_envelope(patch_index, parameter, direction)?;
+                Ok(ReducerEffects::default())
             }
             crate::control::PatchControlId::Engine
             | crate::control::PatchControlId::Output(_)
@@ -4078,6 +4091,33 @@ mod tests {
         state
     }
 
+    fn focus_instrument_detail_control(state: &mut AppState, target: PatchControlId) {
+        if state.context() != TopLevelContext::Patch {
+            state
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+        }
+        assert_eq!(
+            state.interaction().patch_control_focus(),
+            Some(PatchControlId::Engine),
+            "instrument Detail entry starts from the Overview Engine control"
+        );
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let paths = SemanticResolver::new(state)
+            .ordered_paths(SurfaceId::PatchDetail)
+            .unwrap();
+        let target_index = paths
+            .iter()
+            .position(|path| path.control_id() == &SemanticControlId::Patch(target.clone()))
+            .expect("the instrument Detail descriptor contains the target control");
+        for _ in 0..target_index {
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        assert_eq!(state.interaction().patch_control_focus(), Some(target));
+    }
+
     fn prepared_event(
         state: &AppState,
         target_graph_revision: GraphRevision,
@@ -4295,8 +4335,8 @@ mod tests {
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         assert_eq!(
             state.interaction().patch_control_focus(),
-            Some(crate::control::PatchControlId::Envelope(
-                VoiceEnvelopeParameter::AttackMilliseconds
+            Some(crate::control::PatchControlId::EffectSlot(
+                EffectSlotIndex::ALL[0]
             ))
         );
         state
@@ -4322,14 +4362,9 @@ mod tests {
         );
         assert_eq!(state, engine);
 
-        let navigated = state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-        assert_eq!(navigated.audio_command(), None);
-        assert_eq!(navigated.engine_selection_effect(), None);
-        assert_eq!(
-            state.interaction().patch_control_focus(),
-            Some(crate::control::PatchControlId::Envelope(
-                VoiceEnvelopeParameter::AttackMilliseconds
-            ))
+        focus_instrument_detail_control(
+            &mut state,
+            PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
         );
 
         for (direction, expected) in [
@@ -4442,19 +4477,14 @@ mod tests {
     #[test]
     fn patch_focus_reducer_covers_every_control_edge_and_direction_without_wrapping() {
         let controls = mixed_state().focused_patch_controls().unwrap();
-        // After the instrument's StructuralChoice rows, every one of the
-        // three slots contributes its occupancy row whether occupied or
-        // empty, so the surface always ends on the last occupancy row here.
-        assert!(
-            controls.contains(&crate::control::PatchControlId::Capability(
-                ParameterId::new(SOUNDFONT_PRESET_PARAMETER_ID).unwrap()
-            ))
-        );
         assert_eq!(
-            controls.last(),
-            Some(&crate::control::PatchControlId::EffectSlot(
-                crate::synth::effect_slot_id::EffectSlotIndex::new(2).unwrap()
-            ))
+            controls,
+            vec![
+                PatchControlId::Engine,
+                PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]),
+                PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]),
+                PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]),
+            ]
         );
         for (index, expected) in controls.iter().cloned().enumerate() {
             let mut focused = mixed_state();
@@ -4523,10 +4553,7 @@ mod tests {
     fn every_patch_envelope_field_uses_descriptor_steps_bounds_and_target_isolation() {
         let middle = crate::synth::VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap();
 
-        for (parameter_index, descriptor) in crate::synth::VoiceEnvelope::surface_descriptor()
-            .iter()
-            .enumerate()
-        {
+        for descriptor in crate::synth::VoiceEnvelope::surface_descriptor() {
             for direction in [
                 Direction::Left,
                 Direction::Right,
@@ -4539,9 +4566,10 @@ mod tests {
                 state
                     .apply(AppEvent::SelectContext(TopLevelContext::Patch))
                     .unwrap();
-                for _ in 0..=parameter_index {
-                    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-                }
+                focus_instrument_detail_control(
+                    &mut state,
+                    PatchControlId::Envelope(descriptor.parameter()),
+                );
 
                 let expected = adjusted_value(
                     middle.value(descriptor.parameter()),
@@ -4582,9 +4610,10 @@ mod tests {
                     state
                         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
                         .unwrap();
-                    for _ in 0..=parameter_index {
-                        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-                    }
+                    focus_instrument_detail_control(
+                        &mut state,
+                        PatchControlId::Envelope(descriptor.parameter()),
+                    );
                     let before = state.clone();
                     assert_eq!(
                         state.apply(AppEvent::Adjust(direction)),
@@ -4610,10 +4639,7 @@ mod tests {
     fn mixer_tracks_and_patch_envelopes_have_disjoint_ownership() {
         let middle = crate::synth::VoiceEnvelope::new(500.0, 600.0, 0.5, 700.0).unwrap();
 
-        for (parameter_index, descriptor) in crate::synth::VoiceEnvelope::surface_descriptor()
-            .iter()
-            .enumerate()
-        {
+        for descriptor in crate::synth::VoiceEnvelope::surface_descriptor() {
             let mut mixer = installed_state();
             mixer.patches[0].set_envelope(middle);
             let patches_before = mixer.patches().to_vec();
@@ -4631,9 +4657,10 @@ mod tests {
             patch
                 .apply(AppEvent::SelectContext(TopLevelContext::Patch))
                 .unwrap();
-            for _ in 0..=parameter_index {
-                patch.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-            }
+            focus_instrument_detail_control(
+                &mut patch,
+                PatchControlId::Envelope(descriptor.parameter()),
+            );
             patch.apply(AppEvent::Adjust(Direction::Right)).unwrap();
 
             assert_eq!(*patch.mixer(), mixer_before);
@@ -4658,7 +4685,10 @@ mod tests {
         );
         assert_eq!(state, engine);
 
-        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        focus_instrument_detail_control(
+            &mut state,
+            PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
         let adjusted = state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
         assert_eq!(adjusted.audio_command(), None);
         assert_eq!(adjusted.engine_selection_effect(), None);
@@ -4679,40 +4709,38 @@ mod tests {
         let mut state = mixed_state();
         let patches = state.patches().to_vec();
         let engine_status = state.engine_selection().clone();
-        let start_generation = state.generation();
-
-        let focus = state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
-        assert_eq!(focus.accepted().generation(), start_generation + 1);
-        assert_eq!(state.generation(), start_generation + 1);
-        assert_eq!(focus.audio_command(), None);
-        assert_eq!(focus.engine_selection_effect(), None);
-        assert_eq!(state.patches(), patches);
-        assert_eq!(state.engine_selection(), &engine_status);
-
+        focus_instrument_detail_control(
+            &mut state,
+            PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
+        let before_adjust = state.generation();
         let adjusted = state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
-        assert_eq!(adjusted.accepted().generation(), start_generation + 2);
-        assert_eq!(state.generation(), start_generation + 2);
+        assert_eq!(adjusted.accepted().generation(), before_adjust + 1);
+        assert_eq!(state.generation(), before_adjust + 1);
         assert_eq!(adjusted.audio_command(), None);
         assert_eq!(adjusted.engine_selection_effect(), None);
         assert_eq!(state.engine_selection(), &engine_status);
+        assert_ne!(state.patches(), patches);
 
         let before = state.clone();
         assert_eq!(
-            state.apply(AppEvent::Navigate(Direction::Left)),
+            state.apply(AppEvent::Navigate(Direction::Right)),
             Err(EventRejection::ActionUnavailableInContext)
         );
-        assert_eq!(state.generation(), start_generation + 2);
+        assert_eq!(state.generation(), before_adjust + 1);
         assert_eq!(state, before);
 
+        state.apply(AppEvent::Return).unwrap();
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         let origin = state.interaction().focus_path().clone();
+        let before_utility = state.generation();
         let entered = state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
-        assert_eq!(entered.accepted().generation(), start_generation + 3);
+        assert_eq!(entered.accepted().generation(), before_utility + 1);
         assert_eq!(
             state.interaction().active_surface(),
             SurfaceId::PatchUtility
         );
         state.apply(AppEvent::Return).unwrap();
-        assert_eq!(state.generation(), start_generation + 4);
         assert_eq!(state.interaction().focus_path(), &origin);
 
         let mut endpoint = mixed_state();
@@ -4723,6 +4751,11 @@ mod tests {
         );
         assert_eq!(endpoint, before);
 
+        state.apply(AppEvent::Navigate(Direction::Up)).unwrap();
+        focus_instrument_detail_control(
+            &mut state,
+            PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
         let boundary_envelope = (*state.patches[0].envelope())
             .with_value(VoiceEnvelopeParameter::AttackMilliseconds, 0.0)
             .unwrap();
@@ -4891,7 +4924,10 @@ mod tests {
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
-        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        focus_instrument_detail_control(
+            &mut state,
+            PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        );
         state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
 
         assert_eq!(state.patches()[0].envelope().attack_milliseconds(), 100.0);
@@ -5781,7 +5817,7 @@ mod tests {
         assert!(state.interaction().detail_invariant_holds());
     }
 
-    /// T010/T011: an envelope row and every Utility row resolve no subject, so
+    /// T010/T011: an empty slot and every Utility row resolve no subject, so
     /// entry from them is a typed unchanged rejection rather than an empty
     /// detail surface.
     #[test]
@@ -5790,11 +5826,11 @@ mod tests {
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
-        // Move off the engine row onto the first envelope row.
+        // Move off the engine row onto the first empty slot.
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         assert!(matches!(
             state.interaction().focus_path().control_id(),
-            SemanticControlId::Patch(PatchControlId::Envelope(_))
+            SemanticControlId::Patch(PatchControlId::EffectSlot(_))
         ));
 
         let before = state.clone();
@@ -5923,7 +5959,7 @@ mod tests {
         assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
         assert!(state.interaction().detail_subject().is_some());
 
-        // Still refused where no subject resolves: from an envelope row the
+        // Still refused where no subject resolves: from an empty slot the
         // action is neither offered nor accepted, and refusing it changes
         // nothing. Offering the vocabulary did not widen the entry rule.
         state.apply_semantic_action(SemanticAction::Return).unwrap();
@@ -5931,9 +5967,9 @@ mod tests {
         assert!(
             matches!(
                 state.interaction().focus_path().control_id(),
-                SemanticControlId::Patch(PatchControlId::Envelope(_))
+                SemanticControlId::Patch(PatchControlId::EffectSlot(_))
             ),
-            "the row below Engine is an envelope row, which resolves no subject"
+            "the first empty slot resolves no detail subject"
         );
         assert!(!state.accepts_semantic_action(&entry));
         assert!(!SemanticResolver::new(&state)
@@ -5951,13 +5987,8 @@ mod tests {
     /// B1, resolved: a **Braids** detail state projects, which is the whole
     /// reason the entry gate existed.
     ///
-    /// Braids is the discriminating engine: its PatchMain order is
-    /// `[Engine, ADSR…, EffectSlot…]` with no `Capability` row at all, while
-    /// its detail order is entirely `Capability` rows, so the two share
-    /// nothing. On SoundFont the first detail row is
-    /// `Capability(soundfont.preset)`, which is *also* a PatchMain row, so a
-    /// SoundFont-only test cannot tell a working projection from a missing one
-    /// — which is exactly how the original hole survived a whole cycle.
+    /// Patch Main contains only the shared Overview identities, while this
+    /// engine's Detail order is capability-owned, so the two share nothing.
     ///
     /// The assertions below therefore *establish* the discriminating shape
     /// before projecting: the focused detail control is one the main order does
@@ -6206,13 +6237,10 @@ mod tests {
         assert_eq!(state, at_last);
     }
 
-    /// T012: a destination declaring fewer rows recovers focus through the
-    /// deterministic sibling rule rather than carrying a stale identity — and
-    /// not by falling back to the first row.
+    /// The shared Overview identities survive a switch between heterogeneous
+    /// instrument descriptors without falling back to the first row.
     #[test]
-    fn a_switch_to_a_narrower_destination_recovers_through_the_sibling_rule() {
-        // Patch 1 is a SoundFont: its descriptor declares a preset
-        // StructuralChoice row that Braids does not host.
+    fn a_switch_between_descriptor_shapes_preserves_the_overview_identity() {
         let braids = BraidsCapability::new().unwrap().default_config().unwrap();
         let mut state = AppState::new(
             crate::adapter::production_instruments::production_capability_registry().unwrap(),
@@ -6234,25 +6262,10 @@ mod tests {
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
 
-        let source_order = SemanticResolver::new(&state)
-            .patch_main_paths(PatchId::new(1).unwrap())
-            .unwrap();
-        // Focus the SoundFont-only preset row: the last capability row.
-        let preset = source_order
-            .iter()
-            .rev()
-            .find(|path| {
-                matches!(
-                    path.control_id(),
-                    SemanticControlId::Patch(PatchControlId::Capability(_))
-                )
-            })
-            .expect("the SoundFont descriptor declares a structural choice row")
-            .clone();
-        let preset_index = source_order.iter().position(|p| p == &preset).unwrap();
-        state
-            .interaction
-            .replace_remembered_patch_main(preset.clone());
+        for _ in 0..3 {
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        let held_control = state.interaction().focus_path().control_id().clone();
 
         state
             .apply(AppEvent::SelectPatch(Direction::Right))
@@ -6266,36 +6279,10 @@ mod tests {
             destination_order.contains(&landed),
             "focus must land on a control the destination actually hosts"
         );
-        assert_ne!(
-            landed.control_id(),
-            preset.control_id(),
-            "a control the destination cannot host is never carried across"
-        );
-
-        // The sibling rule, not "first row": the recovered control is the
-        // nearest surviving neighbour of the held row in the source order.
-        let expected = SemanticResolver::recovered_index(
-            &preset.control_id(),
-            &source_order
-                .iter()
-                .map(FocusPath::control_id)
-                .collect::<Vec<_>>(),
-            &destination_order
-                .iter()
-                .map(FocusPath::control_id)
-                .collect::<Vec<_>>(),
-        )
-        .map(|index| destination_order[index].clone())
-        .expect("the deterministic rule finds a surviving sibling");
-        assert_eq!(landed, expected);
-        assert!(
-            preset_index > 0,
-            "the held row is not the first row, so a first-row fallback would \
-             be observably different from the sibling rule"
-        );
+        assert_eq!(landed.control_id(), &held_control);
         assert_ne!(
             landed, destination_order[0],
-            "recovery must not fall back to the first row while a sibling survives"
+            "the retained third-slot identity is not a first-row fallback"
         );
     }
 }

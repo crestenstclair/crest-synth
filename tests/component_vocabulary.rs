@@ -90,7 +90,7 @@ use crest_synth::shell::component_state::{
     ComponentState, NonColorSignal, ALL_COMPONENT_STATES, COMPONENT_STATE_COUNT,
     LOADING_PROGRESS_WORDS,
 };
-use crest_synth::shell::density::ALL_DENSITY_POLICIES;
+use crest_synth::shell::density::{ResponsiveShellContract, ALL_LAYOUT_MODES};
 use crest_synth::shell::tokens::{
     Radius, SemanticColor, SpacingStep, TypeStyle, ALL_COLORS, ALL_RADII, ALL_SPACING_STEPS,
     ALL_TYPE_STYLES, ALL_WEIGHTS, FOCUS_HALO_OPACITY, FOCUS_HALO_RADIUS_PX, FOCUS_HALO_SPREAD_PX,
@@ -349,17 +349,6 @@ fn kebab_canonical(canonical: &str) -> String {
 }
 
 /// Kebab-cases a CamelCase policy name (`SteamDeck` → `steam-deck`).
-fn kebab_camel(name: &str) -> String {
-    let mut kebab = String::new();
-    for (index, character) in name.chars().enumerate() {
-        if character.is_ascii_uppercase() && index > 0 {
-            kebab.push('-');
-        }
-        kebab.push(character.to_ascii_lowercase());
-    }
-    kebab
-}
-
 /// Formats an authored pixel value as the generator's documented CSS form.
 fn css_px(value: f32) -> String {
     if value.fract() == 0.0 {
@@ -970,7 +959,11 @@ fn check_generated_tokens_carry_every_authored_value() {
 
     // Exactly the declared vocabulary, no more and no fewer, each property
     // once.
-    let properties: Vec<&str> = generated
+    let root = generated
+        .split_once("}\n")
+        .map(|(root, _)| root)
+        .expect("the generated root block closes");
+    let properties: Vec<&str> = root
         .lines()
         .filter_map(|line| {
             let trimmed = line.trim_start();
@@ -986,7 +979,8 @@ fn check_generated_tokens_carry_every_authored_value() {
         + AUTHORED_RADII.len()
         + 6
         + AUTHORED_FADER.len()
-        + ALL_DENSITY_POLICIES.len() * 5;
+        + ResponsiveShellContract::get().all_bounds().len() * 3
+        + 9;
     assert_eq!(
         properties.len(),
         expected_count,
@@ -1003,84 +997,43 @@ fn check_generated_tokens_carry_every_authored_value() {
 }
 
 // ===========================================================================
-// T036 — viewport integrity: the authored geometry and its page usage
+// T036 — responsive geometry and page usage
 // ===========================================================================
 
-/// The authored density geometry tiles both authored viewports, clears the
-/// authored interactive minimum, reaches the token table per policy, and is
-/// what the page's own composition resolves.
-fn check_density_policy_geometry_reaches_the_page() {
+/// The responsive bounds clear the interactive minimum, reach the generated
+/// token table, and are consumed by the page composition.
+fn check_responsive_geometry_reaches_the_page() {
     let generated = token_export::tokens_css();
     let page_css = page_source("page.css");
-
-    for policy in ALL_DENSITY_POLICIES {
-        let name = policy.canonical_name();
-        let suffix = kebab_camel(name);
-        let viewport = policy.authored_viewport();
-        let bands = policy.bands();
-        let split = policy.split();
-
-        // The authored bands and split tile the authored viewport exactly.
-        assert_eq!(
-            bands.total_height_px(),
-            viewport.height_px,
-            "{name}: the bands do not sum to the authored viewport height"
-        );
-        assert_eq!(
-            split.total_width_px(),
-            viewport.width_px,
-            "{name}: the surface split does not sum to the authored viewport width"
-        );
-        // The persistent side region is narrowed by density, never hidden.
-        assert!(
-            split.side_px >= 320.0,
-            "{name}: the side region narrowed to {} px",
-            split.side_px
-        );
-
-        // The policy's declared interactive extents clear the authored
-        // minimum.
-        for (extent_name, extent) in [
-            ("row height", policy.rhythm().row_height_px),
-            ("utility control height", policy.utility_control().height_px),
-            ("mixer column width", policy.mixer_column().width_px),
-            ("mixer column floor", policy.mixer_column().floor_px),
+    let contract = ResponsiveShellContract::get();
+    assert!(contract.row_height.minimum_px >= AUTHORED_MIN_TARGET_PX);
+    assert!(contract.mixer_column.minimum_px >= AUTHORED_MIN_TARGET_PX);
+    for (name, bounds) in contract.all_bounds() {
+        assert!(bounds.is_ordered(), "{name} bounds must be ordered");
+        let name = name.replace(' ', "-");
+        for (suffix, value) in [
+            ("min", bounds.minimum_px),
+            ("preferred", bounds.preferred_px),
+            ("max", bounds.maximum_px),
         ] {
-            assert!(
-                extent >= AUTHORED_MIN_TARGET_PX,
-                "{name}: the declared {extent_name} is {extent} px, below the authored minimum"
-            );
-        }
-
-        // The per-policy geometry reaches the token table at the declared
-        // values.
-        let column = policy.mixer_column();
-        for (property, value) in [
-            (format!("--mixer-column-width-{suffix}"), column.width_px),
-            (format!("--mixer-column-pitch-{suffix}"), column.pitch_px),
-            (format!("--mixer-column-floor-{suffix}"), column.floor_px),
-            (format!("--surface-split-main-{suffix}"), split.main_px),
-            (format!("--surface-split-side-{suffix}"), split.side_px),
-        ] {
+            let property = format!("--shell-{name}-{suffix}");
             let needle = format!("  {property}: {};\n", css_px(value));
             assert!(
                 generated.contains(&needle),
-                "{name}: the token table must declare {property} at the declared {value} px"
+                "the token table must declare {property} at {value} px"
             );
         }
     }
 
-    // The page composes from those tokens: the strip bank's column geometry,
-    // the Inspector's clamped split (narrowed toward and never below the
-    // deck's side region), and the authored minimum interactive target on
-    // every listed row.
+    // The page composes from bounded tracks, structural grid properties, and
+    // the shared interactive target floor.
     for usage in [
-        "var(--mixer-column-floor-desktop)",
-        "var(--mixer-column-width-desktop)",
-        "var(--mixer-column-pitch-desktop)",
-        "var(--surface-split-side-steam-deck)",
-        "var(--surface-split-main-desktop)",
-        "var(--surface-split-side-desktop)",
+        "var(--shell-mixer-column-min)",
+        "var(--workspace-columns)",
+        "var(--workspace-areas)",
+        "var(--shell-side-track-min)",
+        "grid-template-columns: var(--overview-columns)",
+        "grid-template-columns: minmax(0, 1fr)",
         "min-height: var(--min-interactive-target)",
     ] {
         assert!(
@@ -1088,6 +1041,10 @@ fn check_density_policy_geometry_reaches_the_page() {
             "page.css must resolve {usage} rather than restating the geometry"
         );
     }
+    assert!(
+        generated.contains("  --overview-columns: minmax(0, 1fr);\n"),
+        "the generated Overview contract must retain one vertical section track"
+    );
 }
 
 // ===========================================================================
@@ -1730,7 +1687,7 @@ fn the_generated_token_table_carries_every_authored_value() {
 
 #[test]
 fn the_density_policy_geometry_reaches_the_page() {
-    check_density_policy_geometry_reaches_the_page();
+    check_responsive_geometry_reaches_the_page();
 }
 
 #[test]
@@ -1906,7 +1863,7 @@ fn an_unavailable_typeface_is_a_typed_visible_failure() {
 fn component_vocabulary_acceptance() {
     check_declared_values_match_the_authored_table();
     check_generated_tokens_carry_every_authored_value();
-    check_density_policy_geometry_reaches_the_page();
+    check_responsive_geometry_reaches_the_page();
     check_page_sources_spell_no_visual_value();
 
     let (sources, lines, violations) = scan_delivered_tree();
@@ -1945,7 +1902,7 @@ fn component_vocabulary_acceptance() {
         ALL_RADII.len(),
         COMPONENT_STATE_COUNT,
         GALLERY_PAGE_COUNT,
-        ALL_DENSITY_POLICIES.len(),
+        ALL_LAYOUT_MODES.len(),
         token_declarations,
         sources.len(),
         lines,

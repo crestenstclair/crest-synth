@@ -621,8 +621,6 @@ impl StateTree {
                 "interaction.rememberedMixerMain.surface",
                 "interaction.rememberedPatchMain",
                 "interaction.rememberedPatchMain.capabilityId",
-                "interaction.rememberedPatchMain.capabilityId.id",
-                "interaction.rememberedPatchMain.capabilityId.kind",
                 "interaction.rememberedPatchMain.context",
                 "interaction.rememberedPatchMain.controlId.id",
                 "interaction.rememberedPatchMain.controlId.kind",

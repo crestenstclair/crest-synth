@@ -80,7 +80,9 @@ use crest_synth::shell::component_vocabulary::{
     ALL_SHELL_COMPOSITIONS, COMPONENT_CONTROL_COUNT, HINT_SEPARATOR, PRESENTATION_ROLE_COUNT,
     SEMANTIC_CONTROL_KIND_COUNT, SHELL_COMPOSITION_COUNT, UNAVAILABLE_MARK,
 };
-use crest_synth::shell::density::{ViewportDensityPolicy, ALL_DENSITY_POLICIES};
+use crest_synth::shell::density::{
+    RepresentativeViewport, ResponsiveLayoutMode, ResponsiveShellContract, ALL_LAYOUT_MODES,
+};
 use crest_synth::shell::webview::projection_channel::{
     ForwardedAck, ProjectionChannel, ProjectionPush,
 };
@@ -97,10 +99,11 @@ use serde_json::{json, Value};
 /// after every declared check has run and passed.
 const ACCEPTANCE_MARKER: &str = "CREST_ACCEPTANCE component_composition passed";
 
-/// `DESIGN.md`: the two authored viewports.
-const AUTHORED_VIEWPORTS: [([f32; 2], ViewportDensityPolicy); 2] = [
-    ([1_920.0, 1_080.0], ViewportDensityPolicy::Desktop),
-    ([1_280.0, 800.0], ViewportDensityPolicy::SteamDeck),
+/// Representative witness inputs; neither is production geometry authority.
+const REFERENCE_VIEWPORTS: [([f32; 2], ResponsiveLayoutMode); 3] = [
+    ([1_920.0, 1_080.0], ResponsiveLayoutMode::Wide),
+    ([1_280.0, 800.0], ResponsiveLayoutMode::Standard),
+    ([900.0, 800.0], ResponsiveLayoutMode::Compact),
 ];
 
 /// The pairs the control family declares un-askable, and the only ones.
@@ -176,17 +179,17 @@ const NOT_ASKABLE_PAIRS: [(SemanticControlKind, PresentationRole); 15] = [
 /// Pinned so that a kind appearing or disappearing fails
 /// [`the_production_projection_carries_the_kinds_this_target_can_drive`]
 /// rather than silently shrinking what the document sweep covers.
-const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 6] = [
+const PRODUCTION_PROJECTED_KINDS: [SemanticControlKind; 5] = [
     SemanticControlKind::Continuous,
     SemanticControlKind::Stepped,
     SemanticControlKind::Choice,
     SemanticControlKind::Toggle,
-    SemanticControlKind::Asset,
     SemanticControlKind::Identity,
 ];
 
 /// The kinds the shipped reducer projects nothing of.
-const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 5] = [
+const PRODUCTION_UNPROJECTED_KINDS: [SemanticControlKind; 6] = [
+    SemanticControlKind::Asset,
     SemanticControlKind::Surface,
     SemanticControlKind::BrowserParent,
     SemanticControlKind::BrowserFolder,
@@ -605,23 +608,19 @@ const PALETTE_HEXES: [(&str, &str); 24] = [
     ("retired border", "#2a3140"),
 ];
 
-/// Every band height and workspace split extent the density policies
-/// declare, read from [`ViewportDensityPolicy`] itself so the rule cannot
-/// drift away from the values it protects.
+/// Every responsive bound, read from the contract itself.
 fn declared_band_extents() -> Vec<(String, f32)> {
-    let mut extents = Vec::new();
-    for policy in ALL_DENSITY_POLICIES {
-        let name = policy.canonical_name();
-        let bands = policy.bands();
-        let split = policy.split();
-        extents.push((format!("{name} context line"), bands.context_line_px));
-        extents.push((format!("{name} identity header"), bands.identity_header_px));
-        extents.push((format!("{name} workspace"), bands.workspace_px));
-        extents.push((format!("{name} footer"), bands.footer_px));
-        extents.push((format!("{name} side region"), split.side_px));
-        extents.push((format!("{name} main surface"), split.main_px));
-    }
-    extents
+    ResponsiveShellContract::get()
+        .all_bounds()
+        .into_iter()
+        .flat_map(|(name, bounds)| {
+            [
+                (format!("{name} minimum"), bounds.minimum_px),
+                (format!("{name} preferred"), bounds.preferred_px),
+                (format!("{name} maximum"), bounds.maximum_px),
+            ]
+        })
+        .collect()
 }
 
 /// Strips line comments, and optionally the contents of string literals.
@@ -1431,13 +1430,32 @@ const PAGE_BANDS: [(&str, &str, &str); 5] = [
 /// The page's paint-acknowledgment role, played headless (identity from the
 /// pushed document, geometry from the authored policy).
 fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
-    let policy = ViewportDensityPolicy::resolve(viewport[0]);
-    let bands = policy.bands();
-    let split = policy.split();
-    let context_bottom = bands.context_line_px;
-    let identity_bottom = context_bottom + bands.identity_header_px;
-    let workspace_bottom = viewport[1] - bands.footer_px;
-    let main_width = viewport[0] - split.side_px;
+    let mode = ResponsiveLayoutMode::resolve(viewport[0]);
+    let contract = ResponsiveShellContract::get();
+    let context_bottom = contract.context_line.preferred_px;
+    let identity_bottom = context_bottom + contract.identity_header.preferred_px;
+    let workspace_bottom = viewport[1] - contract.footer.preferred_px;
+    let workspace_height = workspace_bottom - identity_bottom;
+    let side_width = contract
+        .side_track
+        .preferred_px
+        .min(viewport[0] - contract.side_track.minimum_px);
+    let (main_width, main_height, side_x, side_y, side_height) = match mode {
+        ResponsiveLayoutMode::Compact => (
+            viewport[0],
+            workspace_height / 2.0,
+            0.0,
+            identity_bottom + workspace_height / 2.0,
+            workspace_height / 2.0,
+        ),
+        ResponsiveLayoutMode::Wide | ResponsiveLayoutMode::Standard => (
+            viewport[0] - side_width,
+            workspace_height,
+            viewport[0] - side_width,
+            identity_bottom,
+            workspace_height,
+        ),
+    };
     let context = document
         .get("context")
         .and_then(Value::as_str)
@@ -1456,16 +1474,17 @@ fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
               "widthPx": viewport[0], "heightPx": context_bottom,
               "label": "CREST SYNTH" },
             { "id": "identityHeader", "xPx": 0.0, "yPx": context_bottom,
-              "widthPx": viewport[0], "heightPx": bands.identity_header_px,
+              "widthPx": viewport[0], "heightPx": contract.identity_header.preferred_px,
               "label": context },
             { "id": "mainWorkspace", "xPx": 0.0, "yPx": identity_bottom,
-              "widthPx": main_width, "heightPx": workspace_bottom - identity_bottom,
+              "widthPx": main_width, "heightPx": main_height,
               "label": "WORKSPACE" },
-            { "id": "persistentSideRegion", "xPx": main_width, "yPx": identity_bottom,
-              "widthPx": split.side_px, "heightPx": workspace_bottom - identity_bottom,
+            { "id": "persistentSideRegion", "xPx": side_x, "yPx": side_y,
+              "widthPx": if mode == ResponsiveLayoutMode::Compact { viewport[0] } else { side_width },
+              "heightPx": side_height,
               "label": "SIDE" },
             { "id": "footer", "xPx": 0.0, "yPx": workspace_bottom,
-              "widthPx": viewport[0], "heightPx": bands.footer_px,
+              "widthPx": viewport[0], "heightPx": contract.footer.preferred_px,
               "label": context },
         ],
     })
@@ -1575,7 +1594,7 @@ fn check_every_region_is_a_declared_band() {
     // authored extents — for both contexts at both viewports.
     for context in [TopLevelContext::Mixer, TopLevelContext::Patch] {
         let projection = production_projection(context);
-        for (viewport, policy) in AUTHORED_VIEWPORTS {
+        for (viewport, mode) in REFERENCE_VIEWPORTS {
             let label = format!("{context:?} at {viewport:?}");
             let (document, observation) = forwarded_observation(&projection, viewport);
             assert_eq!(
@@ -1598,8 +1617,8 @@ fn check_every_region_is_a_declared_band() {
                 observation.regions_are_non_overlapping(),
                 "{label}: two structural regions overlap"
             );
-            let bands = policy.bands();
-            let split = policy.split();
+            assert_eq!(ResponsiveLayoutMode::resolve(viewport[0]), mode);
+            let contract = ResponsiveShellContract::get();
             let context_line = observation.region(ShellRegionId::ContextLine).rect();
             let identity = observation.region(ShellRegionId::IdentityHeader).rect();
             let main = observation.region(ShellRegionId::MainWorkspace).rect();
@@ -1609,31 +1628,45 @@ fn check_every_region_is_a_declared_band() {
             let footer = observation.region(ShellRegionId::Footer).rect();
             assert_eq!(
                 context_line.height(),
-                bands.context_line_px,
+                contract.context_line.preferred_px,
                 "{label} context line"
             );
             assert_eq!(
                 identity.height(),
-                bands.identity_header_px,
+                contract.identity_header.preferred_px,
                 "{label} identity header"
             );
-            assert_eq!(footer.height(), bands.footer_px, "{label} footer");
-            assert_eq!(side.width(), split.side_px, "{label} side region width");
+            assert_eq!(
+                footer.height(),
+                contract.footer.preferred_px,
+                "{label} footer"
+            );
             assert!(
                 side.width() >= 320.0,
                 "{label}: the side region narrowed to {} px",
                 side.width()
             );
-            assert_eq!(
-                context_line.height() + identity.height() + main.height() + footer.height(),
-                viewport[1],
-                "{label}: the bands and workspace do not sum to the viewport height"
-            );
-            assert_eq!(
-                main.width() + side.width(),
-                viewport[0],
-                "{label}: the workspace and side region do not sum to the viewport width"
-            );
+            match mode {
+                ResponsiveLayoutMode::Compact => {
+                    assert_eq!(main.width(), viewport[0]);
+                    assert_eq!(side.width(), viewport[0]);
+                    assert_eq!(
+                        context_line.height()
+                            + identity.height()
+                            + main.height()
+                            + side.height()
+                            + footer.height(),
+                        viewport[1]
+                    );
+                }
+                ResponsiveLayoutMode::Wide | ResponsiveLayoutMode::Standard => {
+                    assert_eq!(main.width() + side.width(), viewport[0]);
+                    assert_eq!(
+                        context_line.height() + identity.height() + main.height() + footer.height(),
+                        viewport[1]
+                    );
+                }
+            }
             for region in observation.regions() {
                 assert!(
                     !region.visible_label().trim().is_empty(),
@@ -1702,10 +1735,9 @@ fn check_the_mixer_column_anatomy_is_declared_and_driven() {
 // T043 — the no-placeholder rule and the ownership boundary
 // ===========================================================================
 
-/// A designed structure with no view data behind it is marked, never
-/// painted with a placeholder: the page's designed Utility entries equal the
-/// authored table driver for driver, the production document drives exactly
-/// the two driven entries, and the mark is the declared one.
+/// A structure with no view data behind it is marked, never painted with a
+/// placeholder. Utility itself is projection-driven: the canonical surface
+/// supplies the complete ordered row set and the page owns no parallel table.
 fn check_a_designed_structure_with_no_view_data_is_marked() {
     assert_eq!(
         UNAVAILABLE_MARK, "--",
@@ -1729,32 +1761,10 @@ fn check_a_designed_structure_with_no_view_data_is_marked() {
         "the page's hint separator drifted from the authored separator"
     );
 
-    // The designed entries, parsed from the committed script, equal the
-    // authored table — labels, order, and drivers.
-    let entries = page_array_block(&page_js, "DESIGNED_UTILITY_ENTRIES");
-    assert_eq!(
-        entries.len(),
-        AUTHORED_UTILITY_ENTRIES.len(),
-        "the page designs {} Utility entries where DESIGN.md draws {}",
-        entries.len(),
-        AUTHORED_UTILITY_ENTRIES.len()
+    assert!(
+        !page_js.contains("DESIGNED_UTILITY_ENTRIES"),
+        "the page must not own a second Utility registry"
     );
-    for (entry, (label, driver)) in entries.iter().zip(AUTHORED_UTILITY_ENTRIES) {
-        assert!(
-            entry.contains(&format!("label: \"{label}\"")),
-            "the page's designed entry {entry:?} does not carry the authored label {label}"
-        );
-        match driver {
-            Some(driver) => assert!(
-                entry.contains(&format!("driver: \"{driver}\"")),
-                "{label} must be driven by the projected {driver}"
-            ),
-            None => assert!(
-                entry.contains("driver: null"),
-                "{label} is undriven by declaration and must be marked, not invented"
-            ),
-        }
-    }
     // The marked path exists and paints the declared mark beside the
     // structure's name.
     assert!(
@@ -1762,27 +1772,30 @@ fn check_a_designed_structure_with_no_view_data_is_marked() {
         "the page has no marked-unavailable path"
     );
 
-    // The production document drives exactly the declared drivers: the
-    // utility surface carries the two driven rows and nothing for the three
-    // undriven designs — so the page can only mark them.
+    // The production document drives the complete declared surface in order.
     let document = production_document(TopLevelContext::Patch);
-    let utility_ids: BTreeSet<String> = surface_controls(&document, "patchUtility")
+    let utility: Vec<(String, String)> = surface_controls(&document, "patchUtility")
         .iter()
         .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
         .filter_map(|control| {
-            control
-                .pointer("/path/controlId/id")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
+            Some((
+                control.pointer("/path/controlId/id")?.as_str()?.to_owned(),
+                control.get("label")?.as_str()?.to_owned(),
+            ))
         })
         .collect();
-    let declared_drivers: BTreeSet<String> = AUTHORED_UTILITY_ENTRIES
+    let declared_ids: Vec<String> = AUTHORED_UTILITY_ENTRIES
         .iter()
         .filter_map(|(_, driver)| driver.map(str::to_owned))
         .collect();
     assert_eq!(
-        utility_ids, declared_drivers,
-        "the projected utility surface and the declared drivers disagree"
+        utility.iter().map(|(id, _)| id.clone()).collect::<Vec<_>>(),
+        declared_ids,
+        "the projected Utility surface must carry the declared identities in order"
+    );
+    assert!(
+        utility.iter().all(|(_, label)| !label.trim().is_empty()),
+        "every projected Utility control must carry its canonical display label"
     );
 }
 
@@ -1848,8 +1861,8 @@ fn check_no_component_owns_or_dispatches_application_state() {
                 "{path} reads a raw viewport size instead of asking the density policy"
             );
             assert!(
-                !code.contains("ViewportDensityPolicy::resolve"),
-                "{path} resolves a density policy from a raw width of its own"
+                !code.contains("ResponsiveLayoutMode::resolve"),
+                "{path} resolves presentation mode from a raw width of its own"
             );
         }
     }
@@ -1948,51 +1961,42 @@ fn check_no_component_owns_or_dispatches_application_state() {
     }
 }
 
-/// Both authored viewports resolve from the density policy, and nothing
-/// between or below them introduces a third layout.
+/// Representative viewports reach all three presentation modes while sharing
+/// one bounded geometry contract.
 fn check_both_viewports_resolve_from_the_declared_policy() {
-    for (viewport, expected) in AUTHORED_VIEWPORTS {
+    for (viewport, expected) in REFERENCE_VIEWPORTS {
         assert_eq!(
-            ViewportDensityPolicy::resolve(viewport[0]),
+            ResponsiveLayoutMode::resolve(viewport[0]),
             expected,
-            "the authored {viewport:?} viewport does not resolve to {}",
+            "the reference {viewport:?} viewport does not resolve to {}",
             expected.canonical_name()
         );
-        let authored = expected.authored_viewport();
-        assert_eq!(authored.width_px, viewport[0]);
-        assert_eq!(authored.height_px, viewport[1]);
     }
 
-    let mut layouts: BTreeSet<String> = BTreeSet::new();
     let mut policies: BTreeSet<&str> = BTreeSet::new();
     for width in [
         320.0_f32, 800.0, 1_024.0, 1_280.0, 1_281.0, 1_366.0, 1_600.0, 1_920.0, 2_560.0, 3_840.0,
     ] {
-        let policy = ViewportDensityPolicy::resolve(width);
+        let policy = ResponsiveLayoutMode::resolve(width);
         policies.insert(policy.canonical_name());
-        layouts.insert(format!(
-            "{:?}|{:?}|{:?}|{:?}|{:?}",
-            policy.bands(),
-            policy.split(),
-            policy.rhythm(),
-            policy.utility_control(),
-            policy.mixer_column()
-        ));
     }
     assert_eq!(
-        layouts.len(),
-        ALL_DENSITY_POLICIES.len(),
-        "a viewport between or below the authored sizes introduced a third layout: {layouts:?}"
-    );
-    assert_eq!(
         policies.len(),
-        ALL_DENSITY_POLICIES.len(),
-        "the sweep did not reach both declared policies"
+        ALL_LAYOUT_MODES.len(),
+        "the sweep did not reach all declared presentation modes"
     );
 
-    // The production window's declared window sizing reads the same policy:
-    // the authored desktop viewport opens it and the deck viewport floors
-    // it. (The window itself is transport; the sizes are the policy's.)
+    assert!(ResponsiveShellContract::get()
+        .all_bounds()
+        .into_iter()
+        .all(|(_, bounds)| bounds.is_ordered()));
+    assert_eq!(
+        RepresentativeViewport::StandardReference.fixture().width_px,
+        1_280.0
+    );
+
+    // The production window reads the same representative-size helpers; the
+    // window itself remains transport rather than layout authority.
     let _ = TauriWebviewWindow::default();
 }
 
@@ -2106,7 +2110,7 @@ fn the_transport_guard_reports_a_planted_decision() {
     assert!(
         violations
             .iter()
-            .any(|violation| violation.contains("side region")),
+            .any(|violation| violation.contains("side track")),
         "the transport guard did not report the planted band extent:\n{joined}"
     );
 
@@ -2210,13 +2214,13 @@ fn the_visual_decision_guard_reports_a_planted_decision() {
 fn the_visual_decision_guard_allows_what_the_vocabulary_permits() {
     let permitted = concat!(
         "use crate::shell::tokens::{SemanticColor, SpacingStep, MIN_INTERACTIVE_TARGET_PX};\n",
-        "pub fn paint(ui: &mut Ui, policy: &ViewportDensityPolicy) {\n",
+        "pub fn paint(ui: &mut Ui, contract: &ResponsiveShellContract) {\n",
         "    ui.add_space(SpacingStep::S12.resolve());\n",
         "    let clear = Color32::TRANSPARENT;\n",
         "    let id = FontId::new(style.metrics().size_px, family_for(style));\n",
         "    let corner = CornerRadius::same(Radius::Small.resolve() as u8);\n",
         "    painter.rect_filled(row, 0.0, SemanticColor::BgPanel.resolve());\n",
-        "    let band = policy.bands().context_line_px;\n",
+        "    let band = contract.context_line.preferred_px;\n",
         "    let button = Button::new(label).min_size(vec2(0.0, MIN_INTERACTIVE_TARGET_PX));\n",
         "    let label = \"PATCH 01 · Lead\";\n",
         "}\n",

@@ -97,8 +97,8 @@ impl LiveShellCoverage {
         }
         self.healthy_empty_errors_observed |= frame.errors().is_empty();
         self.desktop_viewport_painted |=
-            crate::shell::density::ViewportDensityPolicy::resolve(frame.viewport_width())
-                == crate::shell::density::ViewportDensityPolicy::Desktop;
+            crate::shell::density::ResponsiveLayoutMode::resolve(frame.viewport_width())
+                == crate::shell::density::ResponsiveLayoutMode::Wide;
         if let Some(strip) = frame.strip() {
             self.strip_groups_painted = Some(
                 self.strip_groups_painted

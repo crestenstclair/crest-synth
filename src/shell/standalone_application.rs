@@ -241,8 +241,6 @@ impl GraphicalShellLiveObservation {
                 // subject: every second-Patch counter keys off this (F-47).
                 &installed_patch_order(report),
                 crate::testing::PatchEditorTeardown {
-                    strip_groups_painted: shell.strip_groups_painted(),
-                    strip_flat_control_run: shell.strip_flat_control_run(),
                     voice_limit_refusals: report.final_audio_observation().voice_limit_refusals(),
                     events_dropped: report.event_log().dropped_records(),
                     callback_allocations: callback_safety.allocations() as u64,

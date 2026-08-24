@@ -50,7 +50,7 @@ use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
 use crest_synth::real_time::{AudioObservationSnapshot, PatchAudioBlock};
 use crest_synth::shell::app_window::{AppInputCallback, ProjectionCallback};
-use crest_synth::shell::density::ViewportDensityPolicy;
+use crest_synth::shell::density::ResponsiveShellContract;
 use crest_synth::shell::tokens::{SemanticColor, ALL_WEIGHTS};
 use crest_synth::shell::typeface::{family_name, AUTHORED_FAMILY};
 use crest_synth::shell::webview::frame_stream::FrameExpectation;
@@ -167,13 +167,10 @@ fn page_band_labels(document: &Value) -> [String; 5] {
 /// whose identity is not a verbatim copy of an in-flight pushed document's,
 /// so this role cannot render a separately supplied projection.
 fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
-    let policy = ViewportDensityPolicy::resolve(viewport[0]);
-    let bands = policy.bands();
-    let split = policy.split();
-    let context_bottom = bands.context_line_px;
-    let identity_bottom = context_bottom + bands.identity_header_px;
-    let workspace_bottom = viewport[1] - bands.footer_px;
-    let main_width = viewport[0] - split.side_px;
+    let geometry = ResponsiveShellContract::get().witness_geometry(viewport[0], viewport[1]);
+    let context_bottom = geometry.context_line_px;
+    let identity_bottom = geometry.workspace_y_px;
+    let workspace_bottom = viewport[1] - geometry.footer_px;
     let labels = page_band_labels(document);
     json!({
         "generation": document["generation"],
@@ -188,16 +185,16 @@ fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
               "widthPx": viewport[0], "heightPx": context_bottom,
               "label": labels[0] },
             { "id": "identityHeader", "xPx": 0.0, "yPx": context_bottom,
-              "widthPx": viewport[0], "heightPx": bands.identity_header_px,
+              "widthPx": viewport[0], "heightPx": geometry.identity_header_px,
               "label": labels[1] },
             { "id": "mainWorkspace", "xPx": 0.0, "yPx": identity_bottom,
-              "widthPx": main_width, "heightPx": workspace_bottom - identity_bottom,
+              "widthPx": geometry.main_width_px, "heightPx": geometry.main_height_px,
               "label": labels[2] },
-            { "id": "persistentSideRegion", "xPx": main_width, "yPx": identity_bottom,
-              "widthPx": split.side_px, "heightPx": workspace_bottom - identity_bottom,
+            { "id": "persistentSideRegion", "xPx": geometry.side_x_px, "yPx": geometry.side_y_px,
+              "widthPx": geometry.side_width_px, "heightPx": geometry.side_height_px,
               "label": labels[3] },
             { "id": "footer", "xPx": 0.0, "yPx": workspace_bottom,
-              "widthPx": viewport[0], "heightPx": bands.footer_px,
+              "widthPx": viewport[0], "heightPx": geometry.footer_px,
               "label": labels[4] },
         ],
     })
@@ -328,13 +325,10 @@ fn assert_frame(
     // viewport, so this asserts the authored geometry itself: a policy whose
     // bands stopped tiling the viewport fails the exact-rect and non-overlap
     // assertions here before any page could seat it.
-    let policy = ViewportDensityPolicy::resolve(viewport[0]);
-    let bands = policy.bands();
-    let context_bottom = bands.context_line_px;
-    let identity_bottom = context_bottom + bands.identity_header_px;
-    let workspace_bottom = viewport[1] - bands.footer_px;
-    let side_width = policy.split().side_px;
-    let main_width = viewport[0] - side_width;
+    let geometry = ResponsiveShellContract::get().witness_geometry(viewport[0], viewport[1]);
+    let context_bottom = geometry.context_line_px;
+    let identity_bottom = geometry.workspace_y_px;
+    let workspace_bottom = viewport[1] - geometry.footer_px;
     assert_rect(
         observation,
         ShellRegionId::ContextLine,
@@ -348,12 +342,22 @@ fn assert_frame(
     assert_rect(
         observation,
         ShellRegionId::MainWorkspace,
-        [0.0, identity_bottom, main_width, workspace_bottom],
+        [
+            0.0,
+            identity_bottom,
+            geometry.main_width_px,
+            identity_bottom + geometry.main_height_px,
+        ],
     );
     assert_rect(
         observation,
         ShellRegionId::PersistentSideRegion,
-        [main_width, identity_bottom, viewport[0], workspace_bottom],
+        [
+            geometry.side_x_px,
+            geometry.side_y_px,
+            geometry.side_x_px + geometry.side_width_px,
+            geometry.side_y_px + geometry.side_height_px,
+        ],
     );
     assert_rect(
         observation,

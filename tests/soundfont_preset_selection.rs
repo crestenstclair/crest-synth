@@ -11,7 +11,8 @@ use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructura
 use crest_synth::control::event_record::EventSource;
 use crest_synth::control::{
     AppEvent, AppLoop, AppState, Direction, EngineSelectionFailure, EngineSelectionStatusKind,
-    EventRejection, PatchControlId, StateProjector, StructuralEditIntent, TopLevelContext,
+    EventRejection, PatchControlId, StateProjector, StructuralEditIntent, SurfaceId,
+    TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -29,6 +30,7 @@ use crest_synth::synth::{
     CapabilityRegistry, DescriptorDefaultConfigFactory, InstrumentCapabilityProvider,
     InstrumentConfig, InstrumentPreparer, ParameterId, ParameterValue, Patch,
     SoundFontPresetCatalog, SoundFontPresetCatalogError, SoundFontPresetId, SoundFontPresetSource,
+    VoiceEnvelopeParameter,
 };
 use crest_synth::testing::DeterministicGraphPreparationWorker;
 use rustysynth::SoundFont;
@@ -434,12 +436,21 @@ fn soundfont_preset_selection() {
             EventSource::Keyboard,
         )
         .unwrap();
-    for _ in 0..5 {
+    app_loop
+        .dispatch_from(
+            AppEvent::EnterSurface(SurfaceId::PatchDetail),
+            EventSource::Keyboard,
+        )
+        .unwrap();
+    let preset_control = PatchControlId::Capability(preset_parameter.clone());
+    for _ in 0..64 {
+        if app_loop.current_patch_page().unwrap().focused_control_id() == preset_control {
+            break;
+        }
         app_loop
             .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
             .unwrap();
     }
-    let preset_control = PatchControlId::Capability(preset_parameter.clone());
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),
         preset_control
@@ -518,9 +529,19 @@ fn soundfont_preset_selection() {
         .clone();
     assert_eq!(app_loop.patches()[0].instrument_config(), &default_config);
     let release_before = app_loop.patches()[0].envelope().release_milliseconds();
-    app_loop
-        .dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::Keyboard)
-        .unwrap();
+    let release_control = PatchControlId::Envelope(VoiceEnvelopeParameter::ReleaseMilliseconds);
+    for _ in 0..64 {
+        if app_loop.current_patch_page().unwrap().focused_control_id() == release_control {
+            break;
+        }
+        app_loop
+            .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
+            .unwrap();
+    }
+    assert_eq!(
+        app_loop.current_patch_page().unwrap().focused_control_id(),
+        release_control
+    );
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Up), EventSource::Keyboard)
         .unwrap();
@@ -575,9 +596,14 @@ fn soundfont_preset_selection() {
             .zip(&target_audio)
             .any(|(source, target)| (source - target).abs() > 1.0e-6);
 
-    app_loop
-        .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
-        .unwrap();
+    for _ in 0..64 {
+        if app_loop.current_patch_page().unwrap().focused_control_id() == preset_control {
+            break;
+        }
+        app_loop
+            .dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::Keyboard)
+            .unwrap();
+    }
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),
         preset_control
@@ -624,11 +650,24 @@ fn soundfont_preset_selection() {
     upper_state
         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
         .unwrap();
-    for _ in 0..5 {
+    upper_state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    for _ in 0..64 {
+        if matches!(
+            upper_state.interaction().focus_path().control_id(),
+            crest_synth::control::SemanticControlId::Patch(control) if control == &preset_control
+        ) {
+            break;
+        }
         upper_state
             .apply(AppEvent::Navigate(Direction::Down))
             .unwrap();
     }
+    assert!(matches!(
+        upper_state.interaction().focus_path().control_id(),
+        crest_synth::control::SemanticControlId::Patch(control) if control == &preset_control
+    ));
     let upper_boundary_rejected = upper_state.apply(AppEvent::Adjust(Direction::Right))
         == Err(EventRejection::ParameterAtBoundary);
 

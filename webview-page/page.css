@@ -47,43 +47,59 @@ body {
   background: var(--color-bg-canvas);
   color: var(--color-text-primary);
   font-family: "Azeret Mono";
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-rows:
+    clamp(
+      var(--shell-context-line-min),
+      var(--shell-context-line-preferred),
+      var(--shell-context-line-max)
+    )
+    clamp(
+      var(--shell-identity-header-min),
+      var(--shell-identity-header-preferred),
+      var(--shell-identity-header-max)
+    )
+    minmax(0, 1fr)
+    clamp(
+      var(--shell-footer-min),
+      var(--shell-footer-preferred),
+      var(--shell-footer-max)
+    );
   overflow: hidden;
 }
 
 /* ---- authored type styles (from the generated table) ------------------ */
 
 .type-display {
-  font-size: var(--type-display-screen-size);
+  font-size: calc(var(--type-display-screen-size) * var(--shell-text-scale));
   line-height: var(--type-display-screen-line);
   font-weight: var(--type-display-screen-weight);
   letter-spacing: var(--type-display-screen-tracking);
 }
 
 .type-heading {
-  font-size: var(--type-heading-section-size);
+  font-size: calc(var(--type-heading-section-size) * var(--shell-text-scale));
   line-height: var(--type-heading-section-line);
   font-weight: var(--type-heading-section-weight);
   letter-spacing: var(--type-heading-section-tracking);
 }
 
 .type-label {
-  font-size: var(--type-label-control-size);
+  font-size: calc(var(--type-label-control-size) * var(--shell-text-scale));
   line-height: var(--type-label-control-line);
   font-weight: var(--type-label-control-weight);
   letter-spacing: var(--type-label-control-tracking);
 }
 
 .type-value {
-  font-size: var(--type-code-value-size);
+  font-size: calc(var(--type-code-value-size) * var(--shell-text-scale));
   line-height: var(--type-code-value-line);
   font-weight: var(--type-code-value-weight);
   letter-spacing: var(--type-code-value-tracking);
 }
 
 .type-hint {
-  font-size: var(--type-instruction-hint-size);
+  font-size: calc(var(--type-instruction-hint-size) * var(--shell-text-scale));
   line-height: var(--type-instruction-hint-line);
   font-weight: var(--type-instruction-hint-weight);
   letter-spacing: var(--type-instruction-hint-tracking);
@@ -129,7 +145,12 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-24);
-  padding: var(--space-12) var(--space-24);
+  padding-block: var(--space-8);
+  padding-inline: clamp(
+    var(--shell-content-inset-min),
+    var(--shell-content-inset-preferred),
+    var(--shell-content-inset-max)
+  );
   border-bottom: var(--keyline-resting) solid var(--color-border-default);
 }
 
@@ -142,22 +163,38 @@ body {
   display: flex;
   align-items: baseline;
   gap: var(--space-12);
-  padding: var(--space-12) var(--space-24);
+  padding-block: var(--space-8);
+  padding-inline: clamp(
+    var(--shell-content-inset-min),
+    var(--shell-content-inset-preferred),
+    var(--shell-content-inset-max)
+  );
+  flex-wrap: wrap;
   border-bottom: var(--keyline-resting) solid var(--color-border-default);
 }
 
 #main-region {
-  flex: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--workspace-columns);
+  grid-template-rows: var(--workspace-rows);
+  grid-template-areas: var(--workspace-areas);
   min-height: 0;
+  min-width: 0;
+  overflow: auto;
 }
 
 #workspace {
-  flex: 1;
+  grid-area: workspace;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
-  padding: var(--space-16) var(--space-24);
+  padding: clamp(
+    var(--shell-content-inset-min),
+    var(--shell-content-inset-preferred),
+    var(--shell-content-inset-max)
+  );
+  overflow: auto;
 }
 
 .caption-row,
@@ -181,24 +218,23 @@ body {
   border-top: var(--keyline-resting) solid var(--color-border-default);
 }
 
-/* ---- the sixteen-column strip bank ------------------------------------
- * The authored desktop geometry (82 px column on an 86 px pitch) narrows
- * uniformly — width and pitch together — down to the declared interactive
- * floor, never scrolling and never eliding a track. The gutter is the
- * declared pitch minus the declared width. */
+/* ---- the sixteen-column strip bank ------------------------------------ */
 
 .bank {
   flex: 1;
   display: grid;
   grid-template-columns: repeat(
     16,
-    minmax(var(--mixer-column-floor-desktop), var(--mixer-column-width-desktop))
+    minmax(var(--shell-mixer-column-min), 1fr)
   );
-  column-gap: calc(
-    var(--mixer-column-pitch-desktop) - var(--mixer-column-width-desktop)
+  column-gap: clamp(
+    var(--shell-region-gap-min),
+    var(--space-8),
+    var(--shell-region-gap-max)
   );
   margin: var(--space-16) 0;
   min-height: 0;
+  overflow-x: auto;
 }
 
 .bank.bank-unavailable {
@@ -244,7 +280,7 @@ body {
   border-left: var(--keyline-emphasis) dashed var(--color-accent-focus);
 }
 
-/* LevelFader — the dominant structure at both authored viewports. */
+/* LevelFader — the dominant structure wherever the bank has room. */
 .level-fader {
   position: relative;
   flex: 1;
@@ -398,105 +434,164 @@ body {
   align-self: stretch;
 }
 
-/* ---- the PATCH strip ----------------------------------------------------
- * The PATCH main workspace: the projected controls as full-width listed
- * rows in the document's declared order, on the same fluid width the mixer
- * bank rides — no third layout mode, both authored viewports seat through
- * the browser layout engine. Rows that exceed the band stay reachable by
- * scroll (the side region's own affordance), never clipped and never
- * overlapped.
- *
- * Token gaps (recorded, not closed with literals): the authored content
- * rhythm (row 52/66 px desktop, 48/56 px deck) and utility pitch are not in
- * the generated table, so the row minimum leans on the declared
- * --min-interactive-target and the gaps on the declared spacing steps. */
+/* ---- PATCH Overview ----------------------------------------------------
+ * The controller order is also the reading order: Engine first, then each
+ * effect position vertically. Wide screens give those rows more room for
+ * values and hints; they never turn navigation into a sideways card scan. */
 
-/* The strip's own rhythm, and the whole of it: the only air inside the strip
- * is the step between one group and the next. Rows within a group are ruled by
- * their own hairlines and a group title sits on its rows, so the one gap that
- * remains is the one the grouping exists to communicate.
- *
- * The measured budget, in the shipped window at the authored desktop viewport
- * (page height 1018, strip band 770): the SoundFont fixture's twelve rows hold
- * the declared 48 px interactive minimum and take 576 px of it. The header,
- * six group titles and five inter-group steps take the remaining 177 px, and
- * the composition seats at 753 px. Every step here is a declared one; there is
- * no room to spend a larger one and no reason to spend a smaller.
- *
- * The strip's own inset is one step down from the shell's band inset, because
- * the caption row above and the hint row below already carry their own
- * padding — 16 px on both sides of them reads as a gap, not a rhythm. */
-#workspace .strip {
+.patch-overview {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   display: flex;
   flex-direction: column;
-  gap: var(--space-8);
-  margin: var(--space-8) 0;
+  gap: clamp(
+    var(--shell-region-gap-min),
+    var(--shell-region-gap-preferred),
+    var(--shell-region-gap-max)
+  );
+  margin: var(--space-12) 0;
 }
 
-#workspace .strip.strip-unavailable {
-  justify-content: center;
-}
-
-/* ---- the PatchStrip group anatomy --------------------------------------
- * The workspace holds ordered groups, each an optional authored title band
- * and its rows — groups arranging groups, the PATCH twin of the mixer bank
- * arranging track columns. Groups separate by the rhythm of the strip's own
- * gap; a group is not a card. */
-
-/* A group's title sits directly on its rows: adjacency is what binds a section
- * head to the section, and the muted label against the ruled row block already
- * reads as one. The step that separates groups is the strip's. */
-.pgroup {
-  display: flex;
-  flex-direction: column;
-}
-
-.pgroup-title {
-  padding: 0 var(--space-12);
-}
-
-/* A group's rows are one contiguous ruled list: each row already carries its
- * own hairline below it, and the design separates listed rows with hairlines
- * rather than with air ("The shell is structural, not a collection of cards.
- * Separators are hairlines."). The rhythm that reads is the one *between*
- * groups, which the strip's own gap carries. */
-.pgroup-rows {
-  display: flex;
-  flex-direction: column;
-}
-
-/* A designed group the projection carried no row for keeps its title and
- * says so inside its own group; it is never dropped and never filled with a
- * representative row. */
-.pgroup.unavailable > .pgroup-title {
-  color: var(--color-text-muted);
-}
-
-/* A control identity no designed group claims is arranged under the explicit
- * `?group` marker in the warning accent — visible, never folded silently
- * into a neighbouring group. */
-.pgroup.unknown > .pgroup-title {
-  color: var(--color-accent-warning);
-}
-
-/* The strip's own identity and routing header: the Patch being edited and
- * where its sound goes. Informative — it allocates no interactive target, so
- * it carries neither the row minimum nor a focus treatment. */
-.strip-header {
+.overview-heading {
   display: flex;
   align-items: baseline;
   flex-wrap: wrap;
-  gap: var(--space-12);
-  padding: 0 var(--space-12) var(--space-8);
+  gap: var(--space-8) var(--space-16);
+  padding: 0 var(--space-12) var(--space-12);
   border-bottom: var(--keyline-resting) solid var(--color-border-default);
 }
 
-.strip-header .strip-header-name {
+.overview-routing {
+  margin-inline-start: auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-8) var(--space-16);
+}
+
+.overview-sections {
+  display: grid;
+  grid-template-columns: var(--overview-columns);
+  align-items: start;
+  gap: var(--space-12);
+  min-width: 0;
+}
+
+.overview-section {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.overview-section-heading {
+  min-height: calc(var(--space-32) + var(--space-8));
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-12);
+  padding: 0 var(--space-12);
+  border-bottom: var(--keyline-emphasis) solid var(--color-border-strong);
+}
+
+.overview-section-controls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--space-4);
+}
+
+.overview-control {
+  min-width: 0;
+  min-height: clamp(
+    var(--shell-row-height-min),
+    var(--shell-row-height-preferred),
+    var(--shell-row-height-max)
+  );
+  padding: var(--space-8) var(--space-12);
+  border: var(--keyline-resting) solid var(--color-border-default);
+  border-inline-start: var(--keyline-emphasis) solid var(--color-border-strong);
+  display: grid;
+  grid-template-columns: minmax(8rem, 0.75fr) minmax(10rem, 1.25fr) auto;
+  grid-template-areas:
+    "label value summary"
+    "hints hints hints";
+  align-items: center;
+  gap: var(--space-4) var(--space-16);
+  overflow-wrap: anywhere;
+}
+
+.overview-control-label {
+  grid-area: label;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-12);
+}
+
+.overview-control-value {
+  grid-area: value;
   color: var(--color-accent-patch);
 }
+
+.overview-control-summary {
+  grid-area: summary;
+  justify-self: end;
+}
+
+.overview-control-hints {
+  grid-area: hints;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-12);
+}
+
+.overview-control > .lifecycle {
+  grid-column: 1 / -1;
+  padding: var(--space-8) 0 0;
+  border-top: var(--keyline-resting) dashed var(--color-border-strong);
+}
+
+.overview-control[data-state="focused"] {
+  background: var(--color-bg-panel);
+  border-inline-start-color: var(--color-accent-focus);
+  box-shadow: 0 0 var(--focus-halo-radius) var(--focus-halo-spread)
+    color-mix(
+      in srgb,
+      var(--color-accent-focus) calc(var(--focus-halo-opacity) * 100%),
+      transparent
+    );
+}
+
+.overview-control[data-state="focused"] .overview-control-label,
+.overview-control[data-state="focused"] .overview-control-value {
+  color: var(--color-accent-focus);
+}
+
+.overview-control[data-state="adjusting"] {
+  border-inline-start-style: double;
+  border-inline-start-color: var(--color-accent-adjust);
+}
+
+.overview-control[data-state="disabled"] {
+  border-inline-start-style: dotted;
+}
+
+.overview-control[data-state="loading"] {
+  border-inline-start-color: var(--color-accent-adjust);
+}
+
+.overview-control[data-state="error"],
+.overview-control[data-state="unknown"] {
+  border-inline-start-style: dashed;
+  border-inline-start-color: var(--color-accent-warning);
+}
+
+/* ---- shared PATCH control rows -----------------------------------------
+ * Detail, Choice, Browser, and Utility reuse one token-bound row grammar.
+ * Required content wraps or scrolls inside its owning region. */
 
 /* One listed row, on two lines inside one interactive target: the shipped
  * parameter-row anatomy reads across line one — label left, state mark or
@@ -663,7 +758,7 @@ body {
   background: var(--color-border-strong);
 }
 
-/* The lifecycle band beneath a row reporting a structural edit: a readout,
+/* The lifecycle band inside a control reporting a structural edit: a readout,
  * not a row — it takes no focus and allocates no interactive target. */
 #workspace .lifecycle,
 #inspector .lifecycle {
@@ -782,14 +877,13 @@ body {
 .modal-shell {
   width: min(
     calc(
-      var(--surface-split-main-steam-deck) - var(--space-32) - var(--space-8)
+      var(--shell-side-track-max) + var(--shell-side-track-min)
     ),
     calc(100% - var(--min-interactive-target))
   );
   max-height: min(
     calc(
-      var(--surface-split-side-steam-deck) +
-        var(--surface-split-side-steam-deck) + var(--space-32) + var(--space-8)
+      var(--shell-side-track-max) + var(--shell-side-track-min)
     ),
     calc(100% - var(--min-interactive-target))
   );
@@ -916,15 +1010,8 @@ body {
 /* ---- Utility panel rows ------------------------------------------------
  * Two lines, as the design draws them (`Utility MASTER VOLUME` 36:53): the
  * label and value on one line, the position indicator full width below it.
- * The five-row set is bounded by declaration, so the rows are sized to seat
- * inside the side region at both authored viewports and `#inspector` keeps
- * its `overflow: hidden` — the bound is five, and a row that does not seat
- * is a row height to fix, not a scroll to add.
- *
- * Token gap (recorded, not closed with a literal): the authored 48 px
- * utility entry on a 60 px pitch is not in the generated table, so the entry
- * leans on the declared --min-interactive-target and the pitch on the
- * declared spacing steps. */
+ * The bounded five-row set remains independently scrollable when text or
+ * viewport scaling needs more room. */
 #inspector .prow {
   gap: var(--space-4);
   padding: var(--space-8);
@@ -958,25 +1045,22 @@ body {
   gap: var(--space-8);
 }
 
-/* ---- the persistent Inspector ------------------------------------------
- * Width resolves from the vocabulary's declared surface split: the desktop
- * side region when the viewport carries it, narrowed toward — and never
- * below — the deck's 320 px side region (T021: >= 320 px at 1280×800).
- * 100vw minus the desktop main width reproduces both authored splits
- * exactly at the two authored viewports. */
+/* ---- the persistent Inspector ------------------------------------------ */
 #inspector {
-  width: clamp(
-    var(--surface-split-side-steam-deck),
-    calc(100vw - var(--surface-split-main-desktop)),
-    var(--surface-split-side-desktop)
-  );
-  flex-shrink: 0;
+  grid-area: side;
+  min-width: 0;
+  min-height: 0;
   border-left: var(--keyline-resting) solid var(--color-border-default);
-  padding: var(--space-16) var(--space-24);
+  border-top: var(--keyline-resting) solid var(--color-border-default);
+  padding: clamp(
+    var(--shell-content-inset-min),
+    var(--shell-content-inset-preferred),
+    var(--shell-content-inset-max)
+  );
   display: flex;
   flex-direction: column;
   gap: var(--space-12);
-  overflow: hidden;
+  overflow: auto;
 }
 
 .inspector-pinned {
@@ -1049,6 +1133,13 @@ body {
   display: flex;
   align-items: center;
   gap: var(--space-24);
-  padding: var(--space-12) var(--space-24);
+  padding-block: var(--space-8);
+  padding-inline: clamp(
+    var(--shell-content-inset-min),
+    var(--shell-content-inset-preferred),
+    var(--shell-content-inset-max)
+  );
+  flex-wrap: wrap;
+  overflow: auto;
   border-top: var(--keyline-resting) solid var(--color-border-default);
 }

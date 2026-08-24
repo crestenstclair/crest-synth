@@ -175,6 +175,28 @@ fn note(patch_id: PatchId, channel: MidiChannel) -> AppEvent {
     }
 }
 
+fn enter_attack_detail<Boundary>(app_loop: &mut AppLoop<Boundary>)
+where
+    Boundary: crest_synth::real_time::ControlAudioBoundary,
+{
+    app_loop
+        .dispatch_from(
+            AppEvent::EnterSurface(crest_synth::control::SurfaceId::PatchDetail),
+            EventSource::Keyboard,
+        )
+        .unwrap();
+    let target = PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds);
+    for _ in 0..32 {
+        if app_loop.current_patch_page().unwrap().focused_control_id() == target {
+            return;
+        }
+        app_loop
+            .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
+            .unwrap();
+    }
+    panic!("descriptor-backed Detail did not expose Attack");
+}
+
 #[test]
 fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     let registry = production_capability_registry().unwrap();
@@ -314,9 +336,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         && app_loop.in_flight_graph_revision().is_none();
 
     assert_eq!(failed_page.focused_control_id(), PatchControlId::Engine);
-    app_loop
-        .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
-        .unwrap();
+    enter_attack_detail(&mut app_loop);
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Right), EventSource::Keyboard)
         .unwrap();
@@ -326,7 +346,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     );
     assert_eq!(app_loop.patches()[0].envelope().attack_milliseconds(), 1.0);
     app_loop
-        .dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::Keyboard)
+        .dispatch_from(AppEvent::Return, EventSource::Keyboard)
         .unwrap();
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),
@@ -355,9 +375,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         },
         EventSource::Worker,
     ) == Err(EventRejection::StaleEngineSelection);
-    app_loop
-        .dispatch_from(AppEvent::Navigate(Direction::Down), EventSource::Keyboard)
-        .unwrap();
+    enter_attack_detail(&mut app_loop);
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Right), EventSource::Keyboard)
         .unwrap();
@@ -407,6 +425,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         app_loop.current_patch_page().unwrap().engine().status(),
         EngineSelectionStatusKind::Activating
     );
+    enter_attack_detail(&mut app_loop);
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
@@ -464,7 +483,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     let braids_observation = reader.read_latest_on_control();
 
     app_loop
-        .dispatch_from(AppEvent::Navigate(Direction::Up), EventSource::Keyboard)
+        .dispatch_from(AppEvent::Return, EventSource::Keyboard)
         .unwrap();
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),

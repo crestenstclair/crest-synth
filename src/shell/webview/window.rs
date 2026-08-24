@@ -47,7 +47,7 @@ use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
     ProjectionCallback, TickCallback, WindowError,
 };
-use crate::shell::density::ViewportDensityPolicy;
+use crate::shell::density::RepresentativeViewport;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::webview::frame_stream::QualifyingFrameStream;
 use crate::shell::webview::meter_channel::{MeterChannel, METER_EVENT};
@@ -527,8 +527,8 @@ impl AppWindow for TauriWebviewWindow {
         let url: tauri::Url = "crest://localhost/index.html"
             .parse()
             .expect("the static page url is well-formed");
-        let authored = ViewportDensityPolicy::Desktop.authored_viewport();
-        let smallest = ViewportDensityPolicy::SteamDeck.authored_viewport();
+        let authored = RepresentativeViewport::WideReference.fixture();
+        let smallest = RepresentativeViewport::Compact.fixture();
         let window = WebviewWindowBuilder::new(&app, WINDOW_LABEL, WebviewUrl::CustomProtocol(url))
             .title(&self.title)
             .inner_size(f64::from(authored.width_px), f64::from(authored.height_px))

@@ -93,7 +93,7 @@ use crate::shell::component_vocabulary::{
     ALL_PRESENTATION_ROLES, ALL_SEMANTIC_CONTROL_KINDS, ALL_SHELL_COMPOSITIONS,
     COMPONENT_CONTROL_COUNT, OBSERVED_REGION_NAMES, SHELL_COMPOSITION_COUNT,
 };
-use crate::shell::density::{ViewportDensityPolicy, ALL_DENSITY_POLICIES};
+use crate::shell::density::{RepresentativeViewport, ResponsiveShellContract};
 use crate::shell::standalone_application::ApplicationConfig;
 use crate::shell::tokens::{
     FontWeight, Radius, SemanticColor, SpacingStep, TypeStyle, ALL_COLORS, ALL_RADII,
@@ -110,6 +110,11 @@ pub const COMPONENT_GALLERY_OBSERVATION_MARKER: &str = "CREST_COMPONENT_GALLERY_
 
 /// The native window title.
 pub const COMPONENT_GALLERY_WINDOW_TITLE: &str = "crest-synth — component gallery";
+
+const GALLERY_VIEWPORTS: [RepresentativeViewport; 2] = [
+    RepresentativeViewport::WideReference,
+    RepresentativeViewport::StandardReference,
+];
 
 /// The named tauri event carrying each gallery document to the page.
 ///
@@ -750,11 +755,11 @@ pub struct GallerySection {
     specimens: Vec<GallerySpecimen>,
 }
 
-/// One authored density's column of a gallery document.
+/// One representative responsive witness column of a gallery document.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GalleryDensityColumn {
-    /// The canonical policy name, `Desktop` or `SteamDeck`.
+    /// The canonical representative viewport name.
     policy: &'static str,
     /// The column caption, naming the policy and its authored viewport.
     label: String,
@@ -766,7 +771,7 @@ pub struct GalleryDensityColumn {
 }
 
 /// One gallery-scene document: everything the page needs to paint one page at
-/// both authored densities.
+/// both representative responsive witnesses.
 ///
 /// This is not a `SemanticGraphicalViewModel` and is never pushed on the
 /// production projection channel; see the module docs.
@@ -789,7 +794,7 @@ pub struct GalleryDocument {
     step_hint: String,
     /// The full page index, one entry per declared page.
     index: Vec<GalleryIndexEntry>,
-    /// Both authored densities, in [`ALL_DENSITY_POLICIES`] order.
+    /// The two gallery reference viewports, in [`GALLERY_VIEWPORTS`] order.
     densities: Vec<GalleryDensityColumn>,
 }
 
@@ -1167,7 +1172,10 @@ fn composition_section(composition: ShellComposition) -> GallerySection {
 /// Exhaustive over the closed page set with no wildcard, so a sixteenth page
 /// is a compile error naming this function rather than a page that renders
 /// blank.
-fn page_sections(page: ComponentGalleryPage, policy: ViewportDensityPolicy) -> Vec<GallerySection> {
+fn page_sections(
+    page: ComponentGalleryPage,
+    policy: RepresentativeViewport,
+) -> Vec<GallerySection> {
     match page {
         ComponentGalleryPage::Colors => vec![GallerySection {
             heading: format!("{} DECLARED COLORS", ALL_COLORS.len()),
@@ -1401,8 +1409,12 @@ fn page_sections(page: ComponentGalleryPage, policy: ViewportDensityPolicy) -> V
                 .collect(),
         }],
         ComponentGalleryPage::ShellBands => {
-            let bands = policy.bands();
-            let viewport = policy.authored_viewport();
+            let contract = ResponsiveShellContract::get();
+            let viewport = policy.fixture();
+            let workspace = viewport.height_px
+                - contract.context_line.preferred_px
+                - contract.identity_header.preferred_px
+                - contract.footer.preferred_px;
             vec![GallerySection {
                 heading: format!(
                     "FIVE STRUCTURAL BANDS · AUTHORED {} × {}",
@@ -1411,28 +1423,37 @@ fn page_sections(page: ComponentGalleryPage, policy: ViewportDensityPolicy) -> V
                 specimens: vec![
                     GallerySpecimen::Band {
                         region: "contextLine",
-                        label: format!("CONTEXT LINE · {} px", bands.context_line_px),
-                        weight: bands.context_line_px,
+                        label: format!(
+                            "CONTEXT LINE · {} px preferred",
+                            contract.context_line.preferred_px
+                        ),
+                        weight: contract.context_line.preferred_px,
                     },
                     GallerySpecimen::Band {
                         region: "identityHeader",
-                        label: format!("IDENTITY HEADER · {} px", bands.identity_header_px),
-                        weight: bands.identity_header_px,
+                        label: format!(
+                            "IDENTITY HEADER · {} px preferred",
+                            contract.identity_header.preferred_px
+                        ),
+                        weight: contract.identity_header.preferred_px,
                     },
                     GallerySpecimen::Band {
                         region: "mainWorkspace",
-                        label: format!("MAIN WORKSPACE · {} px", bands.workspace_px),
-                        weight: bands.workspace_px,
+                        label: format!("MAIN WORKSPACE · {} px available", workspace),
+                        weight: workspace,
                     },
                     GallerySpecimen::Band {
                         region: "persistentSideRegion",
-                        label: format!("SIDE REGION · {} px", policy.split().side_px),
-                        weight: bands.workspace_px,
+                        label: format!(
+                            "SIDE REGION · {} px preferred",
+                            contract.side_track.preferred_px
+                        ),
+                        weight: workspace,
                     },
                     GallerySpecimen::Band {
                         region: "footer",
-                        label: format!("FOOTER · {} px", bands.footer_px),
-                        weight: bands.footer_px,
+                        label: format!("FOOTER · {} px preferred", contract.footer.preferred_px),
+                        weight: contract.footer.preferred_px,
                     },
                 ],
             }]
@@ -1472,24 +1493,21 @@ fn page_sections(page: ComponentGalleryPage, policy: ViewportDensityPolicy) -> V
     }
 }
 
-/// The generated custom property of one policy's mixer column width.
-const fn column_width_var(policy: ViewportDensityPolicy) -> &'static str {
-    match policy {
-        ViewportDensityPolicy::Desktop => "--mixer-column-width-desktop",
-        ViewportDensityPolicy::SteamDeck => "--mixer-column-width-steam-deck",
-    }
+/// The generated bounded custom property used by mixer-column specimens.
+const fn column_width_var(_policy: RepresentativeViewport) -> &'static str {
+    "--shell-mixer-column-preferred"
 }
 
-/// One authored density's column of one page's document.
+/// One representative responsive witness column of one page's document.
 fn density_column(
     page: ComponentGalleryPage,
-    policy: ViewportDensityPolicy,
+    policy: RepresentativeViewport,
 ) -> GalleryDensityColumn {
-    let viewport = policy.authored_viewport();
+    let viewport = policy.fixture();
     GalleryDensityColumn {
         policy: policy.canonical_name(),
         label: format!(
-            "{} · AUTHORED {} × {}",
+            "{} · REFERENCE {} × {}",
             policy.canonical_name().to_uppercase(),
             viewport.width_px,
             viewport.height_px
@@ -1521,7 +1539,7 @@ pub fn gallery_document(page: ComponentGalleryPage) -> GalleryDocument {
                 active: entry == page,
             })
             .collect(),
-        densities: ALL_DENSITY_POLICIES
+        densities: GALLERY_VIEWPORTS
             .into_iter()
             .map(|policy| density_column(page, policy))
             .collect(),
@@ -1591,7 +1609,7 @@ pub fn gallery_coverage_failures(documents: &[GalleryDocument]) -> Vec<String> {
     // Per density: every document carries the density with at least one
     // specimen, every state has a specimen somewhere, every control covers
     // its declared states, and every composition appears.
-    for policy in ALL_DENSITY_POLICIES {
+    for policy in GALLERY_VIEWPORTS {
         let policy_name = policy.canonical_name();
         let mut states_covered: BTreeSet<&str> = BTreeSet::new();
         let mut controls_covered: BTreeMap<&str, BTreeSet<&str>> = BTreeMap::new();
@@ -1874,17 +1892,22 @@ pub struct GalleryPaintedAck {
 // The ack ledger the observation is built from
 // ===========================================================================
 
-/// A policy's position in [`ALL_DENSITY_POLICIES`].
-const fn policy_index(policy: ViewportDensityPolicy) -> usize {
+/// A reference viewport's position in [`GALLERY_VIEWPORTS`].
+const fn policy_index(policy: RepresentativeViewport) -> usize {
     match policy {
-        ViewportDensityPolicy::Desktop => 0,
-        ViewportDensityPolicy::SteamDeck => 1,
+        RepresentativeViewport::WideReference => 0,
+        RepresentativeViewport::StandardReference => 1,
+        RepresentativeViewport::Intermediate
+        | RepresentativeViewport::Compact
+        | RepresentativeViewport::ScaledText => {
+            panic!("viewport is not part of the two-column gallery")
+        }
     }
 }
 
 /// The policy a canonical name resolves to, or `None`.
-fn policy_for_name(name: &str) -> Option<ViewportDensityPolicy> {
-    ALL_DENSITY_POLICIES
+fn policy_for_name(name: &str) -> Option<RepresentativeViewport> {
+    GALLERY_VIEWPORTS
         .into_iter()
         .find(|policy| policy.canonical_name() == name)
 }
@@ -2359,9 +2382,9 @@ impl GalleryAckLedger {
                     state: name,
                     visible_label: label.clone(),
                     non_color_evidence: evidence.clone(),
-                    viewports: ALL_DENSITY_POLICIES
+                    viewports: GALLERY_VIEWPORTS
                         .into_iter()
-                        .map(ViewportDensityPolicy::canonical_name)
+                        .map(RepresentativeViewport::canonical_name)
                         .collect(),
                 })
             })
@@ -2386,9 +2409,9 @@ impl GalleryAckLedger {
                     states_painted: states.len(),
                     states_declared: states.len(),
                     visible_label: label.clone(),
-                    viewports: ALL_DENSITY_POLICIES
+                    viewports: GALLERY_VIEWPORTS
                         .into_iter()
-                        .map(ViewportDensityPolicy::canonical_name)
+                        .map(RepresentativeViewport::canonical_name)
                         .collect(),
                 })
             })
@@ -2410,9 +2433,9 @@ impl GalleryAckLedger {
                     composition: composition.canonical_name(),
                     region: region.clone(),
                     visible_label: label.clone(),
-                    viewports: ALL_DENSITY_POLICIES
+                    viewports: GALLERY_VIEWPORTS
                         .into_iter()
-                        .map(ViewportDensityPolicy::canonical_name)
+                        .map(RepresentativeViewport::canonical_name)
                         .collect(),
                 })
             })
@@ -2643,10 +2666,10 @@ impl ComponentGalleryObservation {
             mixer_column_names_beyond_track_header: ledger.bank_names_beyond_anatomy(),
             mixer_column_level_readout_is_midi_hex: ledger.bank_level_readout_is_midi_hex(),
             desktop_viewport_painted: ledger.densities
-                [policy_index(ViewportDensityPolicy::Desktop)]
+                [policy_index(RepresentativeViewport::WideReference)]
             .painted,
             steam_deck_viewport_painted: ledger.densities
-                [policy_index(ViewportDensityPolicy::SteamDeck)]
+                [policy_index(RepresentativeViewport::StandardReference)]
             .painted,
             bands_retained_both_viewports: ledger.bands_retained_both_viewports(),
             clipped_or_overlapping_text: ledger.defects.len(),
@@ -3195,8 +3218,8 @@ impl ComponentGalleryScene {
         let url: tauri::Url = "crest://localhost/index.html"
             .parse()
             .expect("the static page url is well-formed");
-        let authored = ViewportDensityPolicy::Desktop.authored_viewport();
-        let smallest = ViewportDensityPolicy::SteamDeck.authored_viewport();
+        let authored = RepresentativeViewport::WideReference.fixture();
+        let smallest = RepresentativeViewport::Compact.fixture();
         let window = WebviewWindowBuilder::new(&app, WINDOW_LABEL, WebviewUrl::CustomProtocol(url))
             .title(COMPONENT_GALLERY_WINDOW_TITLE)
             .inner_size(f64::from(authored.width_px), f64::from(authored.height_px))
@@ -3617,7 +3640,7 @@ mod tests {
                 .iter()
                 .map(|column| column.policy)
                 .collect();
-            assert_eq!(policies, vec!["Desktop", "SteamDeck"]);
+            assert_eq!(policies, vec!["WideReference", "StandardReference"]);
             for column in &document.densities {
                 let specimens: usize = column
                     .sections
@@ -3815,8 +3838,9 @@ mod tests {
             radius_css_var(Radius::Small).to_owned(),
             "--keyline-resting".to_owned(),
             "--min-interactive-target".to_owned(),
-            "--mixer-column-width-desktop".to_owned(),
-            "--mixer-column-width-steam-deck".to_owned(),
+            "--shell-mixer-column-min".to_owned(),
+            "--shell-mixer-column-preferred".to_owned(),
+            "--shell-mixer-column-max".to_owned(),
         ] {
             assert!(
                 GALLERY_TOKENS_CSS.contains(&format!("{var}:")),

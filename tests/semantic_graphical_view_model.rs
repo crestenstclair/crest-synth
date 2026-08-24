@@ -15,7 +15,6 @@
 //! impossible in this harness.
 
 use crest_synth::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
-use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::production_effects::{
     production_chorus_config, production_effect_registry,
 };
@@ -35,7 +34,7 @@ use crest_synth::mixer::mixer_track_parameters::MixerTrackParameter;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crest_synth::real_time::{AudioCommand, GraphRevision, ParameterSnapshot};
-use crest_synth::shell::density::ViewportDensityPolicy;
+use crest_synth::shell::density::ResponsiveShellContract;
 use crest_synth::shell::webview::projection_channel::{
     ForwardedAck, ProjectionChannel, ProjectionPush,
 };
@@ -178,13 +177,10 @@ fn page_band_labels(document: &Value) -> [String; 5] {
 /// identity matches a pushed document, whose geometry tiles the viewport,
 /// and whose labels are visible can ever become an observation.
 fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
-    let policy = ViewportDensityPolicy::resolve(viewport[0]);
-    let bands = policy.bands();
-    let split = policy.split();
-    let context_bottom = bands.context_line_px;
-    let identity_bottom = context_bottom + bands.identity_header_px;
-    let workspace_bottom = viewport[1] - bands.footer_px;
-    let main_width = viewport[0] - split.side_px;
+    let geometry = ResponsiveShellContract::get().witness_geometry(viewport[0], viewport[1]);
+    let context_bottom = geometry.context_line_px;
+    let identity_bottom = geometry.workspace_y_px;
+    let workspace_bottom = viewport[1] - geometry.footer_px;
     let labels = page_band_labels(document);
     json!({
         "generation": document["generation"],
@@ -199,16 +195,16 @@ fn page_painted_ack(document: &Value, viewport: [f32; 2]) -> Value {
               "widthPx": viewport[0], "heightPx": context_bottom,
               "label": labels[0] },
             { "id": "identityHeader", "xPx": 0.0, "yPx": context_bottom,
-              "widthPx": viewport[0], "heightPx": bands.identity_header_px,
+              "widthPx": viewport[0], "heightPx": geometry.identity_header_px,
               "label": labels[1] },
             { "id": "mainWorkspace", "xPx": 0.0, "yPx": identity_bottom,
-              "widthPx": main_width, "heightPx": workspace_bottom - identity_bottom,
+              "widthPx": geometry.main_width_px, "heightPx": geometry.main_height_px,
               "label": labels[2] },
-            { "id": "persistentSideRegion", "xPx": main_width, "yPx": identity_bottom,
-              "widthPx": split.side_px, "heightPx": workspace_bottom - identity_bottom,
+            { "id": "persistentSideRegion", "xPx": geometry.side_x_px, "yPx": geometry.side_y_px,
+              "widthPx": geometry.side_width_px, "heightPx": geometry.side_height_px,
               "label": labels[3] },
             { "id": "footer", "xPx": 0.0, "yPx": workspace_bottom,
-              "widthPx": viewport[0], "heightPx": bands.footer_px,
+              "widthPx": viewport[0], "heightPx": geometry.footer_px,
               "label": labels[4] },
         ],
     })
@@ -332,19 +328,23 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     assert_eq!(patch.active_surface(), SurfaceId::PatchMain);
     assert_eq!(patch.surfaces().len(), 2);
     assert!(patch.surface(SurfaceId::PatchUtility).is_some());
-    let patch_paths = patch
-        .surfaces()
+    let main = patch.surface(SurfaceId::PatchMain).unwrap();
+    assert_eq!(main.controls().len(), 4);
+    assert!(main
+        .controls()
         .iter()
-        .flat_map(|surface| surface.controls())
-        .map(|control| control.path())
-        .collect::<Vec<_>>();
-    assert!(patch_paths.iter().any(|path| matches!(
-        path.capability_id(),
-        Some(FocusCapabilityId::Instrument(id)) if id.as_str() == HIDEF_CAPABILITY_ID
-    )));
-    assert!(patch_paths
+        .all(|control| control.path().capability_id().is_none()));
+    assert_eq!(
+        main.sections()
+            .iter()
+            .map(|section| section.id())
+            .collect::<Vec<_>>(),
+        vec!["overview.engine", "overview.effects"]
+    );
+    assert!(main.sections().iter().all(|section| section
+        .control_paths()
         .iter()
-        .any(|path| matches!(path.capability_id(), Some(FocusCapabilityId::Effect(_)))));
+        .all(|path| main.controls().iter().any(|control| control.path() == path))));
 
     let origin = patch.focus_path().clone();
     state
@@ -403,6 +403,9 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     let mut braids_state = installed_state(false);
     braids_state
         .apply_semantic_action(SemanticAction::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    braids_state
+        .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::PatchDetail))
         .unwrap();
     let braids_patch = semantic(&braids_state);
     assert!(braids_patch
@@ -466,19 +469,22 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
             .iter()
             .all(|region| region.rect().is_finite_nonempty()));
     }
-    // "Identical despite different rectangles": the two viewports really did
-    // seat different geometry, so the semantic identity above was proven
-    // across a genuine layout difference rather than two copies of one frame.
+    // "Identical despite different rectangles": the two representative
+    // widths seat different main tracks while the side track remains within
+    // its shared bounds.
     assert_ne!(large.viewport_width(), compact.viewport_width());
-    for id in [
-        ShellRegionId::MainWorkspace,
-        ShellRegionId::PersistentSideRegion,
-    ] {
-        assert_ne!(
-            large.region(id).rect().width(),
-            compact.region(id).rect().width(),
-            "{id:?} must measure differently at the two authored viewports"
-        );
+    assert_ne!(
+        large.region(ShellRegionId::MainWorkspace).rect().width(),
+        compact.region(ShellRegionId::MainWorkspace).rect().width(),
+        "the main workspace must consume the fluid track remainder"
+    );
+    let side_bounds = ResponsiveShellContract::get().side_track;
+    for observation in [&large, &compact] {
+        let width = observation
+            .region(ShellRegionId::PersistentSideRegion)
+            .rect()
+            .width();
+        assert!((side_bounds.minimum_px..=side_bounds.maximum_px).contains(&width));
     }
 
     // A separately supplied projection is structurally impossible: an ack
@@ -541,20 +547,10 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     let old_order = SemanticResolver::new(&recovering)
         .patch_main_paths(PatchId::new(1).unwrap())
         .unwrap();
+    let overview_origin = recovering.interaction().focus_path().clone();
     recovering
         .apply(AppEvent::Adjust(Direction::Right))
         .unwrap();
-    while recovering
-        .interaction()
-        .focus_path()
-        .capability_id()
-        .is_none()
-    {
-        recovering
-            .apply(AppEvent::Navigate(Direction::Down))
-            .unwrap();
-    }
-    let removed = recovering.interaction().focus_path().clone();
     let correlation = recovering.engine_selection().correlation().unwrap().clone();
     let target_revision = GraphRevision::new(2).unwrap();
     recovering
@@ -573,10 +569,12 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
     let new_order = SemanticResolver::new(&recovering)
         .patch_main_paths(PatchId::new(1).unwrap())
         .unwrap();
-    let expected = SemanticResolver::recover(&removed, &old_order, &new_order).unwrap();
-    assert_ne!(expected, removed);
-    assert_eq!(recovering.interaction().focus_path(), &expected);
-    assert!(matches!(expected.control_id(), SemanticControlId::Patch(_)));
+    assert_eq!(new_order, old_order);
+    assert_eq!(recovering.interaction().focus_path(), &overview_origin);
+    assert!(matches!(
+        overview_origin.control_id(),
+        SemanticControlId::Patch(PatchControlId::Engine)
+    ));
     recovering
         .apply(AppEvent::EngineActivationAcknowledged {
             request_id: correlation.request_id(),
