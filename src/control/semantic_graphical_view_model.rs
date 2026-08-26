@@ -264,6 +264,7 @@ pub struct SemanticControlViewModel {
     numeric_range: Option<SemanticNumericRange>,
     unit: Option<String>,
     browser_metadata: Option<SemanticBrowserMetadata>,
+    availability_label: Option<String>,
     enabled: bool,
     visible: bool,
     focusable: bool,
@@ -326,6 +327,12 @@ impl SemanticControlViewModel {
 
     pub const fn browser_metadata(&self) -> Option<&SemanticBrowserMetadata> {
         self.browser_metadata.as_ref()
+    }
+
+    /// Registry-authored reason this otherwise-installed option cannot be
+    /// chosen, or `None` for ordinary available and dependency-disabled rows.
+    pub fn availability_label(&self) -> Option<&str> {
+        self.availability_label.as_deref()
     }
 
     pub const fn enabled(&self) -> bool {
@@ -814,6 +821,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].browserMetadata.sourceBytes",
         "surfaces[].controls[].browserMetadata.status",
         "surfaces[].controls[].browserMetadata.text",
+        "surfaces[].controls[].availabilityLabel",
         "surfaces[].controls[].editable",
         "surfaces[].controls[].enabled",
         "surfaces[].controls[].error",
@@ -1237,6 +1245,7 @@ fn fixture_surfaces(
         numeric_range: None,
         unit: None,
         browser_metadata: None,
+        availability_label: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -1689,6 +1698,7 @@ fn project_patch_surfaces(
         numeric_range: None,
         unit: None,
         browser_metadata: None,
+        availability_label: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -1740,6 +1750,7 @@ fn project_patch_surfaces(
             numeric_range: None,
             unit: None,
             browser_metadata: None,
+            availability_label: None,
             enabled: true,
             visible: true,
             focusable: true,
@@ -1911,6 +1922,7 @@ fn project_patch_surfaces(
                 numeric_range,
                 unit,
                 browser_metadata: None,
+                availability_label: None,
                 enabled: true,
                 visible: true,
                 focusable: true,
@@ -2076,6 +2088,7 @@ fn project_patch_surfaces(
                         )),
                         unit: descriptor.unit().map(str::to_owned),
                         browser_metadata: None,
+                        availability_label: None,
                         enabled: true,
                         visible: true,
                         focusable: true,
@@ -2152,32 +2165,37 @@ fn project_patch_surfaces(
         let source = resolver
             .choice_source(subject)
             .map_err(map_resolver_error)?;
-        let paths = resolver
-            .patch_choice_paths(subject)
-            .map_err(map_resolver_error)?;
-        let choice_controls = paths
-            .into_iter()
-            .zip(source.options().iter().filter(|option| option.is_enabled()))
-            .map(|(path, option)| SemanticControlViewModel {
-                focused: active == &path,
-                path,
-                label: option.label().to_owned(),
-                kind: SemanticControlKind::Choice,
-                value: SemanticControlValue::Identity(option.id().to_owned()),
-                numeric_range: None,
-                unit: None,
-                browser_metadata: None,
-                enabled: option.is_enabled(),
-                visible: true,
-                focusable: option.is_enabled(),
-                editable: option.is_enabled(),
-                status: None,
-                error: None,
-                requested_value: None,
-                requested_label: None,
-                patch_interaction: None,
-                selected_label: option.is_current().then(|| "CURRENT".to_owned()),
-                valid_actions: Vec::new(),
+        let choice_controls = source
+            .options()
+            .iter()
+            .map(|option| {
+                let path = FocusPath::patch_choice(
+                    subject.patch_id(),
+                    subject.stable_id(),
+                    option.id().to_owned(),
+                );
+                SemanticControlViewModel {
+                    focused: active == &path,
+                    path,
+                    label: option.label().to_owned(),
+                    kind: SemanticControlKind::Choice,
+                    value: SemanticControlValue::Identity(option.id().to_owned()),
+                    numeric_range: None,
+                    unit: None,
+                    browser_metadata: None,
+                    availability_label: option.availability().reason().map(str::to_owned),
+                    enabled: option.is_enabled(),
+                    visible: true,
+                    focusable: option.is_enabled(),
+                    editable: option.is_enabled(),
+                    status: None,
+                    error: None,
+                    requested_value: None,
+                    requested_label: None,
+                    patch_interaction: None,
+                    selected_label: option.is_current().then(|| "CURRENT".to_owned()),
+                    valid_actions: Vec::new(),
+                }
             })
             .collect();
         surfaces.push(SemanticSurfaceViewModel {
@@ -2230,6 +2248,7 @@ fn project_patch_surfaces(
                     numeric_range: None,
                     unit: None,
                     browser_metadata: project_browser_metadata(row),
+                    availability_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -2663,6 +2682,7 @@ fn project_mixer_surfaces(
                     )),
                     unit: None,
                     browser_metadata: None,
+                    availability_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -2707,6 +2727,7 @@ fn project_mixer_surfaces(
                     numeric_range: None,
                     unit: None,
                     browser_metadata: None,
+                    availability_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -2738,6 +2759,7 @@ fn project_mixer_surfaces(
                     )),
                     unit: None,
                     browser_metadata: None,
+                    availability_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -2795,6 +2817,7 @@ fn project_mixer_surfaces(
                     )),
                     unit: None,
                     browser_metadata: None,
+                    availability_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -2887,6 +2910,7 @@ fn track_control(
         }),
         unit: descriptor.unit().map(str::to_owned),
         browser_metadata: None,
+        availability_label: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -2952,6 +2976,7 @@ fn control_from_parameter(
         numeric_range,
         unit: spec.unit().map(str::to_owned),
         browser_metadata: None,
+        availability_label: None,
         enabled: projection.enabled,
         visible: projection.visible,
         focusable: projection.focusable,
@@ -2978,6 +3003,7 @@ fn surface_root_control(
         numeric_range: None,
         unit: None,
         browser_metadata: None,
+        availability_label: None,
         enabled: true,
         visible: true,
         focusable: true,

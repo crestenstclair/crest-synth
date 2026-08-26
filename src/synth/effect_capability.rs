@@ -1,9 +1,9 @@
 use crate::kernel::midi_message::MidiMessageKind;
 use crate::synth::{
-    AssetAssignment, AssetReference, AssetRequirement, CapabilityDescriptor, CapabilityError,
-    CapabilityId, CapabilitySection, CapabilityVisualization, EffectCapabilityId, EffectSlotId,
-    ParameterAssignment, ParameterDefault, ParameterKind, ParameterSpec, ParameterUpdate,
-    ParameterValue, VoicePolicy,
+    AssetAssignment, AssetReference, AssetRequirement, CapabilityAvailability,
+    CapabilityDescriptor, CapabilityError, CapabilityId, CapabilitySection,
+    CapabilityVisualization, EffectCapabilityId, EffectSlotId, ParameterAssignment,
+    ParameterDefault, ParameterKind, ParameterSpec, ParameterUpdate, ParameterValue, VoicePolicy,
 };
 use core::fmt;
 use serde::{Deserialize, Serialize};
@@ -28,6 +28,8 @@ pub struct EffectCapabilityDescriptor {
     id: EffectCapabilityId,
     label: String,
     semantic_accent: String,
+    #[serde(default)]
+    availability: CapabilityAvailability,
     sections: Vec<CapabilitySection>,
     #[serde(default)]
     visualizations: Vec<CapabilityVisualization>,
@@ -46,6 +48,7 @@ impl EffectCapabilityDescriptor {
             id,
             label: label.into(),
             semantic_accent: semantic_accent.into(),
+            availability: CapabilityAvailability::Available,
             sections,
             visualizations: Vec::new(),
             asset_requirements,
@@ -70,6 +73,15 @@ impl EffectCapabilityDescriptor {
 
     pub fn semantic_accent(&self) -> &str {
         &self.semantic_accent
+    }
+
+    pub const fn availability(&self) -> &CapabilityAvailability {
+        &self.availability
+    }
+
+    pub fn with_availability(mut self, availability: CapabilityAvailability) -> Self {
+        self.availability = availability;
+        self
     }
 
     pub fn sections(&self) -> &[CapabilitySection] {
@@ -159,6 +171,9 @@ impl EffectCapabilityDescriptor {
     }
 
     fn validation_descriptor(&self) -> Result<CapabilityDescriptor, EffectCapabilityError> {
+        if self.availability.reason().is_some_and(str::is_empty) {
+            return Err(CapabilityError::EmptyAvailabilityReason.into());
+        }
         if self.scalar_parameter_count() > MAX_EFFECT_SCALAR_PARAMETERS {
             return Err(EffectCapabilityError::TooManyScalarParameters {
                 count: self.scalar_parameter_count(),

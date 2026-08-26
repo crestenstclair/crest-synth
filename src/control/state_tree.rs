@@ -217,7 +217,7 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 17;
+    pub const SCHEMA_VERSION: u32 = 18;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -265,6 +265,8 @@ impl StateTree {
         "capabilities.descriptors[].id",
         "capabilities.descriptors[].label",
         "capabilities.descriptors[].semanticAccent",
+        "capabilities.descriptors[].availability.kind",
+        "capabilities.descriptors[].availability.reason",
         "capabilities.descriptors[].visualizations[].assetParameterId",
         "capabilities.descriptors[].visualizations[].id",
         "capabilities.descriptors[].visualizations[].kind",
@@ -304,6 +306,8 @@ impl StateTree {
         "effects.descriptors[].id",
         "effects.descriptors[].label",
         "effects.descriptors[].semanticAccent",
+        "effects.descriptors[].availability.kind",
+        "effects.descriptors[].availability.reason",
         "effects.descriptors[].sections[].id",
         "effects.descriptors[].sections[].label",
         "effects.descriptors[].sections[].parameters[].id",

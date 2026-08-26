@@ -37,11 +37,11 @@ pub use effect_composition::{compose_effect_registry, EffectCompositionError};
 pub use effect_preparer::{EffectPreparationError, EffectPreparer};
 pub use effect_slot_id::{EffectSlotId, EffectSlotIdError};
 pub use instrument_capability::{
-    AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityDescriptor,
-    CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig, ParameterAdjustment,
-    ParameterAssignment, ParameterChoice, ParameterDefault, ParameterKind, ParameterPredicate,
-    ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue, PatchInteraction, VoicePolicy,
-    MAX_INSTRUMENT_SCALAR_PARAMETERS,
+    AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityAvailability,
+    CapabilityDescriptor, CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig,
+    ParameterAdjustment, ParameterAssignment, ParameterChoice, ParameterDefault, ParameterKind,
+    ParameterPredicate, ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue,
+    PatchInteraction, VoicePolicy, MAX_INSTRUMENT_SCALAR_PARAMETERS,
 };
 pub use instrument_capability_provider::InstrumentCapabilityProvider;
 pub use instrument_composition::{compose_instrument_registry, InstrumentCompositionError};

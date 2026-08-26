@@ -1258,7 +1258,7 @@ fn page_sections(
             },
         ],
         ComponentGalleryPage::InteractionStates => {
-            // All nine declared states, grouped: the three interaction states
+            // All ten declared states, grouped: the three interaction states
             // the page is named for, then availability and lifecycle, then the
             // mixer and selection states. This page is the closed-set anchor
             // the coverage assertion leans on: every declared state has a
@@ -1293,6 +1293,7 @@ fn page_sections(
                     &[
                         ComponentState::Disabled,
                         ComponentState::Loading,
+                        ComponentState::Unavailable,
                         ComponentState::Error,
                     ],
                 ),
@@ -2926,7 +2927,7 @@ fn production_source(source: &str) -> String {
 ///
 /// The split points are chosen so that **no fragment spelled here is itself one
 /// of the needles**. That is not cosmetic: the first version of this function
-/// spelled `"MidiEventSource"` as one half of `CorridorsMidiEventSource`, and
+/// spelled `"MidiEventSource"` as one half of `FixedMidiEventSource`, and
 /// the search duly found that literal in its own source and reported the gallery
 /// as constructing a MIDI source. The tests below are what caught it, and they
 /// are what will catch the next bad split — a scene that is genuinely silent
@@ -2936,7 +2937,7 @@ fn source_constructs_audio_or_midi(source: &str) -> bool {
     let needles = [
         // The two production ports the standalone application constructs.
         format!("{}{}", "Cpal", "AudioOutput"),
-        format!("{}{}", "CorridorsMidi", "EventSource"),
+        format!("{}{}", "FixedMidi", "EventSource"),
         // The port traits themselves, so a scene reaching for either through an
         // abstraction is caught as well as one naming a concrete adapter.
         format!("{}{}", "Audio", "OutputPort"),
@@ -4119,8 +4120,8 @@ mod tests {
         assert_eq!(observation.pages_reachable_by_digit(), 10);
         assert_eq!(observation.pages_reachable_by_step(), 15);
         assert!(observation.unbound_digit_retained_page());
-        assert_eq!(observation.states_declared(), 9);
-        assert_eq!(observation.states_painted(), 9);
+        assert_eq!(observation.states_declared(), COMPONENT_STATE_COUNT);
+        assert_eq!(observation.states_painted(), COMPONENT_STATE_COUNT);
         assert!(observation.states_distinguishable_without_color());
         assert_eq!(observation.controls_declared(), 8);
         assert_eq!(observation.controls_painted(), 8);
@@ -4141,7 +4142,7 @@ mod tests {
         assert!(!observation.audio_or_midi_constructed());
         assert_eq!(observation.app_state_generation_delta(), 0);
         assert!(observation.window_closed());
-        assert_eq!(observation.states_rendered().len(), 9);
+        assert_eq!(observation.states_rendered().len(), COMPONENT_STATE_COUNT);
         assert_eq!(observation.controls_rendered().len(), 8);
         assert_eq!(observation.compositions_rendered().len(), 10);
     }

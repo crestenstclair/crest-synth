@@ -1219,6 +1219,13 @@ impl PatchPageProjection {
                     controls
                 })
                 .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?
+        } else if state.interaction().active_surface() == SurfaceId::PatchChoice {
+            // Choice retains the exact subject even when schema repair removes
+            // its Overview return origin while the modal is open. The repaired
+            // ReturnPath owns the destination; this compatibility projection
+            // must not invalidate the still-live modal merely because its
+            // original row is no longer focusable on Patch Main.
+            vec![focused_control_id.clone()]
         } else if focused_control_id.is_utility() {
             PatchControlId::utility_surface_descriptor().to_vec()
         } else {

@@ -19,12 +19,12 @@ use crest_synth::real_time::GraphRevision;
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    AssetAssignment, CapabilityId, CapabilityRegistry, EffectCapabilityDescriptor,
-    EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider,
-    InstrumentConfig, Patch, PreparedSampleLandmarks, PreparedSamplePcm,
-    PreparedSampleVisualization, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
-    SampleCatalogListing, SampleEncoding, SampleFolderId, SampleLoopMode, SampleMetadata,
-    VoiceEnvelope, WaveformPair,
+    AssetAssignment, CapabilityAvailability, CapabilityId, CapabilityRegistry,
+    EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId,
+    InstrumentCapabilityProvider, InstrumentConfig, Patch, PreparedSampleLandmarks,
+    PreparedSamplePcm, PreparedSampleVisualization, SampleAssetId, SampleBrowserRow,
+    SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId, SampleLoopMode,
+    SampleMetadata, VoiceEnvelope, WaveformPair,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::{
@@ -241,6 +241,42 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             false,
         ),
     ];
+    let unavailable = CapabilityAvailability::Unavailable {
+        reason: "schema fixture unavailable".to_owned(),
+    };
+    let mut capability_descriptors = production_capability_registry()
+        .unwrap()
+        .descriptors()
+        .to_vec();
+    capability_descriptors[0] = capability_descriptors[0]
+        .clone()
+        .with_availability(unavailable.clone());
+    let mut effect_descriptors = production_effect_registry().unwrap().descriptors().to_vec();
+    effect_descriptors[0] = effect_descriptors[0].clone().with_availability(unavailable);
+    let mut unavailable_state = AppState::new_with_effects(
+        CapabilityRegistry::new(capability_descriptors).unwrap(),
+        EffectCapabilityRegistry::new(effect_descriptors).unwrap(),
+        support::globals(),
+    );
+    unavailable_state
+        .apply(AppEvent::InstallPatches(vec![Patch::new(
+            PatchId::new(91).unwrap(),
+            "Unavailable schema fixture".to_owned(),
+            soundfont_config.clone(),
+            MidiChannel::new(9).unwrap(),
+            PatchOutput::to_track(MixerTrackId::new(9).unwrap()),
+        )
+        .with_effect_slot(
+            EffectSlotIndex::ALL[0],
+            production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
+        )]))
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&unavailable_state)
+            .unwrap()
+            .4,
+    );
     // Occupancy correlations expose the position-bearing intent leaves
     // (patchId/slot/bus/entry) of the shared structural lifecycle.
     trees.push(state_tree_after(
@@ -646,8 +682,10 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // correlate a detail interaction with its consequence. Version 15 made the
     // detail surface projectable — `patchPage.detail`, plus per-control
     // `requestedValue` and `validActions` on the semantic model — and moved
-    // `PatchDetailSubject`'s own fields to camelCase in the same bump.
-    assert_eq!(StateTree::SCHEMA_VERSION, 17);
+    // `PatchDetailSubject`'s own fields to camelCase in the same bump. Version
+    // 18 adds registry-owned capability availability and the generic semantic
+    // control `availabilityLabel` consumed by installed option surfaces.
+    assert_eq!(StateTree::SCHEMA_VERSION, 18);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

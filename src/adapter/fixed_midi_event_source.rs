@@ -10,8 +10,9 @@ use midly::{
 use std::fs;
 use std::time::Duration;
 
-/// The only MIDI file used by the automatic test input.
-pub const CORRIDORS_MIDI_PATH: &str = "./midi/Corridors of Time - Chrono Trigger.mid";
+/// The only MIDI file used by the automatic input path.
+pub const FIXED_MIDI_PATH: &str =
+    "./midi/Radiohead - Everything In Its Right Place - HiDef Compatible.mid";
 
 const DEFAULT_MICROSECONDS_PER_BEAT: u64 = 500_000;
 const BANK_SELECT_MSB: u8 = 0;
@@ -21,9 +22,9 @@ const ALL_NOTES_OFF: u8 = 123;
 const PERCUSSION_CHANNEL: u8 = 9;
 const MIDI_CHANNEL_COUNT: usize = 16;
 
-/// Automatic, run-once Standard MIDI File input for the fixed Corridors fixture.
+/// Automatic, run-once Standard MIDI File input for the fixed production fixture.
 #[derive(Debug, Default)]
-pub struct CorridorsMidiEventSource {
+pub struct FixedMidiEventSource {
     events: Vec<ScheduledMidiEvent>,
     cursor: usize,
     elapsed: Duration,
@@ -31,7 +32,7 @@ pub struct CorridorsMidiEventSource {
     started: bool,
 }
 
-impl CorridorsMidiEventSource {
+impl FixedMidiEventSource {
     /// Creates an unprepared source bound to the fixed fixture path.
     pub const fn new() -> Self {
         Self {
@@ -44,7 +45,7 @@ impl CorridorsMidiEventSource {
     }
 }
 
-impl MidiEventSource for CorridorsMidiEventSource {
+impl MidiEventSource for FixedMidiEventSource {
     fn prepare(&mut self) -> Result<Vec<InstrumentPart>, MidiSourceError> {
         self.events.clear();
         self.cursor = 0;
@@ -52,14 +53,14 @@ impl MidiEventSource for CorridorsMidiEventSource {
         self.prepared = false;
         self.started = false;
 
-        let bytes = fs::read(CORRIDORS_MIDI_PATH).map_err(|error| {
+        let bytes = fs::read(FIXED_MIDI_PATH).map_err(|error| {
             MidiSourceError::new(format!(
-                "failed to read fixed MIDI fixture {CORRIDORS_MIDI_PATH}: {error}"
+                "failed to read fixed MIDI fixture {FIXED_MIDI_PATH}: {error}"
             ))
         })?;
         let smf = Smf::parse(&bytes).map_err(|error| {
             MidiSourceError::new(format!(
-                "fixed MIDI fixture {CORRIDORS_MIDI_PATH} is malformed: {error}"
+                "fixed MIDI fixture {FIXED_MIDI_PATH} is malformed: {error}"
             ))
         })?;
         let (parts, events) = prepare_smf(&smf)?;
@@ -606,17 +607,15 @@ fn push_message(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        find_or_create_part, CorridorsMidiEventSource, InstrumentIdentity, CORRIDORS_MIDI_PATH,
-    };
+    use super::{find_or_create_part, FixedMidiEventSource, InstrumentIdentity, FIXED_MIDI_PATH};
     use crate::kernel::midi_message::MidiMessageKind;
     use crate::testing::midi_event_source::{FixedEventBatch, MidiEventSource};
     use std::collections::BTreeSet;
     use std::time::Duration;
 
     #[test]
-    fn corridors_midi_event_source_prepares_multiple_stable_parts() {
-        let mut source = CorridorsMidiEventSource::new();
+    fn fixed_midi_event_source_prepares_multiple_stable_parts() {
+        let mut source = FixedMidiEventSource::new();
         let parts = source.prepare().expect("real fixture should prepare");
 
         assert!(parts.len() > 1);
@@ -627,7 +626,7 @@ mod tests {
     }
 
     #[test]
-    fn corridors_midi_event_source_rejects_channel_exhaustion() {
+    fn fixed_midi_event_source_rejects_channel_exhaustion() {
         let mut identities = Vec::new();
         let mut parts = Vec::new();
         let track_names = Vec::<String>::new();
@@ -667,8 +666,8 @@ mod tests {
     }
 
     #[test]
-    fn corridors_midi_event_source_runs_once_and_rewrites_target_channels() {
-        let mut source = CorridorsMidiEventSource::new();
+    fn fixed_midi_event_source_runs_once_and_rewrites_target_channels() {
+        let mut source = FixedMidiEventSource::new();
         let parts = source.prepare().expect("real fixture should prepare");
         source.start();
 
@@ -704,8 +703,8 @@ mod tests {
     }
 
     #[test]
-    fn corridors_midi_event_source_drains_delayed_input_in_bounded_ordered_batches() {
-        let mut source = CorridorsMidiEventSource::new();
+    fn fixed_midi_event_source_drains_delayed_input_in_bounded_ordered_batches() {
+        let mut source = FixedMidiEventSource::new();
         source.prepare().expect("real fixture should prepare");
         let expected = source
             .events
@@ -738,10 +737,11 @@ mod tests {
     }
 
     #[test]
-    fn corridors_midi_event_source_reports_malformed_data_clearly() {
+    fn fixed_midi_event_source_reports_malformed_data_clearly() {
         let error = midly::Smf::parse(b"not a MIDI file").unwrap_err();
 
         assert!(!error.to_string().is_empty());
-        assert!(CORRIDORS_MIDI_PATH.ends_with("Corridors of Time - Chrono Trigger.mid"));
+        assert!(FIXED_MIDI_PATH
+            .ends_with("Radiohead - Everything In Its Right Place - HiDef Compatible.mid"));
     }
 }

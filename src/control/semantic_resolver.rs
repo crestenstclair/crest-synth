@@ -29,15 +29,31 @@ pub struct ResolvedChoiceOption {
     label: String,
     current: bool,
     enabled: bool,
+    availability: crate::synth::CapabilityAvailability,
 }
 
 impl ResolvedChoiceOption {
     fn enabled(id: impl Into<String>, label: impl Into<String>, current: bool) -> Self {
+        Self::with_availability(
+            id,
+            label,
+            current,
+            crate::synth::CapabilityAvailability::Available,
+        )
+    }
+
+    fn with_availability(
+        id: impl Into<String>,
+        label: impl Into<String>,
+        current: bool,
+        availability: crate::synth::CapabilityAvailability,
+    ) -> Self {
         Self {
             id: id.into(),
             label: label.into(),
             current,
-            enabled: true,
+            enabled: availability.is_enabled(),
+            availability,
         }
     }
 
@@ -55,6 +71,10 @@ impl ResolvedChoiceOption {
 
     pub const fn is_enabled(&self) -> bool {
         self.enabled
+    }
+
+    pub const fn availability(&self) -> &crate::synth::CapabilityAvailability {
+        &self.availability
     }
 }
 
@@ -123,10 +143,11 @@ impl<'a> SemanticResolver<'a> {
                         .descriptors()
                         .iter()
                         .map(|descriptor| {
-                            ResolvedChoiceOption::enabled(
+                            ResolvedChoiceOption::with_availability(
                                 descriptor.id().to_string(),
                                 descriptor.label(),
                                 descriptor.id() == current,
+                                descriptor.availability().clone(),
                             )
                         })
                         .collect(),
@@ -143,10 +164,11 @@ impl<'a> SemanticResolver<'a> {
                         current.is_none(),
                     ))
                     .chain(self.state.effects().descriptors().iter().map(|descriptor| {
-                        ResolvedChoiceOption::enabled(
+                        ResolvedChoiceOption::with_availability(
                             descriptor.id().to_string(),
                             descriptor.label(),
                             current == Some(descriptor.id()),
+                            descriptor.availability().clone(),
                         )
                     }))
                     .collect();
@@ -262,6 +284,9 @@ impl<'a> SemanticResolver<'a> {
                 )
             })
             .collect::<Vec<_>>();
+        if paths.is_empty() {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
         ensure_unique(&paths)?;
         Ok(paths)
     }

@@ -105,7 +105,7 @@ height, and the witness measures descendant-painted overlap to prevent its
 return. A scoped `make test-webview-detail-native` target runs this real-window
 Detail/Mixer proof and closes automatically, while honestly skipping unrelated
 soak and deliberately uncloseable fault-injection scenes. Live physical
-keyboard/controller operation remains unverified and is not inferred from the
+keyboard/controller operation for any later slice is not inferred from the
 native render witness.
 
 Engine selection now exposes the reducer-owned sequence Loading → Validating →
@@ -117,14 +117,61 @@ scalar snapshots target the prepared revision during that interval, while the
 source renderer ignores them by revision. No capability, asset, or value is
 silently substituted.
 
+Engine and Post FX option selection now use the existing reducer-owned generic
+Choice session and one shared option DOM composition. Installed instrument and
+effect descriptors provide stable row identity, authored label, registry order,
+and generic enabled/unavailable metadata; the canonical Empty effect choice is
+prepended independently for every slot. Visible membership includes unavailable
+rows for truthful explanation, while focus membership and activation include
+only enabled rows. Opening focuses the current enabled identity or the first
+enabled row, `CURRENT` remains independent of focus, and choosing the current
+row is an accepted no-op close. A changed choice emits exactly one correlated
+Engine or slot request through `AppState::apply`; Shift+Down closes unchanged,
+and return uses the exact Overview origin or the stable-order repair path.
+
+The only new generic serialized presentation fact is the optional
+`availabilityLabel` on an existing semantic control; state-tree schema version
+18 covers that addition. The option projection otherwise reuses canonical
+Choice subject/origin, stable controls, valid actions, active/requested
+lifecycle, typed failure, revision, and focus-repair facts. The renderer reads
+only that projection. It publishes an identity header, exact Engine or slot
+source, ordered rows with independent structural focus/current markers,
+explicit availability, origin-anchored lifecycle, and projected action
+guidance. Sample Browser remains on its separate preview and file-navigation
+composition.
+
+The shared hierarchy and action grammar were compared directly with live Figma
+Engine Options `48:173`, Post FX Options `48:207`, Interaction Map `49:3`, Patch
+Overview `95:202`, and Responsive Contract `98:2`. The production renderer adds
+projected lifecycle/revision/cause and per-row action facts that the compact
+Figma fixtures do not enumerate, and its generic footer wording is denser than
+the authored D-pad/Edit/Shift legend. Those are recorded scoped discrepancies;
+the implementation is structural and responsive evidence, not a pixel-parity
+claim or evidence for Sample or Mixer visual composition.
+
+The real WKWebView option witness passed Wide, Standard, Intermediate, Compact,
+1280×800, and enlarged-text fixtures with maximum registry content, long
+labels, every option lifecycle, occupied and empty slots, and duplicate effect
+capabilities. It measured one focus, independent current state, 48 px target
+floors, reachable scroll endpoints and Utility, no required-content overlap or
+document horizontal overflow, deterministic repeated paint, resize-neutral
+semantic identity, normalized keyboard/controller journeys, exact and repaired
+return, and clean shutdown; Detail and all sixteen Mixer tracks remained in the
+same run as regressions. A bounded production-app physical handoff script exists,
+but no interactive operator and controller were available in this session, so
+physical option entry/navigation/choice/return and teardown remain unverified
+and are not inferred from translation tests or native input injection.
+
 Detail and Utility share one reducer-owned subordinate session. Unmodified
 Right moves from Detail to Utility, Left restores the exact stable Detail
 focus, and a subsequent Left returns to the exact Overview origin. If schema
 change removes that origin while Detail is open, the reducer repairs the
 return path to the nearest enabled stable Overview sibling and the projection
 publishes the explicit `focusRepair` notice. Remaining visual slices are
-Sample Detail/Browser, Engine and Post-FX option states, Mixer composition, and
-native polish; none is implied complete by this Detail slice.
+Sample Detail/Browser, Mixer composition, and native polish. The Engine/Post FX
+option slice still has the physical handoff and the scoped visual refinements
+recorded above outstanding; neither its functional predecessor nor its new
+structural witness implies broad Figma parity.
 
 The old phase/spec system recorded 73 of 79 implementation tasks complete when
 it was retired. The six incomplete items were the two native viewport
@@ -162,9 +209,12 @@ sample row and stopping on release; Start is reserved elsewhere.
 
 Crest Synth is a standalone, controller-first MIDI instrument host. The
 production composition is a Rust application using a Tauri v2/WKWebView shell,
-CPAL stereo audio output, and the parsed `midi/Corridors of Time - Chrono
-Trigger.mid` fixture for automatic playback. It is not a DAW, arranger, or
-general-purpose sequencer.
+CPAL stereo audio output, and the parsed `midi/Radiohead - Everything In Its
+Right Place - HiDef Compatible.mid` fixture for automatic playback. That
+explicit derived fixture differs from the retained source MIDI only by changing
+its unavailable percussion bank-128/program-118 request to the installed
+bank-128/program-0 drum kit; runtime capability fallback remains forbidden. It
+is not a DAW, arranger, or general-purpose sequencer.
 
 The application currently provides:
 
@@ -556,13 +606,24 @@ Overview slice:
   composition, 29-state exact serialization matrix, and current native
   responsive/render measurements described above; its production native
   physical keyboard/controller handoff also passed as described above.
+- the 2026-08-26 Engine/Post FX option run passed the focused reducer,
+  registry, lifecycle, serialization, semantic-action, Sample regression,
+  formatting, warnings-denied lint, exact-validation self-test, no-name guard,
+  and broad deterministic suite; the library aggregate reported 750 passed and
+  two measurement-only tests ignored;
+- the scoped real-window option target passed the full viewport/text-scale
+  matrix, maximum-registry scroll and wrapping, repeated paint, resize-only
+  sequence, normalized input journeys, every occupied/empty/duplicate slot,
+  Detail/Mixer regressions, and clean shutdown described above; the separate
+  physical option handoff is still incomplete evidence.
 
 Instrument and FX Detail have completed their scoped native manual handoff.
 The native responsive DOM measurements and handoff do not claim full Figma
-parity. The other remaining visual slices are Sample Detail and Browser,
-Engine/Post FX option states, Mixer responsive composition, native scaling,
-and visual polish. Their existing functional surfaces are not evidence that
-those visual slices are complete.
+parity. The other remaining visual slices are Sample Detail and Browser, Mixer
+responsive composition, native scaling, and visual polish. Engine/Post FX
+options retain the physical-input and scoped visual gaps recorded above. Their
+existing functional surfaces are not evidence that those visual slices are
+complete.
 
 These measurements are historical observations, not a roadmap and not a
 waiver for missing Figma fidelity. A test that only constructs objects, prints
@@ -577,6 +638,8 @@ make check
 make test
 make lint
 make fmt-check
+make test-engine-post-fx-options
+make test-webview-options-native
 
 # Open the production window and automatic MIDI/audio path.
 make run
@@ -612,8 +675,10 @@ Useful validation entry points are
 `scripts/check_no_name_enumerated_identity.sh`,
 `cargo test --test webview_projection_shell -- --nocapture`, and
 `make test-webview-detail-native` for the bounded real-window Detail/Mixer
-witness. Native window and physical-audio sections may require an interactive
-macOS host; a typed environmental skip is incomplete evidence, not acceptance.
+witness. The option handoff checklist is
+`scripts/run_engine_post_fx_option_handoff.sh`. Native window, physical-input,
+and physical-audio sections may require an interactive macOS host; a typed
+environmental skip is incomplete evidence, not acceptance.
 
 ## Change checklist
 

@@ -2,8 +2,8 @@ use anyhow::{bail, Context, Result};
 use core::alloc::{GlobalAlloc, Layout};
 use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-use crest_synth::adapter::corridors_midi_event_source::CorridorsMidiEventSource;
 use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
+use crest_synth::adapter::fixed_midi_event_source::FixedMidiEventSource;
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
@@ -114,7 +114,7 @@ fn run(options: Options) -> Result<()> {
             effect_preparers,
             structural,
             AtomicAudioObservation::default(),
-            CorridorsMidiEventSource::new(),
+            FixedMidiEventSource::new(),
             window,
             CpalAudioOutput::new(),
             config,
@@ -1607,7 +1607,9 @@ mod tests {
         assert!(parse_options(["--demo-live-mixer", "--smoke"]).is_err());
 
         let makefile = include_str!("../../Makefile");
-        assert!(makefile.contains("demo-live-mixer: ## Run the dedicated sixteen-track Mixer demo"));
+        assert!(makefile.contains(
+            "demo-live-mixer: cache-guard ## Run the dedicated sixteen-track Mixer demo"
+        ));
         assert!(makefile.contains("cargo run --release --bin crest-synth -- --demo-live-mixer"));
         assert!(makefile.contains("demo-live: demo-live-detail-and-assets"));
         assert!(!makefile.contains("demo-live: demo-live-mixer"));

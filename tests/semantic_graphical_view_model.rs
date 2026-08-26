@@ -733,3 +733,56 @@ fn mixer_focus_matrix_inspector_return_and_density_reflow_keep_semantic_identity
         action.action() != &SemanticAction::SetInteractionMode(InteractionMode::MultiSelect)
     }));
 }
+
+#[test]
+fn engine_option_rows_have_one_focus_independent_current_and_reducer_actions() {
+    let mut state = installed_state(true);
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+        .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+        .unwrap();
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    let model = semantic(&state);
+    let choice = model.surface(SurfaceId::PatchChoice).unwrap();
+    assert_eq!(
+        choice.controls().len(),
+        state.capabilities().descriptors().len()
+    );
+    assert_eq!(
+        choice
+            .controls()
+            .iter()
+            .filter(|control| control.focused())
+            .count(),
+        1
+    );
+    assert_eq!(
+        choice
+            .controls()
+            .iter()
+            .filter(|control| control.selected_label() == Some("CURRENT"))
+            .count(),
+        1
+    );
+    assert!(choice.controls()[0].focused());
+    assert_eq!(choice.controls()[0].selected_label(), Some("CURRENT"));
+    for (index, control) in choice.controls().iter().enumerate() {
+        let has = |action: &SemanticAction| {
+            control
+                .valid_actions()
+                .iter()
+                .any(|valid| valid.action() == action)
+        };
+        assert!(has(&SemanticAction::Activate));
+        assert!(has(&SemanticAction::Return));
+        assert_eq!(has(&SemanticAction::Navigate(Direction::Up)), index > 0);
+        assert_eq!(
+            has(&SemanticAction::Navigate(Direction::Down)),
+            index + 1 < choice.controls().len()
+        );
+    }
+    assert_eq!(choice.controls()[0].valid_actions(), model.valid_actions());
+    println!("SEMANTIC_OPTION_ROWS_EXACT");
+}

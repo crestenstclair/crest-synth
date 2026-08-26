@@ -328,10 +328,12 @@ mod tests {
     fn modifier_transitions_never_query_the_key_repeat_property() {
         use objc2_app_kit::NSEventType;
 
-        assert!(!super::platform::repeat_for_event(
-            NSEventType::FlagsChanged,
-            || panic!("modifier input must not query key repeat")
-        ));
+        for _ in 0..64 {
+            assert!(!super::platform::repeat_for_event(
+                NSEventType::FlagsChanged,
+                || panic!("modifier input must not query key repeat")
+            ));
+        }
         assert!(super::platform::repeat_for_event(
             NSEventType::KeyDown,
             || true

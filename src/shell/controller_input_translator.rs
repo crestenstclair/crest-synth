@@ -158,6 +158,35 @@ mod tests {
     }
 
     #[test]
+    fn option_state_controller_grammar_uses_adjust_navigate_activate_and_return() {
+        let mut translator = ControllerInputTranslator::new();
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::EditDirection(
+                Direction::Up
+            ))),
+            Some(SemanticAction::Adjust(Direction::Up))
+        );
+        for direction in [Direction::Up, Direction::Down] {
+            assert_eq!(
+                translator.translate(ControllerInput::pressed(ControllerGesture::Direction(
+                    direction
+                ))),
+                Some(SemanticAction::Navigate(direction))
+            );
+        }
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::Edit)),
+            Some(SemanticAction::Activate)
+        );
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
+                Direction::Down
+            ))),
+            Some(SemanticAction::Return)
+        );
+    }
+
+    #[test]
     fn start_is_one_press_and_one_release_even_with_repeat_or_disconnect() {
         let mut translator = ControllerInputTranslator::new();
         let start = ControllerInput::pressed(ControllerGesture::Start);

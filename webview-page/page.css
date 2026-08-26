@@ -1009,6 +1009,101 @@ body {
   grid-template-rows: auto auto auto auto minmax(0, 1fr);
 }
 
+/* Engine and Post FX options share the authored Figma composition while
+ * remaining inside the production shell. The one modal grows into the
+ * workspace's available band; only the option list scrolls. */
+.option-modal {
+  flex: 1 1 0;
+  min-height: var(--shell-side-track-min);
+  width: min(
+    calc(var(--shell-side-track-max) + var(--shell-side-track-max)),
+    100%
+  );
+  max-height: none;
+  margin: var(--space-12) auto;
+  padding: clamp(var(--space-16), 2vw, var(--space-24));
+  gap: var(--space-8);
+  grid-template-rows: auto auto auto auto minmax(0, 1fr) auto;
+  background: var(--color-bg-canvas);
+  box-shadow: none;
+}
+
+.option-header {
+  min-width: 0;
+  min-height: var(--space-32);
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  overflow-wrap: anywhere;
+}
+
+.option-modal[data-option-kind="engine"] .option-title {
+  color: var(--color-accent-instrument-plates);
+}
+
+.option-modal[data-option-kind="postFx"] .option-title {
+  color: var(--color-accent-chorus);
+}
+
+.option-modal[data-option-kind="generic"] .option-title {
+  color: var(--color-accent-patch);
+}
+
+.option-source {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.option-origin-status {
+  min-width: 0;
+  padding: var(--space-8) var(--space-12);
+  border-left: var(--keyline-emphasis) solid var(--color-border-strong);
+  background: var(--color-bg-surface);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-16);
+  overflow-wrap: anywhere;
+}
+
+.option-origin-status.state-loading,
+.option-origin-status.state-validating,
+.option-origin-status.state-preparing,
+.option-origin-status.state-activating {
+  border-left-color: var(--color-accent-adjust);
+  border-left-style: double;
+}
+
+.option-origin-status.state-unavailable,
+.option-origin-status.state-failed,
+.option-origin-status.has-cause,
+.option-origin-status.is-unavailable {
+  border-left-color: var(--color-accent-warning);
+  border-left-style: dashed;
+}
+
+.option-origin-status.state-ready .option-lifecycle-state {
+  color: var(--color-accent-positive);
+}
+
+.option-origin-status.state-loading .option-lifecycle-state,
+.option-origin-status.state-validating .option-lifecycle-state,
+.option-origin-status.state-preparing .option-lifecycle-state,
+.option-origin-status.state-activating .option-lifecycle-state {
+  color: var(--color-accent-adjust);
+}
+
+.option-origin-status.state-unavailable .option-lifecycle-state,
+.option-origin-status.state-failed .option-lifecycle-state,
+.option-origin-status.has-cause .option-lifecycle-state {
+  color: var(--color-accent-warning);
+}
+
+.option-rule {
+  height: var(--keyline-resting);
+  background: var(--color-border-default);
+}
+
 .browser-visualizations {
   min-height: 0;
   border-bottom: var(--keyline-resting) solid var(--color-border-default);
@@ -1060,6 +1155,13 @@ body {
   padding: var(--space-8);
 }
 
+.option-modal .modal-options {
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 0;
+  overscroll-behavior: contain;
+}
+
 .modal-option {
   min-height: var(--min-interactive-target);
   padding: var(--space-8)
@@ -1097,6 +1199,108 @@ body {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.option-modal .option-row {
+  min-width: 0;
+  min-height: var(--min-interactive-target);
+  padding: var(--space-8)
+    calc(var(--space-8) + var(--keyline-resting) + var(--keyline-resting));
+  border: 0;
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+  display: grid;
+  grid-template-columns:
+    calc(var(--space-16) + var(--space-4))
+    minmax(0, 1fr)
+    auto;
+  align-items: center;
+  gap: var(--space-4) var(--space-12);
+}
+
+.option-modal .option-row + .option-row {
+  border-top: 0;
+}
+
+.option-modal .option-row.is-focused {
+  border-color: var(--color-accent-focus);
+  border-bottom-width: var(--keyline-emphasis);
+  outline: 0;
+  background: var(--color-bg-surface);
+}
+
+.option-modal .option-row.is-current:not(.is-focused) {
+  border-left: var(--keyline-emphasis) double var(--color-border-strong);
+}
+
+.option-modal .option-row.is-disabled {
+  border-style: dashed;
+  opacity: 1;
+}
+
+.option-modal .option-row.is-unavailable {
+  border-left: var(--keyline-emphasis) dashed var(--color-accent-warning);
+}
+
+.option-modal .modal-option-shape {
+  color: var(--color-text-muted);
+}
+
+.option-modal .option-row.is-focused .modal-option-shape {
+  color: var(--color-accent-focus);
+}
+
+.option-modal[data-option-kind="engine"] .option-row.is-focused .modal-option-label {
+  color: var(--color-accent-instrument-plates);
+}
+
+.option-modal[data-option-kind="postFx"] .option-row.is-focused .modal-option-label {
+  color: var(--color-accent-chorus);
+}
+
+.option-modal .modal-option-label,
+.option-modal .modal-option-availability,
+.option-modal .modal-option-current,
+.option-modal .modal-option-actions {
+  min-width: 0;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.option-modal .modal-option-availability {
+  grid-column: 2 / -1;
+  grid-row: 2;
+  color: var(--color-text-secondary);
+}
+
+.option-modal .modal-option-current {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.option-modal .option-row.is-disabled .modal-option-availability,
+.option-modal .option-row.is-unavailable .modal-option-availability {
+  color: var(--color-accent-warning);
+}
+
+.option-modal .modal-option-actions {
+  grid-column: 2 / -1;
+  grid-row: 3;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-12);
+}
+
+.option-footer {
+  min-width: 0;
+  min-height: var(--space-16);
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-16);
+  overflow-wrap: anywhere;
 }
 
 /* ---- Utility panel rows ------------------------------------------------

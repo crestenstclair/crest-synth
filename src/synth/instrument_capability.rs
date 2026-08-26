@@ -8,6 +8,35 @@ use serde::{Deserialize, Serialize};
 /// Maximum descriptor-ordered live instrument values carried by one RT Patch slot.
 pub const MAX_INSTRUMENT_SCALAR_PARAMETERS: usize = 16;
 
+/// Registry-owned availability of one installed capability descriptor.
+///
+/// An unavailable descriptor remains installed and may still name the
+/// acknowledged configuration, but it cannot receive Choice focus or start a
+/// new structural request. The reason is presentation data from the registry,
+/// never a substitute capability or a renderer-owned rule.
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum CapabilityAvailability {
+    #[default]
+    Available,
+    Unavailable {
+        reason: String,
+    },
+}
+
+impl CapabilityAvailability {
+    pub const fn is_enabled(&self) -> bool {
+        matches!(self, Self::Available)
+    }
+
+    pub fn reason(&self) -> Option<&str> {
+        match self {
+            Self::Available => None,
+            Self::Unavailable { reason } => Some(reason),
+        }
+    }
+}
+
 /// The semantic kind of a stable asset reference.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -769,6 +798,8 @@ pub struct CapabilityDescriptor {
     id: CapabilityId,
     label: String,
     semantic_accent: String,
+    #[serde(default)]
+    availability: CapabilityAvailability,
     sections: Vec<CapabilitySection>,
     #[serde(default)]
     visualizations: Vec<CapabilityVisualization>,
@@ -791,6 +822,7 @@ impl CapabilityDescriptor {
             id,
             label: label.into(),
             semantic_accent: semantic_accent.into(),
+            availability: CapabilityAvailability::Available,
             sections,
             visualizations: vec![CapabilityVisualization::envelope(
                 "shared.envelope",
@@ -814,6 +846,15 @@ impl CapabilityDescriptor {
 
     pub fn semantic_accent(&self) -> &str {
         &self.semantic_accent
+    }
+
+    pub const fn availability(&self) -> &CapabilityAvailability {
+        &self.availability
+    }
+
+    pub fn with_availability(mut self, availability: CapabilityAvailability) -> Self {
+        self.availability = availability;
+        self
     }
 
     pub fn sections(&self) -> &[CapabilitySection] {
@@ -938,6 +979,9 @@ impl CapabilityDescriptor {
     fn validate(&self) -> Result<(), CapabilityError> {
         if self.label.is_empty() {
             return Err(CapabilityError::EmptyLabel);
+        }
+        if self.availability.reason().is_some_and(str::is_empty) {
+            return Err(CapabilityError::EmptyAvailabilityReason);
         }
         validate_namespaced_identifier(&self.semantic_accent).map_err(|_| {
             CapabilityError::InvalidMetadataIdentifier(self.semantic_accent.clone())
@@ -1310,6 +1354,7 @@ impl CapabilityRegistry {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CapabilityError {
     EmptyAssetLocator,
+    EmptyAvailabilityReason,
     EmptyLabel,
     EmptyUnit,
     EmptyRegistry,
@@ -1369,6 +1414,9 @@ impl fmt::Display for CapabilityError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::EmptyAssetLocator => formatter.write_str("asset locator must not be empty"),
+            Self::EmptyAvailabilityReason => {
+                formatter.write_str("unavailable capability reason must not be empty")
+            }
             Self::EmptyLabel => formatter.write_str("presentation labels must not be empty"),
             Self::EmptyUnit => formatter.write_str("parameter units must not be empty"),
             Self::EmptyRegistry => formatter.write_str("capability registry must not be empty"),

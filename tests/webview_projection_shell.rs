@@ -133,13 +133,18 @@ use crest_synth::shell::webview::projection_channel::{
 };
 use crest_synth::shell::webview::token_export;
 use crest_synth::shell::webview::{protocol_response, PAGE_CSP};
+use crest_synth::shell::{
+    ControllerGesture, ControllerInput, ControllerInputTranslator, KeyboardInputTranslator,
+    WindowInput, WindowKey,
+};
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityRegistry, CapabilitySection, DescriptorDefaultConfigFactory,
-    EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId,
-    InstrumentCapabilityProvider, InstrumentConfig, Patch, SampleAssetId, SampleBrowserRow,
-    SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId, SampleMetadata,
+    CapabilityAvailability, CapabilityDescriptor, CapabilityId, CapabilityRegistry,
+    CapabilitySection, DescriptorDefaultConfigFactory, EffectCapabilityDescriptor,
+    EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider,
+    InstrumentConfig, Patch, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
+    SampleCatalogListing, SampleEncoding, SampleFolderId, SampleMetadata,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -203,6 +208,7 @@ const PAINTED_ACK_IDENTITY_FIELDS: [&str; 6] = [
 /// and forced-failure subprocesses. The ordinary live command remains the
 /// complete suite.
 const DETAIL_WITNESS_ENV: &str = "CREST_WEBVIEW_DETAIL_WITNESS";
+const OPTION_WITNESS_ENV: &str = "CREST_WEBVIEW_OPTION_WITNESS";
 
 fn main() {
     // libtest-style arguments (`--nocapture`, filters) are accepted and
@@ -214,6 +220,7 @@ fn main() {
     // failure into a skip.
     let live = std::env::var("CREST_WEBVIEW_TESTS").as_deref() == Ok("1");
     let detail_witness = live && std::env::var(DETAIL_WITNESS_ENV).as_deref() == Ok("1");
+    let option_witness = live && std::env::var(OPTION_WITNESS_ENV).as_deref() == Ok("1");
     println!(
         "webview_projection_shell acceptance: {} run",
         if live {
@@ -238,7 +245,7 @@ fn main() {
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
             "T013 forced double-close failure (a shipped-binary subprocess with every close forced to fail: with no prior error recorded the typed WindowClose itself surfaces carrying the forced cause verbatim, ending the process nonzero rather than hanging)",
         ]
-    } else if detail_witness {
+    } else if detail_witness || option_witness {
         vec![
             "T011 painted fader/position geometry (outside the Detail slice)",
             "T012 forced render failures (outside the Detail slice)",
@@ -250,7 +257,7 @@ fn main() {
     };
 
     if live {
-        run_live_sections(&fidelity, detail_witness);
+        run_live_sections(&fidelity, detail_witness, option_witness);
     } else {
         for skip in &skips {
             println!(
@@ -427,6 +434,288 @@ fn production_patch_maximum_content_state() -> AppState {
     state
         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
         .unwrap();
+    state
+}
+
+fn maximum_option_capability_registry() -> CapabilityRegistry {
+    let production = production_capability_registry().unwrap();
+    let prototype = production.descriptors()[0].clone();
+    let mut descriptors = production.descriptors().to_vec();
+    descriptors[0] =
+        descriptors[0]
+            .clone()
+            .with_availability(CapabilityAvailability::Unavailable {
+                reason: "SoundFont provider offline while its acknowledged engine remains active"
+                    .to_owned(),
+            });
+    for index in 0..18 {
+        let descriptor = CapabilityDescriptor::new(
+            CapabilityId::new(format!("instrument.option-fixture-{index:02}")).unwrap(),
+            format!("Installed Engine {index:02} With A Deliberately Long Authored Registry Label"),
+            prototype.semantic_accent(),
+            prototype.sections().to_vec(),
+            prototype.asset_requirements().to_vec(),
+            prototype.voice_policy(),
+            prototype.supported_midi_kinds().to_vec(),
+        )
+        .unwrap();
+        descriptors.push(if index == 17 {
+            descriptor.with_availability(CapabilityAvailability::Unavailable {
+                reason: "provider handshake unavailable after a deliberately long typed cause"
+                    .to_owned(),
+            })
+        } else {
+            descriptor
+        });
+    }
+    CapabilityRegistry::new(descriptors).unwrap()
+}
+
+fn maximum_option_effect_registry() -> EffectCapabilityRegistry {
+    let production = production_effect_registry().unwrap();
+    let prototype = production.descriptors()[0].clone();
+    let mut descriptors = production.descriptors().to_vec();
+    descriptors[0] =
+        descriptors[0]
+            .clone()
+            .with_availability(CapabilityAvailability::Unavailable {
+                reason: "effect assets unavailable while the acknowledged slot remains occupied"
+                    .to_owned(),
+            });
+    for index in 0..18 {
+        let descriptor = EffectCapabilityDescriptor::new(
+            EffectCapabilityId::new(format!("effect.option-fixture-{index:02}")).unwrap(),
+            format!(
+                "Installed Post Effect {index:02} With A Deliberately Long Authored Registry Label"
+            ),
+            prototype.semantic_accent(),
+            prototype.sections().to_vec(),
+            prototype.asset_requirements().to_vec(),
+        )
+        .unwrap();
+        descriptors.push(if index == 17 {
+            descriptor.with_availability(CapabilityAvailability::Unavailable {
+                reason: "prepared effect assets are unavailable for this installed entry"
+                    .to_owned(),
+            })
+        } else {
+            descriptor
+        });
+    }
+    EffectCapabilityRegistry::new(descriptors).unwrap()
+}
+
+fn maximum_option_state() -> AppState {
+    let patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Option Registry With A Deliberately Long Projected Patch Identity".to_owned(),
+        soundfont_config(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    )
+    .with_effect_slot(
+        EffectSlotIndex::ALL[0],
+        production_chorus_config(EffectSlotId::new(1).unwrap()).unwrap(),
+    )
+    .with_effect_slot(
+        EffectSlotIndex::ALL[1],
+        production_chorus_config(EffectSlotId::new(2).unwrap()).unwrap(),
+    )
+    .with_effect_slot(
+        EffectSlotIndex::ALL[2],
+        production_chorus_config(EffectSlotId::new(3).unwrap()).unwrap(),
+    );
+    let mut state = AppState::new_with_effects(
+        maximum_option_capability_registry(),
+        maximum_option_effect_registry(),
+        GlobalParameters::new(-3.0).unwrap(),
+    );
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+}
+
+fn navigate_to_patch_control(state: &mut AppState, wanted: &PatchControlId) {
+    for _ in 0..16 {
+        if state.interaction().patch_control_focus().as_ref() == Some(wanted) {
+            return;
+        }
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    }
+    panic!("canonical Patch order reaches {wanted:?}");
+}
+
+fn open_option_modal(state: &mut AppState) {
+    if state.interaction().mode() != InteractionMode::Adjust {
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+    }
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchChoice);
+}
+
+fn production_engine_options_state() -> AppState {
+    let mut state = production_patch_state();
+    open_option_modal(&mut state);
+    state
+}
+
+fn maximum_engine_options_state() -> AppState {
+    let mut state = maximum_option_state();
+    open_option_modal(&mut state);
+    state
+}
+
+fn production_post_fx_options_state(position: usize, maximum: bool) -> AppState {
+    let mut state = if maximum {
+        maximum_option_state()
+    } else {
+        production_patch_state()
+    };
+    navigate_to_patch_control(
+        &mut state,
+        &PatchControlId::EffectSlot(EffectSlotIndex::ALL[position]),
+    );
+    open_option_modal(&mut state);
+    state
+}
+
+fn reopen_engine_option_lifecycle(mut state: AppState) -> AppState {
+    open_option_modal(&mut state);
+    state
+}
+
+fn production_engine_options_loading_state() -> AppState {
+    reopen_engine_option_lifecycle(production_patch_loading_state())
+}
+
+fn production_engine_options_validating_state() -> AppState {
+    let mut state = production_patch_loading_state();
+    let request_id = state.engine_selection().correlation().unwrap().request_id();
+    state
+        .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+            request_id,
+            lifecycle: EngineSelectionStatusKind::Validating,
+        })
+        .unwrap();
+    reopen_engine_option_lifecycle(state)
+}
+
+fn production_engine_options_preparing_state() -> AppState {
+    let mut state = production_engine_options_validating_state();
+    state.apply(AppEvent::Return).unwrap();
+    let request_id = state.engine_selection().correlation().unwrap().request_id();
+    state
+        .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+            request_id,
+            lifecycle: EngineSelectionStatusKind::Preparing,
+        })
+        .unwrap();
+    reopen_engine_option_lifecycle(state)
+}
+
+fn production_engine_options_activating_state() -> AppState {
+    let mut state = production_engine_options_preparing_state();
+    state.apply(AppEvent::Return).unwrap();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    let candidate = BraidsCapability::new().unwrap().default_config().unwrap();
+    state
+        .apply(AppEvent::EnginePrepared {
+            request_id: correlation.request_id(),
+            patch_id: correlation.patch_id().unwrap(),
+            intent: correlation.intent().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            candidate_config: candidate,
+            prepared_visualization: None,
+        })
+        .unwrap();
+    reopen_engine_option_lifecycle(state)
+}
+
+fn production_engine_options_failure_state(failure: EngineSelectionFailure) -> AppState {
+    let mut state = production_patch_loading_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::EnginePreparationFailed {
+            request_id: correlation.request_id(),
+            patch_id: correlation.patch_id().unwrap(),
+            intent: correlation.intent().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            failure,
+        })
+        .unwrap();
+    reopen_engine_option_lifecycle(state)
+}
+
+fn production_repaired_engine_options_state() -> AppState {
+    let mut state = production_engine_options_state();
+    state
+        .apply(AppEvent::SetPatchOverviewOriginEnabled {
+            patch_id: PatchId::new(1).unwrap(),
+            control: PatchControlId::Engine,
+            enabled: false,
+        })
+        .unwrap();
+    state
+}
+
+fn production_engine_options_after_current_noop_state() -> AppState {
+    let mut state = production_engine_options_state();
+    let acknowledged = state.patches()[0].instrument_config().clone();
+    let outcome = state.apply(AppEvent::Activate).unwrap();
+    assert!(outcome.engine_selection_effect().is_none());
+    assert_eq!(state.patches()[0].instrument_config(), &acknowledged);
+    assert!(state.engine_selection().correlation().is_none());
+    open_option_modal(&mut state);
+    state
+}
+
+fn production_post_fx_options_after_unchanged_close_state() -> AppState {
+    let mut state = production_post_fx_options_state(2, false);
+    let acknowledged = state.patches()[0].effect_slots().to_vec();
+    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    state.apply(AppEvent::Return).unwrap();
+    assert_eq!(state.patches()[0].effect_slots(), acknowledged.as_slice());
+    assert!(state.engine_selection().correlation().is_none());
+    open_option_modal(&mut state);
+    state
+}
+
+fn production_post_fx_options_loading_state() -> AppState {
+    let mut state = production_post_fx_options_state(2, false);
+    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    state.apply(AppEvent::Activate).unwrap();
+    assert_eq!(
+        state.engine_selection().kind(),
+        EngineSelectionStatusKind::Loading
+    );
+    open_option_modal(&mut state);
+    state
+}
+
+fn production_post_fx_options_failure_state() -> AppState {
+    let mut state = production_post_fx_options_loading_state();
+    state.apply(AppEvent::Return).unwrap();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::TopologyPreparationFailed {
+            request_id: correlation.request_id(),
+            intent: correlation.intent().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            failure: EngineSelectionFailure::AssetUnavailable,
+        })
+        .unwrap();
+    open_option_modal(&mut state);
     state
 }
 
@@ -1237,6 +1526,82 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &production_patch_failure_state(),
         "PATCH state I (typed engine failure)",
     );
+    let option_document = |state: AppState, label: &str| {
+        let mut channel = ProjectionChannel::new();
+        check_state_fidelity(&projector, &mut channel, &state, label).1
+    };
+    let patch_engine_options = option_document(
+        production_engine_options_state(),
+        "PATCH Engine Options ready",
+    );
+    let patch_engine_options_maximum = option_document(
+        maximum_engine_options_state(),
+        "PATCH Engine Options maximum registry and unavailable current",
+    );
+    let patch_engine_options_noop = option_document(
+        production_engine_options_after_current_noop_state(),
+        "PATCH Engine Options after current no-op choose",
+    );
+    let patch_engine_options_repaired = option_document(
+        production_repaired_engine_options_state(),
+        "PATCH Engine Options with repaired return origin",
+    );
+    let patch_engine_options_loading = option_document(
+        production_engine_options_loading_state(),
+        "PATCH Engine Options loading",
+    );
+    let patch_engine_options_validating = option_document(
+        production_engine_options_validating_state(),
+        "PATCH Engine Options validating",
+    );
+    let patch_engine_options_preparing = option_document(
+        production_engine_options_preparing_state(),
+        "PATCH Engine Options preparing",
+    );
+    let patch_engine_options_activating = option_document(
+        production_engine_options_activating_state(),
+        "PATCH Engine Options activating",
+    );
+    let patch_engine_options_unavailable = option_document(
+        production_engine_options_failure_state(EngineSelectionFailure::AssetUnavailable),
+        "PATCH Engine Options unavailable",
+    );
+    let patch_engine_options_failed = option_document(
+        production_engine_options_failure_state(EngineSelectionFailure::PreparationFailed),
+        "PATCH Engine Options failed",
+    );
+    let patch_post_fx_position_0 = option_document(
+        production_post_fx_options_state(0, true),
+        "PATCH duplicate Post FX Options position 0",
+    );
+    let patch_post_fx_position_1 = option_document(
+        production_post_fx_options_state(1, true),
+        "PATCH duplicate Post FX Options position 1",
+    );
+    let patch_post_fx_position_2 = option_document(
+        production_post_fx_options_state(2, true),
+        "PATCH duplicate Post FX Options position 2",
+    );
+    let patch_post_fx_empty_position_1 = option_document(
+        production_post_fx_options_state(1, false),
+        "PATCH empty Post FX Options position 1",
+    );
+    let patch_post_fx_empty_position_2 = option_document(
+        production_post_fx_options_state(2, false),
+        "PATCH empty Post FX Options position 2",
+    );
+    let patch_post_fx_closed_unchanged = option_document(
+        production_post_fx_options_after_unchanged_close_state(),
+        "PATCH Post FX Options after unchanged close",
+    );
+    let patch_post_fx_loading = option_document(
+        production_post_fx_options_loading_state(),
+        "PATCH Post FX Options changed request loading",
+    );
+    let patch_post_fx_failure = option_document(
+        production_post_fx_options_failure_state(),
+        "PATCH Post FX Options typed unavailable failure",
+    );
     assert_ne!(
         patch_generation_d, patch_generation_e,
         "the two detail states must carry distinct generations so gating cannot mask one"
@@ -1287,6 +1652,26 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &patch_loading,
         &patch_failure,
     );
+    assert_option_fixture_documents([
+        &patch_engine_options,
+        &patch_engine_options_maximum,
+        &patch_engine_options_noop,
+        &patch_engine_options_repaired,
+        &patch_engine_options_loading,
+        &patch_engine_options_validating,
+        &patch_engine_options_preparing,
+        &patch_engine_options_activating,
+        &patch_engine_options_unavailable,
+        &patch_engine_options_failed,
+        &patch_post_fx_position_0,
+        &patch_post_fx_position_1,
+        &patch_post_fx_position_2,
+        &patch_post_fx_empty_position_1,
+        &patch_post_fx_empty_position_2,
+        &patch_post_fx_closed_unchanged,
+        &patch_post_fx_loading,
+        &patch_post_fx_failure,
+    ]);
 
     // The WP03 T011 geometry fixtures, proven through the identical emit
     // path so the live geometry section renders exactly the bytes whose
@@ -1352,6 +1737,48 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-maximum-content", patch_maximum_content),
             ("patch-loading", patch_loading),
             ("patch-failure", patch_failure),
+            ("patch-engine-options", patch_engine_options),
+            ("patch-engine-options-maximum", patch_engine_options_maximum),
+            ("patch-engine-options-noop", patch_engine_options_noop),
+            (
+                "patch-engine-options-repaired",
+                patch_engine_options_repaired,
+            ),
+            ("patch-engine-options-loading", patch_engine_options_loading),
+            (
+                "patch-engine-options-validating",
+                patch_engine_options_validating,
+            ),
+            (
+                "patch-engine-options-preparing",
+                patch_engine_options_preparing,
+            ),
+            (
+                "patch-engine-options-activating",
+                patch_engine_options_activating,
+            ),
+            (
+                "patch-engine-options-unavailable",
+                patch_engine_options_unavailable,
+            ),
+            ("patch-engine-options-failed", patch_engine_options_failed),
+            ("patch-post-fx-position-0", patch_post_fx_position_0),
+            ("patch-post-fx-position-1", patch_post_fx_position_1),
+            ("patch-post-fx-position-2", patch_post_fx_position_2),
+            (
+                "patch-post-fx-empty-position-1",
+                patch_post_fx_empty_position_1,
+            ),
+            (
+                "patch-post-fx-empty-position-2",
+                patch_post_fx_empty_position_2,
+            ),
+            (
+                "patch-post-fx-closed-unchanged",
+                patch_post_fx_closed_unchanged,
+            ),
+            ("patch-post-fx-loading", patch_post_fx_loading),
+            ("patch-post-fx-failure", patch_post_fx_failure),
         ],
         zero_level_document,
         patch_geometry_document,
@@ -1854,6 +2281,7 @@ fn assert_detail_fixture_documents(instrument: &str, effect: &str, lifecycle: [&
             "{label}: section membership and control order are exact and complete"
         );
         let expected_control_keys = [
+            "availabilityLabel",
             "browserMetadata",
             "editable",
             "enabled",
@@ -2249,6 +2677,137 @@ fn assert_patch_resilience_fixture_documents(maximum_content: &str, loading: &st
         failed_engine.get("value"),
         loading_engine.get("value"),
         "the failed request keeps the active Engine instead of substituting"
+    );
+}
+
+fn assert_option_fixture_documents<const N: usize>(documents: [&str; N]) {
+    let mut subjects = HashSet::new();
+    let mut slot_positions = HashSet::new();
+    let mut lifecycle_kinds = HashSet::new();
+    let mut saw_maximum_registry = false;
+    let mut saw_unavailable_row = false;
+    let mut saw_repaired_return = false;
+    for (index, bytes) in documents.into_iter().enumerate() {
+        let document: Value = serde_json::from_str(bytes)
+            .unwrap_or_else(|error| panic!("option fixture {index} parses: {error}"));
+        assert_eq!(
+            document.get("activeSurface").and_then(Value::as_str),
+            Some("patchChoice")
+        );
+        let modal = document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchChoice"))
+            .unwrap_or_else(|| panic!("option fixture {index} carries patchChoice"));
+        let subject = modal
+            .pointer("/summary/subject/controlId")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("option fixture {index} carries a stable subject"));
+        subjects.insert(subject.to_owned());
+        if let Some(position) = subject
+            .strip_prefix("patch.effectSlot.")
+            .and_then(|position| position.parse::<usize>().ok())
+        {
+            slot_positions.insert(position);
+        }
+        let rows = modal
+            .get("controls")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("option fixture {index} carries ordered rows"));
+        saw_maximum_registry |= rows.len() > 16;
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.get("focused").and_then(Value::as_bool) == Some(true))
+                .count(),
+            1,
+            "option fixture {index}: focus is singular"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|row| row.get("selectedLabel").and_then(Value::as_str) == Some("CURRENT"))
+                .count(),
+            1,
+            "option fixture {index}: CURRENT is singular"
+        );
+        let mut row_ids = HashSet::new();
+        for row in rows {
+            let id = row
+                .pointer("/value/value")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("option fixture {index}: row has stable identity"));
+            assert!(row_ids.insert(id));
+            assert!(
+                row.get("label")
+                    .and_then(Value::as_str)
+                    .is_some_and(|label| !label.is_empty() && label != id),
+                "option fixture {index}: raw registry id {id:?} is never its visible label"
+            );
+            if row
+                .get("availabilityLabel")
+                .is_some_and(|value| !value.is_null())
+            {
+                saw_unavailable_row = true;
+                assert_eq!(row.get("enabled").and_then(Value::as_bool), Some(false));
+                assert!(
+                    row.get("validActions")
+                        .and_then(Value::as_array)
+                        .is_some_and(Vec::is_empty),
+                    "unavailable option carries no reducer action"
+                );
+            }
+        }
+        let main = document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+            .unwrap();
+        let origin = main
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|control| {
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    == Some(subject)
+            })
+            .unwrap();
+        lifecycle_kinds.insert(
+            origin
+                .pointer("/status/kind")
+                .and_then(Value::as_str)
+                .unwrap_or("ready")
+                .to_owned(),
+        );
+        let return_control = document
+            .pointer("/returnPath/origin/controlId/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        saw_repaired_return |= return_control != subject;
+    }
+    assert!(subjects.contains("patch.engine"));
+    assert_eq!(slot_positions, HashSet::from([0, 1, 2]));
+    assert!(saw_maximum_registry);
+    assert!(saw_unavailable_row);
+    assert!(saw_repaired_return);
+    assert!(
+        [
+            "ready",
+            "loading",
+            "validating",
+            "preparing",
+            "activating",
+            "unavailable",
+            "failed",
+        ]
+        .into_iter()
+        .all(|kind| lifecycle_kinds.contains(kind)),
+        "option fixtures cover every representative structural lifecycle: {lifecycle_kinds:?}"
     );
 }
 
@@ -3047,7 +3606,13 @@ fn screenshot(name: &str) -> PathBuf {
     path
 }
 
-fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool) {
+#[derive(Clone, Copy)]
+struct ScopedWitness {
+    detail: bool,
+    option: bool,
+}
+
+fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool, option_witness: bool) {
     use tauri::{Listener, Manager};
 
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -3141,6 +3706,10 @@ fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool) {
     let driver_fidelity = fidelity.clone();
     let driver_painted = Arc::clone(&painted);
     let driver_render_errors = Arc::clone(&render_errors);
+    let scoped_witness = ScopedWitness {
+        detail: detail_witness,
+        option: option_witness,
+    };
     let outcome: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
     let driver_outcome = Arc::clone(&outcome);
     let driver = std::thread::spawn(move || {
@@ -3152,7 +3721,7 @@ fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool) {
                 &driver_painted,
                 &driver_render_errors,
                 &driver_fidelity,
-                detail_witness,
+                scoped_witness,
             )
         }));
         let posted = match result {
@@ -3194,6 +3763,12 @@ fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool) {
         println!(
             "CREST_WEBVIEW_DETAIL_WITNESS complete: real Detail/Mixer window closed; \
              unrelated soak and forced-failure subprocesses skipped"
+        );
+    } else if option_witness {
+        println!(
+            "CREST_WEBVIEW_OPTION_WITNESS complete: real Engine/Post FX options plus \
+             Detail/Mixer non-regression scenes closed cleanly; unrelated soak and \
+             forced-failure subprocesses skipped"
         );
     } else {
         prove_forced_render_throw_on_the_shipped_binary();
@@ -3303,6 +3878,325 @@ fn observe_render(
         .get("observation")
         .cloned()
         .ok_or_else(|| format!("harness phase {tag:?} carried no observation"))
+}
+
+fn apply_keyboard_gesture(
+    state: &mut AppState,
+    translator: &mut KeyboardInputTranslator,
+    input: WindowInput,
+    expected: crest_synth::control::SemanticAction,
+    accepted: bool,
+    label: &str,
+) {
+    let action = translator
+        .translate(input)
+        .unwrap_or_else(|| panic!("{label}: physical keyboard input produces an action"));
+    assert_eq!(action, expected, "{label}: normalized semantic action");
+    let generation = state.generation();
+    let outcome = state.apply_semantic_action(action);
+    if accepted {
+        outcome.unwrap_or_else(|error| panic!("{label}: reducer rejected input: {error:?}"));
+        assert!(
+            state.generation() > generation,
+            "{label}: accepted input advances canonical generation"
+        );
+    } else {
+        assert!(
+            outcome.is_err(),
+            "{label}: modal modifier release is rejected unchanged"
+        );
+        assert_eq!(state.generation(), generation);
+    }
+}
+
+fn keyboard_open_options(
+    state: &mut AppState,
+    translator: &mut KeyboardInputTranslator,
+    label: &str,
+) {
+    apply_keyboard_gesture(
+        state,
+        translator,
+        WindowInput::key_down(WindowKey::K),
+        crest_synth::control::SemanticAction::SetInteractionMode(InteractionMode::Adjust),
+        true,
+        &format!("{label} Edit press"),
+    );
+    apply_keyboard_gesture(
+        state,
+        translator,
+        WindowInput::key_down(WindowKey::W),
+        crest_synth::control::SemanticAction::Adjust(Direction::Up),
+        true,
+        &format!("{label} Edit+Up"),
+    );
+    apply_keyboard_gesture(
+        state,
+        translator,
+        WindowInput::key_up(WindowKey::K),
+        crest_synth::control::SemanticAction::SetInteractionMode(InteractionMode::Navigate),
+        false,
+        &format!("{label} Edit release inside modal"),
+    );
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchChoice);
+}
+
+fn keyboard_close_options(
+    state: &mut AppState,
+    translator: &mut KeyboardInputTranslator,
+    label: &str,
+) {
+    assert_eq!(
+        translator.translate(WindowInput::key_down(WindowKey::Shift)),
+        None
+    );
+    apply_keyboard_gesture(
+        state,
+        translator,
+        WindowInput::key_down(WindowKey::S),
+        crest_synth::control::SemanticAction::Return,
+        true,
+        &format!("{label} Shift+Down"),
+    );
+    assert_eq!(
+        translator.translate(WindowInput::key_up(WindowKey::Shift)),
+        None
+    );
+}
+
+fn observe_native_option_state(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    state: &AppState,
+    tag: &str,
+    inspector_floor: f32,
+) -> Result<Value, String> {
+    let semantic = StateProjector::new()
+        .project_with_shell(state)
+        .map_err(|error| format!("{tag}: projection failed: {error}"))?
+        .3
+        .semantic_model()
+        .clone();
+    let bytes = serde_json::to_string(&semantic)
+        .map_err(|error| format!("{tag}: semantic document failed to serialize: {error}"))?;
+    let document: Value = serde_json::from_str(&bytes)
+        .map_err(|error| format!("{tag}: semantic document failed to parse: {error}"))?;
+    let observation = observe_render(window, receiver, &bytes, tag)?;
+    assert_eq!(observation.get("generation"), document.get("generation"));
+    assert_eq!(
+        observation.pointer("/paintAcknowledgment/generation"),
+        document.get("generation"),
+        "{tag}: accepted generation reaches native paint acknowledgement"
+    );
+    assert_patch_observation_structure(&observation, &document, inspector_floor, tag);
+    Ok(observation)
+}
+
+fn prove_native_option_input_journeys(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    inspector_floor: f32,
+) -> Result<(), String> {
+    let mut engine = production_patch_state();
+    let engine_origin = engine.interaction().focus_path().clone();
+    let mut keyboard = KeyboardInputTranslator::new();
+    keyboard_open_options(&mut engine, &mut keyboard, "native Engine entry");
+    observe_native_option_state(
+        window,
+        receiver,
+        &engine,
+        "native-input-engine-current",
+        inspector_floor,
+    )?;
+    apply_keyboard_gesture(
+        &mut engine,
+        &mut keyboard,
+        WindowInput::key_down(WindowKey::Return),
+        crest_synth::control::SemanticAction::Activate,
+        true,
+        "native Engine current no-op choose",
+    );
+    assert_eq!(engine.interaction().focus_path(), &engine_origin);
+    assert!(engine.engine_selection().correlation().is_none());
+
+    keyboard_open_options(&mut engine, &mut keyboard, "native Engine changed entry");
+    apply_keyboard_gesture(
+        &mut engine,
+        &mut keyboard,
+        WindowInput::key_down(WindowKey::S),
+        crest_synth::control::SemanticAction::Navigate(Direction::Down),
+        true,
+        "native Engine option Down",
+    );
+    apply_keyboard_gesture(
+        &mut engine,
+        &mut keyboard,
+        WindowInput::key_down(WindowKey::Return),
+        crest_synth::control::SemanticAction::Activate,
+        true,
+        "native Engine changed choose",
+    );
+    assert!(engine.engine_selection().correlation().is_some());
+    keyboard_open_options(&mut engine, &mut keyboard, "native Engine busy reopen");
+    observe_native_option_state(
+        window,
+        receiver,
+        &engine,
+        "native-input-engine-loading",
+        inspector_floor,
+    )?;
+    keyboard_close_options(&mut engine, &mut keyboard, "native Engine unchanged close");
+    assert_eq!(engine.interaction().focus_path(), &engine_origin);
+
+    for position in 0..3 {
+        let mut state = maximum_option_state();
+        let mut translator = KeyboardInputTranslator::new();
+        for step in 0..=position {
+            apply_keyboard_gesture(
+                &mut state,
+                &mut translator,
+                WindowInput::key_down(WindowKey::S),
+                crest_synth::control::SemanticAction::Navigate(Direction::Down),
+                true,
+                &format!("native occupied slot {position} Overview step {step}"),
+            );
+        }
+        let origin = state.interaction().focus_path().clone();
+        keyboard_open_options(
+            &mut state,
+            &mut translator,
+            &format!("native occupied slot {position} entry"),
+        );
+        let observation = observe_native_option_state(
+            window,
+            receiver,
+            &state,
+            &format!("native-input-occupied-slot-{position}"),
+            inspector_floor,
+        )?;
+        assert_eq!(
+            observation
+                .pointer("/modal/slotPosition")
+                .and_then(Value::as_u64),
+            Some(position as u64)
+        );
+        keyboard_close_options(
+            &mut state,
+            &mut translator,
+            &format!("native occupied slot {position} close"),
+        );
+        assert_eq!(state.interaction().focus_path(), &origin);
+    }
+
+    for position in [1_usize, 2] {
+        let mut state = production_patch_state();
+        let mut translator = KeyboardInputTranslator::new();
+        for step in 0..=position {
+            apply_keyboard_gesture(
+                &mut state,
+                &mut translator,
+                WindowInput::key_down(WindowKey::S),
+                crest_synth::control::SemanticAction::Navigate(Direction::Down),
+                true,
+                &format!("native empty slot {position} Overview step {step}"),
+            );
+        }
+        let origin = state.interaction().focus_path().clone();
+        keyboard_open_options(
+            &mut state,
+            &mut translator,
+            &format!("native empty slot {position} entry"),
+        );
+        observe_native_option_state(
+            window,
+            receiver,
+            &state,
+            &format!("native-input-empty-slot-{position}"),
+            inspector_floor,
+        )?;
+        keyboard_close_options(
+            &mut state,
+            &mut translator,
+            &format!("native empty slot {position} close"),
+        );
+        assert_eq!(state.interaction().focus_path(), &origin);
+    }
+
+    let mut repaired = production_patch_state();
+    let mut repair_keyboard = KeyboardInputTranslator::new();
+    keyboard_open_options(
+        &mut repaired,
+        &mut repair_keyboard,
+        "native repaired Engine entry",
+    );
+    repaired
+        .apply(AppEvent::SetPatchOverviewOriginEnabled {
+            patch_id: PatchId::new(1).unwrap(),
+            control: PatchControlId::Engine,
+            enabled: false,
+        })
+        .unwrap();
+    let repaired_observation = observe_native_option_state(
+        window,
+        receiver,
+        &repaired,
+        "native-input-repaired-return",
+        inspector_floor,
+    )?;
+    assert_ne!(
+        repaired_observation.pointer("/modal/subjectControl"),
+        repaired_observation.pointer("/modal/returnControl")
+    );
+
+    let mut controller_state = production_patch_state();
+    let mut controller = ControllerInputTranslator::new();
+    // `EditDirection` is the controller adapter's normalized chord, parallel
+    // to the keyboard direction edge after its Edit modifier has established
+    // Adjust mode. Establish that canonical modifier phase explicitly here;
+    // the bounded physical handoff remains responsible for proving a concrete
+    // device adapter supplies the phase in the production application.
+    controller_state
+        .apply_semantic_action(crest_synth::control::SemanticAction::SetInteractionMode(
+            InteractionMode::Adjust,
+        ))
+        .unwrap();
+    let action = controller
+        .translate(ControllerInput::pressed(ControllerGesture::EditDirection(
+            Direction::Up,
+        )))
+        .expect("controller Edit+Up produces Adjust Up");
+    assert_eq!(
+        action,
+        crest_synth::control::SemanticAction::Adjust(Direction::Up)
+    );
+    controller_state.apply_semantic_action(action).unwrap();
+    observe_native_option_state(
+        window,
+        receiver,
+        &controller_state,
+        "native-input-controller-entry",
+        inspector_floor,
+    )?;
+    let action = controller
+        .translate(ControllerInput::pressed(ControllerGesture::Direction(
+            Direction::Down,
+        )))
+        .unwrap();
+    controller_state.apply_semantic_action(action).unwrap();
+    let action = controller
+        .translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
+            Direction::Down,
+        )))
+        .unwrap();
+    controller_state.apply_semantic_action(action).unwrap();
+    assert_eq!(controller_state.interaction().focus_path(), &engine_origin);
+
+    println!(
+        "T024 native option input journeys: PASS (keyboard and controller normalized input → \
+         existing semantic actions → AppState::apply → correlated projection/paint for Engine, \
+         every occupied/empty slot, duplicate effects, no-op/change/close, exact and repaired return)"
+    );
+    Ok(())
 }
 
 /// Static half of the native resize audit. The dynamic half below resizes a
@@ -3930,17 +4824,16 @@ fn assert_patch_observation_structure(
         Some(0),
         "{label}: the shell introduces no document-level horizontal overflow"
     );
-    let serialized_focus = serde_json::to_string(
-        document
-            .get("focusPath")
-            .unwrap_or_else(|| panic!("{label}: the document carries focusPath")),
-    )
-    .unwrap();
-    assert_eq!(
+    let observed_focus: Value = serde_json::from_str(
         observation
             .pointer("/focus/semanticPath")
-            .and_then(Value::as_str),
-        Some(serialized_focus.as_str()),
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: the observation carries semanticPath")),
+    )
+    .unwrap_or_else(|error| panic!("{label}: semanticPath is valid JSON: {error}"));
+    assert_eq!(
+        Some(&observed_focus),
+        document.get("focusPath"),
         "{label}: responsive presentation preserves the exact semantic focus identity"
     );
     assert_eq!(
@@ -3997,7 +4890,7 @@ fn assert_patch_observation_structure(
         .find(|surface| surface.get("role").and_then(Value::as_str) == Some("modal"))
         .cloned();
     if let Some(modal_surface) = modal_surface {
-        assert_patch_modal_composition(observation, &modal_surface, label);
+        assert_patch_modal_composition(observation, document, &modal_surface, label);
         assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
         return;
     }
@@ -4333,15 +5226,248 @@ fn assert_patch_observation_structure(
     assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
 }
 
-fn assert_patch_modal_composition(observation: &Value, modal_surface: &Value, label: &str) {
+fn assert_patch_modal_composition(
+    observation: &Value,
+    document: &Value,
+    modal_surface: &Value,
+    label: &str,
+) {
     let modal = observation
         .get("modal")
         .filter(|value| !value.is_null())
         .unwrap_or_else(|| panic!("{label}: a modal semantic surface paints the shared modal"));
+    let browser = modal_surface
+        .pointer("/summary/kind")
+        .and_then(Value::as_str)
+        == Some("sampleBrowser");
+    if !browser {
+        let subject_control = modal_surface
+            .pointer("/summary/subject/controlId")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: Choice summary names its exact origin control"));
+        let expected_title = if subject_control == "patch.engine" {
+            "ENGINE TYPE OPTIONS".to_owned()
+        } else if subject_control.starts_with("patch.effectSlot.") {
+            "POST FX OPTIONS".to_owned()
+        } else {
+            modal_surface
+                .get("label")
+                .and_then(Value::as_str)
+                .unwrap_or("OPTIONS")
+                .to_uppercase()
+        };
+        assert_eq!(
+            modal.get("title").and_then(Value::as_str),
+            Some(expected_title.as_str())
+        );
+        assert_eq!(
+            modal.get("subjectControl").and_then(Value::as_str),
+            Some(subject_control),
+            "{label}: option DOM identity is the projected Choice subject"
+        );
+        let return_control = document
+            .pointer("/returnPath/origin/controlId/id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        assert_eq!(
+            modal.get("returnControl").and_then(Value::as_str),
+            Some(return_control),
+            "{label}: exact or repaired return identity is painted separately"
+        );
+        let expected_slot = subject_control
+            .strip_prefix("patch.effectSlot.")
+            .and_then(|position| position.parse::<u64>().ok());
+        assert_eq!(
+            modal.get("slotPosition").and_then(Value::as_u64),
+            expected_slot,
+            "{label}: Post FX position comes from the stable subject control"
+        );
+        assert_eq!(
+            modal.get("entry").and_then(Value::as_str),
+            Some("EDIT + UP")
+        );
+        assert!(
+            modal
+                .get("source")
+                .and_then(Value::as_str)
+                .is_some_and(|source| source.starts_with("Opened from Patch /")),
+            "{label}: option source annotation is present"
+        );
+
+        let main = document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+            .unwrap_or_else(|| panic!("{label}: Choice document carries Patch Main"));
+        let origin = main
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|control| {
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    == Some(subject_control)
+            })
+            .unwrap_or_else(|| panic!("{label}: Patch Main carries the Choice origin control"));
+        let status = modal
+            .get("optionStatus")
+            .filter(|status| !status.is_null())
+            .unwrap_or_else(|| panic!("{label}: option origin status is painted"));
+        let active = origin
+            .pointer("/value/value")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let expected_active = format!("ACTIVE {active}");
+        assert_eq!(
+            status.get("active").and_then(Value::as_str),
+            Some(expected_active.as_str()),
+            "{label}: acknowledged active reading stays origin-anchored"
+        );
+        let requested = origin
+            .pointer("/requestedValue/value")
+            .and_then(Value::as_str)
+            .unwrap_or("--");
+        let expected_requested = format!("REQUESTED {requested}");
+        assert_eq!(
+            status.get("requested").and_then(Value::as_str),
+            Some(expected_requested.as_str()),
+            "{label}: requested reading is distinct from acknowledged active"
+        );
+        assert_eq!(
+            status.get("lifecycle").and_then(Value::as_str),
+            origin
+                .pointer("/status/kind")
+                .and_then(Value::as_str)
+                .or(Some("ready")),
+            "{label}: lifecycle comes from the exact origin control"
+        );
+        let expected_cause = origin
+            .pointer("/error/label")
+            .and_then(Value::as_str)
+            .map(|cause| format!("CAUSE {cause}"));
+        assert_eq!(
+            status.get("cause").and_then(Value::as_str),
+            expected_cause.as_deref(),
+            "{label}: typed cause is absent or explicit without fallback"
+        );
+
+        let expected_rows = modal_surface
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+            .collect::<Vec<_>>();
+        let painted_rows = modal
+            .get("options")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{label}: option observation reports its rows"));
+        assert_eq!(painted_rows.len(), expected_rows.len());
+        for (painted, projected) in painted_rows.iter().zip(expected_rows) {
+            assert_eq!(painted.get("identity"), projected.pointer("/value/value"));
+            assert_eq!(painted.get("label"), projected.get("label"));
+            let painted_focus: Value = serde_json::from_str(
+                painted
+                    .get("focusPath")
+                    .and_then(Value::as_str)
+                    .unwrap_or_else(|| panic!("{label}: option row carries focusPath")),
+            )
+            .unwrap_or_else(|error| panic!("{label}: option focusPath is valid JSON: {error}"));
+            assert_eq!(painted_focus, projected["path"]);
+            assert_eq!(painted.get("focused"), projected.get("focused"));
+            assert_eq!(painted.get("enabled"), projected.get("enabled"));
+            assert_eq!(
+                painted.get("current").and_then(Value::as_bool),
+                Some(projected.get("selectedLabel").and_then(Value::as_str) == Some("CURRENT"))
+            );
+            let expected_state = if projected
+                .get("availabilityLabel")
+                .is_some_and(|value| !value.is_null())
+            {
+                "unavailable"
+            } else if projected.get("enabled").and_then(Value::as_bool) == Some(true) {
+                "available"
+            } else {
+                "disabled"
+            };
+            assert_eq!(
+                painted.get("state").and_then(Value::as_str),
+                Some(expected_state)
+            );
+            assert_eq!(painted.get("validActions"), projected.get("validActions"));
+            assert!(
+                painted
+                    .pointer("/bounds/heightPx")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|height| height >= 48.0),
+                "{label}: every option row keeps the 48px target floor"
+            );
+        }
+        assert_eq!(
+            painted_rows
+                .iter()
+                .filter(|row| row.get("focused").and_then(Value::as_bool) == Some(true))
+                .count(),
+            1,
+            "{label}: option focus is singular"
+        );
+        assert_eq!(
+            painted_rows
+                .iter()
+                .filter(|row| row.get("current").and_then(Value::as_bool) == Some(true))
+                .count(),
+            1,
+            "{label}: acknowledged CURRENT is singular and independent"
+        );
+        assert_eq!(
+            modal
+                .pointer("/listReachability/startReachable")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            modal
+                .pointer("/listReachability/endReachable")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            modal
+                .pointer("/listReachability/firstTargetReachable")
+                .and_then(Value::as_bool),
+            Some(true),
+            "{label}: the first registry row is reachable at the list start"
+        );
+        assert_eq!(
+            modal
+                .pointer("/listReachability/lastTargetReachable")
+                .and_then(Value::as_bool),
+            Some(true),
+            "{label}: the last registry row is reachable at the list end"
+        );
+        assert_eq!(
+            modal
+                .get("listHorizontalOverflowPx")
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            modal
+                .get("requiredContentOverlapPx")
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        return;
+    }
+
     assert_eq!(
         modal.get("title").and_then(Value::as_str),
         modal_surface.get("label").and_then(Value::as_str),
-        "{label}: the modal title is descriptor/projector-authored"
+        "{label}: the Sample Browser title remains projector-authored"
     );
     let expected = modal_surface
         .get("controls")
@@ -4448,11 +5574,7 @@ fn assert_patch_modal_composition(observation: &Value, modal_surface: &Value, la
         .collect::<Vec<_>>();
     assert_eq!(painted_visualizations, expected_visualizations);
 
-    if modal_surface
-        .pointer("/summary/kind")
-        .and_then(Value::as_str)
-        == Some("sampleBrowser")
-    {
+    if browser {
         assert_eq!(modal.get("browser").and_then(Value::as_bool), Some(true));
         assert_eq!(
             modal.get("previewState").and_then(Value::as_str),
@@ -5078,13 +6200,33 @@ fn drive_live_window(
     painted: &PaintedAcks,
     render_errors: &RenderErrors,
     fidelity: &FidelityEvidence,
-    detail_witness: bool,
+    scoped_witness: ScopedWitness,
 ) -> Result<(), String> {
     use tauri::Manager;
 
     let document_a: &str = &fidelity.document_a;
     let mixer_inspector_document: &str = &fidelity.mixer_inspector_document;
-    let patch_documents: &[(&'static str, String)] = &fidelity.patch_documents;
+    let option_patch_documents = fidelity
+        .patch_documents
+        .iter()
+        .filter(|(label, _)| {
+            label.contains("options")
+                || label.starts_with("patch-post-fx")
+                || matches!(
+                    *label,
+                    "patch-navigate"
+                        | "patch-instrument-detail"
+                        | "patch-effect-detail"
+                        | "patch-sample-browser"
+                )
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    let patch_documents: &[(&'static str, String)] = if scoped_witness.option {
+        &option_patch_documents
+    } else {
+        &fidelity.patch_documents
+    };
     // T015: what the production channel decides about every real painted ack
     // the healthy sections below produce. Asserted at the very end, after
     // every healthy section has run and before the page is broken.
@@ -5464,12 +6606,15 @@ fn drive_live_window(
     // accepted document. Resizing and text scaling are presentation-only:
     // generation, state hash, semantic focus, surfaces, and controls remain
     // the serialized document's, while painted geometry and mode may change.
+    let responsive_root = if scoped_witness.option {
+        "patch-engine-options-maximum"
+    } else {
+        "patch-long-instrument-detail"
+    };
     let (root_label, root_bytes) = patch_documents
         .iter()
-        .find(|(label, _)| *label == "patch-long-instrument-detail")
-        .ok_or_else(|| {
-            "the fidelity run carries the long-content Instrument Detail document".to_owned()
-        })?;
+        .find(|(label, _)| *label == responsive_root)
+        .ok_or_else(|| format!("the fidelity run carries the responsive root {responsive_root}"))?;
     let root_document: Value = serde_json::from_str(root_bytes)
         .map_err(|error| format!("the {root_label} fidelity document parses: {error}"))?;
     assert_resize_path_is_presentation_only();
@@ -5550,7 +6695,11 @@ fn drive_live_window(
         desktop_side, standard_side
     );
 
-    if detail_witness {
+    if scoped_witness.option {
+        prove_native_option_input_journeys(&window, receiver, desktop_side)?;
+    }
+
+    if scoped_witness.detail || scoped_witness.option {
         return Ok(());
     }
 

@@ -1432,9 +1432,98 @@
     );
   }
 
-  // One shared subordinate modal composition for descriptor choices and the
-  // Sample Browser. Row identity, current/focus markers, lifecycle, and hold
-  // state are all projected; the DOM owns no option or file index.
+  // Reads a serialized SemanticControlId/PatchControlId without inventing a
+  // second identity vocabulary. The stable id is used only for structure and
+  // data attributes; it is never painted as a display name.
+  function serializedControlId(value) {
+    if (value && typeof value === "object" && value.id !== undefined) {
+      value = value.id;
+    }
+    return value === null || value === undefined
+      ? ""
+      : typeof value === "object"
+        ? JSON.stringify(value)
+        : String(value);
+  }
+
+  function optionRequestedText(control) {
+    if (!control || !control.requestedValue) {
+      return UNAVAILABLE_MARK;
+    }
+    return controlValueText({
+      kind: control.kind,
+      value: control.requestedValue,
+      selectedLabel: control.requestedLabel,
+    });
+  }
+
+  // The option surface's exact active/requested structural truth stays
+  // anchored to the Patch Main control named by its projected subject. It is
+  // a readout, never a second focus target. Ready, in-flight, unavailable,
+  // and failed all use the same fields and differ through explicit text,
+  // data state, and keyline treatment rather than color alone.
+  function optionOriginStatusHtml(origin) {
+    if (!origin) {
+      return (
+        '<div class="option-origin-status is-unavailable" data-role="option-origin-status" data-lifecycle="unavailable">' +
+        '<span class="type-hint warning">ORIGIN ' +
+        UNAVAILABLE +
+        "</span></div>"
+      );
+    }
+    var status = origin.status || {};
+    var lifecycle = String(status.kind || "ready");
+    var active = controlValueText(origin);
+    var requested = optionRequestedText(origin);
+    var cause = origin.error ? String(origin.error.label) : "";
+    var activeRevision =
+      status.graphRevision === null || status.graphRevision === undefined
+        ? UNAVAILABLE_MARK
+        : String(status.graphRevision);
+    var requestedRevision =
+      status.targetGraphRevision === null ||
+      status.targetGraphRevision === undefined
+        ? UNAVAILABLE_MARK
+        : String(status.targetGraphRevision);
+    var stateLabel = String(status.label || lifecycle).toUpperCase();
+    return (
+      '<div class="option-origin-status state-' +
+      escapeHtml(lifecycle) +
+      (cause ? " has-cause" : "") +
+      '" data-role="option-origin-status" data-lifecycle="' +
+      escapeHtml(lifecycle) +
+      '">' +
+      '<span class="type-hint muted" data-role="option-origin-label">ORIGIN ' +
+      escapeHtml(String(origin.label || UNAVAILABLE_MARK).toUpperCase()) +
+      "</span>" +
+      '<span class="type-hint" data-role="option-active">ACTIVE ' +
+      escapeHtml(active) +
+      "</span>" +
+      '<span class="type-hint adjust" data-role="option-requested">REQUESTED ' +
+      escapeHtml(requested) +
+      "</span>" +
+      '<span class="type-hint option-lifecycle-state" data-role="option-lifecycle">' +
+      escapeHtml(stateLabel) +
+      "</span>" +
+      '<span class="type-hint secondary" data-role="option-revisions">GRAPH ' +
+      escapeHtml(activeRevision) +
+      " → " +
+      escapeHtml(requestedRevision) +
+      "</span>" +
+      (cause
+        ? '<span class="type-hint warning" data-role="option-cause">CAUSE ' +
+          escapeHtml(cause) +
+          "</span>"
+        : "") +
+      "</div>"
+    );
+  }
+
+  // One shared subordinate modal entry point with deliberately separate
+  // compositions for descriptor choices and Sample Browser. The browser
+  // keeps its waveform/preview behavior; Engine and Post FX share the one
+  // Figma-authored option hierarchy below. Neither branch owns an option or
+  // file index.
   function modalShellHtml(model) {
     var modal = surfaceByRole(model, "modal");
     if (!modal) {
@@ -1443,58 +1532,61 @@
     var summary = modal.summary || {};
     var browser = summary.kind === "sampleBrowser";
     var controls = modal.controls || [];
-    var rows = "";
-    for (var i = 0; i < controls.length; i += 1) {
-      var control = controls[i];
-      if (control.visible !== true) {
-        continue;
-      }
-      var marker = [];
-      if (control.selectedLabel) {
-        marker.push(String(control.selectedLabel));
-      }
-      if (control.focused) {
-        marker.push("FOCUS");
-      }
-      if (!control.enabled) {
-        marker.push(UNAVAILABLE);
-      }
-      var browserMetadata = control.browserMetadata || null;
-      if (browserMetadata && browserMetadata.status === "pending") {
-        marker.push("LOADING");
-      } else if (browserMetadata && browserMetadata.status === "failed") {
-        marker.push("INVALID");
-      }
-      rows +=
-        '<div class="modal-option' +
-        (control.focused ? " is-focused" : "") +
-        (!control.enabled ? " is-disabled" : "") +
-        (browserMetadata ? " has-browser-metadata" : "") +
-        '" data-focus-path="' +
-        escapeHtml(JSON.stringify(control.path || null)) +
-        '" data-metadata-state="' +
-        escapeHtml(String((browserMetadata && browserMetadata.status) || "none")) +
-        '">' +
-        '<span class="modal-option-shape" aria-hidden="true">' +
-        (control.focused ? "▶" : "◇") +
-        "</span>" +
-        '<span class="type-value modal-option-label">' +
-        escapeHtml(String(control.label || UNAVAILABLE_MARK)) +
-        "</span>" +
-        (browserMetadata || control.unit
-          ? '<span class="type-hint muted modal-option-meta">' +
-            escapeHtml(String(browserMetadata ? browserMetadata.text : control.unit)) +
-            "</span>"
-          : "") +
-        '<span class="type-hint modal-option-state">' +
-        escapeHtml(marker.join(HINT_SEPARATOR) || "AVAILABLE") +
-        "</span></div>";
-    }
-    if (!rows) {
-      rows = markUnavailableRowHtml(browser ? "FILES" : "OPTIONS");
-    }
-    var status = "";
     if (browser) {
+      var browserRows = "";
+      for (var browserRowIndex = 0; browserRowIndex < controls.length; browserRowIndex += 1) {
+        var browserControl = controls[browserRowIndex];
+        if (browserControl.visible !== true) {
+          continue;
+        }
+        var browserMarker = [];
+        if (browserControl.selectedLabel) {
+          browserMarker.push(String(browserControl.selectedLabel));
+        }
+        if (browserControl.focused) {
+          browserMarker.push("FOCUS");
+        }
+        if (!browserControl.enabled) {
+          browserMarker.push(UNAVAILABLE);
+        }
+        var browserMetadata = browserControl.browserMetadata || null;
+        if (browserMetadata && browserMetadata.status === "pending") {
+          browserMarker.push("LOADING");
+        } else if (browserMetadata && browserMetadata.status === "failed") {
+          browserMarker.push("INVALID");
+        }
+        browserRows +=
+          '<div class="modal-option' +
+          (browserControl.focused ? " is-focused" : "") +
+          (!browserControl.enabled ? " is-disabled" : "") +
+          (browserMetadata ? " has-browser-metadata" : "") +
+          '" data-focus-path="' +
+          escapeHtml(JSON.stringify(browserControl.path || null)) +
+          '" data-metadata-state="' +
+          escapeHtml(String((browserMetadata && browserMetadata.status) || "none")) +
+          '">' +
+          '<span class="modal-option-shape" aria-hidden="true">' +
+          (browserControl.focused ? "▶" : "◇") +
+          "</span>" +
+          '<span class="type-value modal-option-label">' +
+          escapeHtml(String(browserControl.label || UNAVAILABLE_MARK)) +
+          "</span>" +
+          (browserMetadata || browserControl.unit
+            ? '<span class="type-hint muted modal-option-meta">' +
+              escapeHtml(
+                String(
+                  browserMetadata ? browserMetadata.text : browserControl.unit
+                )
+              ) +
+              "</span>"
+            : "") +
+          '<span class="type-hint modal-option-state">' +
+          escapeHtml(browserMarker.join(HINT_SEPARATOR) || "AVAILABLE") +
+          "</span></div>";
+      }
+      if (!browserRows) {
+        browserRows = markUnavailableRowHtml("FILES");
+      }
       var browserVisualizations = "";
       var modalVisualizations = modal.visualizations || [];
       for (var visualizationIndex = 0; visualizationIndex < modalVisualizations.length; visualizationIndex += 1) {
@@ -1508,7 +1600,7 @@
       if (preview.kind === "preparing") {
         previewText += preview.held ? HINT_SEPARATOR + "HELD" : HINT_SEPARATOR + "RELEASED";
       }
-      status =
+      var browserStatus =
         '<div class="browser-status" data-role="browser-status">' +
         '<span class="type-label muted">' +
         escapeHtml(String(summary.folder || "/")) +
@@ -1520,7 +1612,15 @@
         escapeHtml(previewText) +
         "</span>" +
         '<span class="type-hint muted">ORIGIN PATCH ROUTING / MUTE / SOLO / SENDS APPLY</span>' +
-        "</div>" +
+        "</div>";
+      return (
+        '<div class="modal-shell sample-browser" id="modal-shell">' +
+        '<div class="modal-title">' +
+        '<span class="type-label muted">LIBRARY</span>' +
+        '<span class="type-heading focus">' +
+        escapeHtml(String(modal.label || "SAMPLE BROWSER")) +
+        "</span></div>" +
+        browserStatus +
         '<div class="browser-visualizations" data-role="browser-visualizations">' +
         (browserVisualizations || markUnavailableRowHtml("WAVEFORM")) +
         "</div>" +
@@ -1533,21 +1633,143 @@
         '<span class="preview-playhead-shape" aria-hidden="true"><span class="preview-playhead-marker"></span></span>' +
         '<span class="type-hint" data-role="preview-playhead">PLAYHEAD — / ' +
         escapeHtml(String(preview.kind || "idle").toUpperCase()) +
-        "</span></div>";
+        "</span></div>" +
+        '<div class="modal-options" data-role="modal-options">' +
+        browserRows +
+        "</div></div>"
+      );
+    }
+
+    var summary = modal.summary || {};
+    var subject = summary.subject || {};
+    var subjectControl = serializedControlId(subject.controlId);
+    var patchMain = surfaceById(model, "patchMain");
+    var origin = controlById(patchMain, subjectControl);
+    var returnControl = serializedControlId(
+      model.returnPath && model.returnPath.origin
+        ? model.returnPath.origin.controlId
+        : null
+    );
+    var slotMatch = /^patch\.effectSlot\.(\d+)$/.exec(subjectControl);
+    var optionKind =
+      subjectControl === "patch.engine"
+        ? "engine"
+        : slotMatch
+          ? "postFx"
+          : "generic";
+    var slotPosition = slotMatch ? Number(slotMatch[1]) : null;
+    var title =
+      optionKind === "engine"
+        ? "ENGINE TYPE OPTIONS"
+        : optionKind === "postFx"
+          ? "POST FX OPTIONS"
+          : String(modal.label || "OPTIONS").toUpperCase();
+    var sourceAnnotation =
+      optionKind === "engine"
+        ? "Opened from Patch / Instrument selector"
+        : optionKind === "postFx"
+          ? "Opened from Patch / Post FX selector · SLOT " +
+            String(slotPosition + 1).padStart(2, "0")
+          : "Opened from Patch / " +
+            String((origin && origin.label) || "selector");
+    if (returnControl && returnControl !== subjectControl) {
+      var returnOrigin = controlById(patchMain, returnControl);
+      sourceAnnotation +=
+        " · RETURN REPAIRED TO " +
+        String((returnOrigin && returnOrigin.label) || UNAVAILABLE_MARK).toUpperCase();
+    }
+
+    var optionRows = "";
+    for (var optionIndex = 0; optionIndex < controls.length; optionIndex += 1) {
+      var option = controls[optionIndex];
+      if (option.visible !== true) {
+        continue;
+      }
+      var current = String(option.selectedLabel || "") === "CURRENT";
+      var availability = option.availabilityLabel
+        ? "unavailable"
+        : option.enabled
+          ? "available"
+          : "disabled";
+      var availabilityText =
+        availability === "unavailable"
+          ? "UNAVAILABLE" + HINT_SEPARATOR + String(option.availabilityLabel)
+          : availability.toUpperCase();
+      var optionIdentity =
+        option.value && option.value.kind === "identity"
+          ? String(option.value.value)
+          : "";
+      optionRows +=
+        '<div class="modal-option option-row' +
+        (option.focused ? " is-focused" : "") +
+        (current ? " is-current" : "") +
+        (!option.enabled ? " is-disabled" : "") +
+        (availability === "unavailable" ? " is-unavailable" : "") +
+        '" data-focus-path="' +
+        escapeHtml(JSON.stringify(option.path || null)) +
+        '" data-option-id="' +
+        escapeHtml(optionIdentity) +
+        '" data-option-state="' +
+        availability +
+        '" data-enabled="' +
+        String(option.enabled === true) +
+        '" data-current="' +
+        String(current) +
+        '" data-valid-actions="' +
+        escapeHtml(JSON.stringify(option.validActions || [])) +
+        '">' +
+        '<span class="modal-option-shape" aria-hidden="true">' +
+        (option.focused ? "&gt;" : "&nbsp;") +
+        "</span>" +
+        '<span class="type-value modal-option-label">' +
+        escapeHtml(String(option.label || UNAVAILABLE_MARK)) +
+        "</span>" +
+        '<span class="type-hint modal-option-availability">' +
+        escapeHtml(availabilityText) +
+        "</span>" +
+        (current
+          ? '<span class="type-hint muted modal-option-current"><span aria-hidden="true">■</span> CURRENT</span>'
+          : "") +
+        ((option.validActions || []).length > 0
+          ? '<span class="modal-option-actions" data-role="option-actions">' +
+            hintRun(option.validActions || []) +
+            "</span>"
+          : "") +
+        "</div>";
+    }
+    if (!optionRows) {
+      optionRows = markUnavailableRowHtml("OPTIONS");
     }
     return (
-      '<div class="modal-shell' + (browser ? " sample-browser" : " option-modal") + '" id="modal-shell">' +
-      '<div class="modal-title">' +
-      '<span class="type-label muted">' +
-      escapeHtml(browser ? "LIBRARY" : "SELECT OPTION") +
+      '<div class="modal-shell option-modal" id="modal-shell" data-option-kind="' +
+      escapeHtml(optionKind) +
+      '" data-subject-control="' +
+      escapeHtml(subjectControl) +
+      '" data-return-control="' +
+      escapeHtml(returnControl) +
+      '"' +
+      (slotPosition === null
+        ? ""
+        : ' data-slot-position="' + String(slotPosition) + '"') +
+      ">" +
+      '<header class="option-header" data-role="option-header">' +
+      '<span class="type-heading option-title" data-role="option-title">' +
+      escapeHtml(title) +
       "</span>" +
-      '<span class="type-heading focus">' +
-      escapeHtml(String(modal.label || (browser ? "SAMPLE BROWSER" : "OPTIONS"))) +
-      "</span></div>" +
-      status +
+      '<span class="spring"></span>' +
+      '<span class="type-hint focus" data-role="option-entry">EDIT + UP</span>' +
+      "</header>" +
+      '<div class="type-hint muted option-source" data-role="option-source">' +
+      escapeHtml(sourceAnnotation) +
+      "</div>" +
+      optionOriginStatusHtml(origin) +
+      '<div class="option-rule" aria-hidden="true"></div>' +
       '<div class="modal-options" data-role="modal-options">' +
-      rows +
-      "</div></div>"
+      optionRows +
+      "</div>" +
+      '<footer class="option-footer" data-role="option-footer">' +
+      hintRun(model.validActions || []) +
+      "</footer></div>"
     );
   }
 
@@ -2002,15 +2224,34 @@
       }
       var originalTop = element.scrollTop;
       var maximumTop = Math.max(0, element.scrollHeight - element.clientHeight);
+      var semanticTargets = element.querySelectorAll("[data-focus-path]");
+      var firstTarget = semanticTargets.length > 0 ? semanticTargets[0] : null;
+      var lastTarget =
+        semanticTargets.length > 0
+          ? semanticTargets[semanticTargets.length - 1]
+          : null;
       element.scrollTop = 0;
       var startReachable = Math.abs(element.scrollTop) <= 1;
+      var containerRect = element.getBoundingClientRect();
+      var firstRect = firstTarget ? firstTarget.getBoundingClientRect() : null;
+      var firstTargetReachable =
+        !firstRect ||
+        (firstRect.top >= containerRect.top - 1 &&
+          firstRect.bottom <= containerRect.bottom + 1);
       element.scrollTop = maximumTop;
       var endReachable = Math.abs(element.scrollTop - maximumTop) <= 1;
+      var lastRect = lastTarget ? lastTarget.getBoundingClientRect() : null;
+      var lastTargetReachable =
+        !lastRect ||
+        (lastRect.top >= containerRect.top - 1 &&
+          lastRect.bottom <= containerRect.bottom + 1);
       element.scrollTop = originalTop;
       return {
         scrollableBy: maximumTop,
         startReachable: startReachable,
         endReachable: endReachable,
+        firstTargetReachable: firstTargetReachable,
+        lastTargetReachable: lastTargetReachable,
       };
     }
 
@@ -2339,14 +2580,38 @@
       var optionNodes = modalNode.querySelectorAll(".modal-option");
       var modalOptions = [];
       for (var optionIndex = 0; optionIndex < optionNodes.length; optionIndex += 1) {
+        var serializedOptionActions = optionNodes[optionIndex].getAttribute(
+          "data-valid-actions"
+        );
+        var optionActions = [];
+        if (serializedOptionActions) {
+          try {
+            optionActions = JSON.parse(serializedOptionActions);
+          } catch (_error) {
+            optionActions = [{ invalid: true }];
+          }
+        }
         modalOptions.push({
+          identity: optionNodes[optionIndex].getAttribute("data-option-id"),
           focusPath: optionNodes[optionIndex].getAttribute("data-focus-path"),
           focused: optionNodes[optionIndex].classList.contains("is-focused"),
           disabled: optionNodes[optionIndex].classList.contains("is-disabled"),
+          enabled: optionNodes[optionIndex].getAttribute("data-enabled") === "true",
+          current: optionNodes[optionIndex].getAttribute("data-current") === "true",
           label: textOf(optionNodes[optionIndex], ".modal-option-label"),
           metadata: textOf(optionNodes[optionIndex], ".modal-option-meta"),
           metadataState: optionNodes[optionIndex].getAttribute("data-metadata-state"),
-          state: textOf(optionNodes[optionIndex], ".modal-option-state"),
+          state:
+            optionNodes[optionIndex].getAttribute("data-option-state") ||
+            textOf(optionNodes[optionIndex], ".modal-option-state"),
+          stateLabel:
+            textOf(optionNodes[optionIndex], ".modal-option-availability") ||
+            textOf(optionNodes[optionIndex], ".modal-option-state"),
+          currentLabel: textOf(optionNodes[optionIndex], ".modal-option-current"),
+          validActions: optionActions,
+          actionText: textOf(optionNodes[optionIndex], '[data-role="option-actions"]'),
+          bounds: rectOf(optionNodes[optionIndex]),
+          visible: fullyVisible(optionNodes[optionIndex]),
         });
       }
       var visualizationNodes = modalNode.querySelectorAll("[data-visualization]");
@@ -2361,10 +2626,92 @@
         });
       }
       var previewNode = modalNode.querySelector('[data-role="preview-region"]');
+      var optionListNode = modalNode.querySelector('[data-role="modal-options"]');
+      var optionStatusNode = modalNode.querySelector(
+        '[data-role="option-origin-status"]'
+      );
+      var slotPositionAttribute = modalNode.getAttribute("data-slot-position");
+      var modalRequiredOverlapPx = 0;
+      if (modalNode.classList.contains("option-modal")) {
+        var modalChildren = [];
+        for (var modalChildIndex = 0; modalChildIndex < modalNode.children.length; modalChildIndex += 1) {
+          var modalChild = modalNode.children[modalChildIndex];
+          var modalChildRect = modalChild.getBoundingClientRect();
+          if (modalChildRect.width > 0 && modalChildRect.height > 0) {
+            modalChildren.push(modalChild);
+          }
+        }
+        for (var modalAdjacentIndex = 0; modalAdjacentIndex + 1 < modalChildren.length; modalAdjacentIndex += 1) {
+          var paintedBottom = modalChildren[
+            modalAdjacentIndex
+          ].getBoundingClientRect().bottom;
+          var modalChildStyle = window.getComputedStyle(
+            modalChildren[modalAdjacentIndex]
+          );
+          var clipsDescendants =
+            modalChildStyle.overflowY === "auto" ||
+            modalChildStyle.overflowY === "scroll" ||
+            modalChildStyle.overflowY === "hidden" ||
+            modalChildStyle.overflowY === "clip";
+          if (!clipsDescendants) {
+            var modalDescendants = modalChildren[modalAdjacentIndex].querySelectorAll("*");
+            for (var modalDescendantIndex = 0; modalDescendantIndex < modalDescendants.length; modalDescendantIndex += 1) {
+              var modalDescendantRect = modalDescendants[
+                modalDescendantIndex
+              ].getBoundingClientRect();
+              if (modalDescendantRect.width > 0 && modalDescendantRect.height > 0) {
+                paintedBottom = Math.max(paintedBottom, modalDescendantRect.bottom);
+              }
+            }
+          }
+          modalRequiredOverlapPx = Math.max(
+            modalRequiredOverlapPx,
+            paintedBottom -
+              modalChildren[modalAdjacentIndex + 1].getBoundingClientRect().top
+          );
+        }
+      }
       modal = {
         browser: modalNode.classList.contains("sample-browser"),
-        title: textOf(modalNode, ".modal-title .type-heading"),
+        title:
+          textOf(modalNode, '[data-role="option-title"]') ||
+          textOf(modalNode, ".modal-title .type-heading"),
+        optionKind: modalNode.getAttribute("data-option-kind"),
+        subjectControl: modalNode.getAttribute("data-subject-control"),
+        returnControl: modalNode.getAttribute("data-return-control"),
+        slotPosition:
+          slotPositionAttribute === null ? null : Number(slotPositionAttribute),
+        entry: textOf(modalNode, '[data-role="option-entry"]'),
+        source: textOf(modalNode, '[data-role="option-source"]'),
         options: modalOptions,
+        optionStatus: optionStatusNode
+          ? {
+              origin: textOf(optionStatusNode, '[data-role="option-origin-label"]'),
+              active: textOf(optionStatusNode, '[data-role="option-active"]'),
+              requested: textOf(optionStatusNode, '[data-role="option-requested"]'),
+              lifecycle: optionStatusNode.getAttribute("data-lifecycle"),
+              lifecycleLabel: textOf(
+                optionStatusNode,
+                '[data-role="option-lifecycle"]'
+              ),
+              revisions: textOf(
+                optionStatusNode,
+                '[data-role="option-revisions"]'
+              ),
+              cause: textOf(optionStatusNode, '[data-role="option-cause"]'),
+            }
+          : null,
+        listBounds: rectOf(optionListNode),
+        listReachability: scrollReachability(optionListNode),
+        listHorizontalOverflowPx: optionListNode
+          ? Math.max(0, optionListNode.scrollWidth - optionListNode.clientWidth)
+          : 0,
+        requiredContentOverlapPx: Math.max(
+          0,
+          Math.round(modalRequiredOverlapPx)
+        ),
+        footerGuidance: textOf(modalNode, '[data-role="option-footer"]'),
+        bounds: rectOf(modalNode),
         visualizations: modalVisualizations,
         previewState: previewNode ? previewNode.getAttribute("data-preview-state") : null,
         previewText: previewNode ? textOf(previewNode, '[data-role="preview-playhead"]') : null,

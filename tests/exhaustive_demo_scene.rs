@@ -96,16 +96,17 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .len(),
         47
     );
-    // The eleven WP-era reducer events, the four WP06 occupancy lifecycle
-    // events, SelectPatch, and Phase 7's OpenRelated, Activate, PreviewStart,
-    // and PreviewStop — every current player-reachable event kind.
+    // The eleven WP-era reducer events, the five WP06 occupancy lifecycle and
+    // topology outcomes, SelectPatch, and Phase 7's OpenRelated, Activate,
+    // PreviewStart, and PreviewStop — every current player/worker-reachable
+    // event kind declared by the exhaustive scene.
     assert_eq!(
         report
             .coverage()
             .group(DemoCoverageGroup::Events)
             .exercised()
             .len(),
-        20
+        21
     );
     assert_eq!(
         report

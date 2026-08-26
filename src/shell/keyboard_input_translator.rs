@@ -383,6 +383,48 @@ mod tests {
     }
 
     #[test]
+    fn option_state_keyboard_grammar_maps_to_existing_semantic_actions_only() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::K)),
+            Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::W)),
+            Some(SemanticAction::Adjust(Direction::Up)),
+            "Edit+Up enters the reducer-owned option state"
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::K)),
+            Some(SemanticAction::SetInteractionMode(
+                InteractionMode::Navigate
+            ))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::W)),
+            Some(SemanticAction::Navigate(Direction::Up))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::S)),
+            Some(SemanticAction::Navigate(Direction::Down))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Return)),
+            Some(SemanticAction::Activate),
+            "Edit/Return chooses through the existing Activate action"
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Shift)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::S)),
+            Some(SemanticAction::Return),
+            "Shift+Down closes through the existing Return action"
+        );
+    }
+
+    #[test]
     fn return_and_start_press_hold_release_have_exact_semantic_edges() {
         let mut translator = KeyboardInputTranslator::new();
         assert_eq!(

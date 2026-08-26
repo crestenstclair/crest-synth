@@ -1466,14 +1466,18 @@ impl AppState {
             .ok_or(EventRejection::ActionUnavailableInContext)?;
         let source = resolver.choice_source(&subject)?;
         let paths = resolver.patch_choice_paths(&subject)?;
-        let focus_index = source
+        let focus = source
             .options()
             .iter()
-            .position(|option| option.is_current() && option.is_enabled())
-            .unwrap_or(0);
-        let focus = paths
-            .get(focus_index)
-            .cloned()
+            .find(|option| option.is_current() && option.is_enabled())
+            .map(|option| {
+                FocusPath::patch_choice(
+                    subject.patch_id(),
+                    subject.stable_id(),
+                    option.id().to_owned(),
+                )
+            })
+            .or_else(|| paths.first().cloned())
             .ok_or(EventRejection::ActionUnavailableInContext)?;
         self.interaction
             .enter_choice(subject, focus)

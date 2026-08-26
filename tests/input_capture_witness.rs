@@ -166,6 +166,21 @@ mod witness {
             pressed: false,
             repeat: false,
         });
+        // Repeated physical Shift gestures use AppKit FlagsChanged edges.
+        // Every transition must remain non-repeatable and must survive the
+        // Objective-C callback boundary without querying key-only state.
+        for _ in 0..4 {
+            steps.push(Step::Key {
+                code: code_for(WindowKey::Shift),
+                pressed: true,
+                repeat: false,
+            });
+            steps.push(Step::Key {
+                code: code_for(WindowKey::Shift),
+                pressed: false,
+                repeat: false,
+            });
+        }
         // Hold K, lose focus, then probe with a bare D: cleared modifier
         // means Navigate, retained modifier means Adjust.
         steps.push(Step::Key {
