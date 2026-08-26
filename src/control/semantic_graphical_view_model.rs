@@ -37,6 +37,35 @@ pub enum SemanticControlKind {
     BrowserCancel,
 }
 
+/// Visible generic status for one deterministic Patch Overview focus repair.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SemanticFocusRepairStatus {
+    kind: String,
+    label: String,
+    patch_id: PatchId,
+    removed_control_id: PatchControlId,
+    replacement_control_id: PatchControlId,
+}
+
+impl SemanticFocusRepairStatus {
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+
+    pub const fn patch_id(&self) -> PatchId {
+        self.patch_id
+    }
+
+    pub const fn removed_control_id(&self) -> &PatchControlId {
+        &self.removed_control_id
+    }
+
+    pub const fn replacement_control_id(&self) -> &PatchControlId {
+        &self.replacement_control_id
+    }
+}
+
 impl From<ParameterKind> for SemanticControlKind {
     fn from(kind: ParameterKind) -> Self {
         match kind {
@@ -644,6 +673,7 @@ struct SemanticGraphicalData {
     return_path: Option<ReturnPath>,
     valid_actions: Vec<ValidAction>,
     status: SemanticLifecycleStatus,
+    focus_repair: Option<SemanticFocusRepairStatus>,
     errors: Vec<SemanticError>,
     surfaces: Vec<SemanticSurfaceViewModel>,
 }
@@ -709,6 +739,7 @@ impl SemanticGraphicalViewModel {
         "returnPath",
         "validActions",
         "status",
+        "focusRepair",
         "errors",
         "surfaces",
     ];
@@ -744,6 +775,12 @@ impl SemanticGraphicalViewModel {
         "focusPath.modalId",
         "focusPath.patchId",
         "focusPath.surface",
+        "focusRepair",
+        "focusRepair.kind",
+        "focusRepair.label",
+        "focusRepair.patchId",
+        "focusRepair.removedControlId",
+        "focusRepair.replacementControlId",
         "generation",
         "interactionMode",
         "returnPath",
@@ -970,6 +1007,10 @@ impl SemanticGraphicalViewModel {
         &self.data.status
     }
 
+    pub fn focus_repair(&self) -> Option<&SemanticFocusRepairStatus> {
+        self.data.focus_repair.as_ref()
+    }
+
     pub fn errors(&self) -> &[SemanticError] {
         &self.data.errors
     }
@@ -1127,6 +1168,7 @@ impl SemanticGraphicalViewModel {
                 graph_revision,
                 target_graph_revision: None,
             },
+            focus_repair: None,
             errors: Vec::new(),
             surfaces,
         };
@@ -1146,6 +1188,7 @@ impl SemanticGraphicalViewModel {
             return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
         }
         let status = project_status(state);
+        let focus_repair = project_focus_repair(state)?;
         let errors = project_errors(state, &resolver, &status)?;
         let mut surfaces = match state.context() {
             TopLevelContext::Patch => project_patch_surfaces(state, &resolver, &status, &errors)?,
@@ -1163,6 +1206,7 @@ impl SemanticGraphicalViewModel {
             return_path: state.interaction().return_path().cloned(),
             valid_actions,
             status,
+            focus_repair,
             errors,
             surfaces,
         };
@@ -1508,6 +1552,38 @@ fn project_status(state: &AppState) -> SemanticLifecycleStatus {
         graph_revision: selection.projection_graph_revision(),
         target_graph_revision: correlation.and_then(|value| value.target_graph_revision()),
     }
+}
+
+fn project_focus_repair(
+    state: &AppState,
+) -> Result<Option<SemanticFocusRepairStatus>, SemanticGraphicalViewModelError> {
+    let Some(repair) = state.focus_repair_status() else {
+        return Ok(None);
+    };
+    let patch_id = repair
+        .removed_origin()
+        .patch_id()
+        .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
+    if repair.replacement_origin().patch_id() != Some(patch_id) {
+        return Err(SemanticGraphicalViewModelError::PatchIdentityDisagreement);
+    }
+    let SemanticControlId::Patch(removed_control_id) = repair.removed_origin().control_id() else {
+        return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
+    };
+    let SemanticControlId::Patch(replacement_control_id) = repair.replacement_origin().control_id()
+    else {
+        return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
+    };
+    Ok(Some(SemanticFocusRepairStatus {
+        kind: "focusRepaired".to_owned(),
+        label: format!(
+            "Focus repaired: {} → {}",
+            removed_control_id, replacement_control_id
+        ),
+        patch_id,
+        removed_control_id: removed_control_id.clone(),
+        replacement_control_id: replacement_control_id.clone(),
+    }))
 }
 
 fn project_errors(
@@ -3922,7 +3998,12 @@ mod projection_enrichment_tests {
         assert!(
             detail.controls().iter().all(|control| matches!(
                 control.status().map(SemanticLifecycleStatus::kind),
-                Some(EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Activating)
+                Some(
+                    EngineSelectionStatusKind::Loading
+                        | EngineSelectionStatusKind::Validating
+                        | EngineSelectionStatusKind::Preparing
+                        | EngineSelectionStatusKind::Activating
+                )
             )),
             "a preparing subject reports its typed lifecycle on its own rows"
         );

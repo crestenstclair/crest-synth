@@ -811,12 +811,12 @@ where
                     request_id,
                     source_revision,
                     None,
-                    EngineSelectionStatusKind::Preparing,
+                    EngineSelectionStatusKind::Loading,
                 )?;
                 let checkpoint = self.capture_engine_checkpoint(
                     app_loop,
                     &transition,
-                    EngineSelectionStatusKind::Preparing,
+                    EngineSelectionStatusKind::Loading,
                     request_id,
                     request_record.sequence(),
                     source_audio,
@@ -846,7 +846,9 @@ where
             } => {
                 let transition = self.current_engine_transition()?.clone();
                 match app_loop.engine_selection_status().kind() {
-                    EngineSelectionStatusKind::Preparing => Ok(None),
+                    EngineSelectionStatusKind::Loading
+                    | EngineSelectionStatusKind::Validating
+                    | EngineSelectionStatusKind::Preparing => Ok(None),
                     EngineSelectionStatusKind::Activating => {
                         let target_revision = app_loop
                             .engine_selection_status()
@@ -858,6 +860,47 @@ where
                         {
                             return Err(LiveDemoError::EngineLifecycleMismatch);
                         }
+                        let event_sequence = verify_engine_effects(
+                            app_loop,
+                            &transition,
+                            request_id,
+                            source_revision,
+                            Some(target_revision),
+                            EngineSelectionStatusKind::Activating,
+                        )?;
+                        let checkpoint = self.capture_engine_checkpoint(
+                            app_loop,
+                            &transition,
+                            EngineSelectionStatusKind::Activating,
+                            request_id,
+                            event_sequence,
+                            None,
+                            None,
+                        )?;
+                        self.engine_phase = LiveEnginePhase::AwaitReady {
+                            request_id,
+                            source_revision,
+                            target_revision,
+                        };
+                        self.mark_progress();
+                        self.push_engine_checkpoint(checkpoint)
+                    }
+                    EngineSelectionStatusKind::Unavailable
+                    | EngineSelectionStatusKind::Failed
+                    | EngineSelectionStatusKind::Ready => {
+                        Err(LiveDemoError::EngineLifecycleMismatch)
+                    }
+                }
+            }
+            LiveEnginePhase::AwaitReady {
+                request_id,
+                source_revision,
+                target_revision,
+            } => {
+                let transition = self.current_engine_transition()?.clone();
+                match app_loop.engine_selection_status().kind() {
+                    EngineSelectionStatusKind::Activating => Ok(None),
+                    EngineSelectionStatusKind::Ready => {
                         if let Some((removed, old_order)) = self.pending_focus_recovery.take() {
                             let new_order = SemanticResolver::new(app_loop.state())
                                 .patch_main_paths(transition.patch_id())?;
@@ -886,45 +929,6 @@ where
                                 }
                             }
                         }
-                        let event_sequence = verify_engine_effects(
-                            app_loop,
-                            &transition,
-                            request_id,
-                            source_revision,
-                            Some(target_revision),
-                            EngineSelectionStatusKind::Activating,
-                        )?;
-                        let checkpoint = self.capture_engine_checkpoint(
-                            app_loop,
-                            &transition,
-                            EngineSelectionStatusKind::Activating,
-                            request_id,
-                            event_sequence,
-                            None,
-                            None,
-                        )?;
-                        self.engine_phase = LiveEnginePhase::AwaitReady {
-                            request_id,
-                            source_revision,
-                            target_revision,
-                        };
-                        self.mark_progress();
-                        self.push_engine_checkpoint(checkpoint)
-                    }
-                    EngineSelectionStatusKind::Failed | EngineSelectionStatusKind::Ready => {
-                        Err(LiveDemoError::EngineLifecycleMismatch)
-                    }
-                }
-            }
-            LiveEnginePhase::AwaitReady {
-                request_id,
-                source_revision,
-                target_revision,
-            } => {
-                let transition = self.current_engine_transition()?.clone();
-                match app_loop.engine_selection_status().kind() {
-                    EngineSelectionStatusKind::Activating => Ok(None),
-                    EngineSelectionStatusKind::Ready => {
                         verify_engine_effects(
                             app_loop,
                             &transition,
@@ -950,7 +954,11 @@ where
                         self.mark_progress();
                         Ok(None)
                     }
-                    EngineSelectionStatusKind::Failed | EngineSelectionStatusKind::Preparing => {
+                    EngineSelectionStatusKind::Loading
+                    | EngineSelectionStatusKind::Validating
+                    | EngineSelectionStatusKind::Preparing
+                    | EngineSelectionStatusKind::Unavailable
+                    | EngineSelectionStatusKind::Failed => {
                         Err(LiveDemoError::EngineLifecycleMismatch)
                     }
                 }
@@ -1174,7 +1182,7 @@ where
                     } else {
                         let record = dispatch_engine_event(app_loop, event)?;
                         let status = app_loop.engine_selection_status();
-                        if status.kind() != EngineSelectionStatusKind::Preparing {
+                        if status.kind() != EngineSelectionStatusKind::Loading {
                             return Err(LiveDemoError::TopologyLifecycleMismatch);
                         }
                         let request_id = status
@@ -1205,7 +1213,9 @@ where
             LiveTopologyPhase::AwaitActivating { mut context } => {
                 self.observe_topology_revision(&mut context);
                 match app_loop.engine_selection_status().kind() {
-                    EngineSelectionStatusKind::Preparing => {
+                    EngineSelectionStatusKind::Loading
+                    | EngineSelectionStatusKind::Validating
+                    | EngineSelectionStatusKind::Preparing => {
                         self.topology_phase = LiveTopologyPhase::AwaitActivating { context };
                         Ok(None)
                     }
@@ -1218,9 +1228,9 @@ where
                         if target <= context.source_revision {
                             return Err(LiveDemoError::TopologyLifecycleMismatch);
                         }
-                        // The occupancy is committed exactly at Activating:
-                        // the canonical projection must reflect it now.
-                        if !topology_occupancy_committed(app_loop, &transition)? {
+                        // Activating retains the acknowledged occupancy while
+                        // the prepared candidate waits for graph acknowledgement.
+                        if topology_occupancy_committed(app_loop, &transition)? {
                             return Err(LiveDemoError::TopologyProjectionMismatch);
                         }
                         context.target_revision = Some(target);
@@ -1228,7 +1238,9 @@ where
                         self.mark_progress();
                         Ok(None)
                     }
-                    EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed => {
+                    EngineSelectionStatusKind::Ready
+                    | EngineSelectionStatusKind::Unavailable
+                    | EngineSelectionStatusKind::Failed => {
                         Err(LiveDemoError::TopologyLifecycleMismatch)
                     }
                 }
@@ -1241,6 +1253,9 @@ where
                         Ok(None)
                     }
                     EngineSelectionStatusKind::Ready => {
+                        if !topology_occupancy_committed(app_loop, &transition)? {
+                            return Err(LiveDemoError::TopologyProjectionMismatch);
+                        }
                         // A held-note transition never re-sounds its
                         // probe — the note sounded before the dispatch must
                         // itself survive the block-boundary activation via
@@ -1257,7 +1272,11 @@ where
                         self.mark_progress();
                         Ok(None)
                     }
-                    EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Failed => {
+                    EngineSelectionStatusKind::Loading
+                    | EngineSelectionStatusKind::Validating
+                    | EngineSelectionStatusKind::Preparing
+                    | EngineSelectionStatusKind::Unavailable
+                    | EngineSelectionStatusKind::Failed => {
                         Err(LiveDemoError::TopologyLifecycleMismatch)
                     }
                 }
@@ -1627,17 +1646,16 @@ where
             .structural_config_baseline
             .as_ref()
             .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
+        let pending = status != EngineSelectionStatusKind::Ready;
         let preset = match transition.intent() {
             StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. } => {
                 return Err(LiveDemoError::EngineProjectionMismatch)
             }
             StructuralEditIntent::ReplaceCapability { .. } => {
-                let expected_request =
-                    (status != EngineSelectionStatusKind::Ready).then_some(request_id);
-                let expected_requested = (status != EngineSelectionStatusKind::Ready)
-                    .then_some(transition.target_capability_id());
-                let expected_active = if status == EngineSelectionStatusKind::Preparing {
+                let expected_request = pending.then_some(request_id);
+                let expected_requested = pending.then_some(transition.target_capability_id());
+                let expected_active = if pending {
                     transition.source_capability_id()
                 } else {
                     transition.target_capability_id()
@@ -1647,10 +1665,8 @@ where
                     || engine.request_id() != expected_request
                     || engine.requested_capability_id() != expected_requested
                     || engine.failure().is_some()
-                    || (status == EngineSelectionStatusKind::Preparing
-                        && patch.instrument_config() != baseline)
-                    || (status != EngineSelectionStatusKind::Preparing
-                        && !focused_config_is_descriptor_default(app_loop, transition)?)
+                    || (pending && patch.instrument_config() != baseline)
+                    || (!pending && !focused_config_is_descriptor_default(app_loop, transition)?)
                 {
                     return Err(LiveDemoError::EngineTargetConfigMismatch);
                 }
@@ -1675,7 +1691,7 @@ where
                     .flat_map(|section| section.parameters())
                     .find(|row| row.id() == parameter_id)
                     .ok_or(LiveDemoError::EngineProjectionMismatch)?;
-                let active_choice = if status == EngineSelectionStatusKind::Preparing {
+                let active_choice = if pending {
                     transition
                         .source_choice_id()
                         .ok_or(LiveDemoError::EngineProjectionMismatch)?
@@ -1684,7 +1700,7 @@ where
                         .target_choice_id()
                         .ok_or(LiveDemoError::EngineProjectionMismatch)?
                 };
-                let active_label = if status == EngineSelectionStatusKind::Preparing {
+                let active_label = if pending {
                     transition
                         .source_label()
                         .ok_or(LiveDemoError::EngineProjectionMismatch)?
@@ -1693,13 +1709,9 @@ where
                         .target_label()
                         .ok_or(LiveDemoError::EngineProjectionMismatch)?
                 };
-                let requested_choice =
-                    (status != EngineSelectionStatusKind::Ready).then_some(choice_id.as_str());
-                let requested_label = (status != EngineSelectionStatusKind::Ready)
-                    .then(|| transition.target_label())
-                    .flatten();
-                let expected_row_status =
-                    (status != EngineSelectionStatusKind::Ready).then_some(status);
+                let requested_choice = pending.then_some(choice_id.as_str());
+                let requested_label = pending.then(|| transition.target_label()).flatten();
+                let expected_row_status = pending.then_some(status);
                 if row.control_id() != Some(transition.focused_control_id())
                     || row.selected_choice_id() != Some(active_choice)
                     || row.selected_label() != Some(active_label)
@@ -1707,9 +1719,8 @@ where
                     || row.requested_label() != requested_label
                     || row.status() != expected_row_status
                     || row.failure().is_some()
-                    || (status == EngineSelectionStatusKind::Preparing
-                        && patch.instrument_config() != baseline)
-                    || (status != EngineSelectionStatusKind::Preparing
+                    || (pending && patch.instrument_config() != baseline)
+                    || (!pending
                         && !preset_config_delta_is_exact(
                             baseline,
                             patch.instrument_config(),
@@ -2491,21 +2502,25 @@ where
     Boundary: ControlAudioBoundary,
 {
     let expected: &[EngineSelectionEffectKind] = match status {
-        EngineSelectionStatusKind::Preparing => &[EngineSelectionEffectKind::PrepareRequested],
+        EngineSelectionStatusKind::Loading
+        | EngineSelectionStatusKind::Validating
+        | EngineSelectionStatusKind::Preparing => &[EngineSelectionEffectKind::PrepareRequested],
         EngineSelectionStatusKind::Activating => &[
             EngineSelectionEffectKind::PrepareRequested,
-            EngineSelectionEffectKind::CandidateCommitted,
+            EngineSelectionEffectKind::CandidatePrepared,
             EngineSelectionEffectKind::GraphStaged,
             EngineSelectionEffectKind::GraphPublished,
         ],
         EngineSelectionStatusKind::Ready => &[
             EngineSelectionEffectKind::PrepareRequested,
-            EngineSelectionEffectKind::CandidateCommitted,
+            EngineSelectionEffectKind::CandidatePrepared,
             EngineSelectionEffectKind::GraphStaged,
             EngineSelectionEffectKind::GraphPublished,
             EngineSelectionEffectKind::ActivationAcknowledged,
         ],
-        EngineSelectionStatusKind::Failed => return Err(LiveDemoError::EngineLifecycleMismatch),
+        EngineSelectionStatusKind::Unavailable | EngineSelectionStatusKind::Failed => {
+            return Err(LiveDemoError::EngineLifecycleMismatch)
+        }
     };
     let mut actual = Vec::new();
     let mut endpoint = None;

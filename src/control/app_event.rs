@@ -1,7 +1,7 @@
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
-    EngineSelectionFailure, EngineSelectionRequestId, InteractionMode, SampleAssetLifecycle,
-    SemanticAction, StructuralEditIntent, SurfaceId,
+    EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, InteractionMode,
+    PatchControlId, SampleAssetLifecycle, SemanticAction, StructuralEditIntent, SurfaceId,
 };
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
@@ -50,6 +50,7 @@ pub enum AppEventPayloadShape {
     SampleCatalogListing,
     SampleAssetError,
     EngineSelectionFailure,
+    EngineSelectionStatusKind,
     Boolean,
     StructuralEditIntent,
     InteractionMode,
@@ -57,6 +58,7 @@ pub enum AppEventPayloadShape {
     EffectSlotIndex,
     BusId,
     OptionalEffectEntry,
+    PatchControlId,
 }
 
 /// One typed entry in the exhaustive application-event surface.
@@ -94,6 +96,15 @@ pub enum AppEventSurfaceDescriptor {
     Midi {
         patch_id: AppEventPayloadShape,
         message: AppEventPayloadShape,
+    },
+    SetPatchOverviewOriginEnabled {
+        patch_id: AppEventPayloadShape,
+        control: AppEventPayloadShape,
+        enabled: AppEventPayloadShape,
+    },
+    EngineSelectionLifecycleAdvanced {
+        request_id: AppEventPayloadShape,
+        lifecycle: AppEventPayloadShape,
     },
     EnginePrepared {
         request_id: AppEventPayloadShape,
@@ -156,7 +167,7 @@ pub enum AppEventSurfaceDescriptor {
     },
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 33] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 35] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -219,6 +230,15 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 33] = [
     AppEventSurfaceDescriptor::Midi {
         patch_id: AppEventPayloadShape::PatchId,
         message: AppEventPayloadShape::MidiMessage,
+    },
+    AppEventSurfaceDescriptor::SetPatchOverviewOriginEnabled {
+        patch_id: AppEventPayloadShape::PatchId,
+        control: AppEventPayloadShape::PatchControlId,
+        enabled: AppEventPayloadShape::Boolean,
+    },
+    AppEventSurfaceDescriptor::EngineSelectionLifecycleAdvanced {
+        request_id: AppEventPayloadShape::EngineSelectionRequestId,
+        lifecycle: AppEventPayloadShape::EngineSelectionStatusKind,
     },
     AppEventSurfaceDescriptor::EnginePrepared {
         request_id: AppEventPayloadShape::EngineSelectionRequestId,
@@ -319,7 +339,22 @@ pub enum AppEvent {
         patch_id: PatchId,
         message: MidiMessage,
     },
-    /// Commits one provider-validated candidate after off-callback preparation.
+    /// Enables or disables one canonical Patch Overview origin in the
+    /// reducer-owned semantic schema.
+    SetPatchOverviewOriginEnabled {
+        patch_id: PatchId,
+        control: PatchControlId,
+        enabled: bool,
+    },
+    /// Advances one correlated structural request through reducer-owned
+    /// Loading → Validating → Preparing admission phases.
+    EngineSelectionLifecycleAdvanced {
+        request_id: EngineSelectionRequestId,
+        lifecycle: EngineSelectionStatusKind,
+    },
+    /// Records one provider-validated candidate after off-callback
+    /// preparation. Canonical Patch state is committed only by the correlated
+    /// activation acknowledgement.
     EnginePrepared {
         request_id: EngineSelectionRequestId,
         patch_id: PatchId,
@@ -379,7 +414,9 @@ pub enum AppEvent {
         bus: BusId,
         entry: Option<EffectCapabilityId>,
     },
-    /// Commits one prepared occupancy change after off-callback preparation.
+    /// Records one prepared occupancy candidate after off-callback
+    /// preparation. Canonical occupancy is committed only by the correlated
+    /// activation acknowledgement.
     TopologyPrepared {
         request_id: EngineSelectionRequestId,
         intent: StructuralEditIntent,
@@ -441,6 +478,8 @@ impl AppEvent {
                 | Self::OpenRelated
                 | Self::PreviewStart
                 | Self::PreviewStop
+                | Self::SetPatchOverviewOriginEnabled { .. }
+                | Self::EngineSelectionLifecycleAdvanced { .. }
                 | Self::SampleAssetLifecycleAdvanced { .. }
                 | Self::SampleCatalogRefreshed { .. }
                 | Self::EnterSurface(_)
@@ -489,6 +528,19 @@ impl AppEvent {
                 patch_id: AppEventPayloadShape::PatchId,
                 message: AppEventPayloadShape::MidiMessage,
             },
+            Self::SetPatchOverviewOriginEnabled { .. } => {
+                AppEventSurfaceDescriptor::SetPatchOverviewOriginEnabled {
+                    patch_id: AppEventPayloadShape::PatchId,
+                    control: AppEventPayloadShape::PatchControlId,
+                    enabled: AppEventPayloadShape::Boolean,
+                }
+            }
+            Self::EngineSelectionLifecycleAdvanced { .. } => {
+                AppEventSurfaceDescriptor::EngineSelectionLifecycleAdvanced {
+                    request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                    lifecycle: AppEventPayloadShape::EngineSelectionStatusKind,
+                }
+            }
             Self::EnginePrepared { .. } => AppEventSurfaceDescriptor::EnginePrepared {
                 request_id: AppEventPayloadShape::EngineSelectionRequestId,
                 patch_id: AppEventPayloadShape::PatchId,
@@ -607,7 +659,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 33);
+        assert_eq!(descriptor.len(), 35);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -649,6 +701,19 @@ mod tests {
             patch_id: AppEventPayloadShape::PatchId,
             message: AppEventPayloadShape::MidiMessage,
         }));
+        assert!(
+            descriptor.contains(&AppEventSurfaceDescriptor::SetPatchOverviewOriginEnabled {
+                patch_id: AppEventPayloadShape::PatchId,
+                control: AppEventPayloadShape::PatchControlId,
+                enabled: AppEventPayloadShape::Boolean,
+            })
+        );
+        assert!(descriptor.contains(
+            &AppEventSurfaceDescriptor::EngineSelectionLifecycleAdvanced {
+                request_id: AppEventPayloadShape::EngineSelectionRequestId,
+                lifecycle: AppEventPayloadShape::EngineSelectionStatusKind,
+            }
+        ));
         assert!(
             descriptor.contains(&AppEventSurfaceDescriptor::EnginePrepared {
                 request_id: AppEventPayloadShape::EngineSelectionRequestId,

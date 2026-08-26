@@ -310,14 +310,23 @@ impl<'a> SemanticResolver<'a> {
             .descriptor(patch.instrument_config().capability_id())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let mut paths = Vec::with_capacity(1 + crate::synth::effect_slot_id::MAX_EFFECT_SLOTS);
-        paths.push(FocusPath::patch_main(
-            patch_id,
-            None,
-            PatchControlId::Engine,
-        ));
+        if self
+            .state
+            .patch_overview_origin_enabled(patch_id, &PatchControlId::Engine)
+        {
+            paths.push(FocusPath::patch_main(
+                patch_id,
+                None,
+                PatchControlId::Engine,
+            ));
+        }
         paths.extend(
             crate::synth::effect_slot_id::EffectSlotIndex::ALL
                 .into_iter()
+                .filter(|slot| {
+                    self.state
+                        .patch_overview_origin_enabled(patch_id, &PatchControlId::EffectSlot(*slot))
+                })
                 .map(|slot| {
                     FocusPath::patch_main(patch_id, None, PatchControlId::EffectSlot(slot))
                 }),

@@ -7,8 +7,9 @@ use crate::control::engine_selection::{
 use crate::control::interaction_state::{InteractionState, Selection, SelectionSection};
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
-    FocusPath, MixerControlId, ModalControlId, PatchSubordinateSession, SampleBrowserState,
-    SamplePreviewState, SemanticAction, SemanticControlId, SemanticResolver, SurfaceId,
+    FocusPath, MixerControlId, ModalControlId, PatchControlId, PatchSubordinateSession,
+    SampleBrowserState, SamplePreviewState, SemanticAction, SemanticControlId, SemanticResolver,
+    SurfaceId,
 };
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::patch_id::PatchId;
@@ -111,6 +112,24 @@ impl ApplyOutcome {
 struct ReducerEffects {
     audio_command: Option<AudioCommand>,
     engine_selection_effect: Option<EngineSelectionEffect>,
+}
+
+/// One visible deterministic repair caused by an enabled-origin schema change.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FocusRepairStatus {
+    removed_origin: FocusPath,
+    replacement_origin: FocusPath,
+}
+
+impl FocusRepairStatus {
+    pub const fn removed_origin(&self) -> &FocusPath {
+        &self.removed_origin
+    }
+
+    pub const fn replacement_origin(&self) -> &FocusPath {
+        &self.replacement_origin
+    }
 }
 
 /// Reasons an AppEvent can be rejected without changing AppState.
@@ -433,8 +452,10 @@ pub(crate) fn exercise_reducer_table_rejections(
                 .expect("probe path shape is valid");
             interaction
         },
+        disabled_patch_overview_origins: std::collections::BTreeSet::new(),
+        focus_repair_status: None,
         sample_browser: SampleBrowserState::default(),
-        pending_asset_config: None,
+        pending_instrument_config: None,
         sample_visualizations: std::collections::BTreeMap::new(),
         pending_sample_visualization: None,
         engine_selection: EngineSelectionStatus::ready(GraphRevision::INITIAL),
@@ -518,14 +539,14 @@ pub struct AppState {
     global: GlobalParameters,
     returns: BusReturnBank,
     interaction: InteractionState,
+    disabled_patch_overview_origins: std::collections::BTreeSet<(PatchId, PatchControlId)>,
+    focus_repair_status: Option<FocusRepairStatus>,
     engine_selection: EngineSelectionStatus,
     sample_browser: SampleBrowserState,
-    /// Prepared Sample candidate held outside canonical Patch state until the
-    /// audio callback has installed the graph and the retired graph has been
-    /// collected. This is control-thread state only; projections and
-    /// persistence continue to observe the active asset while activation is
-    /// pending.
-    pending_asset_config: Option<crate::synth::InstrumentConfig>,
+    /// Complete prepared instrument candidate retained off callback until the
+    /// corresponding graph activation is acknowledged. This is transient
+    /// control-thread state and is never serialized as acknowledged product state.
+    pending_instrument_config: Option<crate::synth::InstrumentConfig>,
     sample_visualizations:
         std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
     pending_sample_visualization: Option<(
@@ -656,9 +677,11 @@ impl AppState {
             global,
             returns: BusReturnBank::default(),
             interaction: InteractionState::new(),
+            disabled_patch_overview_origins: std::collections::BTreeSet::new(),
+            focus_repair_status: None,
             engine_selection: EngineSelectionStatus::ready(active_graph_revision),
             sample_browser: SampleBrowserState::default(),
-            pending_asset_config: None,
+            pending_instrument_config: None,
             sample_visualizations: std::collections::BTreeMap::new(),
             pending_sample_visualization: None,
             last_engine_selection_request_id: EngineSelectionRequestId::NONE,
@@ -774,6 +797,20 @@ impl AppState {
         &self.interaction
     }
 
+    pub fn patch_overview_origin_enabled(
+        &self,
+        patch_id: PatchId,
+        control: &PatchControlId,
+    ) -> bool {
+        !self
+            .disabled_patch_overview_origins
+            .contains(&(patch_id, control.clone()))
+    }
+
+    pub const fn focus_repair_status(&self) -> Option<&FocusRepairStatus> {
+        self.focus_repair_status.as_ref()
+    }
+
     /// Returns the selected top-level context as a thin compatibility view.
     pub const fn context(&self) -> TopLevelContext {
         self.interaction.context()
@@ -785,6 +822,12 @@ impl AppState {
 
     pub const fn engine_selection(&self) -> &EngineSelectionStatus {
         &self.engine_selection
+    }
+
+    pub(crate) const fn pending_instrument_config(
+        &self,
+    ) -> Option<&crate::synth::InstrumentConfig> {
+        self.pending_instrument_config.as_ref()
     }
 
     /// Tests one normalized user action against a clone of the exact accepted
@@ -970,6 +1013,24 @@ impl AppState {
     }
 
     fn reduce(&mut self, event: AppEvent) -> Result<ReducerEffects, EventRejection> {
+        if matches!(
+            &event,
+            AppEvent::SelectContext(_)
+                | AppEvent::SelectPatch(_)
+                | AppEvent::Navigate(_)
+                | AppEvent::Adjust(_)
+                | AppEvent::SetInteractionMode(_)
+                | AppEvent::OpenRelated
+                | AppEvent::Activate
+                | AppEvent::PreviewStart
+                | AppEvent::PreviewStop
+                | AppEvent::EnterSurface(_)
+                | AppEvent::Return
+                | AppEvent::SetSlotOccupancy { .. }
+                | AppEvent::SetReturnOccupancy { .. }
+        ) {
+            self.focus_repair_status = None;
+        }
         match event {
             AppEvent::SelectContext(context) => {
                 self.select_context(context)?;
@@ -1057,6 +1118,21 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::Midi { .. } => unreachable!("MIDI is reduced by apply's read-only fast path"),
+            AppEvent::SetPatchOverviewOriginEnabled {
+                patch_id,
+                control,
+                enabled,
+            } => {
+                self.set_patch_overview_origin_enabled(patch_id, control, enabled)?;
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle,
+            } => {
+                self.engine_selection_lifecycle_advanced(request_id, lifecycle)?;
+                Ok(ReducerEffects::default())
+            }
             AppEvent::EnginePrepared {
                 request_id,
                 patch_id,
@@ -1415,6 +1491,7 @@ impl AppState {
             Some(PatchSubordinateSession::Choice { subject, .. }) => subject.clone(),
             Some(PatchSubordinateSession::SampleBrowser { .. })
             | Some(PatchSubordinateSession::Detail { .. })
+            | Some(PatchSubordinateSession::UtilityFromDetail { .. })
             | None => return Err(EventRejection::ActionUnavailableInContext),
         };
         let option_id = match self.interaction.focus_path().control_id() {
@@ -1899,8 +1976,6 @@ impl AppState {
         candidate_config: crate::synth::InstrumentConfig,
         prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
     ) -> Result<EngineSelectionEffect, EventRejection> {
-        let old_patch_order = SemanticResolver::new(self).patch_main_paths(patch_id)?;
-        let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
         let correlation = self.pending_correlation(request_id)?.clone();
         if correlation.patch_id() != Some(patch_id)
             || correlation.intent() != &intent
@@ -1916,14 +1991,6 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
-        // Read the destination's declared ceiling before taking the Patch
-        // mutably: committing the config and clamping the limit is one step,
-        // so canonical state never holds a limit the new engine cannot honour.
-        let target_policy = self
-            .capabilities
-            .descriptor(&target_capability_id)
-            .ok_or(EventRejection::MismatchedEngineSelection)?
-            .voice_policy();
         let patch = self
             .patches
             .iter()
@@ -1939,7 +2006,7 @@ impl AppState {
             .activating(target_graph_revision)
             .map_err(|_| EventRejection::MismatchedEngineSelection)?;
         let effect = EngineSelectionEffect::from_correlation(
-            EngineSelectionEffectKind::CandidateCommitted,
+            EngineSelectionEffectKind::CandidatePrepared,
             status
                 .correlation()
                 .expect("Activating status always owns correlation"),
@@ -1952,28 +2019,10 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
-        if asset_assignment {
-            // The prepared graph owns the candidate, but canonical Patch state
-            // remains the active graph's state until the callback swap is
-            // acknowledged. Asset locators therefore cannot leak early into
-            // projection or persistence.
-            self.pending_asset_config = Some(candidate_config);
-        } else if !audition {
-            let patch = self
-                .patches
-                .iter_mut()
-                .find(|patch| patch.id() == patch_id)
-                .ok_or(EventRejection::MismatchedEngineSelection)?;
-            // Commit the config and narrow the limit together. The preparation
-            // worker deliberately does not clamp: clamping only the candidate
-            // would leave the candidate snapshot and canonical state out of
-            // step, so the one narrowing happens here, where both land at once.
-            let carry_over = patch.replace_instrument_config(candidate_config, target_policy);
-            debug_assert_eq!(
-                patch.voice_limit(),
-                carry_over.limit(),
-                "the reported carry-over limit must be the one canonical state now holds"
-            );
+        if !audition {
+            // The prepared graph owns the candidate while canonical Patch
+            // state continues to describe the acknowledged active graph.
+            self.pending_instrument_config = Some(candidate_config);
         }
         self.pending_sample_visualization = prepared_visualization.map(|value| (request_id, value));
         self.engine_selection = status;
@@ -1982,8 +2031,26 @@ impl AppState {
         } else if audition {
             self.sample_browser.preview_activating(request_id);
         }
-        self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
         Ok(effect)
+    }
+
+    fn engine_selection_lifecycle_advanced(
+        &mut self,
+        request_id: EngineSelectionRequestId,
+        lifecycle: EngineSelectionStatusKind,
+    ) -> Result<(), EventRejection> {
+        let correlation = self
+            .engine_selection
+            .correlation()
+            .ok_or(EventRejection::StaleEngineSelection)?;
+        if correlation.request_id() != request_id {
+            return Err(EventRejection::StaleEngineSelection);
+        }
+        self.engine_selection = self
+            .engine_selection
+            .advance_admission(lifecycle)
+            .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -2008,12 +2075,17 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
-        self.engine_selection = self
-            .engine_selection
-            .failed(failure)
-            .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        self.engine_selection = if unavailable_failure(failure) {
+            self.engine_selection.unavailable(failure)
+        } else {
+            self.engine_selection.failed(failure)
+        }
+        .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        if !matches!(intent, StructuralEditIntent::PrepareAudition { .. }) {
+            self.pending_instrument_config = None;
+        }
         if matches!(intent, StructuralEditIntent::ReplaceAsset { .. }) {
-            self.pending_asset_config = None;
+            self.pending_instrument_config = None;
             self.pending_sample_visualization = None;
             self.sample_browser.assignment_failed(request_id, failure);
         } else if matches!(intent, StructuralEditIntent::PrepareAudition { .. }) {
@@ -2051,7 +2123,7 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
-        if !self.committed_intent_matches_state(&correlation) {
+        if !self.pending_intent_matches_state(&correlation) {
             return Err(EventRejection::MismatchedEngineSelection);
         }
         let asset_assignment = matches!(intent, StructuralEditIntent::ReplaceAsset { .. });
@@ -2061,9 +2133,9 @@ impl AppState {
             &correlation,
         )
         .expect("Activating correlation owns a target revision");
-        if asset_assignment {
+        if !audition && !intent.is_occupancy() {
             let candidate = self
-                .pending_asset_config
+                .pending_instrument_config
                 .clone()
                 .ok_or(EventRejection::MismatchedEngineSelection)?;
             let patch_id = correlation
@@ -2082,14 +2154,48 @@ impl AppState {
                 .find(|patch| patch.id() == patch_id)
                 .ok_or(EventRejection::MismatchedEngineSelection)?;
             patch.replace_instrument_config(candidate, target_policy);
-            if let Some((pending_request, visualization)) = self.pending_sample_visualization.take()
-            {
-                if pending_request == request_id {
-                    self.sample_visualizations.insert(patch_id, visualization);
+            if asset_assignment {
+                if let Some((pending_request, visualization)) =
+                    self.pending_sample_visualization.take()
+                {
+                    if pending_request == request_id {
+                        self.sample_visualizations.insert(patch_id, visualization);
+                    }
                 }
             }
-            self.pending_asset_config = None;
+            self.pending_instrument_config = None;
             self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
+        } else if let StructuralEditIntent::SetSlotOccupancy {
+            patch_id,
+            slot,
+            entry,
+        } = intent
+        {
+            let old_patch_order = SemanticResolver::new(self).patch_main_paths(*patch_id)?;
+            let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
+            let occupant = match entry {
+                None => None,
+                Some(entry_id) => Some(
+                    self.effects
+                        .descriptor(entry_id)
+                        .ok_or(EventRejection::MismatchedEngineSelection)?
+                        .default_config(slot.instance_identity())
+                        .map_err(|_| EventRejection::MismatchedEngineSelection)?,
+                ),
+            };
+            self.patches
+                .iter_mut()
+                .find(|patch| patch.id() == *patch_id)
+                .ok_or(EventRejection::MismatchedEngineSelection)?
+                .set_slot_occupancy(*slot, occupant)
+                .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+            self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
+        } else if let StructuralEditIntent::SetReturnOccupancy { bus, entry } = intent {
+            let old_inspector_order = self.mixer_inspector_order();
+            self.returns
+                .set_return_occupancy(&self.effects, *bus, entry.as_ref())
+                .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+            self.repair_inspector_focus(old_inspector_order.as_deref())?;
         }
         self.engine_selection = self
             .engine_selection
@@ -2194,8 +2300,8 @@ impl AppState {
         Ok(effect)
     }
 
-    /// Commits one prepared occupancy change to canonical state and enters
-    /// Activating, exactly as `engine_prepared` commits a candidate config.
+    /// Records one prepared occupancy candidate and enters Activating.
+    /// Canonical occupancy remains on the acknowledged graph until activation.
     fn topology_prepared(
         &mut self,
         request_id: EngineSelectionRequestId,
@@ -2211,64 +2317,20 @@ impl AppState {
             return Err(EventRejection::MismatchedEngineSelection);
         }
         match &intent {
-            StructuralEditIntent::SetSlotOccupancy {
-                patch_id,
-                slot,
-                entry,
-            } => {
-                let old_patch_order = SemanticResolver::new(self).patch_main_paths(*patch_id)?;
-                let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
-                let occupant = match entry {
-                    None => None,
-                    Some(entry_id) => Some(
-                        self.effects
-                            .descriptor(entry_id)
-                            .ok_or(EventRejection::MismatchedEngineSelection)?
-                            .default_config(slot.instance_identity())
-                            .map_err(|_| EventRejection::MismatchedEngineSelection)?,
-                    ),
-                };
-                let patch = self
-                    .patches
-                    .iter_mut()
-                    .find(|patch| patch.id() == *patch_id)
-                    .ok_or(EventRejection::MismatchedEngineSelection)?;
-                patch
-                    .set_slot_occupancy(*slot, occupant)
-                    .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+            StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetReturnOccupancy { .. } => {
                 let status = self
                     .engine_selection
                     .activating(target_graph_revision)
                     .map_err(|_| EventRejection::MismatchedEngineSelection)?;
                 let effect = EngineSelectionEffect::from_correlation(
-                    EngineSelectionEffectKind::CandidateCommitted,
+                    EngineSelectionEffectKind::CandidatePrepared,
                     status
                         .correlation()
                         .expect("Activating status always owns correlation"),
                 )
                 .expect("Activating correlation owns a target revision");
                 self.engine_selection = status;
-                self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
-                Ok(effect)
-            }
-            StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
-                let old_inspector_order = self.mixer_inspector_order();
-                self.returns
-                    .set_return_occupancy(&self.effects, *bus, entry.as_ref())
-                    .map_err(|_| EventRejection::MismatchedEngineSelection)?;
-                let status = self
-                    .engine_selection
-                    .activating(target_graph_revision)
-                    .map_err(|_| EventRejection::MismatchedEngineSelection)?;
-                let effect = EngineSelectionEffect::from_correlation(
-                    EngineSelectionEffectKind::CandidateCommitted,
-                    status
-                        .correlation()
-                        .expect("Activating status always owns correlation"),
-                )
-                .expect("Activating correlation owns a target revision");
-                self.engine_selection = status;
-                self.repair_inspector_focus(old_inspector_order.as_deref())?;
                 Ok(effect)
             }
             StructuralEditIntent::ReplaceCapability { .. }
@@ -2298,73 +2360,56 @@ impl AppState {
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
-        self.engine_selection = self
-            .engine_selection
-            .failed(failure)
-            .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        self.engine_selection = if unavailable_failure(failure) {
+            self.engine_selection.unavailable(failure)
+        } else {
+            self.engine_selection.failed(failure)
+        }
+        .map_err(|_| EventRejection::MismatchedEngineSelection)?;
         Ok(())
     }
 
     /// Verifies acknowledged structure against canonical state: the committed
     /// instrument config for instrument intents, the committed occupancy for
     /// slot and return intents.
-    fn committed_intent_matches_state(
+    fn pending_intent_matches_state(
         &self,
         correlation: &crate::control::EngineSelectionCorrelation,
     ) -> bool {
         match correlation.intent() {
             StructuralEditIntent::ReplaceCapability { .. }
-            | StructuralEditIntent::ReplaceParameterChoice { .. } => {
+            | StructuralEditIntent::ReplaceParameterChoice { .. }
+            | StructuralEditIntent::ReplaceAsset { .. } => {
                 let Some(patch_id) = correlation.patch_id() else {
                     return false;
                 };
                 let Some(patch) = self.patches.iter().find(|patch| patch.id() == patch_id) else {
                     return false;
                 };
-                config_matches_committed_intent(patch.instrument_config(), correlation.intent())
-            }
-            StructuralEditIntent::ReplaceAsset { .. } => {
-                let Some(patch_id) = correlation.patch_id() else {
-                    return false;
-                };
-                let Some(patch) = self.patches.iter().find(|patch| patch.id() == patch_id) else {
-                    return false;
-                };
-                let Some(candidate) = self.pending_asset_config.as_ref() else {
+                let Some(candidate) = self.pending_instrument_config.as_ref() else {
                     return false;
                 };
                 correlation.source_capability_id()
                     == Some(patch.instrument_config().capability_id())
-                    && candidate.capability_id() == patch.instrument_config().capability_id()
-                    && config_matches_committed_intent(candidate, correlation.intent())
+                    && candidate_matches_intent(
+                        patch.instrument_config(),
+                        candidate,
+                        correlation.intent(),
+                    )
             }
             StructuralEditIntent::PrepareAudition { capability_id, .. } => correlation
                 .patch_id()
                 .and_then(|patch_id| self.patches.iter().find(|patch| patch.id() == patch_id))
                 .is_some_and(|patch| patch.instrument_config().capability_id() == capability_id),
-            StructuralEditIntent::SetSlotOccupancy {
-                patch_id,
-                slot,
-                entry,
-            } => {
+            StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => {
                 let Some(patch) = self.patches.iter().find(|patch| patch.id() == *patch_id) else {
                     return false;
                 };
-                match (patch.effect_slot(*slot), entry) {
-                    (None, None) => true,
-                    (Some(config), Some(entry_id)) => {
-                        config.capability_id() == entry_id
-                            && config.slot_id() == slot.instance_identity()
-                    }
-                    _ => false,
-                }
+                correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
+                    && patch.id() == *patch_id
             }
-            StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
-                match (self.returns.bus_return(*bus).effect(), entry) {
-                    (None, None) => true,
-                    (Some(config), Some(entry_id)) => config.capability_id() == entry_id,
-                    _ => false,
-                }
+            StructuralEditIntent::SetReturnOccupancy { .. } => {
+                correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
             }
         }
     }
@@ -2373,7 +2418,12 @@ impl AppState {
         &self,
         request_id: EngineSelectionRequestId,
     ) -> Result<&crate::control::EngineSelectionCorrelation, EventRejection> {
-        if self.engine_selection.kind() != EngineSelectionStatusKind::Preparing {
+        if !matches!(
+            self.engine_selection.kind(),
+            EngineSelectionStatusKind::Loading
+                | EngineSelectionStatusKind::Validating
+                | EngineSelectionStatusKind::Preparing
+        ) {
             return Err(EventRejection::StaleEngineSelection);
         }
         let correlation = self
@@ -2436,12 +2486,25 @@ impl AppState {
 
     fn navigate_patch_control(&mut self, direction: Direction) -> Result<(), EventRejection> {
         match self.interaction.active_surface() {
-            // The subordinate detail surface navigates its subject's rows and
-            // is left the same way Utility is: Left restores the exact origin.
+            // Detail owns vertical row adjacency. Left closes to Overview;
+            // Right switches to persistent Utility while suspending Detail.
             SurfaceId::PatchDetail => {
                 if direction == Direction::Left {
                     self.interaction
                         .return_to_origin()
+                        .map_err(|_| EventRejection::ActionUnavailableInContext)
+                } else if direction == Direction::Right {
+                    let patch_id = self
+                        .interaction
+                        .patch_focus()
+                        .ok_or(EventRejection::NoPatchesInstalled)?;
+                    let utility_focus = SemanticResolver::new(self)
+                        .patch_utility_paths(patch_id)?
+                        .into_iter()
+                        .next()
+                        .ok_or(EventRejection::ActionUnavailableInContext)?;
+                    self.interaction
+                        .switch_detail_to_utility(utility_focus)
                         .map_err(|_| EventRejection::ActionUnavailableInContext)
                 } else if matches!(direction, Direction::Up | Direction::Down) {
                     let paths =
@@ -2453,9 +2516,15 @@ impl AppState {
             }
             SurfaceId::PatchUtility => {
                 if direction == Direction::Left {
-                    self.interaction
-                        .return_to_origin()
-                        .map_err(|_| EventRejection::ActionUnavailableInContext)
+                    if self.interaction.utility_suspends_detail() {
+                        self.interaction
+                            .restore_detail_from_utility()
+                            .map_err(|_| EventRejection::ActionUnavailableInContext)
+                    } else {
+                        self.interaction
+                            .return_to_origin()
+                            .map_err(|_| EventRejection::ActionUnavailableInContext)
+                    }
                 } else if matches!(direction, Direction::Up | Direction::Down) {
                     let patch_id = self
                         .interaction
@@ -3658,6 +3727,61 @@ impl AppState {
         Ok(())
     }
 
+    fn set_patch_overview_origin_enabled(
+        &mut self,
+        patch_id: PatchId,
+        control: PatchControlId,
+        enabled: bool,
+    ) -> Result<(), EventRejection> {
+        if !self.patches.iter().any(|patch| patch.id() == patch_id)
+            || !matches!(
+                control,
+                PatchControlId::Engine | PatchControlId::EffectSlot(_)
+            )
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        let key = (patch_id, control.clone());
+        if self.patch_overview_origin_enabled(patch_id, &control) == enabled {
+            return Err(EventRejection::InvalidSelection);
+        }
+        if enabled {
+            self.disabled_patch_overview_origins.remove(&key);
+            self.focus_repair_status = None;
+            return Ok(());
+        }
+
+        let old_patch_order = SemanticResolver::new(self).patch_main_paths(patch_id)?;
+        if old_patch_order.len() <= 1 {
+            return Err(EventRejection::InvalidSelection);
+        }
+        let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
+        let removed_origin = FocusPath::patch_main(patch_id, None, control);
+        let repairs_return = self
+            .interaction
+            .return_path()
+            .is_some_and(|path| path.origin() == &removed_origin);
+        let repairs_remembered = self.interaction.remembered_patch_main() == Some(&removed_origin);
+
+        self.disabled_patch_overview_origins.insert(key);
+        self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
+
+        let replacement_origin = if repairs_return {
+            self.interaction
+                .return_path()
+                .map(|path| path.origin().clone())
+        } else if repairs_remembered {
+            self.interaction.remembered_patch_main().cloned()
+        } else {
+            None
+        };
+        self.focus_repair_status = replacement_origin.map(|replacement_origin| FocusRepairStatus {
+            removed_origin,
+            replacement_origin,
+        });
+        Ok(())
+    }
+
     /// Leaves an open detail surface whose subject the structural commit just
     /// invalidated.
     ///
@@ -3748,6 +3872,16 @@ fn map_scalar_adjustment_error(error: CapabilityError) -> EventRejection {
         CapabilityError::ScalarValueAtBoundary(_) => EventRejection::ParameterAtBoundary,
         _ => EventRejection::InvalidParameterValue,
     }
+}
+
+fn unavailable_failure(failure: EngineSelectionFailure) -> bool {
+    matches!(
+        failure,
+        EngineSelectionFailure::WorkerUnavailable
+            | EngineSelectionFailure::PresetUnavailable
+            | EngineSelectionFailure::AssetUnavailable
+            | EngineSelectionFailure::PreparerMissing
+    )
 }
 
 fn adjusted_value(
@@ -3858,46 +3992,6 @@ fn candidate_matches_intent(
     }
 }
 
-fn config_matches_committed_intent(
-    config: &crate::synth::InstrumentConfig,
-    intent: &StructuralEditIntent,
-) -> bool {
-    match intent {
-        StructuralEditIntent::SetSlotOccupancy { .. }
-        | StructuralEditIntent::SetReturnOccupancy { .. } => false,
-        StructuralEditIntent::ReplaceCapability {
-            target_capability_id,
-        } => config.capability_id() == target_capability_id,
-        StructuralEditIntent::ReplaceParameterChoice {
-            capability_id,
-            parameter_id,
-            choice_id,
-        } => {
-            config.capability_id() == capability_id
-                && matches!(
-                    config.value(parameter_id),
-                    Some(ParameterValue::Choice(value)) if value == choice_id
-                )
-        }
-        StructuralEditIntent::ReplaceAsset {
-            capability_id,
-            parameter_id,
-            reference,
-        } => {
-            config.capability_id() == capability_id
-                && config.asset_reference(parameter_id) == Some(reference)
-        }
-        StructuralEditIntent::PrepareAudition {
-            capability_id,
-            parameter_id,
-            reference,
-        } => {
-            config.capability_id() == capability_id
-                && config.asset_reference(parameter_id) == Some(reference)
-        }
-    }
-}
-
 fn decimal_scale(step: f32) -> f32 {
     let mut scale = 1.0;
     while scale < 1_000_000.0 && (step * scale - (step * scale).round()).abs() > f32::EPSILON {
@@ -3913,7 +4007,7 @@ mod tests {
     use crate::adapter::hidef_soundfont_capability::{
         HiDefSoundFontCapability, HIDEF_CAPABILITY_ID, SOUNDFONT_PRESET_PARAMETER_ID,
     };
-    use crate::control::{InteractionMode, PatchControlId, PatchDetailSubject};
+    use crate::control::{InteractionMode, PatchControlId, PatchDetailSubject, StateProjector};
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -4135,6 +4229,26 @@ mod tests {
             candidate_config,
             prepared_visualization: None,
         }
+    }
+
+    fn advance_engine_to_preparing(state: &mut AppState) {
+        let request_id = state
+            .engine_selection()
+            .correlation()
+            .expect("an accepted structural request owns correlation")
+            .request_id();
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle: EngineSelectionStatusKind::Validating,
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle: EngineSelectionStatusKind::Preparing,
+            })
+            .unwrap();
     }
 
     fn failed_event(
@@ -4722,13 +4836,15 @@ mod tests {
         assert_eq!(state.engine_selection(), &engine_status);
         assert_ne!(state.patches(), patches);
 
-        let before = state.clone();
+        let detail_focus = state.interaction().focus_path().clone();
+        state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
         assert_eq!(
-            state.apply(AppEvent::Navigate(Direction::Right)),
-            Err(EventRejection::ActionUnavailableInContext)
+            state.interaction().active_surface(),
+            SurfaceId::PatchUtility
         );
-        assert_eq!(state.generation(), before_adjust + 1);
-        assert_eq!(state, before);
+        state.apply(AppEvent::Navigate(Direction::Left)).unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        assert_eq!(state.interaction().focus_path(), &detail_focus);
 
         state.apply(AppEvent::Return).unwrap();
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
@@ -5011,7 +5127,7 @@ mod tests {
         assert_eq!(effect.target_graph_revision(), None);
         assert_eq!(
             state.engine_selection().kind(),
-            EngineSelectionStatusKind::Preparing
+            EngineSelectionStatusKind::Loading
         );
         assert_eq!(
             state.engine_selection().active_graph_revision(),
@@ -5055,6 +5171,7 @@ mod tests {
     fn app_state_engine_failure_and_stale_or_mismatched_outcomes_preserve_source_and_recover() {
         let mut state = mixed_state();
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        advance_engine_to_preparing(&mut state);
         let source = state.clone();
         let target_revision = GraphRevision::INITIAL.checked_next().unwrap();
         let stale_failure = failed_event(
@@ -5084,7 +5201,7 @@ mod tests {
         assert_eq!(outcome.engine_selection_effect(), None);
         assert_eq!(
             state.engine_selection().kind(),
-            EngineSelectionStatusKind::Failed
+            EngineSelectionStatusKind::Unavailable
         );
         assert_eq!(
             state.engine_selection().failure(),
@@ -5152,6 +5269,7 @@ mod tests {
         );
 
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        advance_engine_to_preparing(&mut state);
         let braids = descriptor_default_config(BRAIDS_CAPABILITY_ID);
         let revision_two = GraphRevision::INITIAL.checked_next().unwrap();
         let committed = state
@@ -5159,7 +5277,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             committed.engine_selection_effect().unwrap().kind(),
-            EngineSelectionEffectKind::CandidateCommitted
+            EngineSelectionEffectKind::CandidatePrepared
         );
         assert_eq!(
             state.engine_selection().kind(),
@@ -5169,7 +5287,7 @@ mod tests {
             state.engine_selection().active_graph_revision(),
             GraphRevision::INITIAL
         );
-        assert_eq!(state.patches()[0].instrument_config(), &braids);
+        assert_eq!(state.patches()[0].instrument_config(), &original_soundfont);
 
         let request_id = state.engine_selection().correlation().unwrap().request_id();
         let intent = state
@@ -5207,6 +5325,7 @@ mod tests {
             state.engine_selection(),
             &EngineSelectionStatus::ready(revision_two)
         );
+        assert_eq!(state.patches()[0].instrument_config(), &braids);
 
         let ready = state.clone();
         assert_eq!(
@@ -5222,6 +5341,7 @@ mod tests {
         assert_eq!(state, ready);
 
         state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+        advance_engine_to_preparing(&mut state);
         let default_soundfont = descriptor_default_config(HIDEF_CAPABILITY_ID);
         let revision_three = revision_two.checked_next().unwrap();
         state
@@ -5266,6 +5386,7 @@ mod tests {
     fn app_state_keeps_midi_context_and_mixer_control_available_while_preparing() {
         let mut state = mixed_state();
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        advance_engine_to_preparing(&mut state);
         let correlation = state.engine_selection().correlation().unwrap().clone();
         let message = MidiMessage::try_new(
             MidiChannel::new(0).unwrap(),
@@ -6071,6 +6192,7 @@ mod tests {
             ))
         );
 
+        advance_engine_to_preparing(&mut state);
         let target = GraphRevision::new(2).unwrap();
         state
             .apply(prepared_event(
@@ -6078,6 +6200,18 @@ mod tests {
                 target,
                 descriptor_default_config(BRAIDS_CAPABILITY_ID),
             ))
+            .unwrap();
+
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        let correlation = state.engine_selection().correlation().unwrap().clone();
+        state
+            .apply(AppEvent::EngineActivationAcknowledged {
+                request_id: correlation.request_id(),
+                intent: correlation.intent().clone(),
+                target_graph_revision: target,
+                retired_graph_revision: correlation.source_graph_revision(),
+                collected: true,
+            })
             .unwrap();
 
         // The subject no longer names the Patch's capability, so the surface
@@ -6091,6 +6225,179 @@ mod tests {
         crate::control::StateProjector::new()
             .project_with_shell_tree(&state)
             .expect("the state after leaving must project");
+    }
+
+    #[test]
+    fn detail_and_utility_switch_horizontally_without_losing_the_detail_session() {
+        let mut state = mixed_state();
+        let overview_origin = state.interaction().focus_path().clone();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+
+        let project_and_assert_one_focus = |state: &AppState| {
+            let projection = StateProjector::new()
+                .project_with_shell(state)
+                .expect("each accepted adjacency step projects")
+                .3;
+            let document = serde_json::to_value(projection.semantic_model())
+                .expect("the semantic projection serializes");
+            let focused = document
+                .get("surfaces")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .flat_map(|surface| {
+                    surface
+                        .get("controls")
+                        .and_then(serde_json::Value::as_array)
+                        .into_iter()
+                        .flatten()
+                })
+                .filter(|control| {
+                    control.get("visible").and_then(serde_json::Value::as_bool) == Some(true)
+                        && control.get("focused").and_then(serde_json::Value::as_bool) == Some(true)
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                focused.len(),
+                1,
+                "every accepted Detail/Utility adjacency has one visible focus"
+            );
+            assert_eq!(
+                focused[0].get("path"),
+                document.get("focusPath"),
+                "the only painted focus is the reducer's stable semantic focus"
+            );
+            document
+        };
+
+        let first = project_and_assert_one_focus(&state);
+        let detail = first
+            .get("surfaces")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| {
+                surface.get("id").and_then(serde_json::Value::as_str) == Some("patchDetail")
+            })
+            .expect("the entered Detail surface projects");
+        let declared_detail_order = detail
+            .get("sections")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|section| {
+                section
+                    .get("controlPaths")
+                    .and_then(serde_json::Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .cloned()
+            })
+            .collect::<Vec<_>>();
+        assert!(!declared_detail_order.is_empty());
+
+        let mut visited = Vec::with_capacity(declared_detail_order.len());
+        for index in 0..declared_detail_order.len() {
+            let document = project_and_assert_one_focus(&state);
+            visited.push(document.get("focusPath").cloned().unwrap());
+            if index + 1 < declared_detail_order.len() {
+                state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+            }
+        }
+        assert_eq!(
+            visited, declared_detail_order,
+            "unmodified arrows traverse every projected Detail section in descriptor order"
+        );
+        let detail_focus = state.interaction().focus_path().clone();
+        let detail_subject = state.interaction().detail_subject().cloned();
+
+        state.apply(AppEvent::Navigate(Direction::Right)).unwrap();
+        project_and_assert_one_focus(&state);
+        assert_eq!(
+            state.interaction().active_surface(),
+            SurfaceId::PatchUtility
+        );
+        assert_eq!(
+            state.interaction().detail_subject(),
+            detail_subject.as_ref()
+        );
+        assert_eq!(
+            state.interaction().return_path().unwrap().origin(),
+            &overview_origin
+        );
+        let utility = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Navigate(Direction::Right)),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, utility);
+
+        state.apply(AppEvent::Navigate(Direction::Left)).unwrap();
+        project_and_assert_one_focus(&state);
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        assert_eq!(state.interaction().focus_path(), &detail_focus);
+        assert_eq!(
+            state.interaction().detail_subject(),
+            detail_subject.as_ref()
+        );
+        assert_eq!(
+            state.interaction().return_path().unwrap().origin(),
+            &overview_origin
+        );
+
+        state.apply(AppEvent::Navigate(Direction::Left)).unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+        assert_eq!(state.interaction().focus_path(), &overview_origin);
+        assert!(state.interaction().detail_invariant_holds());
+    }
+
+    #[test]
+    fn disabling_an_open_detail_origin_repairs_return_and_projects_visible_status() {
+        let mut state = mixed_state();
+        let patch_id = state.patches()[0].id();
+        let removed = state.interaction().focus_path().clone();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+
+        state
+            .apply(AppEvent::SetPatchOverviewOriginEnabled {
+                patch_id,
+                control: PatchControlId::Engine,
+                enabled: false,
+            })
+            .unwrap();
+        let replacement = FocusPath::patch_main(
+            patch_id,
+            None,
+            PatchControlId::EffectSlot(EffectSlotIndex::new(0).unwrap()),
+        );
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        assert_eq!(
+            state.interaction().return_path().unwrap().origin(),
+            &replacement
+        );
+        let repair = state.focus_repair_status().unwrap();
+        assert_eq!(repair.removed_origin(), &removed);
+        assert_eq!(repair.replacement_origin(), &replacement);
+
+        let (_, _, _, shell, _, _) = StateProjector::new()
+            .project_with_shell_tree(&state)
+            .unwrap();
+        let projected = shell.semantic_model().focus_repair().unwrap();
+        assert_eq!(projected.patch_id(), patch_id);
+        assert_eq!(projected.removed_control_id(), &PatchControlId::Engine);
+        assert_eq!(
+            projected.replacement_control_id(),
+            &PatchControlId::EffectSlot(EffectSlotIndex::new(0).unwrap())
+        );
+        assert!(projected.label().contains("Focus repaired"));
+
+        state.apply(AppEvent::Return).unwrap();
+        assert_eq!(state.interaction().focus_path(), &replacement);
+        assert!(state.focus_repair_status().is_none());
     }
 
     /// B1b: clearing the subject's slot under an open detail entry leaves the
@@ -6130,12 +6437,25 @@ mod tests {
 
         let correlation = state.engine_selection().correlation().unwrap().clone();
         let source = correlation.source_graph_revision();
+        advance_engine_to_preparing(&mut state);
         state
             .apply(AppEvent::TopologyPrepared {
                 request_id: correlation.request_id(),
                 intent: correlation.intent().clone(),
                 source_graph_revision: source,
                 target_graph_revision: source.checked_next().unwrap(),
+            })
+            .unwrap();
+
+        assert!(state.patches()[0].effect_slot(occupied_slot).is_some());
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        state
+            .apply(AppEvent::EngineActivationAcknowledged {
+                request_id: correlation.request_id(),
+                intent: correlation.intent().clone(),
+                target_graph_revision: source.checked_next().unwrap(),
+                retired_graph_revision: source,
+                collected: true,
             })
             .unwrap();
 

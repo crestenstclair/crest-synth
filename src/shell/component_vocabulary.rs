@@ -152,12 +152,13 @@ const MIXER_STRIP_STATES: [ComponentState; COMPONENT_STATE_COUNT] = ALL_COMPONEN
 /// (`SemanticControlValue::Parameter(ParameterValue::Toggle)`); handing them
 /// `Muted` as a state as well would give one fact two representations that can
 /// disagree.
-const NON_TRACK_STATES: [ComponentState; 7] = [
+const NON_TRACK_STATES: [ComponentState; 8] = [
     ComponentState::Resting,
     ComponentState::Focused,
     ComponentState::Adjusting,
     ComponentState::Disabled,
     ComponentState::Loading,
+    ComponentState::Unavailable,
     ComponentState::Error,
     ComponentState::Selected,
 ];
@@ -589,6 +590,10 @@ pub const GENERIC_FAILURE_WORD: &str = "Failed";
 /// Which phase of a structural edit a loading component is reporting.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum LoadingPhase {
+    /// The edit has been requested and awaits admission.
+    Loading,
+    /// The request is being validated before graph preparation.
+    Validating,
     /// The edit has been prepared but is not yet active.
     Preparing,
     /// The prepared edit is being made active.
@@ -599,8 +604,10 @@ impl LoadingPhase {
     /// The authored word for this phase.
     pub const fn word(self) -> &'static str {
         match self {
-            Self::Preparing => LOADING_PROGRESS_WORDS[0],
-            Self::Activating => LOADING_PROGRESS_WORDS[1],
+            Self::Loading => LOADING_PROGRESS_WORDS[0],
+            Self::Validating => LOADING_PROGRESS_WORDS[1],
+            Self::Preparing => LOADING_PROGRESS_WORDS[2],
+            Self::Activating => LOADING_PROGRESS_WORDS[3],
         }
     }
 }
@@ -628,7 +635,7 @@ impl<'a> StatusDetail<'a> {
     const fn progress_word(self) -> &'a str {
         match self {
             Self::Progress(phase) => phase.word(),
-            Self::None | Self::Failure(_) => LoadingPhase::Preparing.word(),
+            Self::None | Self::Failure(_) => LoadingPhase::Loading.word(),
         }
     }
 
@@ -680,12 +687,13 @@ pub fn status_mark<'a>(state: ComponentState, detail: StatusDetail<'a>) -> Optio
     let appearance = state.appearance();
     match state {
         ComponentState::Resting | ComponentState::Focused | ComponentState::Adjusting => None,
-        ComponentState::Disabled | ComponentState::Muted | ComponentState::Soloed => {
-            Some(StatusMark::Text {
-                text: declared_word(appearance.signal),
-                color: appearance.accent,
-            })
-        }
+        ComponentState::Disabled
+        | ComponentState::Unavailable
+        | ComponentState::Muted
+        | ComponentState::Soloed => Some(StatusMark::Text {
+            text: declared_word(appearance.signal),
+            color: appearance.accent,
+        }),
         ComponentState::Loading => Some(StatusMark::Text {
             text: detail.progress_word(),
             color: appearance.accent,
@@ -722,6 +730,7 @@ pub const fn frames(state: ComponentState) -> bool {
         ComponentState::Focused
         | ComponentState::Adjusting
         | ComponentState::Loading
+        | ComponentState::Unavailable
         | ComponentState::Error => true,
         ComponentState::Resting
         | ComponentState::Disabled
@@ -741,6 +750,7 @@ pub const fn draws_cursor(state: ComponentState) -> bool {
         ComponentState::Resting
         | ComponentState::Disabled
         | ComponentState::Loading
+        | ComponentState::Unavailable
         | ComponentState::Error
         | ComponentState::Muted
         | ComponentState::Soloed
@@ -1197,10 +1207,11 @@ mod tests {
     }
 
     #[test]
-    fn the_five_status_bearing_states_and_disabled_all_mark() {
+    fn every_status_bearing_state_marks() {
         for state in [
             ComponentState::Disabled,
             ComponentState::Loading,
+            ComponentState::Unavailable,
             ComponentState::Error,
             ComponentState::Muted,
             ComponentState::Soloed,
@@ -1244,6 +1255,17 @@ mod tests {
     }
 
     #[test]
+    fn an_unavailable_component_says_it_is_unavailable() {
+        assert_eq!(
+            status_mark(ComponentState::Unavailable, StatusDetail::None),
+            Some(StatusMark::Text {
+                text: "Unavailable",
+                color: SemanticColor::AccentWarning
+            })
+        );
+    }
+
+    #[test]
     fn loading_reports_the_phase_the_caller_supplied() {
         assert_eq!(
             status_mark(
@@ -1257,6 +1279,8 @@ mod tests {
         );
         assert_eq!(LoadingPhase::Preparing.word(), "Preparing");
         assert_eq!(LoadingPhase::Activating.word(), "Activating");
+        assert_eq!(LoadingPhase::Loading.word(), "Loading");
+        assert_eq!(LoadingPhase::Validating.word(), "Validating");
     }
 
     #[test]
@@ -1264,7 +1288,7 @@ mod tests {
         assert_eq!(
             status_mark(ComponentState::Loading, StatusDetail::None),
             Some(StatusMark::Text {
-                text: "Preparing",
+                text: "Loading",
                 color: SemanticColor::AccentAdjust
             })
         );
@@ -1314,6 +1338,7 @@ mod tests {
     fn every_state_routed_to_the_declared_word_declares_one() {
         for state in [
             ComponentState::Disabled,
+            ComponentState::Unavailable,
             ComponentState::Muted,
             ComponentState::Soloed,
         ] {

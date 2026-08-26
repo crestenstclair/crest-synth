@@ -554,7 +554,7 @@ body {
   border-top: var(--keyline-resting) dashed var(--color-border-strong);
 }
 
-.overview-control[data-state="focused"] {
+.overview-control[data-focus-treatment="focused"] {
   background: var(--color-bg-panel);
   border-inline-start-color: var(--color-accent-focus);
   box-shadow: 0 0 var(--focus-halo-radius) var(--focus-halo-spread)
@@ -565,12 +565,12 @@ body {
     );
 }
 
-.overview-control[data-state="focused"] .overview-control-label,
-.overview-control[data-state="focused"] .overview-control-value {
+.overview-control[data-focus-treatment="focused"] .overview-control-label,
+.overview-control[data-focus-treatment="focused"] .overview-control-value {
   color: var(--color-accent-focus);
 }
 
-.overview-control[data-state="adjusting"] {
+.overview-control[data-focus-treatment="adjusting"] {
   border-inline-start-style: double;
   border-inline-start-color: var(--color-accent-adjust);
 }
@@ -583,6 +583,7 @@ body {
   border-inline-start-color: var(--color-accent-adjust);
 }
 
+.overview-control[data-state="unavailable"],
 .overview-control[data-state="error"],
 .overview-control[data-state="unknown"] {
   border-inline-start-style: dashed;
@@ -675,7 +676,7 @@ body {
  * treatment the mixer's focused column carries, so focus reads identically
  * across both contexts and never by color alone (the header annotation and
  * footer breadcrumb carry it as text). */
-.prow[data-state="focused"] {
+.prow[data-focus-treatment="focused"] {
   background: var(--color-bg-panel);
   border-left: var(--keyline-emphasis) solid var(--color-accent-focus);
   box-shadow: 0 0 var(--focus-halo-radius) var(--focus-halo-spread)
@@ -686,19 +687,19 @@ body {
     );
 }
 
-.prow[data-state="focused"] .prow-label,
-.prow[data-state="focused"] .prow-value {
+.prow[data-focus-treatment="focused"] .prow-label,
+.prow[data-focus-treatment="focused"] .prow-value {
   color: var(--color-accent-focus);
 }
 
 /* Adjusting: emphasis keyline in the adjust accent, no halo (declared
  * ComponentState treatment — shape distinguishes it from focus). */
-.prow[data-state="adjusting"] {
+.prow[data-focus-treatment="adjusting"] {
   border-left: var(--keyline-emphasis) solid var(--color-accent-adjust);
 }
 
-.prow[data-state="adjusting"] .prow-label,
-.prow[data-state="adjusting"] .prow-value {
+.prow[data-focus-treatment="adjusting"] .prow-label,
+.prow[data-focus-treatment="adjusting"] .prow-value {
   color: var(--color-accent-adjust);
 }
 
@@ -713,13 +714,15 @@ body {
   border-left: var(--keyline-emphasis) solid var(--color-accent-adjust);
 }
 
-/* Error and unknown-state rows: the warning accent with the typed failure
- * (or explicit ?state marker) in text. */
+/* Unavailable, error, and unknown-state rows: the warning accent with the
+ * explicit state word, typed failure, or ?state marker in text. */
+.prow[data-state="unavailable"],
 .prow[data-state="error"],
 .prow[data-state="unknown"] {
   border-left: var(--keyline-emphasis) solid var(--color-accent-warning);
 }
 
+.prow[data-state="unavailable"] .prow-value,
 .prow[data-state="error"] .prow-value {
   color: var(--color-accent-warning);
 }
@@ -773,46 +776,135 @@ body {
 
 #workspace .detail {
   flex: 1;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
-  gap: var(--space-12);
-  margin: var(--space-16) 0;
+  gap: var(--space-8);
+  margin: var(--space-12) 0;
+  overscroll-behavior: contain;
 }
 
 .detail-title {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   flex-wrap: wrap;
-  gap: var(--space-12);
-  padding: 0 var(--space-12) var(--space-8);
-  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+  gap: var(--space-8) var(--space-12);
+  min-height: var(--min-interactive-target);
+  padding: var(--space-8) var(--space-12);
+  border-bottom: var(--keyline-emphasis) solid var(--color-border-strong);
+  overflow-wrap: anywhere;
+}
+
+/* This is a scrolling flex column. Its content blocks keep their natural
+ * wrapped height; allowing the default flex shrink makes descendant text
+ * overflow a shortened header/section box and collide with the next block at
+ * enlarged text sizes. */
+.detail-title,
+.detail-sections,
+.detail-visualizations,
+.detail-section,
+.detail-section > * {
+  flex-shrink: 0;
+}
+
+.detail[data-detail-kind="instrument"] .detail-kind {
+  color: var(--color-accent-instrument-plates);
+}
+
+.detail[data-detail-kind="effect"] .detail-kind {
+  color: var(--color-accent-chorus);
 }
 
 .detail-section {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: var(--space-4);
 }
 
-.detail-sections,
-.detail-visualizations {
+.detail-section-heading {
+  min-height: calc(var(--space-32) + var(--space-8));
+  padding: var(--space-8) var(--space-12);
+  border-bottom: var(--keyline-resting) solid var(--color-border-strong);
   display: flex;
-  flex-direction: column;
-  gap: var(--space-12);
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-4) var(--space-12);
 }
 
-.detail-section > h3,
+.detail-sections,
+.detail-visualizations {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+}
+
 .detail-visualization > figcaption {
   margin: 0;
   padding: 0 var(--space-12) var(--space-4);
 }
 
+.detail .prow {
+  min-width: 0;
+  padding-block: var(--space-4);
+  overflow-wrap: anywhere;
+}
+
+.detail .prow-cursor,
+.detail .prow-index {
+  flex: 0 0 var(--space-24);
+  text-align: center;
+}
+
+.detail .prow-cursor {
+  color: var(--color-text-muted);
+}
+
+.detail .prow[data-focus-treatment="focused"] .prow-cursor,
+.detail .prow[data-focus-treatment="adjusting"] .prow-cursor {
+  color: currentColor;
+}
+
+.detail .prow-label {
+  flex: 0 1 calc(
+    var(--min-interactive-target) + var(--min-interactive-target) +
+      var(--min-interactive-target)
+  );
+}
+
+.detail .prow-position {
+  flex-basis: calc(
+    var(--min-interactive-target) + var(--min-interactive-target) +
+      var(--min-interactive-target)
+  );
+}
+
+.detail .prow-position-fill::after {
+  content: "";
+  position: absolute;
+  inset-block: calc(var(--space-4) - var(--space-8));
+  right: 0;
+  width: var(--keyline-emphasis);
+  background: var(--color-text-primary);
+}
+
+.detail .prow[data-focus-treatment="focused"] .prow-position-fill::after {
+  background: var(--color-accent-focus);
+}
+
+.detail .prow[data-focus-treatment="adjusting"] .prow-position-fill::after {
+  background: var(--color-accent-adjust);
+}
+
 .detail-visualization {
   margin: 0;
   padding: var(--space-8) var(--space-12);
-  border-block: var(--keyline-resting) solid var(--color-border-default);
+  border: var(--keyline-resting) dashed var(--color-border-strong);
   display: flex;
   flex-direction: column;
   gap: var(--space-8);

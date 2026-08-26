@@ -215,6 +215,16 @@ impl Fixture {
         trace: &mut Vec<u8>,
         counters: &mut Counters,
     ) -> u64 {
+        for expected in [
+            EngineSelectionStatusKind::Validating,
+            EngineSelectionStatusKind::Preparing,
+        ] {
+            let admission = self.app_loop.advance_structural().unwrap();
+            assert_eq!(
+                admission.engine_selection_lifecycle_advanced(),
+                Some(expected)
+            );
+        }
         assert!(self.worker.advance(), "worker advances one request");
         let source = self.renderer.active_revision();
         let staged = self.app_loop.advance_structural().unwrap();

@@ -106,12 +106,14 @@ use crest_synth::adapter::production_effects::{
     production_chorus_config, production_effect_registry,
 };
 use crest_synth::adapter::production_instruments::{
-    production_capability_registry, production_soundfont_capability,
+    production_capability_registry, production_instrument_providers,
+    production_soundfont_capability,
 };
 use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
-    AppEvent, AppState, Direction, EngineSelectionFailure, InteractionMode, PatchControlId,
-    SemanticGraphicalViewModel, StateProjector, SurfaceId, TopLevelContext,
+    AppEvent, AppState, Direction, EngineSelectionFailure, EngineSelectionStatusKind,
+    InteractionMode, PatchControlId, SemanticGraphicalViewModel, StateProjector, SurfaceId,
+    TopLevelContext,
 };
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
@@ -134,9 +136,10 @@ use crest_synth::shell::webview::{protocol_response, PAGE_CSP};
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider, InstrumentConfig, Patch,
-    SampleAssetId, SampleBrowserRow, SampleBrowserRowKind, SampleCatalogListing, SampleEncoding,
-    SampleFolderId, SampleMetadata,
+    CapabilityRegistry, CapabilitySection, DescriptorDefaultConfigFactory,
+    EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId,
+    InstrumentCapabilityProvider, InstrumentConfig, Patch, SampleAssetId, SampleBrowserRow,
+    SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId, SampleMetadata,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -194,6 +197,13 @@ const PAINTED_ACK_IDENTITY_FIELDS: [&str; 6] = [
     "interactionMode",
 ];
 
+/// Opt-in native witness for Detail work. It retains the real Tauri window,
+/// production projection transport, every Detail viewport, and Mixer
+/// non-regression assertions, then closes the harness before unrelated soak
+/// and forced-failure subprocesses. The ordinary live command remains the
+/// complete suite.
+const DETAIL_WITNESS_ENV: &str = "CREST_WEBVIEW_DETAIL_WITNESS";
+
 fn main() {
     // libtest-style arguments (`--nocapture`, filters) are accepted and
     // ignored: output is unconditionally visible under `harness = false`.
@@ -203,6 +213,7 @@ fn main() {
     // the environment variable alone. Nothing downstream may turn a live
     // failure into a skip.
     let live = std::env::var("CREST_WEBVIEW_TESTS").as_deref() == Ok("1");
+    let detail_witness = live && std::env::var(DETAIL_WITNESS_ENV).as_deref() == Ok("1");
     println!(
         "webview_projection_shell acceptance: {} run",
         if live {
@@ -218,9 +229,7 @@ fn main() {
     prove_superseded_late_ack_identity();
     prove_typed_startup_failure();
 
-    let skips: Vec<&str> = if live {
-        Vec::new()
-    } else {
+    let skips: Vec<&str> = if !live {
         vec![
             "T024 page render determinism (DOM layer at 1920x1080 and 1280x800, MIXER and PATCH documents)",
             "T024/WP01 paint-acknowledgment identity (one ack per painted document with verbatim semantic identity)",
@@ -229,10 +238,19 @@ fn main() {
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
             "T013 forced double-close failure (a shipped-binary subprocess with every close forced to fail: with no prior error recorded the typed WindowClose itself surfaces carrying the forced cause verbatim, ending the process nonzero rather than hanging)",
         ]
+    } else if detail_witness {
+        vec![
+            "T011 painted fader/position geometry (outside the Detail slice)",
+            "T012 forced render failures (outside the Detail slice)",
+            "T026 NFR latency/meter soak and shipped-binary shutdown parity (outside the Detail slice)",
+            "T013 forced double-close failure (outside the Detail slice; deliberately presents an uncloseable window for roughly 65 seconds)",
+        ]
+    } else {
+        Vec::new()
     };
 
     if live {
-        run_live_sections(&fidelity);
+        run_live_sections(&fidelity, detail_witness);
     } else {
         for skip in &skips {
             println!(
@@ -368,6 +386,14 @@ fn production_patch_braids_state() -> AppState {
     state
 }
 
+fn production_patch_braids_detail_state() -> AppState {
+    let mut state = production_patch_braids_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("Braids Instrument Detail opens from its canonical Engine origin");
+    state
+}
+
 /// The complete Overview content bound with a deliberately long Patch label.
 /// The fixture uses the full production registries and occupies every
 /// canonical effect position without adding a renderer-only name or count.
@@ -400,6 +426,109 @@ fn production_patch_maximum_content_state() -> AppState {
     state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
     state
         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+}
+
+fn production_patch_maximum_content_detail_state() -> AppState {
+    let mut state = production_patch_maximum_content_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("the long-content Instrument Detail opens from its Engine origin");
+    state
+}
+
+/// Three duplicate effect capabilities opened at each canonical position.
+/// Stable slot subjects and return origins, rather than the shared label,
+/// keep these reducer-to-DOM fixtures distinct.
+fn production_patch_effect_detail_at(position: usize) -> AppState {
+    let mut state = production_patch_maximum_content_state();
+    for _ in 0..=position {
+        state
+            .apply(AppEvent::Navigate(Direction::Down))
+            .expect("the canonical Patch order reaches the requested effect position");
+    }
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .expect("the occupied effect position admits Detail");
+    state
+}
+
+fn differently_shaped_effect_registry() -> EffectCapabilityRegistry {
+    let production = production_effect_registry().unwrap();
+    let prototypes = production.descriptors()[0]
+        .parameters()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(prototypes.len() >= 2);
+    let short = EffectCapabilityDescriptor::new(
+        EffectCapabilityId::new("effect.fixture-short").unwrap(),
+        "Fixture Short",
+        "fixture.short",
+        vec![CapabilitySection::new(
+            "fixture.short.primary",
+            "Primary",
+            vec![prototypes[0].clone()],
+        )
+        .unwrap()],
+        Vec::new(),
+    )
+    .unwrap();
+    let long = EffectCapabilityDescriptor::new(
+        EffectCapabilityId::new("effect.fixture-long").unwrap(),
+        "Fixture Long",
+        "fixture.long",
+        vec![
+            CapabilitySection::new(
+                "fixture.long.primary",
+                "Primary",
+                vec![prototypes[0].clone()],
+            )
+            .unwrap(),
+            CapabilitySection::new(
+                "fixture.long.secondary",
+                "Secondary",
+                prototypes[1..].to_vec(),
+            )
+            .unwrap(),
+        ],
+        Vec::new(),
+    )
+    .unwrap();
+    EffectCapabilityRegistry::new(vec![short, long]).unwrap()
+}
+
+fn differently_shaped_effect_detail_state(position: usize) -> AppState {
+    let effects = differently_shaped_effect_registry();
+    let mut patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Different FX Shapes".to_owned(),
+        soundfont_config(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    );
+    for (slot_position, descriptor) in effects.descriptors().iter().enumerate() {
+        patch = patch.with_effect_slot(
+            EffectSlotIndex::ALL[slot_position],
+            descriptor
+                .default_config(EffectSlotIndex::ALL[slot_position].instance_identity())
+                .unwrap(),
+        );
+    }
+    let mut state = AppState::new_with_effects(
+        production_capability_registry().unwrap(),
+        effects,
+        GlobalParameters::new(-3.0).unwrap(),
+    );
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    for _ in 0..=position {
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    }
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
         .unwrap();
     state
 }
@@ -476,6 +605,137 @@ fn production_patch_effect_detail_state() -> AppState {
     panic!("the PATCH focus order reaches an effect slot occupancy row within 32 steps");
 }
 
+/// Instrument Detail while its focused structural Choice has requested the
+/// next authored option. The active and requested readings are both retained
+/// by the canonical projection during preparation.
+fn production_patch_detail_loading_state() -> AppState {
+    let mut state = production_patch_instrument_detail_state();
+    state
+        .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+        .expect("the focused structural Choice enters Adjust mode");
+    state
+        .apply(AppEvent::Adjust(Direction::Right))
+        .expect("the focused structural Choice requests its next authored option");
+    state
+}
+
+/// Detail after the reducer admits the request for validation.
+fn production_patch_detail_validating_state() -> AppState {
+    let mut state = production_patch_detail_loading_state();
+    let request_id = state.engine_selection().correlation().unwrap().request_id();
+    state
+        .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+            request_id,
+            lifecycle: EngineSelectionStatusKind::Validating,
+        })
+        .unwrap();
+    state
+}
+
+/// Detail after validation admits the request to off-thread preparation.
+fn production_patch_detail_preparing_state() -> AppState {
+    let mut state = production_patch_detail_validating_state();
+    let request_id = state.engine_selection().correlation().unwrap().request_id();
+    state
+        .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+            request_id,
+            lifecycle: EngineSelectionStatusKind::Preparing,
+        })
+        .unwrap();
+    state
+}
+
+/// The same Detail request after the complete candidate has been prepared
+/// and committed for block-boundary activation.
+fn production_patch_detail_activating_state() -> AppState {
+    let mut state = production_patch_detail_loading_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: correlation.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
+    let (parameter_id, choice_id) = match correlation.intent() {
+        crest_synth::control::StructuralEditIntent::ReplaceParameterChoice {
+            parameter_id,
+            choice_id,
+            ..
+        } => (parameter_id, choice_id),
+        unexpected => panic!("the Detail fixture emitted {unexpected:?}, not a Choice request"),
+    };
+    let factory = DescriptorDefaultConfigFactory::new(
+        state.capabilities().clone(),
+        production_instrument_providers().unwrap(),
+    );
+    let candidate = factory
+        .replace_structural_choice(
+            state.patches()[0].instrument_config(),
+            parameter_id,
+            choice_id,
+        )
+        .unwrap();
+    state
+        .apply(AppEvent::EnginePrepared {
+            request_id: correlation.request_id(),
+            patch_id: correlation.patch_id().unwrap(),
+            intent: correlation.intent().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            candidate_config: candidate,
+            prepared_visualization: None,
+        })
+        .unwrap();
+    state
+}
+
+/// The same Detail request after a typed worker failure. The source config
+/// remains active and the failed requested reading stays observable.
+fn production_patch_detail_failure_state() -> AppState {
+    let mut state = production_patch_detail_loading_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::EnginePreparationFailed {
+            request_id: correlation.request_id(),
+            patch_id: correlation.patch_id().unwrap(),
+            intent: correlation.intent().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            failure: EngineSelectionFailure::PreparationFailed,
+        })
+        .unwrap();
+    state
+}
+
+/// The same request after the capability/asset port reports unavailability.
+/// This stays distinct from a preparation failure and retains both readings.
+fn production_patch_detail_unavailable_state() -> AppState {
+    let mut state = production_patch_detail_loading_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::EnginePreparationFailed {
+            request_id: correlation.request_id(),
+            patch_id: correlation.patch_id().unwrap(),
+            intent: correlation.intent().clone(),
+            source_capability_id: correlation.source_capability_id().unwrap().clone(),
+            target_capability_id: correlation.target_capability_id().unwrap().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            failure: EngineSelectionFailure::AssetUnavailable,
+        })
+        .unwrap();
+    state
+}
+
 fn production_sample_browser_state() -> AppState {
     let provider = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
     let patch = Patch::new(
@@ -528,6 +788,33 @@ fn production_sample_browser_state() -> AppState {
         .unwrap();
     state.apply(AppEvent::OpenRelated).unwrap();
     state.apply(AppEvent::OpenRelated).unwrap();
+    state
+}
+
+/// Sample Detail with its default loop mode, whose dependency-driven loop
+/// controls remain visible but disabled. This gives the DOM matrix an actual
+/// reducer/projector disabled state rather than equating read-only with
+/// disabled.
+fn production_sample_disabled_detail_state() -> AppState {
+    let provider = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
+    let patch = Patch::new(
+        PatchId::new(1).unwrap(),
+        "Disabled Dependency Fixture".to_owned(),
+        provider.default_config().unwrap(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    );
+    let mut state = AppState::new(
+        CapabilityRegistry::new(vec![provider.descriptor()]).unwrap(),
+        GlobalParameters::new(-3.0).unwrap(),
+    );
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
     state
 }
 
@@ -832,12 +1119,103 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &production_patch_effect_detail_state(),
         "PATCH state E (effect detail open)",
     );
+    let mut detail_lifecycle_channel = ProjectionChannel::new();
+    let (patch_generation_j, patch_detail_loading) = check_state_fidelity(
+        &projector,
+        &mut detail_lifecycle_channel,
+        &production_patch_detail_loading_state(),
+        "PATCH state J (Detail structural request loading)",
+    );
+    let (_, patch_detail_validating) = check_state_fidelity(
+        &projector,
+        &mut detail_lifecycle_channel,
+        &production_patch_detail_validating_state(),
+        "PATCH Detail structural request validating",
+    );
+    let (_, patch_detail_preparing) = check_state_fidelity(
+        &projector,
+        &mut detail_lifecycle_channel,
+        &production_patch_detail_preparing_state(),
+        "PATCH Detail structural request preparing",
+    );
+    let (patch_generation_k, patch_detail_activating) = check_state_fidelity(
+        &projector,
+        &mut detail_lifecycle_channel,
+        &production_patch_detail_activating_state(),
+        "PATCH state K (Detail structural request activating)",
+    );
+    let mut detail_failure_channel = ProjectionChannel::new();
+    let (patch_generation_l, patch_detail_failure) = check_state_fidelity(
+        &projector,
+        &mut detail_failure_channel,
+        &production_patch_detail_failure_state(),
+        "PATCH state L (Detail typed structural failure)",
+    );
+    let mut detail_unavailable_channel = ProjectionChannel::new();
+    let (_, patch_detail_unavailable) = check_state_fidelity(
+        &projector,
+        &mut detail_unavailable_channel,
+        &production_patch_detail_unavailable_state(),
+        "PATCH Detail typed unavailable state",
+    );
+    let mut extra_instrument_detail_channel = ProjectionChannel::new();
+    let (_, patch_long_instrument_detail) = check_state_fidelity(
+        &projector,
+        &mut extra_instrument_detail_channel,
+        &production_patch_maximum_content_detail_state(),
+        "PATCH long-content Instrument Detail",
+    );
+    let (_, patch_braids_detail) = check_state_fidelity(
+        &projector,
+        &mut extra_instrument_detail_channel,
+        &production_patch_braids_detail_state(),
+        "PATCH differently-shaped Braids Instrument Detail",
+    );
+    let mut positioned_effect_detail_channel = ProjectionChannel::new();
+    let (_, patch_effect_position_0) = check_state_fidelity(
+        &projector,
+        &mut positioned_effect_detail_channel,
+        &production_patch_effect_detail_at(0),
+        "PATCH duplicate FX Detail at position 0",
+    );
+    let (_, patch_effect_position_1) = check_state_fidelity(
+        &projector,
+        &mut positioned_effect_detail_channel,
+        &production_patch_effect_detail_at(1),
+        "PATCH duplicate FX Detail at position 1",
+    );
+    let (_, patch_effect_position_2) = check_state_fidelity(
+        &projector,
+        &mut positioned_effect_detail_channel,
+        &production_patch_effect_detail_at(2),
+        "PATCH duplicate FX Detail at position 2",
+    );
+    let mut shaped_effect_detail_channel = ProjectionChannel::new();
+    let (_, patch_effect_short_detail) = check_state_fidelity(
+        &projector,
+        &mut shaped_effect_detail_channel,
+        &differently_shaped_effect_detail_state(0),
+        "PATCH one-section FX Detail",
+    );
+    let (_, patch_effect_long_detail) = check_state_fidelity(
+        &projector,
+        &mut shaped_effect_detail_channel,
+        &differently_shaped_effect_detail_state(1),
+        "PATCH two-section FX Detail",
+    );
     let mut sample_channel = ProjectionChannel::new();
     let (patch_generation_f, patch_sample_browser) = check_state_fidelity(
         &projector,
         &mut sample_channel,
         &production_sample_browser_state(),
         "PATCH state F (Sample Browser open)",
+    );
+    let mut disabled_detail_channel = ProjectionChannel::new();
+    let (_, patch_sample_disabled_detail) = check_state_fidelity(
+        &projector,
+        &mut disabled_detail_channel,
+        &production_sample_disabled_detail_state(),
+        "PATCH dependency-disabled Sample Detail",
     );
     let mut maximum_content_channel = ProjectionChannel::new();
     let (patch_generation_g, patch_maximum_content) = check_state_fidelity(
@@ -869,6 +1247,32 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
     // quietly removed the discriminating case fails by name instead of
     // leaving the live marking assertion vacuous.
     assert_detail_declares_both_interactions(&patch_instrument_detail);
+    assert_detail_fixture_documents(
+        &patch_instrument_detail,
+        &patch_effect_detail,
+        [
+            &patch_detail_loading,
+            &patch_detail_validating,
+            &patch_detail_preparing,
+            &patch_detail_activating,
+            &patch_detail_unavailable,
+            &patch_detail_failure,
+        ],
+    );
+    assert_detail_shape_fixture_documents(
+        [&patch_instrument_detail, &patch_braids_detail],
+        [&patch_effect_short_detail, &patch_effect_long_detail],
+        [
+            &patch_effect_position_0,
+            &patch_effect_position_1,
+            &patch_effect_position_2,
+        ],
+        [
+            &patch_navigate,
+            &patch_long_instrument_detail,
+            &patch_sample_disabled_detail,
+        ],
+    );
     let patch_generations = [patch_generation_a, patch_generation_b, patch_generation_c];
     assert_eq!(
         patch_generations.iter().collect::<HashSet<_>>().len(),
@@ -912,12 +1316,14 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
 
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (15 distinct states across both contexts, MIXER generations \
+         (29 distinct states across both contexts, MIXER generations \
          {generation_a}/{generation_b}/{generation_c}, PATCH generations \
          {patch_generation_a}/{patch_generation_b}/{patch_generation_c}/\
          {patch_generation_d}/{patch_generation_e}/{patch_generation_f}/\
-         {patch_generation_g}/{patch_generation_h}/{patch_generation_i}, \
-         emit path byte-identical + structural round-trip + declared key surface)"
+         {patch_generation_g}/{patch_generation_h}/{patch_generation_i}/\
+         {patch_generation_j}/{patch_generation_k}/{patch_generation_l}, \
+         plus seven Detail shape/position fixtures, emit path byte-identical + \
+         structural round-trip + declared key surface)"
     );
     FidelityEvidence {
         document_a,
@@ -928,7 +1334,21 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-braids", patch_braids),
             ("patch-instrument-detail", patch_instrument_detail),
             ("patch-effect-detail", patch_effect_detail),
+            ("patch-detail-loading", patch_detail_loading),
+            ("patch-detail-validating", patch_detail_validating),
+            ("patch-detail-preparing", patch_detail_preparing),
+            ("patch-detail-activating", patch_detail_activating),
+            ("patch-detail-unavailable", patch_detail_unavailable),
+            ("patch-detail-failure", patch_detail_failure),
+            ("patch-long-instrument-detail", patch_long_instrument_detail),
+            ("patch-braids-detail", patch_braids_detail),
+            ("patch-effect-position-0", patch_effect_position_0),
+            ("patch-effect-position-1", patch_effect_position_1),
+            ("patch-effect-position-2", patch_effect_position_2),
+            ("patch-effect-short-detail", patch_effect_short_detail),
+            ("patch-effect-long-detail", patch_effect_long_detail),
             ("patch-sample-browser", patch_sample_browser),
+            ("patch-sample-disabled-detail", patch_sample_disabled_detail),
             ("patch-maximum-content", patch_maximum_content),
             ("patch-loading", patch_loading),
             ("patch-failure", patch_failure),
@@ -1274,6 +1694,459 @@ fn assert_patch_fixture_documents(navigate: &str, adjust: &str, braids: &str) {
     );
 }
 
+/// Exact serialized contract consumed by the one Instrument/FX Detail
+/// composition. This is deliberately document-side and capability-blind: it
+/// proves the emitted model already supplies every identity, label, ordered
+/// membership, row-state, and lifecycle fact used by `detailShellHtml`.
+fn assert_detail_fixture_documents(instrument: &str, effect: &str, lifecycle: [&str; 6]) {
+    let parse = |bytes: &str, label: &str| -> Value {
+        serde_json::from_str(bytes)
+            .unwrap_or_else(|error| panic!("{label}: the emitted Detail document parses: {error}"))
+    };
+    let [loading, validating, preparing, activating, unavailable, failure] = lifecycle;
+    let instrument = parse(instrument, "Instrument Detail");
+    let effect = parse(effect, "FX Detail");
+    let loading = parse(loading, "loading Detail");
+    let validating = parse(validating, "validating Detail");
+    let preparing = parse(preparing, "preparing Detail");
+    let activating = parse(activating, "activating Detail");
+    let unavailable = parse(unavailable, "unavailable Detail");
+    let failure = parse(failure, "failed Detail");
+
+    fn surface<'a>(document: &'a Value, id: &str, label: &str) -> &'a Value {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+            .unwrap_or_else(|| panic!("{label}: emitted document carries {id}"))
+    }
+    fn controls<'a>(document: &'a Value, label: &str) -> &'a Vec<Value> {
+        surface(document, "patchDetail", label)
+            .get("controls")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{label}: Detail carries its ordered controls"))
+    }
+    fn requested_control<'a>(document: &'a Value, label: &str) -> &'a Value {
+        controls(document, label)
+            .iter()
+            .find(|control| {
+                control
+                    .get("requestedValue")
+                    .is_some_and(|value| !value.is_null())
+            })
+            .unwrap_or_else(|| panic!("{label}: one Detail row carries the requested reading"))
+    }
+
+    for (document, label, expected_kind) in [
+        (&instrument, "Instrument Detail", "instrument"),
+        (&effect, "FX Detail", "effect"),
+    ] {
+        assert_eq!(
+            document.get("activeSurface").and_then(Value::as_str),
+            Some("patchDetail"),
+            "{label}: Detail is the reducer-owned active surface"
+        );
+        let main = surface(document, "patchMain", label);
+        let detail = surface(document, "patchDetail", label);
+        let summary = detail
+            .get("summary")
+            .unwrap_or_else(|| panic!("{label}: Detail carries its canonical summary"));
+        assert_eq!(
+            summary.get("kind").and_then(Value::as_str),
+            Some("patchDetail")
+        );
+        assert_eq!(
+            summary.pointer("/subject/kind").and_then(Value::as_str),
+            Some(expected_kind)
+        );
+        assert_eq!(
+            summary.get("patchId"),
+            main.pointer("/summary/patchId"),
+            "{label}: Detail and Patch Main name the same exact Patch"
+        );
+        assert!(
+            main.pointer("/summary/patchName")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.is_empty()),
+            "{label}: Patch Main supplies the visible Patch label"
+        );
+
+        let origin = document
+            .pointer("/returnPath/origin")
+            .unwrap_or_else(|| panic!("{label}: the exact return origin is serialized"));
+        let origin_id = origin
+            .pointer("/controlId/id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: the return origin names its control"));
+        let owner = main
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|control| {
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    == Some(origin_id)
+            })
+            .unwrap_or_else(|| panic!("{label}: Patch Main projects the return-origin owner"));
+        assert!(
+            owner
+                .pointer("/value/value")
+                .and_then(Value::as_str)
+                .is_some_and(|name| !name.is_empty()),
+            "{label}: the origin owner supplies the authored subject display label"
+        );
+        match expected_kind {
+            "instrument" => {
+                assert_eq!(origin_id, "patch.engine");
+                assert!(summary.pointer("/subject/capabilityId").is_some());
+                assert!(summary.pointer("/subject/slotId").is_none());
+            }
+            "effect" => {
+                let position = origin_id
+                    .strip_prefix("patch.effectSlot.")
+                    .and_then(|value| value.parse::<usize>().ok())
+                    .expect("FX position comes only from the canonical return origin");
+                assert!(position < EffectSlotIndex::ALL.len());
+                assert!(summary
+                    .pointer("/subject/slotId")
+                    .and_then(Value::as_u64)
+                    .is_some());
+                assert!(summary.pointer("/subject/capabilityId").is_some());
+            }
+            _ => unreachable!(),
+        }
+
+        let declared_paths = detail
+            .get("sections")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|section| {
+                assert!(section
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.is_empty()));
+                assert!(section
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .is_some_and(|section_label| !section_label.is_empty()));
+                section
+                    .get("controlPaths")
+                    .and_then(Value::as_array)
+                    .cloned()
+                    .unwrap_or_default()
+            })
+            .collect::<Vec<_>>();
+        let rows = detail
+            .get("controls")
+            .and_then(Value::as_array)
+            .unwrap_or_else(|| panic!("{label}: Detail carries its controls"));
+        let row_paths = rows
+            .iter()
+            .map(|control| control.get("path").cloned().unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            row_paths, declared_paths,
+            "{label}: section membership and control order are exact and complete"
+        );
+        let expected_control_keys = [
+            "browserMetadata",
+            "editable",
+            "enabled",
+            "error",
+            "focusable",
+            "focused",
+            "kind",
+            "label",
+            "numericRange",
+            "patchInteraction",
+            "path",
+            "requestedLabel",
+            "requestedValue",
+            "selectedLabel",
+            "status",
+            "unit",
+            "validActions",
+            "value",
+            "visible",
+        ];
+        for row in rows {
+            let mut keys = row
+                .as_object()
+                .unwrap_or_else(|| panic!("{label}: every Detail row is an object"))
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>();
+            keys.sort_unstable();
+            assert_eq!(keys, expected_control_keys);
+            assert!(row.get("validActions").is_some_and(Value::is_array));
+        }
+        assert!(
+            rows.iter().any(|control| control
+                .get("numericRange")
+                .is_some_and(|range| !range.is_null())),
+            "{label}: at least one scalar row supplies exact projected bounds"
+        );
+        assert_eq!(
+            rows.iter()
+                .filter(|control| {
+                    control.get("visible").and_then(Value::as_bool) == Some(true)
+                        && control.get("focused").and_then(Value::as_bool) == Some(true)
+                })
+                .count(),
+            1,
+            "{label}: exactly one visible Detail row is focused"
+        );
+        assert!(detail
+            .get("visualizations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .all(|visualization| visualization.get("focusable") == Some(&Value::Bool(false))));
+    }
+
+    let loading_control = requested_control(&loading, "loading Detail");
+    assert_eq!(
+        loading_control
+            .pointer("/status/kind")
+            .and_then(Value::as_str),
+        Some("loading")
+    );
+    assert_ne!(
+        loading_control.get("value"),
+        loading_control.get("requestedValue"),
+        "loading keeps the active and requested readings distinct"
+    );
+    assert!(loading_control
+        .get("requestedLabel")
+        .and_then(Value::as_str)
+        .is_some_and(|label| !label.is_empty()));
+    assert!(loading
+        .get("errors")
+        .and_then(Value::as_array)
+        .is_some_and(Vec::is_empty));
+
+    for (document, label, expected_kind) in [
+        (&validating, "validating Detail", "validating"),
+        (&preparing, "preparing Detail", "preparing"),
+    ] {
+        let control = requested_control(document, label);
+        assert_eq!(
+            control.pointer("/status/kind").and_then(Value::as_str),
+            Some(expected_kind),
+            "{label} remains a distinct reducer-owned lifecycle state"
+        );
+        assert_eq!(control.get("value"), loading_control.get("value"));
+        assert_eq!(
+            control.get("requestedValue"),
+            loading_control.get("requestedValue"),
+            "{label} retains the same explicit request without substitution"
+        );
+    }
+
+    let activating_control = requested_control(&activating, "activating Detail");
+    assert_eq!(
+        activating_control
+            .pointer("/status/kind")
+            .and_then(Value::as_str),
+        Some("activating")
+    );
+    assert_eq!(
+        activating_control
+            .pointer("/status/targetGraphRevision")
+            .and_then(Value::as_u64),
+        Some(2)
+    );
+
+    let unavailable_control = requested_control(&unavailable, "unavailable Detail");
+    assert_eq!(
+        unavailable.pointer("/status/kind").and_then(Value::as_str),
+        Some("unavailable")
+    );
+    assert_eq!(
+        unavailable_control
+            .pointer("/status/kind")
+            .and_then(Value::as_str),
+        Some("unavailable"),
+        "unavailability remains visible on the affected Detail row"
+    );
+    assert!(unavailable_control
+        .pointer("/error/label")
+        .and_then(Value::as_str)
+        .is_some_and(|label| !label.is_empty()));
+    assert_eq!(
+        unavailable_control.get("value"),
+        loading_control.get("value")
+    );
+    assert_eq!(
+        unavailable_control.get("requestedValue"),
+        loading_control.get("requestedValue"),
+        "unavailable retains the requested reading without a fallback"
+    );
+
+    let failed_control = requested_control(&failure, "failed Detail");
+    assert_eq!(
+        failure.pointer("/status/kind").and_then(Value::as_str),
+        Some("failed")
+    );
+    assert!(failed_control.get("status").is_some_and(Value::is_null));
+    assert!(failed_control
+        .pointer("/error/label")
+        .and_then(Value::as_str)
+        .is_some_and(|label| !label.is_empty()));
+    assert_eq!(failed_control.get("value"), loading_control.get("value"));
+    assert_eq!(
+        failed_control.get("requestedValue"),
+        loading_control.get("requestedValue"),
+        "typed failure retains the failed requested reading without fallback"
+    );
+    assert_eq!(
+        failure
+            .get("errors")
+            .and_then(Value::as_array)
+            .map(Vec::len),
+        Some(1),
+        "typed failure remains explicit at the model boundary"
+    );
+}
+
+/// The committed DOM fixture matrix is intentionally broader than the two
+/// baseline Detail documents: different instrument/effect shapes, every
+/// duplicate occupied position, an empty position, and long projected text.
+fn assert_detail_shape_fixture_documents(
+    instrument_shapes: [&str; 2],
+    effect_shapes: [&str; 2],
+    positioned_effects: [&str; 3],
+    edge_cases: [&str; 3],
+) {
+    let parse = |bytes: &str, label: &str| -> Value {
+        serde_json::from_str(bytes)
+            .unwrap_or_else(|error| panic!("{label}: the emitted fixture parses: {error}"))
+    };
+    fn surface<'a>(document: &'a Value, id: &str) -> &'a Value {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+            .unwrap_or_else(|| panic!("fixture carries {id}"))
+    }
+    fn shape(document: &Value) -> (usize, usize) {
+        let detail = surface(document, "patchDetail");
+        (
+            detail
+                .get("sections")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len),
+            detail
+                .get("controls")
+                .and_then(Value::as_array)
+                .map_or(0, Vec::len),
+        )
+    }
+
+    let [soundfont, braids] = instrument_shapes;
+    let [short_effect, long_effect] = effect_shapes;
+    let [empty_overview, long_instrument, disabled_detail] = edge_cases;
+
+    let soundfont = parse(soundfont, "SoundFont Detail shape");
+    let braids = parse(braids, "Braids Detail shape");
+    assert_ne!(
+        shape(&soundfont),
+        shape(&braids),
+        "the DOM fixture matrix includes differently-shaped instruments"
+    );
+    let disabled = parse(disabled_detail, "dependency-disabled Detail");
+    assert!(
+        surface(&disabled, "patchDetail")
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|control| {
+                control.get("visible").and_then(Value::as_bool) == Some(true)
+                    && control.get("enabled").and_then(Value::as_bool) == Some(false)
+            }),
+        "the reducer-to-DOM matrix includes a visible disabled Detail row"
+    );
+    let short_effect = parse(short_effect, "short FX Detail shape");
+    let long_effect = parse(long_effect, "long FX Detail shape");
+    assert_ne!(
+        shape(&short_effect),
+        shape(&long_effect),
+        "the DOM fixture matrix includes differently-shaped effects"
+    );
+
+    let positioned = positioned_effects
+        .into_iter()
+        .enumerate()
+        .map(|(position, bytes)| {
+            let document = parse(bytes, "positioned duplicate FX Detail");
+            assert_eq!(
+                document
+                    .pointer("/returnPath/origin/controlId/id")
+                    .and_then(Value::as_str),
+                Some(format!("patch.effectSlot.{position}").as_str())
+            );
+            let detail = surface(&document, "patchDetail");
+            (
+                detail
+                    .pointer("/summary/subject/slotId")
+                    .and_then(Value::as_u64)
+                    .unwrap(),
+                detail
+                    .pointer("/summary/subject/capabilityId")
+                    .and_then(Value::as_str)
+                    .unwrap()
+                    .to_owned(),
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        positioned
+            .iter()
+            .map(|(slot_id, _)| slot_id)
+            .collect::<HashSet<_>>()
+            .len(),
+        3,
+        "duplicate capabilities retain three distinct stable slot subjects"
+    );
+    assert!(positioned.windows(2).all(|pair| pair[0].1 == pair[1].1));
+
+    let empty = parse(empty_overview, "empty effect-slot Overview");
+    let empty_slot = surface(&empty, "patchMain")
+        .get("controls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|control| control.pointer("/value/value").and_then(Value::as_str) == Some("Empty"))
+        .expect("the DOM fixture matrix includes an empty canonical effect position");
+    assert!(empty_slot
+        .get("validActions")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .all(|action| {
+            action.pointer("/action/kind").and_then(Value::as_str) != Some("enterSurface")
+                || action.pointer("/action/surface").and_then(Value::as_str) != Some("patchDetail")
+        }));
+
+    let long = parse(long_instrument, "long-content Instrument Detail");
+    assert_eq!(
+        long.get("activeSurface").and_then(Value::as_str),
+        Some("patchDetail")
+    );
+    assert!(surface(&long, "patchMain")
+        .pointer("/summary/patchName")
+        .and_then(Value::as_str)
+        .is_some_and(|label| label.len() > 64));
+}
+
 /// Headless document-side facts for the native responsive stress fixtures.
 /// Every value crossed the reducer/projector/serialization channel first; the
 /// live section later renders these same bytes at every representative width.
@@ -1345,7 +2218,7 @@ fn assert_patch_resilience_fixture_documents(maximum_content: &str, loading: &st
         loading_engine
             .pointer("/status/kind")
             .and_then(Value::as_str),
-        Some("preparing")
+        Some("loading")
     );
     assert!(
         loading_engine
@@ -2174,7 +3047,7 @@ fn screenshot(name: &str) -> PathBuf {
     path
 }
 
-fn run_live_sections(fidelity: &FidelityEvidence) {
+fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool) {
     use tauri::{Listener, Manager};
 
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -2279,6 +3152,7 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
                 &driver_painted,
                 &driver_render_errors,
                 &driver_fidelity,
+                detail_witness,
             )
         }));
         let posted = match result {
@@ -2316,9 +3190,16 @@ fn run_live_sections(fidelity: &FidelityEvidence) {
         "T026 harness window owned shutdown: PASS (run_return = 0 through the owned close path)"
     );
 
-    prove_forced_render_throw_on_the_shipped_binary();
-    prove_shutdown_parity_on_real_runs();
-    prove_forced_double_close_failure_on_the_shipped_binary();
+    if detail_witness {
+        println!(
+            "CREST_WEBVIEW_DETAIL_WITNESS complete: real Detail/Mixer window closed; \
+             unrelated soak and forced-failure subprocesses skipped"
+        );
+    } else {
+        prove_forced_render_throw_on_the_shipped_binary();
+        prove_shutdown_parity_on_real_runs();
+        prove_forced_double_close_failure_on_the_shipped_binary();
+    }
 }
 
 /// Request the exact authored desktop viewport on the primary display.
@@ -2422,6 +3303,43 @@ fn observe_render(
         .get("observation")
         .cloned()
         .ok_or_else(|| format!("harness phase {tag:?} carried no observation"))
+}
+
+/// Static half of the native resize audit. The dynamic half below resizes a
+/// live WebKit window while reusing one exact serialized projection. This
+/// guard makes the zero-action conclusion falsifiable: the page's sole
+/// resize callback may reveal the existing semantic identity and the Rust
+/// shell may not route a resize/scale event into product logic.
+fn assert_resize_path_is_presentation_only() {
+    let page = include_str!("../webview-page/page.js");
+    let resize_handler = r#"window.addEventListener("resize", function () {
+    if (latestModel) {
+      revealSemanticFocus(window.document, latestModel);
+    }
+  });"#;
+    assert_eq!(
+        page.matches("window.addEventListener(\"resize\"").count(),
+        1,
+        "the page has exactly one auditable resize callback"
+    );
+    assert!(
+        page.contains(resize_handler),
+        "the resize callback performs presentation-only focus reveal"
+    );
+    for forbidden in ["AppState", "AppEvent", "SemanticAction"] {
+        assert!(
+            !page.contains(forbidden),
+            "the page cannot emit/apply product logic: found {forbidden}"
+        );
+    }
+
+    let window = include_str!("../src/shell/webview/window.rs");
+    for forbidden in ["WindowEvent::Resized", "WindowEvent::ScaleFactorChanged"] {
+        assert!(
+            !window.contains(forbidden),
+            "the native window must not translate presentation changes: found {forbidden}"
+        );
+    }
 }
 
 /// Reads all passive track meters and the selected-track numeric meter after
@@ -2932,16 +3850,17 @@ fn assert_observation_structure(
 }
 
 /// The declared ComponentState treatment one projected control must paint in,
-/// derived with exactly the shipped precedence (patch_strip_row::
-/// component_state): a failed edit outranks an in-flight one, focus outranks
-/// read-only-ness.
+/// derived with the shipped product-condition precedence: a failed edit
+/// outranks an in-flight one. Focus/adjustment is observed separately because
+/// it remains visible while lifecycle or failure state is also present.
 fn expected_control_state(control: &Value, mode: &str) -> String {
     if control.get("error").is_some_and(|error| !error.is_null()) {
         return "error".to_owned();
     }
     if let Some(kind) = control.pointer("/status/kind").and_then(Value::as_str) {
         match kind {
-            "preparing" | "activating" => return "loading".to_owned(),
+            "loading" | "validating" | "preparing" | "activating" => return "loading".to_owned(),
+            "unavailable" => return "unavailable".to_owned(),
             "ready" | "failed" => {}
             unknown => return format!("unknown:{unknown}"),
         }
@@ -2965,8 +3884,8 @@ fn expected_control_state(control: &Value, mode: &str) -> String {
 /// Structural correctness of one painted PATCH observation against the
 /// document it rendered: the declared bands, every visible main-surface
 /// control as one strip row in declared order with its declared
-/// ComponentState treatment, exactly one focused/adjusting row matching the
-/// document's focus path, the section annotation naming the focused entry,
+/// ComponentState treatment, exactly one orthogonal focus/adjustment treatment
+/// matching the document's focus path, the section annotation naming the focused entry,
 /// the Utility panel's designed entries, and the side-region floor.
 fn assert_patch_observation_structure(
     observation: &Value,
@@ -2996,6 +3915,71 @@ fn assert_patch_observation_structure(
         .get("interactionMode")
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("{label}: the document names its interaction mode"));
+
+    assert_eq!(
+        observation
+            .pointer("/layout/workspaceInspectorOverlapPx")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: workspace and Utility never overlap"
+    );
+    assert_eq!(
+        observation
+            .pointer("/layout/horizontalOverflowPx")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: the shell introduces no document-level horizontal overflow"
+    );
+    let serialized_focus = serde_json::to_string(
+        document
+            .get("focusPath")
+            .unwrap_or_else(|| panic!("{label}: the document carries focusPath")),
+    )
+    .unwrap();
+    assert_eq!(
+        observation
+            .pointer("/focus/semanticPath")
+            .and_then(Value::as_str),
+        Some(serialized_focus.as_str()),
+        "{label}: responsive presentation preserves the exact semantic focus identity"
+    );
+    assert_eq!(
+        observation
+            .pointer("/focus/matchCount")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{label}: exactly one DOM target owns the semantic focus path"
+    );
+    assert!(
+        matches!(
+            observation
+                .pointer("/focus/treatment")
+                .and_then(Value::as_str),
+            Some("focused" | "adjusting")
+        ),
+        "{label}: the singular semantic target carries a visible focus or adjustment treatment"
+    );
+    assert_eq!(
+        observation
+            .pointer("/focus/semanticVisible")
+            .and_then(Value::as_bool),
+        Some(true),
+        "{label}: focus reveal keeps the singular semantic target visible"
+    );
+    for target in observation
+        .get("targetSizes")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        assert!(
+            target
+                .pointer("/bounds/heightPx")
+                .and_then(Value::as_f64)
+                .is_some_and(|height| height >= 48.0),
+            "{label}: every PATCH and Utility target preserves the 48px height floor"
+        );
+    }
 
     // The painted workspace geometry comes from the shipped window at the
     // current responsive witness width.
@@ -3179,9 +4163,21 @@ fn assert_patch_observation_structure(
         "{label}: the Overview paints section controls in projected order and state"
     );
     assert_eq!(expected_control_order.len(), 4);
-    let emphasized: Vec<&(String, String)> = painted_control_order
+    let emphasized: Vec<&Value> = painted_sections
         .iter()
-        .filter(|(_, state)| state == "focused" || state == "adjusting")
+        .flat_map(|section| {
+            section
+                .get("controls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+        })
+        .filter(|control| {
+            matches!(
+                control.get("focusTreatment").and_then(Value::as_str),
+                Some("focused" | "adjusting")
+            )
+        })
         .collect();
     assert_eq!(
         emphasized.len(),
@@ -3193,7 +4189,8 @@ fn assert_patch_observation_structure(
         .and_then(Value::as_str)
         .unwrap_or_else(|| panic!("{label}: the document focus path names a PATCH control"));
     assert_eq!(
-        emphasized[0].0, document_focus,
+        emphasized[0].get("control").and_then(Value::as_str),
+        Some(document_focus),
         "{label}: the Overview focus treatment matches the document focus"
     );
 
@@ -3580,7 +4577,8 @@ fn assert_patch_workspace_geometry(
         number("scrollableBy"),
     );
     let desktop_side = f64::from(ResponsiveShellContract::get().side_track.maximum_px);
-    if f64::from(inspector_width_at_least) >= desktop_side {
+    let body_id = body.get("id").and_then(Value::as_str).unwrap_or_default();
+    if f64::from(inspector_width_at_least) >= desktop_side && body_id == "patch-overview" {
         assert_eq!(
             number("scrollableBy"),
             0.0,
@@ -3805,6 +4803,72 @@ fn assert_patch_detail_composition(
         "{label}: the detail composition carries the surface's projected label"
     );
 
+    let summary = detail_surface
+        .get("summary")
+        .unwrap_or_else(|| panic!("{label}: Detail carries its canonical summary"));
+    let subject = summary
+        .get("subject")
+        .unwrap_or_else(|| panic!("{label}: Detail summary carries its canonical subject"));
+    let subject_kind = subject
+        .get("kind")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: Detail subject names its variant"));
+    assert_eq!(
+        detail.get("subjectKind").and_then(Value::as_str),
+        Some(subject_kind),
+        "{label}: the painted header reports the projected subject variant"
+    );
+    assert_eq!(
+        detail.get("patchId"),
+        summary.get("patchId"),
+        "{label}: the painted header reports the exact projected Patch identity"
+    );
+    let origin_id = document
+        .pointer("/returnPath/origin/controlId/id")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| panic!("{label}: Detail retains its Overview origin"));
+    assert_eq!(
+        detail.get("originControl").and_then(Value::as_str),
+        Some(origin_id),
+        "{label}: the painted Detail identity comes from the exact return origin"
+    );
+    let expected_slot_position = origin_id
+        .strip_prefix("patch.effectSlot.")
+        .and_then(|value| value.parse::<u64>().ok());
+    assert_eq!(
+        detail.get("slotPosition").and_then(Value::as_u64),
+        expected_slot_position,
+        "{label}: FX position comes from the canonical slot origin; Instrument has none"
+    );
+
+    let expected_sections = detail_surface
+        .get("sections")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let painted_sections = detail
+        .get("sections")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: the Detail observation reports sections"));
+    assert_eq!(
+        painted_sections.len(),
+        expected_sections.len(),
+        "{label}: the shared Detail composition paints every projected section"
+    );
+    for (painted_section, expected_section) in painted_sections.iter().zip(expected_sections.iter())
+    {
+        assert_eq!(painted_section.get("id"), expected_section.get("id"));
+        assert_eq!(painted_section.get("label"), expected_section.get("label"));
+        assert_eq!(
+            painted_section.get("controlCount").and_then(Value::as_u64),
+            expected_section
+                .get("controlPaths")
+                .and_then(Value::as_array)
+                .map(|paths| paths.len() as u64),
+            "{label}: section counts derive from projected membership"
+        );
+    }
+
     let expected: Vec<(String, String, String)> = detail_surface
         .get("controls")
         .and_then(Value::as_array)
@@ -3851,13 +4915,48 @@ fn assert_patch_detail_composition(
         painted, expected,
         "{label}: the detail composition paints the projected rows, in projected order"
     );
+    assert!(
+        detail
+            .get("rows")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .all(|row| row
+                .get("heightPx")
+                .and_then(Value::as_f64)
+                .is_some_and(|height| height >= 48.0)),
+        "{label}: every Detail row preserves the 48px interactive-target floor"
+    );
+    assert_eq!(
+        detail.get("horizontalOverflowPx").and_then(Value::as_u64),
+        Some(0),
+        "{label}: Detail introduces no horizontal overflow"
+    );
+    assert_eq!(
+        detail
+            .get("requiredContentOverlapPx")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: wrapped Detail header, sections, rows, and lifecycle bands never overlap"
+    );
+    assert_eq!(
+        detail
+            .pointer("/scrollReachability/startReachable")
+            .and_then(Value::as_bool),
+        Some(true),
+        "{label}: the independently scrollable Detail region reaches its start"
+    );
+    assert_eq!(
+        detail
+            .pointer("/scrollReachability/endReachable")
+            .and_then(Value::as_bool),
+        Some(true),
+        "{label}: the independently scrollable Detail region reaches its complete end"
+    );
 
     // The subject's name is the projected value of the exact stable Overview
     // origin retained by the reducer.
-    let owner_id = document
-        .pointer("/returnPath/origin/controlId/id")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("{label}: Detail retains its Overview origin"));
+    let owner_id = origin_id;
     let owner_value = document
         .get("surfaces")
         .and_then(Value::as_array)
@@ -3887,6 +4986,23 @@ fn assert_patch_detail_composition(
         !owner_value.contains('.'),
         "{label}: the painted capability name is a label, not an identity \
          (got {owner_value:?})"
+    );
+
+    let expected_visualizations = detail_surface
+        .get("visualizations")
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    let painted_visualizations = detail
+        .get("visualizations")
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("{label}: Detail reports its optional visualizations"));
+    assert_eq!(painted_visualizations.len(), expected_visualizations);
+    assert!(
+        painted_visualizations.iter().all(|visualization| {
+            visualization.get("focusable").and_then(Value::as_bool) == Some(false)
+                && visualization.get("focusPath").is_some_and(Value::is_null)
+        }),
+        "{label}: projected Detail visualizations are explicitly outside focus order"
     );
 
     // A row the capability declared read-only is distinguishable with the
@@ -3962,6 +5078,7 @@ fn drive_live_window(
     painted: &PaintedAcks,
     render_errors: &RenderErrors,
     fidelity: &FidelityEvidence,
+    detail_witness: bool,
 ) -> Result<(), String> {
     use tauri::Manager;
 
@@ -4348,10 +5465,15 @@ fn drive_live_window(
     // generation, state hash, semantic focus, surfaces, and controls remain
     // the serialized document's, while painted geometry and mode may change.
     let (root_label, root_bytes) = patch_documents
-        .first()
-        .ok_or_else(|| "the fidelity run carries a PATCH root document".to_owned())?;
+        .iter()
+        .find(|(label, _)| *label == "patch-long-instrument-detail")
+        .ok_or_else(|| {
+            "the fidelity run carries the long-content Instrument Detail document".to_owned()
+        })?;
     let root_document: Value = serde_json::from_str(root_bytes)
         .map_err(|error| format!("the {root_label} fidelity document parses: {error}"))?;
+    assert_resize_path_is_presentation_only();
+    let mut resize_only_observations = 0_u32;
     for fixture in [
         RepresentativeViewport::Intermediate,
         RepresentativeViewport::Compact,
@@ -4386,6 +5508,7 @@ fn drive_live_window(
         let tag_two = format!("{}-{root_label}-2", fixture.canonical_name());
         let first = observe_render(&window, receiver, root_bytes, &tag_one)?;
         let second = observe_render(&window, receiver, root_bytes, &tag_two)?;
+        resize_only_observations += 2;
         assert_eq!(
             first,
             second,
@@ -4405,6 +5528,11 @@ fn drive_live_window(
             fixture.canonical_name().to_ascii_lowercase()
         ));
     }
+    println!(
+        "T024 resize-only semantic audit: PASS ({resize_only_observations} native observations \
+         reused one exact projection across Intermediate, Compact, and ScaledText; page resize \
+         path exposes no semantic event and native shell exposes no reducer application path)"
+    );
     window
         .eval("document.documentElement.style.setProperty('--shell-text-scale', '1');")
         .map_err(|error| format!("resetting text scale failed: {error}"))?;
@@ -4421,6 +5549,10 @@ fn drive_live_window(
          Intermediate, Compact, and scaled-text witnesses; Inspector {}px / {}px floors held)",
         desktop_side, standard_side
     );
+
+    if detail_witness {
+        return Ok(());
+    }
 
     // ---- WP03 T011: painted-geometry proof under the shipped policy -------
     prove_painted_geometry(&window, receiver, fidelity)?;

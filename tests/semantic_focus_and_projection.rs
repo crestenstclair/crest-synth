@@ -8,24 +8,29 @@
 #[allow(dead_code)]
 mod support;
 
+use crest_synth::adapter::braids_capability::BraidsCapability;
 use crest_synth::adapter::production_effects::{
     production_chorus_config, production_default_bus_returns, production_effect_registry,
 };
 use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::control::app_event::{AppEvent, Direction};
 use crest_synth::control::{
-    AppState, EventRejection, FocusPath, InteractionMode, MixerControlId, PatchControlId,
-    SemanticAction, SemanticControlId, StateProjector, StructuralEditIntent, SurfaceId,
-    TopLevelContext,
+    AppState, EngineSelectionStatusKind, EventRejection, FocusPath, InteractionMode,
+    MixerControlId, PatchControlId, PatchDetailSubject, SemanticAction, SemanticControlId,
+    StateProjector, StructuralEditIntent, SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::bus_id::BusId;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
+use crest_synth::shell::{KeyboardInputTranslator, WindowInput, WindowKey};
 use crest_synth::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
-use crest_synth::synth::{EffectCapabilityId, EffectSlotId, Patch};
+use crest_synth::synth::{
+    CapabilitySection, EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry,
+    EffectSlotId, Patch,
+};
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 
 fn soundfont_patch(id: u32, channel: u8, track: u8) -> Patch {
@@ -65,10 +70,41 @@ fn installed_state() -> AppState {
     state
 }
 
+fn duplicate_effect_detail_state() -> AppState {
+    let effects = production_effect_registry().unwrap();
+    let returns = production_default_bus_returns(&effects).unwrap();
+    let mut state = AppState::new_with_effects(
+        production_capability_registry().unwrap(),
+        effects,
+        support::globals(),
+    )
+    .with_initial_returns(returns);
+    let mut patch = soundfont_patch(1, 0, 2);
+    for (offset, slot) in EffectSlotIndex::ALL.into_iter().enumerate() {
+        patch = patch.with_effect_slot(
+            slot,
+            production_chorus_config(EffectSlotId::new(offset as u16 + 1).unwrap()).unwrap(),
+        );
+    }
+    state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+    state
+}
+
 /// Drives one accepted occupancy request through TopologyPrepared and the
 /// activation acknowledgement, exactly as the production orchestration does.
 fn commit_pending_topology(state: &mut AppState) {
     let correlation = state.engine_selection().correlation().unwrap().clone();
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: correlation.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
     let source = correlation.source_graph_revision();
     let target = source.checked_next().unwrap();
     state
@@ -221,6 +257,444 @@ fn overview_roots_drive_choice_detail_return_and_patch_switch_workflows() {
         state.interaction().focus_path().control_id(),
         slot_origin.control_id(),
         "sibling Patch navigation preserves the canonical Overview identity"
+    );
+}
+
+/// Instrument and FX Detail admission is owned by the production reducer.
+/// Duplicate capabilities remain distinct by their slot instance and
+/// canonical origin position; an empty position cannot manufacture a subject.
+#[test]
+fn detail_subjects_origins_and_empty_slot_admission_are_canonical() {
+    let mut instrument = duplicate_effect_detail_state();
+    instrument
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    let engine_origin = instrument.interaction().focus_path().clone();
+    let capability = instrument.patches()[0]
+        .instrument_config()
+        .capability_id()
+        .clone();
+    instrument
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    assert_eq!(
+        instrument.interaction().detail_subject(),
+        Some(&PatchDetailSubject::instrument(capability))
+    );
+    assert_eq!(
+        instrument.interaction().return_path().unwrap().origin(),
+        &engine_origin
+    );
+    let instrument_model = StateProjector::new()
+        .project_with_shell(&instrument)
+        .unwrap()
+        .3;
+    let instrument_detail = instrument_model
+        .semantic_model()
+        .surface(SurfaceId::PatchDetail)
+        .unwrap();
+    assert_eq!(
+        instrument_detail
+            .controls()
+            .iter()
+            .filter(|control| control.focused())
+            .count(),
+        1
+    );
+    instrument.apply(AppEvent::Return).unwrap();
+    assert_eq!(instrument.interaction().focus_path(), &engine_origin);
+
+    let mut subjects = Vec::new();
+    for (position, slot) in EffectSlotIndex::ALL.into_iter().enumerate() {
+        let mut state = duplicate_effect_detail_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        for _ in 0..=position {
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        let origin = state.interaction().focus_path().clone();
+        assert_eq!(
+            origin.control_id(),
+            &SemanticControlId::Patch(PatchControlId::EffectSlot(slot))
+        );
+        let occupant = state.patches()[0].effect_slot(slot).unwrap();
+        let occupant_slot_id = occupant.slot_id();
+        let occupant_capability_id = occupant.capability_id().clone();
+        let expected = PatchDetailSubject::effect(occupant_slot_id, occupant_capability_id);
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        assert_eq!(state.interaction().detail_subject(), Some(&expected));
+        assert_eq!(state.interaction().return_path().unwrap().origin(), &origin);
+        let serialized = serde_json::to_value(
+            StateProjector::new()
+                .project_with_shell(&state)
+                .unwrap()
+                .3
+                .semantic_model(),
+        )
+        .unwrap();
+        let summary = serialized
+            .get("surfaces")
+            .and_then(serde_json::Value::as_array)
+            .unwrap()
+            .iter()
+            .find(|surface| {
+                surface.get("id").and_then(serde_json::Value::as_str) == Some("patchDetail")
+            })
+            .unwrap()
+            .get("summary")
+            .unwrap();
+        assert_eq!(
+            summary
+                .pointer("/subject/kind")
+                .and_then(serde_json::Value::as_str),
+            Some("effect")
+        );
+        assert_eq!(
+            summary
+                .pointer("/subject/slotId")
+                .and_then(serde_json::Value::as_u64),
+            Some(u64::from(occupant_slot_id.value()))
+        );
+        assert_eq!(
+            serialized
+                .pointer("/returnPath/origin/controlId/id")
+                .and_then(serde_json::Value::as_str),
+            Some(format!("patch.effectSlot.{position}").as_str())
+        );
+        subjects.push(expected);
+        state.apply(AppEvent::Return).unwrap();
+        assert_eq!(state.interaction().focus_path(), &origin);
+    }
+    assert_eq!(subjects.len(), 3);
+    assert!(subjects.windows(2).all(|pair| pair[0] != pair[1]));
+
+    let mut empty = installed_state();
+    empty
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    empty.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    empty.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    assert_eq!(
+        empty.interaction().patch_control_focus(),
+        Some(PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]))
+    );
+    let empty_model = StateProjector::new().project_with_shell(&empty).unwrap().3;
+    assert!(empty_model
+        .semantic_model()
+        .valid_actions()
+        .iter()
+        .all(|valid| valid.action() != &SemanticAction::EnterSurface(SurfaceId::PatchDetail)));
+    let before = empty.clone();
+    assert_eq!(
+        empty.apply(AppEvent::EnterSurface(SurfaceId::PatchDetail)),
+        Err(EventRejection::ActionUnavailableInContext)
+    );
+    assert_eq!(empty, before);
+    assert!(empty.interaction().detail_subject().is_none());
+}
+
+/// The production keyboard adapter emits semantic OpenRelated/Return actions;
+/// only `AppState::apply` changes the subordinate session and focus.
+#[test]
+fn physical_shift_entry_and_close_restore_every_detail_origin() {
+    for target_offset in 0..=EffectSlotIndex::ALL.len() {
+        let mut state = duplicate_effect_detail_state();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        for _ in 0..target_offset {
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        let origin = state.interaction().focus_path().clone();
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Shift)),
+            None
+        );
+        let enter = translator
+            .translate(WindowInput::key_down(WindowKey::W))
+            .expect("Shift+Up maps to one semantic action");
+        assert_eq!(enter, SemanticAction::OpenRelated);
+        state.apply_semantic_action(enter).unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+        assert_eq!(
+            StateProjector::new()
+                .project_with_shell(&state)
+                .unwrap()
+                .3
+                .semantic_model()
+                .surfaces()
+                .iter()
+                .flat_map(|surface| surface.controls())
+                .filter(|control| control.focused())
+                .count(),
+            1
+        );
+        let close = translator
+            .translate(WindowInput::key_down(WindowKey::S))
+            .expect("Shift+Down maps to one semantic action");
+        assert_eq!(close, SemanticAction::Return);
+        state.apply_semantic_action(close).unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+        assert_eq!(state.interaction().focus_path(), &origin);
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Shift)),
+            None
+        );
+    }
+}
+
+/// Differently shaped production descriptors retain their authored section
+/// and control order through the one canonical Detail projection. Instrument
+/// Detail appends the canonical shared envelope once; effect Detail never does.
+#[test]
+fn differently_shaped_descriptors_share_one_ordered_detail_projection() {
+    let soundfont = soundfont_patch(1, 0, 0);
+    let braids = Patch::new(
+        PatchId::new(2).unwrap(),
+        "Braids Shape".to_owned(),
+        BraidsCapability::new().unwrap().default_config().unwrap(),
+        MidiChannel::new(1).unwrap(),
+        PatchOutput::to_track(MixerTrackId::new(1).unwrap()),
+    );
+    let mut instruments = AppState::new_with_effects(
+        production_capability_registry().unwrap(),
+        production_effect_registry().unwrap(),
+        support::globals(),
+    );
+    instruments
+        .apply(AppEvent::InstallPatches(vec![soundfont, braids]))
+        .unwrap();
+    instruments
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+
+    let mut instrument_shapes = Vec::new();
+    for patch_offset in 0..2 {
+        if patch_offset > 0 {
+            instruments
+                .apply(AppEvent::SelectPatch(Direction::Right))
+                .unwrap();
+        }
+        let patch_id = instruments.interaction().patch_focus().unwrap();
+        let descriptor = instruments
+            .capabilities()
+            .descriptor(
+                instruments
+                    .patches()
+                    .iter()
+                    .find(|patch| patch.id() == patch_id)
+                    .unwrap()
+                    .instrument_config()
+                    .capability_id(),
+            )
+            .unwrap();
+        let mut expected_section_ids = descriptor
+            .sections()
+            .iter()
+            .map(|section| section.id().to_owned())
+            .collect::<Vec<_>>();
+        expected_section_ids.push("shared.envelope".to_owned());
+        let overview_ids = StateProjector::new()
+            .project_with_shell(&instruments)
+            .unwrap()
+            .3
+            .semantic_model()
+            .surface(SurfaceId::PatchMain)
+            .unwrap()
+            .controls()
+            .iter()
+            .map(|control| control.path().control_id().clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            overview_ids,
+            vec![
+                SemanticControlId::Patch(PatchControlId::Engine),
+                SemanticControlId::Patch(PatchControlId::EffectSlot(EffectSlotIndex::ALL[0])),
+                SemanticControlId::Patch(PatchControlId::EffectSlot(EffectSlotIndex::ALL[1])),
+                SemanticControlId::Patch(PatchControlId::EffectSlot(EffectSlotIndex::ALL[2])),
+            ],
+            "descriptor rows never leak into Patch Overview membership"
+        );
+        instruments
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let projection = StateProjector::new()
+            .project_with_shell(&instruments)
+            .unwrap()
+            .3;
+        let detail = projection
+            .semantic_model()
+            .surface(SurfaceId::PatchDetail)
+            .unwrap();
+        assert_eq!(
+            detail
+                .sections()
+                .iter()
+                .map(|section| section.id().to_owned())
+                .collect::<Vec<_>>(),
+            expected_section_ids
+        );
+        assert!(detail
+            .controls()
+            .iter()
+            .all(|control| control.visible() && control.enabled()));
+        assert_eq!(
+            detail
+                .sections()
+                .last()
+                .unwrap()
+                .control_paths()
+                .iter()
+                .filter(|path| matches!(
+                    path.control_id(),
+                    SemanticControlId::Patch(PatchControlId::Envelope(_))
+                ))
+                .count(),
+            crest_synth::synth::VoiceEnvelope::surface_descriptor().len()
+        );
+        instrument_shapes.push((detail.sections().len(), detail.controls().len()));
+        instruments.apply(AppEvent::Return).unwrap();
+    }
+    assert_ne!(
+        instrument_shapes[0], instrument_shapes[1],
+        "the production instrument fixtures must exercise different shapes"
+    );
+
+    let production_effects = production_effect_registry().unwrap();
+    let prototypes = production_effects.descriptors()[0]
+        .parameters()
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(prototypes.len() >= 2);
+    let short = EffectCapabilityDescriptor::new(
+        EffectCapabilityId::new("effect.fixture-short").unwrap(),
+        "Fixture Short",
+        "fixture.short",
+        vec![CapabilitySection::new(
+            "fixture.short.primary",
+            "Primary",
+            vec![prototypes[0].clone()],
+        )
+        .unwrap()],
+        Vec::new(),
+    )
+    .unwrap();
+    let long = EffectCapabilityDescriptor::new(
+        EffectCapabilityId::new("effect.fixture-long").unwrap(),
+        "Fixture Long",
+        "fixture.long",
+        vec![
+            CapabilitySection::new(
+                "fixture.long.primary",
+                "Primary",
+                vec![prototypes[0].clone()],
+            )
+            .unwrap(),
+            CapabilitySection::new(
+                "fixture.long.secondary",
+                "Secondary",
+                prototypes[1..].to_vec(),
+            )
+            .unwrap(),
+        ],
+        Vec::new(),
+    )
+    .unwrap();
+    let effects = EffectCapabilityRegistry::new(vec![short, long]).unwrap();
+    let mut patch = soundfont_patch(3, 2, 2);
+    for (position, descriptor) in effects.descriptors().iter().enumerate() {
+        patch = patch.with_effect_slot(
+            EffectSlotIndex::ALL[position],
+            descriptor
+                .default_config(EffectSlotIndex::ALL[position].instance_identity())
+                .unwrap(),
+        );
+    }
+    let mut effect_state = AppState::new_with_effects(
+        production_capability_registry().unwrap(),
+        effects,
+        support::globals(),
+    );
+    effect_state
+        .apply(AppEvent::InstallPatches(vec![patch]))
+        .unwrap();
+    effect_state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    let mut effect_shapes = Vec::new();
+    for (position, slot) in EffectSlotIndex::ALL
+        .into_iter()
+        .take(effect_state.effects().descriptors().len())
+        .enumerate()
+    {
+        effect_state
+            .apply(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+        let occupant = effect_state.patches()[0].effect_slot(slot).unwrap();
+        let slot_id = occupant.slot_id();
+        let descriptor = effect_state
+            .effects()
+            .descriptor(occupant.capability_id())
+            .unwrap();
+        let expected_section_ids = descriptor
+            .sections()
+            .iter()
+            .map(|section| section.id().to_owned())
+            .collect::<Vec<_>>();
+        let expected_parameter_ids = descriptor
+            .parameters()
+            .map(|parameter| parameter.id().clone())
+            .collect::<Vec<_>>();
+        effect_state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let projection = StateProjector::new()
+            .project_with_shell(&effect_state)
+            .unwrap()
+            .3;
+        let detail = projection
+            .semantic_model()
+            .surface(SurfaceId::PatchDetail)
+            .unwrap();
+        assert_eq!(
+            detail
+                .sections()
+                .iter()
+                .map(|section| section.id().to_owned())
+                .collect::<Vec<_>>(),
+            expected_section_ids
+        );
+        assert_eq!(
+            detail
+                .controls()
+                .iter()
+                .map(|control| match control.path().control_id() {
+                    SemanticControlId::Patch(PatchControlId::Effect(projected_slot, parameter)) => {
+                        assert_eq!(*projected_slot, slot_id);
+                        parameter.clone()
+                    }
+                    unexpected => panic!("unexpected FX Detail row {unexpected:?}"),
+                })
+                .collect::<Vec<_>>(),
+            expected_parameter_ids
+        );
+        assert!(detail
+            .controls()
+            .iter()
+            .all(|control| control.visible() && control.enabled()));
+        effect_shapes.push((detail.sections().len(), detail.controls().len()));
+        effect_state.apply(AppEvent::Return).unwrap();
+        if position + 1 == effect_state.effects().descriptors().len() {
+            break;
+        }
+    }
+    assert!(
+        effect_shapes.windows(2).any(|pair| pair[0] != pair[1]),
+        "the effect fixtures must exercise different shapes"
     );
 }
 

@@ -537,7 +537,7 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
         })
         .unwrap();
     let failed_model = semantic(&failed);
-    assert_eq!(failed_model.status().kind().name(), "failed");
+    assert_eq!(failed_model.status().kind().name(), "unavailable");
     assert_eq!(failed_model.errors().len(), 1);
 
     let mut recovering = installed_state(true);
@@ -552,6 +552,17 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
         .apply(AppEvent::Adjust(Direction::Right))
         .unwrap();
     let correlation = recovering.engine_selection().correlation().unwrap().clone();
+    for lifecycle in [
+        crest_synth::control::EngineSelectionStatusKind::Validating,
+        crest_synth::control::EngineSelectionStatusKind::Preparing,
+    ] {
+        recovering
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: correlation.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
     let target_revision = GraphRevision::new(2).unwrap();
     recovering
         .apply(AppEvent::EnginePrepared {

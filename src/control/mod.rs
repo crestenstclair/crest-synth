@@ -20,7 +20,8 @@ pub mod top_level_context;
 
 pub use app_event::{AppEvent, AppEventPayloadShape, AppEventSurfaceDescriptor, Direction};
 pub use app_state::{
-    AppState, ApplyOutcome, EventRejection, SemanticActionAvailability, StateAccepted,
+    AppState, ApplyOutcome, EventRejection, FocusRepairStatus, SemanticActionAvailability,
+    StateAccepted,
 };
 pub use engine_selection::{
     EngineSelectionCorrelation, EngineSelectionEffect, EngineSelectionEffectKind,
@@ -59,11 +60,11 @@ pub use semantic_focus::{
 pub use semantic_graphical_view_model::{
     SemanticBrowserMetadata, SemanticBrowserMetadataStatus, SemanticControlKind,
     SemanticControlValue, SemanticControlViewModel, SemanticError, SemanticErrorCode,
-    SemanticGraphicalViewModel, SemanticGraphicalViewModelError, SemanticLifecycleStatus,
-    SemanticNumericRange, SemanticSurfaceControlSummaryViewModel, SemanticSurfaceRole,
-    SemanticSurfaceSectionViewModel, SemanticSurfaceSummary, SemanticSurfaceViewModel,
-    SemanticVisualizationData, SemanticVisualizationViewModel, SemanticWaveformLandmark,
-    SemanticWaveformPair,
+    SemanticFocusRepairStatus, SemanticGraphicalViewModel, SemanticGraphicalViewModelError,
+    SemanticLifecycleStatus, SemanticNumericRange, SemanticSurfaceControlSummaryViewModel,
+    SemanticSurfaceRole, SemanticSurfaceSectionViewModel, SemanticSurfaceSummary,
+    SemanticSurfaceViewModel, SemanticVisualizationData, SemanticVisualizationViewModel,
+    SemanticWaveformLandmark, SemanticWaveformPair,
 };
 pub use semantic_resolver::{ResolvedChoiceOption, ResolvedChoiceSource, SemanticResolver};
 pub use state_projector::{StateProjectionError, StateProjector};

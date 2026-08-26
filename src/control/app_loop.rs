@@ -2,7 +2,8 @@ use crate::control::app_event::AppEvent;
 use crate::control::app_state::{AppState, EventRejection, StateAccepted};
 use crate::control::engine_selection::{
     EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
-    EngineSelectionRequestId, EngineSelectionStatusError, StructuralEditIntent,
+    EngineSelectionRequestId, EngineSelectionStatusError, EngineSelectionStatusKind,
+    StructuralEditIntent,
 };
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventRecord, EventSource};
@@ -16,8 +17,8 @@ use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crate::real_time::{
     ControlStructuralGraphBoundary, GraphPreparationCorrelation, GraphPreparationRequest,
     GraphPreparationRequestError, GraphPreparationResult, GraphPreparationWorker, GraphRevision,
-    GraphRevisionError, GraphStageOutcome, PreparedGraph, PreparedGraphRefreshError,
-    StructuralGraphCoordinator, WorkerShutdownError,
+    GraphRevisionError, GraphStageOutcome, ParameterSnapshot, ParameterSnapshotError,
+    PreparedGraph, PreparedGraphRefreshError, StructuralGraphCoordinator, WorkerShutdownError,
 };
 use crate::shell::audio_output::AudioDeviceConfig;
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
@@ -38,6 +39,7 @@ pub struct DispatchResult {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct StructuralProgress {
     sample_asset_lifecycle_advanced: Option<SampleAssetLifecycle>,
+    engine_selection_lifecycle_advanced: Option<EngineSelectionStatusKind>,
     worker_result_polled: bool,
     failure_dispatched: bool,
     graph_stage: Option<GraphStageOutcome>,
@@ -50,6 +52,10 @@ pub struct StructuralProgress {
 impl StructuralProgress {
     pub const fn sample_asset_lifecycle_advanced(self) -> Option<SampleAssetLifecycle> {
         self.sample_asset_lifecycle_advanced
+    }
+
+    pub const fn engine_selection_lifecycle_advanced(self) -> Option<EngineSelectionStatusKind> {
+        self.engine_selection_lifecycle_advanced
     }
     pub const fn worker_result_polled(self) -> bool {
         self.worker_result_polled
@@ -87,6 +93,7 @@ pub enum StructuralAdvanceError {
     RegistryMismatch,
     Revision(GraphRevisionError),
     Refresh(PreparedGraphRefreshError),
+    CandidateParameters(ParameterSnapshotError),
     Publication(crate::real_time::GraphPublicationFailure),
     EventLog(crate::control::EventLogError),
     Status(EngineSelectionStatusError),
@@ -104,6 +111,7 @@ impl fmt::Display for StructuralAdvanceError {
             ),
             Self::Revision(error) => error.fmt(formatter),
             Self::Refresh(error) => error.fmt(formatter),
+            Self::CandidateParameters(error) => error.fmt(formatter),
             Self::Publication(failure) => write!(
                 formatter,
                 "structural graph publication failed: {failure:?}"
@@ -170,6 +178,7 @@ where
     current_state_tree: StateTree,
     event_log: EventLog,
     engine_selection_runtime: Option<EngineSelectionRuntime>,
+    pending_engine_selection_request: Option<EngineSelectionEffect>,
     deferred_engine_failure: Option<AppEvent>,
     deferred_revision_error: Option<GraphRevisionError>,
 }
@@ -227,6 +236,7 @@ where
             current_state_tree,
             event_log,
             engine_selection_runtime: None,
+            pending_engine_selection_request: None,
             deferred_engine_failure: None,
             deferred_revision_error: None,
         })
@@ -354,6 +364,14 @@ where
         let audio_command = outcome.audio_command().copied();
         let engine_selection_effect = outcome.engine_selection_effect().cloned();
         let record_sequence = self.event_log.next_sequence();
+        let published_parameters = if parameters_published
+            && self.state.engine_selection().kind() == EngineSelectionStatusKind::Activating
+        {
+            self.latest_pending_candidate_parameters()
+                .expect("an accepted activating state has one valid candidate scalar projection")
+        } else {
+            parameters
+        };
         let record = EventRecord::accepted(
             record_sequence,
             source,
@@ -362,8 +380,8 @@ where
             state_hash_before,
             accepted,
             &snapshot,
-            parameters.generation(),
-            parameters.graph_revision(),
+            published_parameters.generation(),
+            published_parameters.graph_revision(),
             parameters_published,
             &text,
             audio_command,
@@ -372,7 +390,7 @@ where
         .expect("accepted reducer output and projections must form one coherent record");
 
         if parameters_published {
-            self.boundary.publish_parameters(parameters);
+            self.boundary.publish_parameters(published_parameters);
         }
         let boundary_full =
             audio_command.and_then(|command| self.boundary.push_command(command).err());
@@ -385,15 +403,10 @@ where
         self.event_log
             .append(record)
             .expect("AppLoop must append a contiguous accepted event record");
-        if engine_selection_effect
-            .as_ref()
-            .is_some_and(|effect| effect.kind() == EngineSelectionEffectKind::PrepareRequested)
+        if let Some(effect) = engine_selection_effect
+            .filter(|effect| effect.kind() == EngineSelectionEffectKind::PrepareRequested)
         {
-            self.submit_engine_selection_request(
-                engine_selection_effect
-                    .as_ref()
-                    .expect("the PrepareRequested effect was just matched"),
-            );
+            self.pending_engine_selection_request = Some(effect);
         }
 
         Ok(DispatchResult {
@@ -589,6 +602,44 @@ where
             return Ok(progress);
         }
 
+        let engine_lifecycle = self.state.engine_selection().kind();
+        let next_engine_lifecycle = match engine_lifecycle {
+            EngineSelectionStatusKind::Loading => Some(EngineSelectionStatusKind::Validating),
+            EngineSelectionStatusKind::Validating => Some(EngineSelectionStatusKind::Preparing),
+            _ => None,
+        };
+        if let Some(lifecycle) = next_engine_lifecycle {
+            let request_id = self
+                .state
+                .engine_selection()
+                .correlation()
+                .ok_or(StructuralAdvanceError::Status(
+                    EngineSelectionStatusError::MissingCorrelation,
+                ))?
+                .request_id();
+            match self.dispatch_from(
+                AppEvent::EngineSelectionLifecycleAdvanced {
+                    request_id,
+                    lifecycle,
+                },
+                EventSource::Worker,
+            ) {
+                Ok(_) => {
+                    progress.engine_selection_lifecycle_advanced = Some(lifecycle);
+                    if lifecycle == EngineSelectionStatusKind::Preparing {
+                        let effect = self.pending_engine_selection_request.take().ok_or(
+                            StructuralAdvanceError::Status(
+                                EngineSelectionStatusError::MissingCorrelation,
+                            ),
+                        )?;
+                        self.submit_engine_selection_request(&effect);
+                    }
+                }
+                Err(rejection) => progress.rejected_worker_event = Some(rejection),
+            }
+            return Ok(progress);
+        }
+
         if let Some(event) = self.deferred_engine_failure.take() {
             match self.dispatch_from(event, EventSource::Worker) {
                 Ok(_) => progress.failure_dispatched = true,
@@ -716,6 +767,7 @@ where
                 prepared_visualization,
                 mut prepared_graph,
             } => {
+                let pending_candidate_config = candidate_config.clone();
                 let event = if correlation.intent().is_occupancy() {
                     AppEvent::TopologyPrepared {
                         request_id: correlation.request_id(),
@@ -763,8 +815,10 @@ where
                 let scope = replacement_scope(&correlation).ok_or(
                     StructuralAdvanceError::Status(EngineSelectionStatusError::MissingCorrelation),
                 )?;
+                let candidate_parameters = self
+                    .latest_candidate_parameters(&correlation, pending_candidate_config.as_ref())?;
                 prepared_graph
-                    .refresh_initial_parameters(self.current_parameters)
+                    .refresh_initial_parameters(candidate_parameters)
                     .map_err(StructuralAdvanceError::Refresh)?;
                 let outcome = self
                     .engine_selection_runtime
@@ -798,6 +852,144 @@ where
             }
         }
         Ok(())
+    }
+
+    fn latest_candidate_parameters(
+        &self,
+        correlation: &GraphPreparationCorrelation,
+        candidate_config: Option<&crate::synth::InstrumentConfig>,
+    ) -> Result<ParameterSnapshot, StructuralAdvanceError> {
+        let mut patches = self.state.patches().to_vec();
+        let mut returns = self.state.bus_returns().clone();
+        match correlation.intent() {
+            StructuralEditIntent::ReplaceCapability { .. }
+            | StructuralEditIntent::ReplaceParameterChoice { .. }
+            | StructuralEditIntent::ReplaceAsset { .. } => {
+                let patch_id = correlation
+                    .patch_id()
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?;
+                let candidate = candidate_config.ok_or(StructuralAdvanceError::Status(
+                    EngineSelectionStatusError::MissingCorrelation,
+                ))?;
+                patches
+                    .iter_mut()
+                    .find(|patch| patch.id() == patch_id)
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?
+                    .set_instrument_config(candidate.clone());
+            }
+            StructuralEditIntent::PrepareAudition { .. } => {}
+            StructuralEditIntent::SetSlotOccupancy {
+                patch_id,
+                slot,
+                entry,
+            } => {
+                let occupant = entry
+                    .as_ref()
+                    .map(|entry| {
+                        self.state
+                            .effects()
+                            .descriptor(entry)
+                            .ok_or(ParameterSnapshotError::InvalidEffectConfig { index: 0 })?
+                            .default_config(slot.instance_identity())
+                            .map_err(|_| ParameterSnapshotError::InvalidEffectConfig { index: 0 })
+                    })
+                    .transpose()
+                    .map_err(StructuralAdvanceError::CandidateParameters)?;
+                patches
+                    .iter_mut()
+                    .find(|patch| patch.id() == *patch_id)
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?
+                    .set_slot_occupancy(*slot, occupant)
+                    .map_err(|_| {
+                        StructuralAdvanceError::CandidateParameters(
+                            ParameterSnapshotError::InvalidEffectConfig { index: 0 },
+                        )
+                    })?;
+            }
+            StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
+                returns
+                    .set_return_occupancy(self.state.effects(), *bus, entry.as_ref())
+                    .map_err(|_| {
+                        StructuralAdvanceError::CandidateParameters(
+                            ParameterSnapshotError::InvalidEffectConfig { index: 0 },
+                        )
+                    })?;
+            }
+        }
+        ParameterSnapshot::project_patches_with_effects_and_returns(
+            self.state.generation(),
+            correlation.target_graph_revision(),
+            *self.state.global(),
+            *self.state.mixer(),
+            &patches,
+            self.state.capabilities(),
+            self.state.effects(),
+            &returns,
+        )
+        .map_err(StructuralAdvanceError::CandidateParameters)
+    }
+
+    fn latest_pending_candidate_parameters(
+        &self,
+    ) -> Result<ParameterSnapshot, StructuralAdvanceError> {
+        let correlation =
+            self.state
+                .engine_selection()
+                .correlation()
+                .ok_or(StructuralAdvanceError::Status(
+                    EngineSelectionStatusError::MissingCorrelation,
+                ))?;
+        let target_graph_revision =
+            correlation
+                .target_graph_revision()
+                .ok_or(StructuralAdvanceError::Status(
+                    EngineSelectionStatusError::MissingCorrelation,
+                ))?;
+        let preparation_correlation = if correlation.intent().is_occupancy() {
+            GraphPreparationCorrelation::for_occupancy(
+                correlation.request_id(),
+                correlation.intent().clone(),
+                correlation.source_graph_revision(),
+                target_graph_revision,
+            )
+        } else {
+            GraphPreparationCorrelation::new_with_intent(
+                correlation.request_id(),
+                correlation
+                    .patch_id()
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?,
+                correlation.intent().clone(),
+                correlation
+                    .source_capability_id()
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?
+                    .clone(),
+                correlation
+                    .target_capability_id()
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?
+                    .clone(),
+                correlation.source_graph_revision(),
+                target_graph_revision,
+            )
+        }
+        .map_err(|_| {
+            StructuralAdvanceError::Status(EngineSelectionStatusError::MissingCorrelation)
+        })?;
+        self.latest_candidate_parameters(
+            &preparation_correlation,
+            self.state.pending_instrument_config(),
+        )
     }
 
     fn structural_effect(
@@ -1105,9 +1297,17 @@ mod tests {
     where
         Boundary: ControlAudioBoundary,
     {
+        let surface = app_loop.state().interaction().active_surface();
+        let focus = app_loop.state().interaction().focus_path().clone();
+        let subject =
+            crate::control::SemanticResolver::new(app_loop.state()).detail_subject(&focus);
         app_loop
             .dispatch(AppEvent::EnterSurface(SurfaceId::PatchDetail))
-            .expect("the Engine root opens instrument Detail");
+            .unwrap_or_else(|error| {
+                panic!(
+                    "the Engine root opens instrument Detail: {error:?}; surface={surface:?}, focus={focus:?}, subject={subject:?}"
+                )
+            });
         for _ in 0..32 {
             if app_loop
                 .state()
@@ -1123,6 +1323,30 @@ mod tests {
                 .expect("the descriptor-backed detail order reaches the target");
         }
         panic!("Detail did not reach {target:?}");
+    }
+
+    fn advance_engine_admission<Boundary>(app_loop: &mut AppLoop<Boundary>)
+    where
+        Boundary: ControlAudioBoundary,
+    {
+        assert_eq!(
+            app_loop.engine_selection_status().kind(),
+            EngineSelectionStatusKind::Loading
+        );
+        assert_eq!(
+            app_loop
+                .advance_structural()
+                .unwrap()
+                .engine_selection_lifecycle_advanced(),
+            Some(EngineSelectionStatusKind::Validating)
+        );
+        assert_eq!(
+            app_loop
+                .advance_structural()
+                .unwrap()
+                .engine_selection_lifecycle_advanced(),
+            Some(EngineSelectionStatusKind::Preparing)
+        );
     }
 
     #[derive(Clone, Debug, Default, PartialEq)]
@@ -1494,7 +1718,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             app_loop.state().engine_selection().kind(),
-            EngineSelectionStatusKind::Failed
+            EngineSelectionStatusKind::Unavailable
         );
         assert_eq!(
             app_loop.state().interaction().patch_control_focus(),
@@ -1850,9 +2074,18 @@ mod tests {
         app_loop
             .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
+        while app_loop
+            .current_patch_page()
+            .is_some_and(|page| page.focused_control_id() != PatchControlId::Engine)
+        {
+            app_loop
+                .dispatch(AppEvent::Navigate(Direction::Up))
+                .expect("the PATCH Overview order reaches Engine");
+        }
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
+        advance_engine_admission(&mut app_loop);
         assert_eq!(
             app_loop.state().engine_selection().kind(),
             EngineSelectionStatusKind::Preparing
@@ -1883,6 +2116,13 @@ mod tests {
         );
 
         app_loop.dispatch(AppEvent::Return).unwrap();
+        assert_eq!(
+            app_loop.state().interaction().active_surface(),
+            SurfaceId::PatchMain,
+            "Return closes the transient Detail before the busy Overview edit; session={:?}, return={:?}",
+            app_loop.state().interaction().subordinate_session(),
+            app_loop.state().interaction().return_path(),
+        );
         let busy_state = app_loop.current_state_tree();
         assert_eq!(
             app_loop.dispatch(AppEvent::Adjust(Direction::Right)),
@@ -1930,9 +2170,10 @@ mod tests {
             app_loop.current_parameters().graph_revision(),
             target_revision
         );
-        enter_detail_at(
-            &mut app_loop,
-            &PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
+        assert_eq!(
+            app_loop.state().interaction().active_surface(),
+            SurfaceId::PatchDetail,
+            "preparing the candidate retains the still-active instrument Detail"
         );
         assert_eq!(
             app_loop.current_patch_page().unwrap().focused_control_id(),
@@ -2045,7 +2286,8 @@ mod tests {
         );
         assert_eq!(
             app_loop.current_patch_page().unwrap().focused_control_id(),
-            crate::control::PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+            crate::control::PatchControlId::Engine,
+            "acknowledgement commits the new subject and closes stale Detail to its exact origin"
         );
         assert_eq!(
             app_loop.patches()[0].envelope().attack_milliseconds(),
@@ -2143,6 +2385,11 @@ mod tests {
             .unwrap();
         assert_eq!(
             app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Loading
+        );
+        advance_engine_admission(&mut app_loop);
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
             EngineSelectionStatusKind::Preparing
         );
         assert!(worker_handle.is_pending());
@@ -2222,6 +2469,7 @@ mod tests {
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Left))
             .unwrap();
+        advance_engine_admission(&mut app_loop);
         assert!(worker_handle.advance());
         let reverse = app_loop.advance_structural().unwrap();
         assert_eq!(reverse.graph_stage(), Some(GraphStageOutcome::Staged));
@@ -2248,13 +2496,14 @@ mod tests {
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
+        advance_engine_admission(&mut app_loop);
         worker_handle.fail_next(EngineSelectionFailure::AssetUnavailable);
         assert!(worker_handle.advance());
         let failed = app_loop.advance_structural().unwrap();
         assert!(failed.failure_dispatched());
         assert_eq!(
             app_loop.state().engine_selection().kind(),
-            EngineSelectionStatusKind::Failed
+            EngineSelectionStatusKind::Unavailable
         );
         assert_eq!(
             app_loop.state().engine_selection().failure(),
@@ -2266,6 +2515,7 @@ mod tests {
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
+        advance_engine_admission(&mut app_loop);
         assert!(worker_handle.advance());
         app_loop.advance_structural().unwrap();
         renderer.render(&mut output);
@@ -2286,7 +2536,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert!(effects.contains(&EngineSelectionEffectKind::PrepareRequested));
-        assert!(effects.contains(&EngineSelectionEffectKind::CandidateCommitted));
+        assert!(effects.contains(&EngineSelectionEffectKind::CandidatePrepared));
         assert!(effects.contains(&EngineSelectionEffectKind::GraphPublished));
         assert!(effects.contains(&EngineSelectionEffectKind::ActivationAcknowledged));
 

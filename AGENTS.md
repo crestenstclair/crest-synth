@@ -1,8 +1,10 @@
 # Working in Crest Synth
 
-Read `DESIGN.md` before changing product behavior or architecture. It is the
-master as-built design and status reference; its linked Figma file is the visual
-and interaction reference.
+Read `DESIGN.md` before changing product behavior or architecture. The linked
+Figma file is the normative product, visual, and interaction source of truth.
+`DESIGN.md` is the master as-built architecture, invariant, and implementation
+status reference; it records how the current production system realizes the
+Figma contract without competing with it.
 
 The current UI is a functional blockout, not a faithful Figma implementation.
 Do not infer visual or workflow acceptance from the presence of surfaces,
@@ -36,7 +38,11 @@ Figma example engines, effects, patches, files, values, and counts are design
 fixtures, not an exhaustive feature list. Installed registries determine
 production content.
 
-Do not invoke or reintroduce the retired OpenSpec tooling, CUE DSL, roadmap,
-planning kit, generated specification system, or a competing design document.
-Put durable architecture and product decisions in `DESIGN.md`; use issues and
-commits for temporary plans, sequencing, acceptance notes, and handoffs.
+OpenSpec may be used for scoped change proposals, acceptance criteria, design
+reasoning, and implementation tasks. OpenSpec artifacts complement Figma and
+`DESIGN.md`; they must not redefine the product, create a competing source of
+truth, or be cited as proof of as-built behavior. Put durable as-built
+architecture and implementation decisions in `DESIGN.md`; use OpenSpec, issues,
+and commits for temporary plans, sequencing, acceptance notes, and handoffs.
+Do not reintroduce the retired CUE DSL, roadmap, planning kit, or another master
+design document.

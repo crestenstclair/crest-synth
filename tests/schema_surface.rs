@@ -7,8 +7,9 @@ use crest_synth::adapter::production_effects::{
 use crest_synth::adapter::production_instruments::production_capability_registry;
 use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
-    AppEvent, AppState, EngineSelectionFailure, GraphicalShellProjection, PatchControlId,
-    PatchPageProjection, SemanticAction, StateProjector, StateTree, SurfaceId, TopLevelContext,
+    AppEvent, AppState, EngineSelectionFailure, EngineSelectionStatusKind,
+    GraphicalShellProjection, PatchControlId, PatchPageProjection, SemanticAction, StateProjector,
+    StateTree, SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
@@ -385,24 +386,43 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
                 .unwrap();
         },
     ));
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+            state
+                .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
+                .unwrap();
+            let correlation = state.engine_selection().correlation().unwrap().clone();
+            state
+                .apply(AppEvent::EnginePreparationFailed {
+                    request_id: correlation.request_id(),
+                    patch_id: correlation.patch_id().unwrap(),
+                    intent: correlation.intent().clone(),
+                    source_capability_id: correlation.source_capability_id().unwrap().clone(),
+                    target_capability_id: correlation.target_capability_id().unwrap().clone(),
+                    source_graph_revision: correlation.source_graph_revision(),
+                    target_graph_revision: GraphRevision::new(2).unwrap(),
+                    failure: EngineSelectionFailure::AssetUnavailable,
+                })
+                .unwrap();
+        },
+    ));
     trees.push(state_tree_after(soundfont_config, braids_config, |state| {
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();
         state
-            .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
             .unwrap();
-        let correlation = state.engine_selection().correlation().unwrap().clone();
         state
-            .apply(AppEvent::EnginePreparationFailed {
-                request_id: correlation.request_id(),
-                patch_id: correlation.patch_id().unwrap(),
-                intent: correlation.intent().clone(),
-                source_capability_id: correlation.source_capability_id().unwrap().clone(),
-                target_capability_id: correlation.target_capability_id().unwrap().clone(),
-                source_graph_revision: correlation.source_graph_revision(),
-                target_graph_revision: GraphRevision::new(2).unwrap(),
-                failure: EngineSelectionFailure::AssetUnavailable,
+            .apply(AppEvent::SetPatchOverviewOriginEnabled {
+                patch_id: PatchId::new(1).unwrap(),
+                control: PatchControlId::Engine,
+                enabled: false,
             })
             .unwrap();
     }));
@@ -559,6 +579,17 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             loop_mode: SampleLoopMode::Off,
         },
     );
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        sample_state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: preview_correlation.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
     sample_state
         .apply(AppEvent::EnginePrepared {
             request_id: preview_correlation.request_id(),

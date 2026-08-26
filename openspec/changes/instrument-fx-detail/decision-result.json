@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "change": "instrument-fx-detail",
+  "status": "final",
+  "savedAt": "2026-08-25T18:27:00.782Z",
+  "reviewer": null,
+  "completion": {
+    "answered": 5,
+    "total": 5,
+    "unanswered": []
+  },
+  "decisions": {
+    "lifecycle": {
+      "selections": {
+        "phaseVocabulary": {
+          "id": "expand-engine-lifecycle",
+          "label": "Expand the engine lifecycle",
+          "impact": "reducer + projector + workers + tests"
+        },
+        "activationReading": {
+          "id": "retain-old-active-until-ack",
+          "label": "Retain old active until acknowledgement",
+          "impact": "retain candidate separately · change commit timing"
+        }
+      },
+      "notes": "",
+      "sourceTasks": [
+        "2.6",
+        "3.4",
+        "6.3 (lifecycle fixtures)"
+      ]
+    },
+    "navigation": {
+      "selections": {
+        "detailUtilityNavigation": {
+          "id": "reducer-owned-surface-switch",
+          "label": "Reducer-owned surface switch",
+          "impact": "new transition semantics · moderate scope"
+        }
+      },
+      "notes": "",
+      "sourceTasks": [
+        "5.1"
+      ]
+    },
+    "return-repair": {
+      "selections": {
+        "returnOriginRepair": {
+          "id": "add-detail-origin-removal-and-status",
+          "label": "Add the missing product behavior",
+          "impact": "reducer scenario + generic status model + UI"
+        }
+      },
+      "notes": "",
+      "sourceTasks": [
+        "1.5 (repair/status clause)"
+      ]
+    },
+    "native-proof": {
+      "selections": {
+        "nativeVerification": {
+          "id": "require-working-native-host",
+          "label": "Require a working native host",
+          "impact": "tasks remain open until native evidence exists"
+        }
+      },
+      "notes": "If it's useful to render stuff using an HTML scaffold with mock data, that feels like a good way to go for the web view.",
+      "sourceTasks": [
+        "6.4",
+        "6.5",
+        "6.6",
+        "6.7",
+        "8.4"
+      ]
+    }
+  }
+}

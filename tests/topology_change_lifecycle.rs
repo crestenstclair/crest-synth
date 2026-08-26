@@ -115,6 +115,21 @@ struct Fixture {
 }
 
 impl Fixture {
+    /// Drives a fresh reducer-owned structural request through admission and
+    /// submits it to the deterministic preparation worker.
+    fn admit_pending_change(&mut self) {
+        for expected in [
+            EngineSelectionStatusKind::Validating,
+            EngineSelectionStatusKind::Preparing,
+        ] {
+            let admission = self.app_loop.advance_structural().unwrap();
+            assert_eq!(
+                admission.engine_selection_lifecycle_advanced(),
+                Some(expected)
+            );
+        }
+    }
+
     /// Renders one block while counting allocator activity on this thread.
     fn counted_render(&mut self, output: &mut [f32]) -> (usize, usize) {
         CALLBACK_ALLOCATIONS.with(|count| count.set(0));
@@ -157,6 +172,7 @@ impl Fixture {
     /// next rendered block boundary, and off-callback acknowledgement.
     /// Returns the number of retired graphs collected on control.
     fn complete_pending_change(&mut self, output: &mut [f32]) -> u64 {
+        self.admit_pending_change();
         assert!(self.worker.advance());
         let staged = self.app_loop.advance_structural().unwrap();
         assert_eq!(staged.rejected_worker_event(), None);
@@ -344,7 +360,7 @@ fn occupancy_changes_travel_the_canonical_structural_path_and_become_audible() {
         )
         .unwrap();
     let status = fixture.app_loop.engine_selection_status();
-    assert_eq!(status.kind(), EngineSelectionStatusKind::Preparing);
+    assert_eq!(status.kind(), EngineSelectionStatusKind::Loading);
     assert!(matches!(
         status.correlation().unwrap().intent(),
         StructuralEditIntent::SetReturnOccupancy { bus, .. } if bus.index() == 2
@@ -505,6 +521,7 @@ fn controlled_rejection_leaves_the_active_graph_intact_with_sample_exact_audio()
     refused
         .worker
         .fail_next(EngineSelectionFailure::PreparationFailed);
+    refused.admit_pending_change();
     assert!(refused.worker.advance());
     let progress = refused.app_loop.advance_structural().unwrap();
     assert!(progress.failure_dispatched());
@@ -567,6 +584,7 @@ fn recovery_ordering_and_scalar_structural_coexistence_hold() {
     fixture
         .worker
         .fail_next(EngineSelectionFailure::PreparationFailed);
+    fixture.admit_pending_change();
     assert!(fixture.worker.advance());
     fixture.app_loop.advance_structural().unwrap();
     assert_eq!(
@@ -610,6 +628,7 @@ fn recovery_ordering_and_scalar_structural_coexistence_hold() {
 
     // Complete the first change; coexistence: a scalar edit accepted while
     // the structural activation is pending survives the same rendered block.
+    fixture.admit_pending_change();
     assert!(fixture.worker.advance());
     fixture.app_loop.advance_structural().unwrap();
     fixture
@@ -913,6 +932,7 @@ fn held_voices_carry_over_a_slot_occupancy_activation_sample_continuously() {
             EventSource::Keyboard,
         )
         .unwrap();
+    changed.admit_pending_change();
     assert!(changed.worker.advance());
     let staged = changed.app_loop.advance_structural().unwrap();
     assert!(staged.graph_stage().is_some());
@@ -1095,6 +1115,7 @@ fn held_voices_carry_over_a_slot_clear_activation_sample_continuously() {
             EventSource::Keyboard,
         )
         .unwrap();
+    cleared.admit_pending_change();
     assert!(cleared.worker.advance());
     let staged = cleared.app_loop.advance_structural().unwrap();
     assert!(staged.graph_stage().is_some());
@@ -1299,6 +1320,7 @@ fn return_clear_held_note_continuity_preserves_held_voices_sample_exactly() {
             .intent(),
         StructuralEditIntent::SetReturnOccupancy { bus, entry: None } if bus.index() == 2
     ));
+    cleared.admit_pending_change();
     assert!(cleared.worker.advance());
     let staged = cleared.app_loop.advance_structural().unwrap();
     assert!(staged.graph_stage().is_some());
@@ -1460,6 +1482,7 @@ fn repeated_topology_changes_retire_off_callback_with_clean_ownership_at_exit() 
             .app_loop
             .dispatch_action_from(change, EventSource::Keyboard)
             .unwrap();
+        fixture.admit_pending_change();
         assert!(fixture.worker.advance());
         fixture.app_loop.advance_structural().unwrap();
         let memory = fixture.counted_render(&mut output);
@@ -1511,7 +1534,7 @@ fn topology_status_is_projected_with_reason_and_position() {
         .unwrap();
     let tree: serde_json::Value =
         serde_json::from_str(fixture.app_loop.current_state_tree().json()).unwrap();
-    assert_eq!(tree["engineSelection"]["kind"], "preparing");
+    assert_eq!(tree["engineSelection"]["kind"], "loading");
     assert_eq!(
         tree["engineSelection"]["correlation"]["intent"]["kind"],
         "setReturnOccupancy"
@@ -1527,6 +1550,16 @@ fn topology_status_is_projected_with_reason_and_position() {
     fixture
         .worker
         .fail_next(EngineSelectionFailure::PreparationFailed);
+    for expected in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        let admission = fixture.app_loop.advance_structural().unwrap();
+        assert_eq!(
+            admission.engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     assert!(fixture.worker.advance());
     fixture.app_loop.advance_structural().unwrap();
     let tree: serde_json::Value =

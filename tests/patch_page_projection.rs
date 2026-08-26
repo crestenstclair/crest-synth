@@ -423,6 +423,18 @@ fn prove_patch_lifecycle_visibility() {
     state
         .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
         .unwrap();
+    let request_id = state.engine_selection().correlation().unwrap().request_id();
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle,
+            })
+            .unwrap();
+    }
     enter_detail_at(
         &mut state,
         PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds),
@@ -454,7 +466,10 @@ fn prove_patch_lifecycle_visibility() {
         .unwrap();
     let (_, page, text, _, _) = StateProjector::new().project_with_tree(&state).unwrap();
     let page = page.unwrap();
-    assert_eq!(page.engine().status(), EngineSelectionStatusKind::Failed);
+    assert_eq!(
+        page.engine().status(),
+        EngineSelectionStatusKind::Unavailable
+    );
     assert!(page.engine().editable());
     assert_eq!(
         page.focused_control_id(),
@@ -467,6 +482,17 @@ fn prove_patch_lifecycle_visibility() {
         .apply(AppEvent::Adjust(crest_synth::control::Direction::Right))
         .unwrap();
     let correlation = state.engine_selection().correlation().unwrap().clone();
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: correlation.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
     state
         .apply(AppEvent::EnginePrepared {
             request_id: correlation.request_id(),
@@ -511,11 +537,8 @@ fn prove_patch_lifecycle_visibility() {
     let page = page.unwrap();
     assert_eq!(page.engine().status(), EngineSelectionStatusKind::Ready);
     assert!(page.engine().editable());
-    assert_eq!(
-        page.focused_control_id(),
-        PatchControlId::Envelope(VoiceEnvelopeParameter::DecayMilliseconds)
-    );
-    assert_eq!(text.selected_line(), main_row_line(&page, 2));
+    assert_eq!(page.focused_control_id(), PatchControlId::Engine);
+    assert_eq!(text.selected_line(), main_row_line(&page, 0));
     assert_eq!(parameters.graph_revision(), target_revision);
 }
 
@@ -902,7 +925,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         );
         assert_eq!(
             pending_page.engine().status(),
-            EngineSelectionStatusKind::Preparing
+            EngineSelectionStatusKind::Loading
         );
         assert_eq!(
             pending_page.engine().active_capability_id(),

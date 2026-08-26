@@ -78,7 +78,7 @@ fn fifteen_patch_midi_dispatch_uses_the_complete_production_control_path() {
     let state = installed_state();
     assert_eq!(
         state.engine_selection().kind(),
-        EngineSelectionStatusKind::Preparing
+        EngineSelectionStatusKind::Loading
     );
     let initial_generation = state.generation();
     let mut eager_state = state.clone();
@@ -128,7 +128,7 @@ fn fifteen_patch_midi_dispatch_uses_the_complete_production_control_path() {
     );
     assert_eq!(
         app_loop.current_patch_page().unwrap().engine().status(),
-        EngineSelectionStatusKind::Preparing
+        EngineSelectionStatusKind::Loading
     );
     assert_eq!(app_loop.current_patch_page(), eager_page);
     assert_eq!(app_loop.current_text(), eager_text);

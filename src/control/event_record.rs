@@ -301,6 +301,17 @@ pub enum EventInput {
         patch_id: u32,
         message: MidiInput,
     },
+    SetPatchOverviewOriginEnabled {
+        #[serde(rename = "patchId")]
+        patch_id: u32,
+        control: crate::control::PatchControlId,
+        enabled: bool,
+    },
+    EngineSelectionLifecycleAdvanced {
+        #[serde(rename = "requestId")]
+        request_id: EngineSelectionRequestId,
+        lifecycle: crate::control::EngineSelectionStatusKind,
+    },
     EnginePrepared {
         #[serde(rename = "requestId")]
         request_id: EngineSelectionRequestId,
@@ -413,6 +424,22 @@ impl From<&AppEvent> for EventInput {
             AppEvent::Midi { patch_id, message } => Self::Midi {
                 patch_id: patch_id.value(),
                 message: (*message).into(),
+            },
+            AppEvent::SetPatchOverviewOriginEnabled {
+                patch_id,
+                control,
+                enabled,
+            } => Self::SetPatchOverviewOriginEnabled {
+                patch_id: patch_id.value(),
+                control: control.clone(),
+                enabled: *enabled,
+            },
+            AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle,
+            } => Self::EngineSelectionLifecycleAdvanced {
+                request_id: *request_id,
+                lifecycle: *lifecycle,
             },
             AppEvent::EnginePrepared {
                 request_id,
@@ -540,6 +567,8 @@ impl EventInput {
                 | Self::OpenRelated
                 | Self::PreviewStart
                 | Self::PreviewStop
+                | Self::SetPatchOverviewOriginEnabled { .. }
+                | Self::EngineSelectionLifecycleAdvanced { .. }
                 | Self::SampleAssetLifecycleAdvanced { .. }
                 | Self::SampleCatalogRefreshed { .. }
                 | Self::EnterSurface { .. }
@@ -1222,10 +1251,14 @@ mod tests {
             target_capability_id.clone(),
         )
         .unwrap()
+        .advance_admission(crate::control::EngineSelectionStatusKind::Validating)
+        .unwrap()
+        .advance_admission(crate::control::EngineSelectionStatusKind::Preparing)
+        .unwrap()
         .activating(target_graph_revision)
         .unwrap();
         let engine_effect = EngineSelectionEffect::from_correlation(
-            EngineSelectionEffectKind::CandidateCommitted,
+            EngineSelectionEffectKind::CandidatePrepared,
             effect_status.correlation().unwrap(),
         )
         .unwrap();
@@ -1242,10 +1275,14 @@ mod tests {
             source_capability_id.clone(),
         )
         .unwrap()
+        .advance_admission(crate::control::EngineSelectionStatusKind::Validating)
+        .unwrap()
+        .advance_admission(crate::control::EngineSelectionStatusKind::Preparing)
+        .unwrap()
         .activating(target_graph_revision)
         .unwrap();
         let preset_effect = EngineSelectionEffect::from_correlation(
-            EngineSelectionEffectKind::CandidateCommitted,
+            EngineSelectionEffectKind::CandidatePrepared,
             preset_status.correlation().unwrap(),
         )
         .unwrap();

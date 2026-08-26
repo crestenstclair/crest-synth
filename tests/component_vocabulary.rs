@@ -1171,13 +1171,13 @@ fn check_page_sources_spell_no_visual_value() {
 // T037 — state exhaustiveness, non-color legibility, page totality
 // ===========================================================================
 
-/// The state vocabulary is closed at nine and exhaustive iteration yields
+/// The state vocabulary is closed at ten and exhaustive iteration yields
 /// every one of them.
 fn check_state_set_is_closed_and_exhaustive() {
-    assert_eq!(COMPONENT_STATE_COUNT, 9);
+    assert_eq!(COMPONENT_STATE_COUNT, 10);
     assert_eq!(ALL_COMPONENT_STATES.len(), COMPONENT_STATE_COUNT);
 
-    // The match is exhaustive with no wildcard arm, so a tenth variant fails
+    // The match is exhaustive with no wildcard arm, so an eleventh variant fails
     // to compile here; naming every variant is what makes the count
     // load-bearing.
     let mut named = BTreeSet::new();
@@ -1188,6 +1188,7 @@ fn check_state_set_is_closed_and_exhaustive() {
             ComponentState::Adjusting => "Adjusting",
             ComponentState::Disabled => "Disabled",
             ComponentState::Loading => "Loading",
+            ComponentState::Unavailable => "Unavailable",
             ComponentState::Error => "Error",
             ComponentState::Muted => "Muted",
             ComponentState::Soloed => "Soloed",
@@ -1225,12 +1226,13 @@ fn check_state_set_is_closed_and_exhaustive() {
 
 /// The row states the committed render script can derive from a document
 /// (`controlState` in `webview-page/page.js`), pinned exactly.
-const PAGE_ROW_STATES: [&str; 7] = [
+const PAGE_ROW_STATES: [&str; 8] = [
     "resting",
     "focused",
     "adjusting",
     "disabled",
     "loading",
+    "unavailable",
     "error",
     "unknown",
 ];
@@ -1302,7 +1304,7 @@ fn check_every_page_state_is_legible_without_color() {
 
     // The loading vocabulary is the structural-edit vocabulary, not a second
     // one: the page paints the document's own lifecycle word, and the
-    // production preparing document carries exactly the declared word (in
+    // production loading document carries exactly the declared word (in
     // the projection's display case).
     assert!(
         page_js.contains("status.label"),
@@ -1324,10 +1326,10 @@ fn check_every_page_state_is_legible_without_color() {
                 .and_then(Value::as_str)
                 == Some("patch.engine")
         })
-        .expect("the preparing document carries the engine row");
+        .expect("the loading document carries the engine row");
     assert_eq!(
         engine.pointer("/status/kind").and_then(Value::as_str),
-        Some("preparing")
+        Some("loading")
     );
     assert_eq!(
         engine.pointer("/status/label").and_then(Value::as_str),
@@ -1357,7 +1359,7 @@ fn check_every_page_state_is_legible_without_color() {
         let end = body.find('}').expect("the rule block closes");
         body[..end].to_owned()
     };
-    for focus_selector in [".column.focused", ".prow[data-state=\"focused\"]"] {
+    for focus_selector in [".column.focused", ".prow[data-focus-treatment=\"focused\"]"] {
         let block = rule_block(focus_selector);
         for token in [
             "var(--keyline-emphasis)",
@@ -1372,7 +1374,7 @@ fn check_every_page_state_is_legible_without_color() {
             );
         }
     }
-    let adjusting = rule_block(".prow[data-state=\"adjusting\"]");
+    let adjusting = rule_block(".prow[data-focus-treatment=\"adjusting\"]");
     assert!(adjusting.contains("var(--keyline-emphasis)"));
     assert!(adjusting.contains("var(--color-accent-adjust)"));
     assert!(

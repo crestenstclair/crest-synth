@@ -544,8 +544,9 @@ impl GraphPreparationRequest {
 pub enum GraphPreparationResult {
     Prepared {
         correlation: GraphPreparationCorrelation,
-        /// The committed candidate instrument config for instrument intents;
-        /// occupancy intents change no instrument config.
+        /// The prepared candidate instrument config for instrument intents;
+        /// occupancy intents change no instrument config. The reducer keeps
+        /// it pending until activation acknowledgement.
         candidate_config: Option<InstrumentConfig>,
         prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
         prepared_graph: PreparedGraph,

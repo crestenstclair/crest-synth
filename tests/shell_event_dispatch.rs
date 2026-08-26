@@ -591,7 +591,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
             records.len() >= 22,
             "the complete Overview → Detail → Overview input sequence is logged"
         );
-        assert_eq!(page.engine().status(), EngineSelectionStatusKind::Preparing);
+        assert_eq!(page.engine().status(), EngineSelectionStatusKind::Loading);
         assert!(!page.engine().editable());
         assert_eq!(
             page.engine().active_capability_id().as_str(),
@@ -600,7 +600,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         assert_eq!(
             page.engine()
                 .requested_capability_id()
-                .expect("Preparing identifies the requested capability")
+                .expect("Loading identifies the requested capability")
                 .as_str(),
             BRAIDS_CAPABILITY_ID
         );
@@ -609,7 +609,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
             Some(EngineSelectionRequestId::FIRST)
         );
         assert_eq!(page.engine().target_graph_revision(), None);
-        assert_eq!(pending_tree["engineSelection"]["kind"], "preparing");
+        assert_eq!(pending_tree["engineSelection"]["kind"], "loading");
         assert_eq!(
             pending_tree["engineSelection"]["correlation"]["requestId"],
             EngineSelectionRequestId::FIRST.value()
@@ -667,13 +667,13 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         let engine = engine_row(&pending_document);
         assert_eq!(
             engine.pointer("/status/kind").and_then(Value::as_str),
-            Some("preparing")
+            Some("loading")
         );
         assert_eq!(engine.get("editable"), Some(&Value::from(false)));
         assert_eq!(
             engine.pointer("/status/targetGraphRevision"),
             Some(&Value::Null),
-            "Preparing has not identified a prepared graph yet"
+            "Loading has not identified a prepared graph yet"
         );
         assert_eq!(
             engine.pointer("/status/graphRevision"),

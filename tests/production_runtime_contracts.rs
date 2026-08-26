@@ -862,6 +862,17 @@ fn commit_pending_topology(state: &mut AppState) {
         .correlation()
         .expect("an accepted occupancy request owns its correlation")
         .clone();
+    for lifecycle in [
+        crest_synth::control::EngineSelectionStatusKind::Validating,
+        crest_synth::control::EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: correlation.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
     let source = correlation.source_graph_revision();
     let target = source
         .checked_next()

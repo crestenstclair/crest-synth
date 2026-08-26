@@ -272,8 +272,11 @@ impl StructuralEditIntent {
 #[serde(rename_all = "camelCase")]
 pub enum EngineSelectionStatusKind {
     Ready,
+    Loading,
+    Validating,
     Preparing,
     Activating,
+    Unavailable,
     Failed,
 }
 
@@ -282,7 +285,7 @@ pub enum EngineSelectionStatusKind {
 #[serde(rename_all = "camelCase")]
 pub enum EngineSelectionEffectKind {
     PrepareRequested,
-    CandidateCommitted,
+    CandidatePrepared,
     GraphStaged,
     GraphPublished,
     ActivationAcknowledged,
@@ -291,7 +294,7 @@ pub enum EngineSelectionEffectKind {
 impl EngineSelectionEffectKind {
     pub const ALL: [Self; 5] = [
         Self::PrepareRequested,
-        Self::CandidateCommitted,
+        Self::CandidatePrepared,
         Self::GraphStaged,
         Self::GraphPublished,
         Self::ActivationAcknowledged,
@@ -304,7 +307,7 @@ impl EngineSelectionEffectKind {
     pub const fn name(self) -> &'static str {
         match self {
             Self::PrepareRequested => "prepareRequested",
-            Self::CandidateCommitted => "candidateCommitted",
+            Self::CandidatePrepared => "candidatePrepared",
             Self::GraphStaged => "graphStaged",
             Self::GraphPublished => "graphPublished",
             Self::ActivationAcknowledged => "activationAcknowledged",
@@ -313,7 +316,15 @@ impl EngineSelectionEffectKind {
 }
 
 impl EngineSelectionStatusKind {
-    pub const ALL: [Self; 4] = [Self::Ready, Self::Preparing, Self::Activating, Self::Failed];
+    pub const ALL: [Self; 7] = [
+        Self::Ready,
+        Self::Loading,
+        Self::Validating,
+        Self::Preparing,
+        Self::Activating,
+        Self::Unavailable,
+        Self::Failed,
+    ];
 
     pub const fn surface_descriptor() -> &'static [Self] {
         &Self::ALL
@@ -322,8 +333,11 @@ impl EngineSelectionStatusKind {
     pub const fn name(self) -> &'static str {
         match self {
             Self::Ready => "ready",
+            Self::Loading => "loading",
+            Self::Validating => "validating",
             Self::Preparing => "preparing",
             Self::Activating => "activating",
+            Self::Unavailable => "unavailable",
             Self::Failed => "failed",
         }
     }
@@ -511,7 +525,7 @@ impl EngineSelectionStatus {
         )
     }
 
-    /// Enters Preparing for one occupancy intent, deriving the Patch context
+    /// Enters Loading for one occupancy intent, deriving the Patch context
     /// the intent itself declares.
     pub fn preparing_for_occupancy(
         active_graph_revision: GraphRevision,
@@ -557,7 +571,7 @@ impl EngineSelectionStatus {
             return Err(EngineSelectionStatusError::IntentMismatch);
         }
         Ok(Self {
-            kind: EngineSelectionStatusKind::Preparing,
+            kind: EngineSelectionStatusKind::Loading,
             active_graph_revision,
             correlation: Some(EngineSelectionCorrelation {
                 request_id,
@@ -568,6 +582,39 @@ impl EngineSelectionStatus {
                 source_graph_revision: active_graph_revision,
                 target_graph_revision: None,
             }),
+            failure: None,
+        })
+    }
+
+    /// Advances one correlated request through its observable admission phases.
+    ///
+    /// Only Loading → Validating → Preparing is accepted. The immutable
+    /// correlation is retained exactly across all three reducer-owned states.
+    pub fn advance_admission(
+        &self,
+        target: EngineSelectionStatusKind,
+    ) -> Result<Self, EngineSelectionStatusError> {
+        let valid = matches!(
+            (self.kind, target),
+            (
+                EngineSelectionStatusKind::Loading,
+                EngineSelectionStatusKind::Validating
+            ) | (
+                EngineSelectionStatusKind::Validating,
+                EngineSelectionStatusKind::Preparing
+            )
+        );
+        if !valid {
+            return Err(EngineSelectionStatusError::InvalidTransition);
+        }
+        let correlation = self
+            .correlation
+            .clone()
+            .ok_or(EngineSelectionStatusError::MissingCorrelation)?;
+        Ok(Self {
+            kind: target,
+            active_graph_revision: self.active_graph_revision,
+            correlation: Some(correlation),
             failure: None,
         })
     }
@@ -599,7 +646,12 @@ impl EngineSelectionStatus {
         &self,
         failure: EngineSelectionFailure,
     ) -> Result<Self, EngineSelectionStatusError> {
-        if self.kind != EngineSelectionStatusKind::Preparing {
+        if !matches!(
+            self.kind,
+            EngineSelectionStatusKind::Loading
+                | EngineSelectionStatusKind::Validating
+                | EngineSelectionStatusKind::Preparing
+        ) {
             return Err(EngineSelectionStatusError::InvalidTransition);
         }
         let correlation = self
@@ -608,6 +660,39 @@ impl EngineSelectionStatus {
             .ok_or(EngineSelectionStatusError::MissingCorrelation)?;
         Ok(Self {
             kind: EngineSelectionStatusKind::Failed,
+            active_graph_revision: self.active_graph_revision,
+            correlation: Some(correlation),
+            failure: Some(failure),
+        })
+    }
+
+    pub fn unavailable(
+        &self,
+        failure: EngineSelectionFailure,
+    ) -> Result<Self, EngineSelectionStatusError> {
+        if !matches!(
+            self.kind,
+            EngineSelectionStatusKind::Loading
+                | EngineSelectionStatusKind::Validating
+                | EngineSelectionStatusKind::Preparing
+        ) {
+            return Err(EngineSelectionStatusError::InvalidTransition);
+        }
+        if !matches!(
+            failure,
+            EngineSelectionFailure::WorkerUnavailable
+                | EngineSelectionFailure::PresetUnavailable
+                | EngineSelectionFailure::AssetUnavailable
+                | EngineSelectionFailure::PreparerMissing
+        ) {
+            return Err(EngineSelectionStatusError::InvalidTransition);
+        }
+        let correlation = self
+            .correlation
+            .clone()
+            .ok_or(EngineSelectionStatusError::MissingCorrelation)?;
+        Ok(Self {
+            kind: EngineSelectionStatusKind::Unavailable,
             active_graph_revision: self.active_graph_revision,
             correlation: Some(correlation),
             failure: Some(failure),
@@ -645,25 +730,29 @@ impl EngineSelectionStatus {
     pub const fn is_in_flight(&self) -> bool {
         matches!(
             self.kind,
-            EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Activating
+            EngineSelectionStatusKind::Loading
+                | EngineSelectionStatusKind::Validating
+                | EngineSelectionStatusKind::Preparing
+                | EngineSelectionStatusKind::Activating
         )
     }
 
-    /// Returns the complete graph revision targeted by current scalar projections.
-    /// Activating state has committed the candidate config, so projections target
-    /// its newer graph before callback acknowledgement advances the active revision.
+    /// Returns the revision targeted by the latest compatible scalar snapshot.
+    ///
+    /// The canonical active capability/config remain unchanged throughout
+    /// `Activating`, while scalar edits target the prepared revision so they
+    /// are already available when the callback activates that graph. The
+    /// correlation continues to expose the acknowledged source revision and
+    /// the pending target revision explicitly.
     pub const fn projection_graph_revision(&self) -> GraphRevision {
-        match self.kind {
-            EngineSelectionStatusKind::Activating => match &self.correlation {
-                Some(correlation) => match correlation.target_graph_revision {
-                    Some(target) => target,
+        match (&self.kind, &self.correlation) {
+            (EngineSelectionStatusKind::Activating, Some(correlation)) => {
+                match correlation.target_graph_revision() {
+                    Some(revision) => revision,
                     None => self.active_graph_revision,
-                },
-                None => self.active_graph_revision,
-            },
-            EngineSelectionStatusKind::Ready
-            | EngineSelectionStatusKind::Preparing
-            | EngineSelectionStatusKind::Failed => self.active_graph_revision,
+                }
+            }
+            _ => self.active_graph_revision,
         }
     }
 
@@ -684,7 +773,9 @@ impl EngineSelectionStatus {
             EngineSelectionStatusKind::Ready => {
                 self.correlation.is_none() && self.failure.is_none()
             }
-            EngineSelectionStatusKind::Preparing => {
+            EngineSelectionStatusKind::Loading
+            | EngineSelectionStatusKind::Validating
+            | EngineSelectionStatusKind::Preparing => {
                 self.correlation
                     .as_ref()
                     .is_some_and(|correlation| correlation.target_graph_revision.is_none())
@@ -697,7 +788,7 @@ impl EngineSelectionStatus {
                     .is_some_and(|target| target > self.active_graph_revision)
                     && self.failure.is_none()
             }
-            EngineSelectionStatusKind::Failed => {
+            EngineSelectionStatusKind::Unavailable | EngineSelectionStatusKind::Failed => {
                 self.correlation
                     .as_ref()
                     .is_some_and(|correlation| correlation.target_graph_revision.is_none())
@@ -802,12 +893,16 @@ mod tests {
             capability_id("instrument.target"),
         )
         .unwrap()
+        .advance_admission(EngineSelectionStatusKind::Validating)
+        .unwrap()
+        .advance_admission(EngineSelectionStatusKind::Preparing)
+        .unwrap()
     }
 
     #[test]
     fn engine_selection_values_have_unique_exhaustive_stable_serialized_names() {
         assert_eq!(EngineSelectionFailure::surface_descriptor().len(), 17);
-        assert_eq!(EngineSelectionStatusKind::surface_descriptor().len(), 4);
+        assert_eq!(EngineSelectionStatusKind::surface_descriptor().len(), 7);
         for failures in EngineSelectionFailure::surface_descriptor().windows(2) {
             assert_ne!(failures[0], failures[1]);
         }
@@ -856,7 +951,21 @@ mod tests {
 
     #[test]
     fn engine_selection_status_enforces_the_declared_lifecycle_and_revision_boundary() {
-        let preparing = preparing();
+        let loading = EngineSelectionStatus::preparing(
+            GraphRevision::INITIAL,
+            EngineSelectionRequestId::FIRST,
+            PatchId::new(1).unwrap(),
+            capability_id("instrument.source"),
+            capability_id("instrument.target"),
+        )
+        .unwrap();
+        assert_eq!(loading.kind(), EngineSelectionStatusKind::Loading);
+        let validating = loading
+            .advance_admission(EngineSelectionStatusKind::Validating)
+            .unwrap();
+        let preparing = validating
+            .advance_admission(EngineSelectionStatusKind::Preparing)
+            .unwrap();
         assert_eq!(preparing.kind(), EngineSelectionStatusKind::Preparing);
         assert_eq!(preparing.active_graph_revision(), GraphRevision::INITIAL);
         assert!(preparing.is_in_flight());
@@ -891,6 +1000,10 @@ mod tests {
             failed.acknowledged(),
             Err(EngineSelectionStatusError::InvalidTransition)
         );
+        let unavailable = loading
+            .unavailable(EngineSelectionFailure::WorkerUnavailable)
+            .unwrap();
+        assert_eq!(unavailable.kind(), EngineSelectionStatusKind::Unavailable);
     }
 
     #[test]
@@ -925,7 +1038,7 @@ mod tests {
         assert_eq!(request.target_graph_revision(), None);
         assert_eq!(
             EngineSelectionEffect::from_correlation(
-                EngineSelectionEffectKind::CandidateCommitted,
+                EngineSelectionEffectKind::CandidatePrepared,
                 preparing.correlation().unwrap(),
             ),
             Err(EngineSelectionStatusError::MissingTargetRevision)
@@ -935,18 +1048,18 @@ mod tests {
             .activating(GraphRevision::INITIAL.checked_next().unwrap())
             .unwrap();
         let committed = EngineSelectionEffect::from_correlation(
-            EngineSelectionEffectKind::CandidateCommitted,
+            EngineSelectionEffectKind::CandidatePrepared,
             activating.correlation().unwrap(),
         )
         .unwrap();
         assert_eq!(
             committed.kind(),
-            EngineSelectionEffectKind::CandidateCommitted
+            EngineSelectionEffectKind::CandidatePrepared
         );
         assert_eq!(committed.target_graph_revision().unwrap().value(), 2);
         assert_eq!(
             serde_json::to_value(committed).unwrap()["kind"],
-            "candidateCommitted"
+            "candidatePrepared"
         );
     }
 }

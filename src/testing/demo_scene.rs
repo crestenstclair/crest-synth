@@ -787,6 +787,7 @@ fn push_preset_selection_steps(
     )));
     steps.push(DemoSceneStep::Tick(TICK_DURATION));
     push_single_adjustment(steps, WindowKey::D);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::preset(
@@ -836,6 +837,9 @@ fn push_preset_selection_steps(
         patch,
         fixture,
         "preset.forward",
+        &fixture.source_choice_id,
+        &fixture.source_label,
+        0,
         &fixture.target_choice_id,
         &fixture.target_label,
         requested_target(),
@@ -843,6 +847,7 @@ fn push_preset_selection_steps(
     );
 
     push_single_adjustment(steps, WindowKey::A);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::preset(
@@ -864,6 +869,9 @@ fn push_preset_selection_steps(
         patch,
         fixture,
         "preset.restore",
+        &fixture.target_choice_id,
+        &fixture.target_label,
+        1,
         &fixture.source_choice_id,
         &fixture.source_label,
         requested_source(),
@@ -871,6 +879,7 @@ fn push_preset_selection_steps(
     );
 
     push_single_adjustment(steps, WindowKey::D);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::preset(
@@ -896,7 +905,7 @@ fn push_preset_selection_steps(
         DemoCheckpoint::preset(
             "preset.failure.preserved",
             patch.id(),
-            EngineSelectionStatusKind::Failed,
+            EngineSelectionStatusKind::Unavailable,
             fixture.parameter_id.clone(),
             &fixture.source_choice_id,
             &fixture.source_choice_id,
@@ -909,6 +918,7 @@ fn push_preset_selection_steps(
     );
 
     push_single_adjustment(steps, WindowKey::D);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::preset(
@@ -930,6 +940,9 @@ fn push_preset_selection_steps(
         patch,
         fixture,
         "preset.recovery",
+        &fixture.source_choice_id,
+        &fixture.source_label,
+        0,
         &fixture.target_choice_id,
         &fixture.target_label,
         requested_target(),
@@ -937,6 +950,7 @@ fn push_preset_selection_steps(
     );
 
     push_single_adjustment(steps, WindowKey::A);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::preset(
@@ -958,6 +972,9 @@ fn push_preset_selection_steps(
         patch,
         fixture,
         "preset.final",
+        &fixture.target_choice_id,
+        &fixture.target_label,
+        1,
         &fixture.source_choice_id,
         &fixture.source_label,
         requested_source(),
@@ -975,6 +992,9 @@ fn push_successful_preset_transition(
     patch: &Patch,
     fixture: &DemoPresetFixture,
     prefix: &str,
+    active_choice_id: &str,
+    active_label: &str,
+    active_assignment_changes: usize,
     selected_choice_id: &str,
     selected_label: &str,
     requested_choice: Option<(String, String)>,
@@ -1000,12 +1020,12 @@ fn push_successful_preset_transition(
             EngineSelectionStatusKind::Activating,
             fixture.parameter_id.clone(),
             &fixture.source_choice_id,
-            selected_choice_id,
-            selected_label,
+            active_choice_id,
+            active_label,
             requested_choice,
             None,
             false,
-            expected_assignment_changes,
+            active_assignment_changes,
         ),
     );
     steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
@@ -1702,6 +1722,7 @@ fn push_engine_selection_steps(
         ),
     );
     push_engine_adjustment(steps, WindowKey::D);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::engine(
@@ -1777,20 +1798,29 @@ fn push_engine_selection_steps(
         steps,
         patch,
         "engine.forward",
-        braids.clone(),
-        Some(braids.clone()),
-        DemoWorkerAdvance::Healthy,
-        Some(DemoTransitionAdsrEdit {
-            parameter: decay,
-            before: decay_initial,
-            after: decay_edited,
-            detail_index: braids_descriptor.parameters().count() + 1,
-        }),
+        DemoEngineTransition {
+            activating_capability_id: soundfont.clone(),
+            active_capability_id: braids.clone(),
+            requested_capability_id: Some(braids.clone()),
+            worker: DemoWorkerAdvance::Healthy,
+            activating_adsr: Some(DemoTransitionAdsrEdit {
+                parameter: decay,
+                before: decay_initial,
+                after: decay_edited,
+                detail_index: 1,
+            }),
+        },
     );
 
-    // The activating edit entered the installed Braids subject at Decay. Walk
-    // back through that same descriptor-derived Detail order while restoring
-    // both envelope values.
+    // Activation acknowledgement closes the retained SoundFont Detail to its
+    // exact Engine origin. Enter the newly committed Braids Detail, reach
+    // Decay through its descriptor order, and restore both shared values.
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
+        SurfaceId::PatchDetail,
+    )));
+    for _ in 0..=braids_descriptor.parameters().count() {
+        push_key_press(steps, WindowKey::S);
+    }
     push_single_adjustment(steps, WindowKey::A);
     push_key_press(steps, WindowKey::W);
     push_single_adjustment(steps, WindowKey::A);
@@ -1807,6 +1837,7 @@ fn push_engine_selection_steps(
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
 
     push_engine_adjustment(steps, WindowKey::A);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::engine(
@@ -1822,13 +1853,17 @@ fn push_engine_selection_steps(
         steps,
         patch,
         "engine.reverse",
-        soundfont.clone(),
-        Some(soundfont.clone()),
-        DemoWorkerAdvance::Healthy,
-        None,
+        DemoEngineTransition {
+            activating_capability_id: braids.clone(),
+            active_capability_id: soundfont.clone(),
+            requested_capability_id: Some(soundfont.clone()),
+            worker: DemoWorkerAdvance::Healthy,
+            activating_adsr: None,
+        },
     );
 
     push_engine_adjustment(steps, WindowKey::D);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::engine(
@@ -1848,7 +1883,7 @@ fn push_engine_selection_steps(
         steps,
         DemoCheckpoint::engine(
             "engine.failure.preserved",
-            EngineSelectionStatusKind::Failed,
+            EngineSelectionStatusKind::Unavailable,
             soundfont.clone(),
             Some(braids.clone()),
             Some(EngineSelectionFailure::AssetUnavailable),
@@ -1857,6 +1892,7 @@ fn push_engine_selection_steps(
     );
 
     push_engine_adjustment(steps, WindowKey::D);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::engine(
@@ -1872,19 +1908,23 @@ fn push_engine_selection_steps(
         steps,
         patch,
         "engine.recovery",
-        braids.clone(),
-        Some(braids.clone()),
-        DemoWorkerAdvance::Healthy,
-        None,
+        DemoEngineTransition {
+            activating_capability_id: soundfont.clone(),
+            active_capability_id: braids.clone(),
+            requested_capability_id: Some(braids.clone()),
+            worker: DemoWorkerAdvance::Healthy,
+            activating_adsr: None,
+        },
     );
 
     push_engine_adjustment(steps, WindowKey::A);
+    push_structural_admission(steps);
     push_checkpoint(
         steps,
         DemoCheckpoint::engine(
             "engine.final.preparing",
             EngineSelectionStatusKind::Preparing,
-            braids,
+            braids.clone(),
             Some(soundfont.clone()),
             None,
             false,
@@ -1894,10 +1934,13 @@ fn push_engine_selection_steps(
         steps,
         patch,
         "engine.final",
-        soundfont.clone(),
-        Some(soundfont),
-        DemoWorkerAdvance::Healthy,
-        None,
+        DemoEngineTransition {
+            activating_capability_id: braids.clone(),
+            active_capability_id: soundfont.clone(),
+            requested_capability_id: Some(soundfont),
+            worker: DemoWorkerAdvance::Healthy,
+            activating_adsr: None,
+        },
     );
     push_voice_limit_restoration_steps(steps, patch);
     push_key_press(steps, WindowKey::Digit1);
@@ -2024,6 +2067,7 @@ fn push_topology_occupancy_steps(
             entry: None,
         },
     ));
+    push_structural_admission(steps);
     steps.push(DemoSceneStep::AdvanceWorker(DemoWorkerAdvance::Fail(
         EngineSelectionFailure::PreparationFailed,
     )));
@@ -2070,11 +2114,19 @@ fn push_topology_occupancy_steps(
 /// Drives one accepted occupancy request through prepare, stage, block-boundary
 /// activation, and acknowledgement.
 fn push_topology_completion(steps: &mut Vec<DemoSceneStep>, checkpoint: &str) {
+    push_structural_admission(steps);
     steps.push(DemoSceneStep::AdvanceWorker(DemoWorkerAdvance::Healthy));
     steps.push(DemoSceneStep::AdvanceStructural);
     steps.push(DemoSceneStep::Tick(TICK_DURATION));
     steps.push(DemoSceneStep::AdvanceStructural);
     push_checkpoint(steps, DemoCheckpoint::new(checkpoint));
+}
+
+/// Advances one accepted structural request through the explicit off-thread
+/// loading and validation gates before the preparation worker can receive it.
+fn push_structural_admission(steps: &mut Vec<DemoSceneStep>) {
+    steps.push(DemoSceneStep::AdvanceStructural);
+    steps.push(DemoSceneStep::AdvanceStructural);
 }
 
 #[derive(Clone, Copy)]
@@ -2085,16 +2137,21 @@ struct DemoTransitionAdsrEdit {
     detail_index: usize,
 }
 
-fn push_successful_engine_transition(
-    steps: &mut Vec<DemoSceneStep>,
-    patch: &Patch,
-    prefix: &str,
+struct DemoEngineTransition {
+    activating_capability_id: crate::synth::CapabilityId,
     active_capability_id: crate::synth::CapabilityId,
     requested_capability_id: Option<crate::synth::CapabilityId>,
     worker: DemoWorkerAdvance,
     activating_adsr: Option<DemoTransitionAdsrEdit>,
+}
+
+fn push_successful_engine_transition(
+    steps: &mut Vec<DemoSceneStep>,
+    patch: &Patch,
+    prefix: &str,
+    transition: DemoEngineTransition,
 ) {
-    steps.push(DemoSceneStep::AdvanceWorker(worker));
+    steps.push(DemoSceneStep::AdvanceWorker(transition.worker));
     steps.push(DemoSceneStep::AdvanceStructural);
     steps.push(DemoSceneStep::EngineProbe(
         DemoEngineProbe::MismatchedAcknowledgement,
@@ -2111,16 +2168,15 @@ fn push_successful_engine_transition(
         DemoCheckpoint::engine(
             format!("{prefix}.activating"),
             EngineSelectionStatusKind::Activating,
-            active_capability_id.clone(),
-            requested_capability_id,
+            transition.activating_capability_id,
+            transition.requested_capability_id,
             None,
             false,
         ),
     );
-    if let Some(edit) = activating_adsr {
-        steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
-            SurfaceId::PatchDetail,
-        )));
+    if let Some(edit) = transition.activating_adsr {
+        // The old subject remains open until acknowledgement; move within its
+        // stable Detail order instead of trying to enter a second surface.
         for _ in 0..edit.detail_index {
             push_key_press(steps, WindowKey::S);
         }
@@ -2151,7 +2207,7 @@ fn push_successful_engine_transition(
         DemoCheckpoint::engine(
             format!("{prefix}.ready"),
             EngineSelectionStatusKind::Ready,
-            active_capability_id,
+            transition.active_capability_id,
             None,
             None,
             true,
@@ -2379,6 +2435,14 @@ fn build_expected_coverage(
             }
             crate::control::app_event::AppEventSurfaceDescriptor::Midi { .. } => {
                 expected.push("event.midi".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::SetPatchOverviewOriginEnabled {
+                ..
+            } => {}
+            crate::control::app_event::AppEventSurfaceDescriptor::EngineSelectionLifecycleAdvanced {
+                ..
+            } => {
+                expected.push("event.engineSelectionLifecycleAdvanced".to_owned());
             }
             crate::control::app_event::AppEventSurfaceDescriptor::EnginePrepared { .. } => {
                 expected.push("event.enginePrepared".to_owned());
@@ -3052,7 +3116,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 47);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            33
+            35
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

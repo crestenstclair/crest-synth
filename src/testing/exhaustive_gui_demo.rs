@@ -685,7 +685,10 @@ where
             });
         }
         match expected.status() {
-            EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Failed
+            EngineSelectionStatusKind::Loading
+            | EngineSelectionStatusKind::Validating
+            | EngineSelectionStatusKind::Preparing
+            | EngineSelectionStatusKind::Failed
                 if state_revision != run.last_ready_graph_revision =>
             {
                 return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
@@ -698,7 +701,7 @@ where
             {
                 return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
                     step: step.to_owned(),
-                    reason: "activating graph revision did not advance".to_owned(),
+                    reason: "activating scalar transport revision did not advance".to_owned(),
                 });
             }
             EngineSelectionStatusKind::Ready => {
@@ -859,7 +862,10 @@ where
             });
         }
         match expected.status() {
-            EngineSelectionStatusKind::Preparing | EngineSelectionStatusKind::Failed
+            EngineSelectionStatusKind::Loading
+            | EngineSelectionStatusKind::Validating
+            | EngineSelectionStatusKind::Preparing
+            | EngineSelectionStatusKind::Failed
                 if state_revision != run.last_ready_graph_revision =>
             {
                 return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
@@ -873,7 +879,8 @@ where
             {
                 return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
                     step: step.to_owned(),
-                    reason: "preset activating revision did not advance".to_owned(),
+                    reason: "preset activating scalar transport revision did not advance"
+                        .to_owned(),
                 });
             }
             EngineSelectionStatusKind::Ready => {
@@ -1355,13 +1362,26 @@ where
         }
         run.effect_observed = true;
         let configured_patch = configured.first().expect("configured effects are nonempty");
+        let parameter_projection_matches_transport =
+            if self.app_loop.engine_selection_status().kind()
+                == EngineSelectionStatusKind::Activating
+            {
+                // Activating deliberately publishes the prepared candidate-layout
+                // scalar snapshot while the immutable UI projection retains the
+                // acknowledged source layout. Their audio values need not compare
+                // structurally, but both must name the exact activated target
+                // revision; focused candidate-scalar tests prove the value merge.
+                self.renderer.parameters().graph_revision()
+                    == self.app_loop.current_parameters().graph_revision()
+            } else {
+                self.renderer
+                    .parameters()
+                    .audio_values_equal(self.app_loop.current_parameters())
+            };
         run.effect_target_exact &= configured.len() == 1
             && effect.patch_id() == Some(configured_patch.id())
             && observation.parameter_generation() == self.renderer.parameters().generation()
-            && self
-                .renderer
-                .parameters()
-                .audio_values_equal(self.app_loop.current_parameters())
+            && parameter_projection_matches_transport
             && observation.active_graph_revision() == self.renderer.active_revision()
             && observation.routing_failures() == 0;
         run.effect_difference_nonzero |= effect.difference_rms() > 1.0e-7;
@@ -1618,6 +1638,10 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             EventInput::Midi { message, .. } => {
                 observed.insert("event.midi".to_owned());
                 observed.insert(format!("midi.{}", midi_kind_identifier(message.kind())));
+            }
+            EventInput::SetPatchOverviewOriginEnabled { .. } => {}
+            EventInput::EngineSelectionLifecycleAdvanced { .. } => {
+                observed.insert("event.engineSelectionLifecycleAdvanced".to_owned());
             }
             EventInput::EnginePrepared { .. } => {
                 observed.insert("event.enginePrepared".to_owned());

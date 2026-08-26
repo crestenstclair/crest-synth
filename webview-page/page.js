@@ -343,7 +343,11 @@
     if (status.kind === "ready") {
       return "positive";
     }
-    return status.kind === "error" ? "warning" : "adjust";
+    return status.kind === "failed" ||
+      status.kind === "error" ||
+      status.kind === "unavailable"
+      ? "warning"
+      : "adjust";
   }
 
   // Condenses a valid action's label to the authored hint form:
@@ -398,11 +402,11 @@
 
   // Derives the declared ComponentState treatment for one projected control
   // from the immutable document plus the projected interaction mode —
-  // exactly the precedence the pre-cutover shipped row applied
-  // (patch_strip_row::component_state): a failed edit outranks an in-flight
-  // one, focus outranks read-only-ness. Matching is exhaustive over what the
-  // document can carry; an unknown lifecycle kind or interaction mode is an
-  // explicit visible `?state` marker, never a silent resting row.
+  // exactly the precedence the pre-cutover shipped row applied: a failed edit
+  // outranks an in-flight one, while focus is layered independently below so
+  // neither product condition can erase it. Matching is exhaustive over what
+  // the document can carry; an unknown lifecycle kind or interaction mode is
+  // an explicit visible `?state` marker, never a silent resting row.
   function controlState(control, mode) {
     if (control.error) {
       return { name: "error", raw: null };
@@ -410,8 +414,16 @@
     var status = control.status || null;
     if (status) {
       var kind = String(status.kind);
-      if (kind === "preparing" || kind === "activating") {
+      if (
+        kind === "loading" ||
+        kind === "validating" ||
+        kind === "preparing" ||
+        kind === "activating"
+      ) {
         return { name: "loading", raw: null };
+      }
+      if (kind === "unavailable") {
+        return { name: "unavailable", raw: null };
       }
       if (kind !== "ready" && kind !== "failed") {
         return { name: "unknown", raw: kind };
@@ -435,6 +447,19 @@
       return { name: "resting", raw: null };
     }
     return { name: "disabled", raw: null };
+  }
+
+  // Focus and lifecycle are independent projected facts. A structural row
+  // can remain the singular semantic focus while it reports Loading,
+  // Unavailable, or Error; collapsing both into `data-state` made the
+  // lifecycle treatment hide the focus halo. Keep the state vocabulary for
+  // the row's product condition and layer the reducer-owned focus treatment
+  // beside it.
+  function focusTreatment(control, mode) {
+    if (!control || control.focused !== true) {
+      return null;
+    }
+    return String(mode) === "adjust" ? "adjusting" : "focused";
   }
 
   // Renders one typed document value as finished text, mirroring the shipped
@@ -512,6 +537,9 @@
       var word = control.status ? String(control.status.label) : "";
       return '<span class="adjust">' + escapeHtml(word) + "</span>";
     }
+    if (state.name === "unavailable") {
+      return '<span class="warning">Unavailable</span>';
+    }
     if (state.name === "error") {
       var failure = control.error ? String(control.error.label) : "";
       return '<span class="warning">' + escapeHtml(failure) + "</span>";
@@ -552,10 +580,17 @@
         escapeHtml(status.label) +
         "</span>"
       : "";
+    var focusRepair = model.focusRepair || null;
+    var repairHtml = focusRepair
+      ? '<span class="type-hint warning focus-repair" data-role="focus-repair">' +
+        escapeHtml(String(focusRepair.label)) +
+        "</span>"
+      : "";
     return (
       '<span class="type-heading">CREST SYNTH</span>' +
       '<span class="spring"></span>' +
       run +
+      repairHtml +
       statusHtml
     );
   }
@@ -842,8 +877,9 @@
   // anatomy, widened by the facts FR-011/FR-013 project and nothing painted
   // it. The derived state rides the row as data plus a class so every
   // treatment resolves from the token vocabulary in page.css.
-  function patchRowHtml(control, mode, role) {
+  function patchRowHtml(control, mode, role, ordinal) {
     var state = controlState(control, mode);
+    var focus = focusTreatment(control, mode);
     var id = controlIdOf(control);
     var focusPath = JSON.stringify(control.path || null);
     var semanticId =
@@ -912,6 +948,14 @@
         hintRunHtml +
         "</span>"
       : "";
+    var indexed = ordinal !== null && ordinal !== undefined;
+    var ordinalMarkup = indexed
+      ? '<span class="prow-cursor type-label" aria-hidden="true">' +
+        (focus ? "&gt;" : "&nbsp;") +
+        '</span><span class="prow-index type-label secondary">' +
+        String(ordinal).padStart(2, "0") +
+        "</span>"
+      : "";
     var row =
       '<div class="prow' +
       (role === "panel" ? " panel" : "") +
@@ -921,12 +965,23 @@
       escapeHtml(focusPath) +
       '" data-state="' +
       state.name +
+      '" data-focus-treatment="' +
+      (focus || "none") +
+      '" data-enabled="' +
+      String(control.enabled === true) +
+      '" data-visible="' +
+      String(control.visible === true) +
+      '" data-editable="' +
+      String(control.editable === true) +
+      '" data-valid-action-count="' +
+      String((control.validActions || []).length) +
       '"' +
       mixerAttributes +
       (control.patchInteraction
         ? ' data-interaction="' + escapeHtml(String(control.patchInteraction)) + '"'
         : "") +
       ">" +
+      ordinalMarkup +
       '<span class="prow-label type-label">' +
       escapeHtml(String(control.label)) +
       "</span>" +
@@ -957,7 +1012,11 @@
   function lifecycleHtml(control, id) {
     var status = control.status || null;
     var inFlight =
-      status && (status.kind === "preparing" || status.kind === "activating");
+      status &&
+      (status.kind === "loading" ||
+        status.kind === "validating" ||
+        status.kind === "preparing" ||
+        status.kind === "activating");
     var requested = control.requestedValue || null;
     if (!control.error && !inFlight && !requested) {
       return "";
@@ -1068,6 +1127,7 @@
 
   function overviewControlHtml(control, summary, mode) {
     var state = controlState(control, mode);
+    var focus = focusTreatment(control, mode);
     var id = controlIdOf(control);
     var focusPath = JSON.stringify(control.path || null);
     var parameterCount =
@@ -1087,6 +1147,8 @@
       escapeHtml(focusPath) +
       '" data-state="' +
       escapeHtml(state.name) +
+      '" data-focus-treatment="' +
+      (focus || "none") +
       '">' +
       '<div class="overview-control-label">' +
       '<span class="type-label">' +
@@ -1172,10 +1234,30 @@
     var main = surfaceById(model, "patchMain");
     var head = controlByPath(main, model.returnPath && model.returnPath.origin);
     var subject = head ? controlValueText(head) : UNAVAILABLE_MARK;
+    var summary = (detail && detail.summary) || {};
+    var subjectSummary = summary.subject || {};
+    var subjectKind = String(subjectSummary.kind || "unknown");
+    var mainSummary = (main && main.summary) || {};
+    var patchName = String(mainSummary.patchName || UNAVAILABLE_MARK);
+    var patchId = summary.patchId;
+    var originControl = controlIdOf({
+      path: model.returnPath && model.returnPath.origin,
+    });
+    var slotPosition = null;
+    var slotPrefix = "patch.effectSlot.";
+    if (originControl.indexOf(slotPrefix) === 0) {
+      var parsedSlot = Number(originControl.slice(slotPrefix.length));
+      if (Number.isInteger(parsedSlot) && parsedSlot >= 0) {
+        slotPosition = parsedSlot;
+      }
+    }
+    var visibleControlCount = controls.filter(function (control) {
+      return control.visible === true;
+    }).length;
     // A capability mid-preparation reports its projected lifecycle word here
     // as well as on its rows, so the shell is never read as a settled one.
-    var status = null;
-    for (var s = 0; s < controls.length; s += 1) {
+    var status = head && head.status ? head.status : null;
+    for (var s = 0; !status && s < controls.length; s += 1) {
       if (controls[s].status) {
         status = controls[s].status;
         break;
@@ -1183,6 +1265,7 @@
     }
     var sections = "";
     var declaredSections = (detail && detail.sections) || [];
+    var detailOrdinal = 0;
     for (var sectionIndex = 0; sectionIndex < declaredSections.length; sectionIndex += 1) {
       var declared = declaredSections[sectionIndex];
       var sectionRows = "";
@@ -1191,7 +1274,13 @@
         var wanted = JSON.stringify(paths[pathIndex]);
         for (var rowIndex = 0; rowIndex < controls.length; rowIndex += 1) {
           if (controls[rowIndex].visible && JSON.stringify(controls[rowIndex].path) === wanted) {
-            sectionRows += patchRowHtml(controls[rowIndex], mode, "detail");
+            sectionRows += patchRowHtml(
+              controls[rowIndex],
+              mode,
+              "detail",
+              detailOrdinal
+            );
+            detailOrdinal += 1;
             break;
           }
         }
@@ -1199,9 +1288,12 @@
       sections +=
         '<section class="detail-section" data-detail-section="' +
         escapeHtml(String(declared.id)) +
-        '"><h3 class="type-label muted" data-role="detail-section-label">' +
+        '"><div class="detail-section-heading"><h3 class="type-label muted" data-role="detail-section-label">' +
         escapeHtml(String(declared.label)) +
-        "</h3>" +
+        '</h3><span class="type-hint muted" data-role="detail-section-count">' +
+        String(paths.length) +
+        (paths.length === 1 ? " PARAM" : " PARAMS") +
+        "</span></div>" +
         (sectionRows || markUnavailableRowHtml(String(declared.label))) +
         "</section>";
     }
@@ -1209,7 +1301,8 @@
       var rows = "";
       for (var i = 0; i < controls.length; i += 1) {
         if (controls[i].visible) {
-          rows += patchRowHtml(controls[i], mode, "detail");
+          rows += patchRowHtml(controls[i], mode, "detail", detailOrdinal);
+          detailOrdinal += 1;
         }
       }
       sections =
@@ -1223,20 +1316,49 @@
       visualizationMarkup += detailVisualizationHtml(visualizations[visualizationIndex]);
     }
     return (
-      '<div class="detail" id="detail">' +
-      '<div class="detail-title" data-role="detail-title">' +
+      '<div class="detail" id="detail" data-detail-kind="' +
+      escapeHtml(subjectKind) +
+      '" data-patch-id="' +
+      escapeHtml(String(patchId)) +
+      '" data-origin-control="' +
+      escapeHtml(originControl) +
+      '"' +
+      (slotPosition === null
+        ? ""
+        : ' data-slot-position="' + String(slotPosition) + '"') +
+      ">" +
+      '<header class="detail-title detail-header" data-role="detail-title">' +
       '<span class="type-label muted">' +
       escapeHtml(String((detail && detail.label) || "DETAIL")) +
       "</span>" +
+      '<span class="detail-kind type-heading" data-role="detail-kind">' +
+      escapeHtml(
+        subjectKind === "effect"
+          ? "POST FX " +
+              String((slotPosition === null ? 0 : slotPosition) + 1).padStart(2, "0")
+          : subjectKind.toUpperCase()
+      ) +
+      "</span>" +
+      '<span class="type-heading focus" aria-hidden="true">/</span>' +
       '<span class="type-heading focus" data-role="detail-subject">' +
       escapeHtml(subject) +
+      "</span>" +
+      '<span class="spring"></span>' +
+      '<span class="type-hint secondary" data-role="detail-patch">PATCH ' +
+      escapeHtml(String(patchId)) +
+      HINT_SEPARATOR +
+      escapeHtml(patchName) +
+      "</span>" +
+      '<span class="type-hint muted" data-role="detail-control-count">' +
+      String(visibleControlCount) +
+      (visibleControlCount === 1 ? " PARAM" : " PARAMS") +
       "</span>" +
       (status
         ? '<span class="type-hint adjust" data-role="detail-status">' +
           escapeHtml(String(status.label)) +
           "</span>"
         : "") +
-      "</div>" +
+      "</header>" +
       '<div class="detail-sections" data-role="detail-sections">' +
       sections +
       "</div>" +
@@ -1298,7 +1420,7 @@
       body = '<span class="type-hint">' + escapeHtml(String(data.text || UNAVAILABLE)) + "</span>";
     }
     return (
-      '<figure class="detail-visualization" data-visualization="' +
+      '<figure class="detail-visualization" data-focusable="false" aria-label="non-interactive visualization" data-visualization="' +
       escapeHtml(String(visualization.id)) +
       '" data-visualization-kind="' +
       escapeHtml(String(data.kind)) +
@@ -1870,6 +1992,28 @@
       );
     }
 
+    // Exercise both ends of an independently scrollable region and restore
+    // its presentation state before returning the observation. Merely
+    // comparing scrollHeight and clientHeight proves that overflow exists;
+    // it does not prove the browser can actually reach all of it.
+    function scrollReachability(element) {
+      if (!element) {
+        return null;
+      }
+      var originalTop = element.scrollTop;
+      var maximumTop = Math.max(0, element.scrollHeight - element.clientHeight);
+      element.scrollTop = 0;
+      var startReachable = Math.abs(element.scrollTop) <= 1;
+      element.scrollTop = maximumTop;
+      var endReachable = Math.abs(element.scrollTop - maximumTop) <= 1;
+      element.scrollTop = originalTop;
+      return {
+        scrollableBy: maximumTop,
+        startReachable: startReachable,
+        endReachable: endReachable,
+      };
+    }
+
     var bands = {
       contextLine: painted("context-line"),
       identityHeader: painted("identity-header"),
@@ -1979,8 +2123,17 @@
         var rowNode = nodes[r];
         out.push({
           control: rowNode.getAttribute("data-control"),
+          focusPath: rowNode.getAttribute("data-focus-path"),
           state: rowNode.getAttribute("data-state"),
+          focusTreatment: rowNode.getAttribute("data-focus-treatment"),
+          enabled: rowNode.getAttribute("data-enabled") === "true",
+          visible: rowNode.getAttribute("data-visible") === "true",
+          editable: rowNode.getAttribute("data-editable") === "true",
+          validActionCount: Number(
+            rowNode.getAttribute("data-valid-action-count") || 0
+          ),
           label: textOf(rowNode, ".prow-label"),
+          index: textOf(rowNode, ".prow-index"),
           value: textOf(rowNode, ".prow-value"),
           mark: textOf(rowNode, '[data-role="state-mark"]'),
           unit: textOf(rowNode, ".prow-unit"),
@@ -1988,6 +2141,13 @@
           hints: textOf(rowNode, '[data-role="row-hints"]'),
           interaction: rowNode.getAttribute("data-interaction"),
           readOnly: textOf(rowNode, '[data-role="read-only"]'),
+          position: rowNode.querySelector("[data-position]")
+            ? Number(
+                rowNode
+                  .querySelector("[data-position]")
+                  .getAttribute("data-position")
+              )
+            : null,
           heightPx: Math.round(rowNode.getBoundingClientRect().height),
           railPx: widthOf(rowNode, ".prow-position"),
           hintsPx: widthOf(rowNode, '[data-role="row-hints"]'),
@@ -2018,6 +2178,9 @@
             control: overviewControlNode.getAttribute("data-control"),
             focusPath: overviewControlNode.getAttribute("data-focus-path"),
             state: overviewControlNode.getAttribute("data-state"),
+            focusTreatment: overviewControlNode.getAttribute(
+              "data-focus-treatment"
+            ),
             label: textOf(overviewControlNode, ".overview-control-label .type-label"),
             value: textOf(overviewControlNode, ".overview-control-value"),
             mark: textOf(overviewControlNode, '[data-role="state-mark"]'),
@@ -2046,14 +2209,129 @@
 
     // The painted detail composition, or null when no detail entry is open.
     var detailNode = doc.getElementById("detail");
-    var detail = detailNode
-      ? {
-          surface: textOf(detailNode, '[data-role="detail-title"] .type-label'),
-          subject: textOf(detailNode, '[data-role="detail-subject"]'),
-          status: textOf(detailNode, '[data-role="detail-status"]'),
-          rows: rowReport(detailNode.querySelectorAll(".prow")),
+    var detail = null;
+    if (detailNode) {
+      function maximumPaintedBottom(element) {
+        var bottom = element.getBoundingClientRect().bottom;
+        var descendants = element.querySelectorAll("*");
+        for (var descendantIndex = 0; descendantIndex < descendants.length; descendantIndex += 1) {
+          var descendantRect = descendants[descendantIndex].getBoundingClientRect();
+          if (descendantRect.width > 0 && descendantRect.height > 0) {
+            bottom = Math.max(bottom, descendantRect.bottom);
+          }
         }
-      : null;
+        return bottom;
+      }
+
+      function directChildOverlap(element) {
+        var children = [];
+        for (var childIndex = 0; childIndex < element.children.length; childIndex += 1) {
+          var child = element.children[childIndex];
+          var childRect = child.getBoundingClientRect();
+          if (childRect.width > 0 && childRect.height > 0) {
+            children.push(child);
+          }
+        }
+        var overlap = 0;
+        for (var adjacentIndex = 0; adjacentIndex + 1 < children.length; adjacentIndex += 1) {
+          overlap = Math.max(
+            overlap,
+            maximumPaintedBottom(children[adjacentIndex]) -
+              children[adjacentIndex + 1].getBoundingClientRect().top
+          );
+        }
+        return Math.max(0, Math.round(overlap));
+      }
+
+      var detailSections = [];
+      var detailSectionNodes = detailNode.querySelectorAll(
+        "[data-detail-section]"
+      );
+      for (
+        var detailSectionIndex = 0;
+        detailSectionIndex < detailSectionNodes.length;
+        detailSectionIndex += 1
+      ) {
+        var detailSectionNode = detailSectionNodes[detailSectionIndex];
+        detailSections.push({
+          id: detailSectionNode.getAttribute("data-detail-section"),
+          label: textOf(
+            detailSectionNode,
+            '[data-role="detail-section-label"]'
+          ),
+          controlCount: detailSectionNode.querySelectorAll(
+            ".prow[data-focus-path]"
+          ).length,
+          bounds: rectOf(detailSectionNode),
+        });
+      }
+      var detailVisualizations = [];
+      var detailVisualizationNodes = detailNode.querySelectorAll(
+        "[data-visualization]"
+      );
+      for (
+        var detailVisualizationIndex = 0;
+        detailVisualizationIndex < detailVisualizationNodes.length;
+        detailVisualizationIndex += 1
+      ) {
+        var detailVisualizationNode =
+          detailVisualizationNodes[detailVisualizationIndex];
+        detailVisualizations.push({
+          id: detailVisualizationNode.getAttribute("data-visualization"),
+          kind: detailVisualizationNode.getAttribute(
+            "data-visualization-kind"
+          ),
+          focusable:
+            detailVisualizationNode.getAttribute("data-focusable") !== "false",
+          focusPath: detailVisualizationNode.getAttribute("data-focus-path"),
+          bounds: rectOf(detailVisualizationNode),
+        });
+      }
+      var slotPositionAttribute = detailNode.getAttribute("data-slot-position");
+      var requiredContentOverlapPx = directChildOverlap(detailNode);
+      var sectionContainer = detailNode.querySelector(".detail-sections");
+      if (sectionContainer) {
+        requiredContentOverlapPx = Math.max(
+          requiredContentOverlapPx,
+          directChildOverlap(sectionContainer)
+        );
+      }
+      for (var overlapSectionIndex = 0; overlapSectionIndex < detailSectionNodes.length; overlapSectionIndex += 1) {
+        requiredContentOverlapPx = Math.max(
+          requiredContentOverlapPx,
+          directChildOverlap(detailSectionNodes[overlapSectionIndex])
+        );
+      }
+      detail = {
+        surface: textOf(detailNode, '[data-role="detail-title"] .type-label'),
+        subjectKind: detailNode.getAttribute("data-detail-kind"),
+        patchId: Number(detailNode.getAttribute("data-patch-id")),
+        patch: textOf(detailNode, '[data-role="detail-patch"]'),
+        originControl: detailNode.getAttribute("data-origin-control"),
+        slotPosition:
+          slotPositionAttribute === null ? null : Number(slotPositionAttribute),
+        subject: textOf(detailNode, '[data-role="detail-subject"]'),
+        status: textOf(detailNode, '[data-role="detail-status"]'),
+        controlCount: Number(
+          (textOf(detailNode, '[data-role="detail-control-count"]') || "0")
+            .split(/\s+/)[0]
+        ),
+        bounds: rectOf(detailNode),
+        horizontalOverflowPx: Math.max(
+          0,
+          detailNode.scrollWidth - detailNode.clientWidth
+        ),
+        requiredContentOverlapPx: requiredContentOverlapPx,
+        scrollableBy: Math.max(
+          0,
+          detailNode.scrollHeight - detailNode.clientHeight
+        ),
+        scrollReachability: scrollReachability(detailNode),
+        sections: detailSections,
+        rows: rowReport(detailNode.querySelectorAll(".prow[data-focus-path]")),
+        visualizations: detailVisualizations,
+      };
+    }
 
     var modalNode = doc.getElementById("modal-shell");
     var modal = null;
@@ -2159,10 +2437,16 @@
       var kids = bodyNode.children;
       var contentPx = 0;
       if (kids.length > 0) {
-        contentPx = Math.round(
-          kids[kids.length - 1].getBoundingClientRect().bottom -
-            kids[0].getBoundingClientRect().top
-        );
+        var contentTop = kids[0].getBoundingClientRect().top;
+        var contentBottom = kids[kids.length - 1].getBoundingClientRect().bottom;
+        var descendants = bodyNode.querySelectorAll("*");
+        for (var descendantIndex = 0; descendantIndex < descendants.length; descendantIndex += 1) {
+          var descendantRect = descendants[descendantIndex].getBoundingClientRect();
+          if (descendantRect.width > 0 && descendantRect.height > 0) {
+            contentBottom = Math.max(contentBottom, descendantRect.bottom);
+          }
+        }
+        contentPx = Math.round(contentBottom - contentTop);
       }
       workspaceBody = {
         id: bodyNode.id,
@@ -2181,17 +2465,31 @@
     );
     var semanticFocusPath = JSON.stringify(model.focusPath || null);
     var semanticFocusedNode = null;
+    var semanticFocusMatchCount = 0;
     var semanticNodes = doc.querySelectorAll("[data-focus-path]");
     var targetSizes = [];
     for (var semanticIndex = 0; semanticIndex < semanticNodes.length; semanticIndex += 1) {
       var semanticNode = semanticNodes[semanticIndex];
       if (semanticNode.getAttribute("data-focus-path") === semanticFocusPath) {
         semanticFocusedNode = semanticNode;
+        semanticFocusMatchCount += 1;
       }
       targetSizes.push({
         focusPath: semanticNode.getAttribute("data-focus-path"),
         bounds: rectOf(semanticNode),
       });
+    }
+    var semanticFocusTreatment = null;
+    if (semanticFocusedNode) {
+      semanticFocusTreatment = semanticFocusedNode.getAttribute(
+        "data-focus-treatment"
+      );
+      if (
+        !semanticFocusTreatment &&
+        semanticFocusedNode.classList.contains("is-focused")
+      ) {
+        semanticFocusTreatment = "focused";
+      }
     }
     var workspaceElement = doc.getElementById("workspace");
     var workspaceRect = workspaceElement.getBoundingClientRect();
@@ -2223,6 +2521,14 @@
           0,
           doc.documentElement.scrollWidth - doc.documentElement.clientWidth
         ),
+        workspaceHorizontalOverflowPx: Math.max(
+          0,
+          workspaceElement.scrollWidth - workspaceElement.clientWidth
+        ),
+        inspectorHorizontalOverflowPx: Math.max(
+          0,
+          inspectorElement.scrollWidth - inspectorElement.clientWidth
+        ),
       },
       workspaceBody: workspaceBody,
       columns: columns,
@@ -2233,6 +2539,7 @@
       detail: detail,
       modal: modal,
       lifecycles: lifecycles,
+      focusRepair: textOf(doc, '[data-role="focus-repair"]'),
       sectionAnnotation: textOf(doc, '[data-role="section-annotation"]'),
       patchIdentity: textOf(doc, '[data-role="patch-identity"]'),
       focus: {
@@ -2243,6 +2550,8 @@
         semanticPath: semanticFocusedNode
           ? semanticFocusedNode.getAttribute("data-focus-path")
           : null,
+        matchCount: semanticFocusMatchCount,
+        treatment: semanticFocusTreatment,
         semanticVisible: fullyVisible(semanticFocusedNode),
         targetBounds: rectOf(semanticFocusedNode),
       },
@@ -2284,6 +2593,7 @@
           0,
           inspectorElement.scrollHeight - inspectorElement.clientHeight
         ),
+        scrollReachability: scrollReachability(inspectorElement),
         bodyScrollableBy: inspectorBody
           ? Math.max(0, inspectorBody.scrollHeight - inspectorBody.clientHeight)
           : 0,
@@ -2293,6 +2603,7 @@
       },
       meter: textOf(doc, "#meter-readout"),
       anatomy: COLUMN_ANATOMY.slice(),
+      paintAcknowledgment: paintedEvidence(model),
     };
   }
 

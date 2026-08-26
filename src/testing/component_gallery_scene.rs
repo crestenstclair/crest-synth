@@ -892,12 +892,13 @@ fn keyline_css_var(keyline_px: f32) -> &'static str {
 /// word and the real typed failure.
 const fn specimen_detail(state: ComponentState) -> StatusDetail<'static> {
     match state {
-        ComponentState::Loading => StatusDetail::Progress(LoadingPhase::Preparing),
+        ComponentState::Loading => StatusDetail::Progress(LoadingPhase::Loading),
         ComponentState::Error => StatusDetail::Failure("REJECTED: OUT OF RANGE"),
         ComponentState::Resting
         | ComponentState::Focused
         | ComponentState::Adjusting
         | ComponentState::Disabled
+        | ComponentState::Unavailable
         | ComponentState::Muted
         | ComponentState::Soloed
         | ComponentState::Selected => StatusDetail::None,

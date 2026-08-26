@@ -66,3 +66,16 @@ tauri-build = "2"
 
 [dev-dependencies]
 sha2 = "0.10"
+
+# Full debuginfo and per-integration-test incremental state previously allowed
+# target/ to grow far beyond the size of the source checkout. Line tables keep
+# file/line backtraces while substantially reducing artifact size. The dev
+# profile retains incremental compilation for the normal edit/check loop; the
+# test profile disables it because every integration-test crate otherwise owns
+# another persistent incremental cache.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"
+incremental = false

@@ -68,6 +68,14 @@ pub enum PatchSubordinateSession {
     Detail {
         subject: PatchDetailSubject,
     },
+    /// Utility reached horizontally from an open Detail session. Detail is
+    /// suspended, not closed: its exact focus and original Overview return
+    /// path are retained while Utility owns the one active focus.
+    UtilityFromDetail {
+        subject: PatchDetailSubject,
+        detail_focus: FocusPath,
+        detail_return: ReturnPath,
+    },
     Choice {
         subject: PatchChoiceSubject,
         suspended_detail: Option<PatchDetailSubject>,
@@ -84,7 +92,7 @@ pub enum PatchSubordinateSession {
 impl PatchSubordinateSession {
     pub const fn detail_subject(&self) -> Option<&PatchDetailSubject> {
         match self {
-            Self::Detail { subject } => Some(subject),
+            Self::Detail { subject } | Self::UtilityFromDetail { subject, .. } => Some(subject),
             Self::Choice {
                 suspended_detail, ..
             }
@@ -133,6 +141,21 @@ impl InteractionState {
             (None, _) => true,
             (Some(PatchSubordinateSession::Detail { .. }), SurfaceId::PatchDetail) => {
                 entered == Some(SurfaceId::PatchDetail) && self.mode != InteractionMode::Modal
+            }
+            (
+                Some(PatchSubordinateSession::UtilityFromDetail {
+                    detail_focus,
+                    detail_return,
+                    ..
+                }),
+                SurfaceId::PatchUtility,
+            ) => {
+                entered == Some(SurfaceId::PatchUtility)
+                    && self.mode != InteractionMode::Modal
+                    && detail_focus.surface() == SurfaceId::PatchDetail
+                    && detail_return.entered_surface() == SurfaceId::PatchDetail
+                    && detail_focus.patch_id() == self.active_focus.patch_id()
+                    && detail_return.origin().patch_id() == self.active_focus.patch_id()
             }
             (
                 Some(PatchSubordinateSession::Choice {
@@ -413,6 +436,72 @@ impl InteractionState {
         Ok(())
     }
 
+    /// Moves the one active focus from Detail to Utility while retaining the
+    /// complete Detail session for the inverse horizontal transition.
+    pub(super) fn switch_detail_to_utility(
+        &mut self,
+        utility_focus: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        utility_focus.validate()?;
+        if self.active_focus.surface() != SurfaceId::PatchDetail
+            || utility_focus.surface() != SurfaceId::PatchUtility
+            || utility_focus.patch_id() != self.active_focus.patch_id()
+        {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        let Some(PatchSubordinateSession::Detail { subject }) = self.subordinate_session.take()
+        else {
+            return Err(FocusPathError::ModalIdentityUnavailable);
+        };
+        let detail_focus = self.active_focus.clone();
+        let detail_return = self
+            .return_path
+            .take()
+            .ok_or(FocusPathError::ContextSurfaceMismatch)?;
+        self.return_path = Some(ReturnPath::new(
+            detail_return.origin().clone(),
+            SurfaceId::PatchUtility,
+        )?);
+        self.subordinate_session = Some(PatchSubordinateSession::UtilityFromDetail {
+            subject,
+            detail_focus,
+            detail_return,
+        });
+        self.active_focus = utility_focus;
+        self.mode = InteractionMode::Navigate;
+        self.assert_subordinate_invariant();
+        Ok(())
+    }
+
+    /// Restores the exact Detail subject, focus, and Overview return path that
+    /// were suspended by [`Self::switch_detail_to_utility`].
+    pub(super) fn restore_detail_from_utility(&mut self) -> Result<(), FocusPathError> {
+        if self.active_focus.surface() != SurfaceId::PatchUtility {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        let Some(PatchSubordinateSession::UtilityFromDetail {
+            subject,
+            detail_focus,
+            detail_return,
+        }) = self.subordinate_session.take()
+        else {
+            return Err(FocusPathError::ModalIdentityUnavailable);
+        };
+        self.active_focus = detail_focus;
+        self.return_path = Some(detail_return);
+        self.subordinate_session = Some(PatchSubordinateSession::Detail { subject });
+        self.mode = InteractionMode::Navigate;
+        self.assert_subordinate_invariant();
+        Ok(())
+    }
+
+    pub const fn utility_suspends_detail(&self) -> bool {
+        matches!(
+            self.subordinate_session,
+            Some(PatchSubordinateSession::UtilityFromDetail { .. })
+        )
+    }
+
     /// Replaces the current PATCH main, Utility, or Detail surface with one
     /// generic choice session. A modal/browser origin is refused, so sessions
     /// can never stack.
@@ -524,7 +613,9 @@ impl InteractionState {
                 self.subordinate_session =
                     suspended_detail.map(|subject| PatchSubordinateSession::Detail { subject });
             }
-            Some(PatchSubordinateSession::Detail { .. }) | None => {
+            Some(PatchSubordinateSession::Detail { .. })
+            | Some(PatchSubordinateSession::UtilityFromDetail { .. })
+            | None => {
                 self.return_path = None;
                 self.subordinate_session = None;
             }
@@ -557,15 +648,22 @@ impl InteractionState {
         if !matches!(
             self.subordinate_session,
             Some(PatchSubordinateSession::Detail { .. })
+                | Some(PatchSubordinateSession::UtilityFromDetail { .. })
         ) {
             return false;
         }
-        let origin = self
-            .return_path
-            .take()
-            .expect("the detail invariant pairs an open subject with a return path")
-            .origin()
-            .clone();
+        let origin = match self.subordinate_session.as_ref() {
+            Some(PatchSubordinateSession::UtilityFromDetail { detail_return, .. }) => {
+                detail_return.origin().clone()
+            }
+            _ => self
+                .return_path
+                .as_ref()
+                .expect("the detail invariant pairs an open subject with a return path")
+                .origin()
+                .clone(),
+        };
+        self.return_path = None;
         self.subordinate_session = None;
         self.active_focus = origin;
         self.mode = InteractionMode::Navigate;
@@ -606,7 +704,15 @@ impl InteractionState {
         let Some(return_path) = self.return_path.as_ref() else {
             return Ok(());
         };
-        self.return_path = Some(ReturnPath::new(origin, return_path.entered_surface())?);
+        self.return_path = Some(ReturnPath::new(
+            origin.clone(),
+            return_path.entered_surface(),
+        )?);
+        if let Some(PatchSubordinateSession::UtilityFromDetail { detail_return, .. }) =
+            self.subordinate_session.as_mut()
+        {
+            *detail_return = ReturnPath::new(origin, SurfaceId::PatchDetail)?;
+        }
         self.assert_subordinate_invariant();
         Ok(())
     }

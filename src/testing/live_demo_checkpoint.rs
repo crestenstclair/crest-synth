@@ -1002,7 +1002,7 @@ impl LiveEngineCheckpoint {
                     && self.source_audio_observation.is_none()
                     && !self.source_audio_nonzero
                     && self.active_capability_id
-                        == if self.status == EngineSelectionStatusKind::Preparing {
+                        == if self.status != EngineSelectionStatusKind::Ready {
                             self.source_capability_id.clone()
                         } else {
                             self.target_capability_id.clone()
@@ -1025,7 +1025,7 @@ impl LiveEngineCheckpoint {
                     && self.requested_capability_id.is_none()
                     && choice_id == preset.target_choice_id()
                     && preset.active_choice_id()
-                        == if self.status == EngineSelectionStatusKind::Preparing {
+                        == if self.status != EngineSelectionStatusKind::Ready {
                             preset.source_choice_id()
                         } else {
                             preset.target_choice_id()
@@ -1039,15 +1039,21 @@ impl LiveEngineCheckpoint {
                     && !preset.source_label().is_empty()
                     && !preset.target_label().is_empty()
                     && !preset.active_label().is_empty()
-                    && (self.status != EngineSelectionStatusKind::Preparing
-                        || self.source_audio_nonzero)
+                    && (!matches!(
+                        self.status,
+                        EngineSelectionStatusKind::Loading
+                            | EngineSelectionStatusKind::Validating
+                            | EngineSelectionStatusKind::Preparing
+                    ) || self.source_audio_nonzero)
             }
             StructuralEditIntent::ReplaceAsset { .. }
             | StructuralEditIntent::PrepareAudition { .. } => return false,
         };
         capability_projection_exact
             && match self.status {
-                EngineSelectionStatusKind::Preparing => {
+                EngineSelectionStatusKind::Loading
+                | EngineSelectionStatusKind::Validating
+                | EngineSelectionStatusKind::Preparing => {
                     self.handoff_active_revision == Some(self.graph_revision)
                         && self.staged_revision.is_none()
                         && self.in_flight_revision.is_none()
@@ -1067,7 +1073,7 @@ impl LiveEngineCheckpoint {
                         && self.audio_observation.is_some()
                         && self.target_audio_nonzero
                 }
-                EngineSelectionStatusKind::Failed => false,
+                EngineSelectionStatusKind::Unavailable | EngineSelectionStatusKind::Failed => false,
             }
     }
 }

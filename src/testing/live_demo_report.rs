@@ -2380,7 +2380,7 @@ fn engine_checkpoint_sequence_is_complete(
         let lifecycle = &engines[offset..offset + 3];
         if lifecycle.iter().any(|checkpoint| {
             checkpoint.transition_index() != index || checkpoint.transition() != expected
-        }) || lifecycle[0].status() != crate::control::EngineSelectionStatusKind::Preparing
+        }) || lifecycle[0].status() != crate::control::EngineSelectionStatusKind::Loading
             || lifecycle[1].status() != crate::control::EngineSelectionStatusKind::Activating
             || lifecycle[2].status() != crate::control::EngineSelectionStatusKind::Ready
             || !lifecycle[2].target_audio_nonzero()

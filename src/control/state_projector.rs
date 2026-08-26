@@ -1598,7 +1598,7 @@ mod tests {
         assert_eq!(state.patches()[0].instrument_config(), &source_config);
         assert_projection(
             &state,
-            EngineSelectionStatusKind::Preparing,
+            EngineSelectionStatusKind::Loading,
             source_revision,
             false,
             None,
@@ -1607,7 +1607,7 @@ mod tests {
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         assert_projection(
             &state,
-            EngineSelectionStatusKind::Preparing,
+            EngineSelectionStatusKind::Loading,
             source_revision,
             false,
             None,
@@ -1630,7 +1630,7 @@ mod tests {
         assert_eq!(state.patches()[0].instrument_config(), &source_config);
         assert_projection(
             &state,
-            EngineSelectionStatusKind::Failed,
+            EngineSelectionStatusKind::Unavailable,
             source_revision,
             true,
             Some(EngineSelectionFailure::WorkerUnavailable),
@@ -1640,6 +1640,19 @@ mod tests {
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        let request_id = state.engine_selection().correlation().unwrap().request_id();
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle: EngineSelectionStatusKind::Validating,
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle: EngineSelectionStatusKind::Preparing,
+            })
+            .unwrap();
         assert_projection(
             &state,
             EngineSelectionStatusKind::Preparing,
@@ -1662,13 +1675,7 @@ mod tests {
                 prepared_visualization: None,
             })
             .unwrap();
-        assert_eq!(
-            state.patches()[0]
-                .instrument_config()
-                .capability_id()
-                .as_str(),
-            BRAIDS_CAPABILITY_ID
-        );
+        assert_eq!(state.patches()[0].instrument_config(), &source_config);
         assert_projection(
             &state,
             EngineSelectionStatusKind::Activating,
@@ -1695,6 +1702,13 @@ mod tests {
                 collected: true,
             })
             .unwrap();
+        assert_eq!(
+            state.patches()[0]
+                .instrument_config()
+                .capability_id()
+                .as_str(),
+            BRAIDS_CAPABILITY_ID
+        );
         assert_projection(
             &state,
             EngineSelectionStatusKind::Ready,

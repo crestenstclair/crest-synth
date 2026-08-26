@@ -579,7 +579,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
             .map(|checkpoint| checkpoint.status())
             .collect::<Vec<_>>(),
         [
-            crest_synth::control::EngineSelectionStatusKind::Preparing,
+            crest_synth::control::EngineSelectionStatusKind::Loading,
             crest_synth::control::EngineSelectionStatusKind::Activating,
             crest_synth::control::EngineSelectionStatusKind::Ready,
         ]

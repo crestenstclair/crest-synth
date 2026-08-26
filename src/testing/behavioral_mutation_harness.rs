@@ -2384,6 +2384,19 @@ fn run_refused_topology(mutant_enabled: bool) -> RefusedTopologyObservation {
             EventSource::System,
         )
         .expect("occupancy request is accepted into the lifecycle");
+    for expected in [
+        crate::control::EngineSelectionStatusKind::Validating,
+        crate::control::EngineSelectionStatusKind::Preparing,
+    ] {
+        assert_eq!(
+            fixture
+                .app_loop
+                .advance_structural()
+                .expect("admission phase advances")
+                .engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     if !mutant_enabled {
         fixture
             .worker
@@ -2445,6 +2458,21 @@ fn run_refused_topology(mutant_enabled: bool) -> RefusedTopologyObservation {
         )
         .is_ok();
     let mut recovery_completed = false;
+    if recovery_accepted {
+        for expected in [
+            crate::control::EngineSelectionStatusKind::Validating,
+            crate::control::EngineSelectionStatusKind::Preparing,
+        ] {
+            assert_eq!(
+                fixture
+                    .app_loop
+                    .advance_structural()
+                    .expect("recovery admission phase advances")
+                    .engine_selection_lifecycle_advanced(),
+                Some(expected)
+            );
+        }
+    }
     if recovery_accepted && fixture.worker.advance() {
         if let Ok(staged) = fixture.app_loop.advance_structural() {
             if staged.graph_stage().is_some() {

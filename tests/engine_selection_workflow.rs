@@ -321,12 +321,22 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         .engine()
         .request_id()
         .unwrap();
+    for expected in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        let admission = app_loop.advance_structural().unwrap();
+        assert_eq!(
+            admission.engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     worker_handle.fail_next(EngineSelectionFailure::AssetUnavailable);
     assert!(worker_handle.advance());
     let failed = app_loop.advance_structural().unwrap();
     let failed_page = app_loop.current_patch_page().unwrap();
     let controlled_failure_preserved_source = failed.failure_dispatched()
-        && failed_page.engine().status() == EngineSelectionStatusKind::Failed
+        && failed_page.engine().status() == EngineSelectionStatusKind::Unavailable
         && failed_page.engine().active_capability_id() == &soundfont_id
         && failed_page.engine().failure() == Some(EngineSelectionFailure::AssetUnavailable)
         && app_loop.graph_revision() == GraphRevision::INITIAL
@@ -375,6 +385,16 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         },
         EventSource::Worker,
     ) == Err(EventRejection::StaleEngineSelection);
+    for expected in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        let admission = app_loop.advance_structural().unwrap();
+        assert_eq!(
+            admission.engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     enter_attack_detail(&mut app_loop);
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Right), EventSource::Keyboard)
@@ -425,7 +445,8 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
         app_loop.current_patch_page().unwrap().engine().status(),
         EngineSelectionStatusKind::Activating
     );
-    enter_attack_detail(&mut app_loop);
+    // The acknowledged source remains canonical throughout Activating, so
+    // the already-open Detail and its stable envelope focus remain intact.
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),
         PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
@@ -468,7 +489,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     );
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),
-        PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
+        PatchControlId::Engine
     );
     assert_eq!(app_loop.patches()[0].envelope().attack_milliseconds(), 3.0);
     app_loop
@@ -482,9 +503,8 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     callback_deallocations += memory.1;
     let braids_observation = reader.read_latest_on_control();
 
-    app_loop
-        .dispatch_from(AppEvent::Return, EventSource::Keyboard)
-        .unwrap();
+    // Acknowledging the different capability closes the stale source Detail
+    // and restores its exact Overview origin.
     assert_eq!(
         app_loop.current_patch_page().unwrap().focused_control_id(),
         PatchControlId::Engine
@@ -492,6 +512,16 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Left), EventSource::Keyboard)
         .unwrap();
+    for expected in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        let admission = app_loop.advance_structural().unwrap();
+        assert_eq!(
+            admission.engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     assert!(worker_handle.advance());
     let reverse = app_loop.advance_structural().unwrap();
     assert_eq!(reverse.graph_stage(), Some(GraphStageOutcome::Staged));

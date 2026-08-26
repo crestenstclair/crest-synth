@@ -7,10 +7,10 @@ use crest_synth::adapter::sample_capability::{
 use crest_synth::adapter::sample_preparer::SamplePreparer;
 use crest_synth::control::{
     AppEvent, AppLoop, AppState, Direction, EngineSelectionFailure, EngineSelectionRequestId,
-    GraphicalShellProjection, InteractionMode, ModalControlId, SampleAssetLifecycle,
-    SamplePreviewState, SemanticAction, SemanticBrowserMetadataStatus, SemanticControlId,
-    SemanticControlKind, SemanticControlValue, SemanticResolver, SemanticSurfaceSummary,
-    SemanticVisualizationData, StateProjector, SurfaceId,
+    EngineSelectionStatusKind, GraphicalShellProjection, InteractionMode, ModalControlId,
+    SampleAssetLifecycle, SamplePreviewState, SemanticAction, SemanticBrowserMetadataStatus,
+    SemanticControlId, SemanticControlKind, SemanticControlValue, SemanticResolver,
+    SemanticSurfaceSummary, SemanticVisualizationData, StateProjector, SurfaceId,
 };
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::global_parameters::GlobalParameters;
@@ -122,6 +122,20 @@ fn alternate_candidate(
         .unwrap()
 }
 
+fn advance_engine_admission(state: &mut AppState, request_id: EngineSelectionRequestId) {
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle,
+            })
+            .unwrap();
+    }
+}
+
 fn decoded_fixture(asset: &str) -> DecodedSample {
     let asset_id = SampleAssetId::new(asset).unwrap();
     let interleaved = (0..128)
@@ -172,6 +186,7 @@ fn activate_preview(
         .unwrap()
         .clone();
     let target_revision = GraphRevision::INITIAL.checked_next().unwrap();
+    advance_engine_admission(state, effect.request_id());
     state
         .apply(AppEvent::EnginePrepared {
             request_id: effect.request_id(),
@@ -347,6 +362,7 @@ fn preview_emits_no_audio_before_activation_and_never_changes_the_assigned_asset
         .unwrap()
         .clone();
     let target_revision = GraphRevision::INITIAL.checked_next().unwrap();
+    advance_engine_admission(&mut state, effect.request_id());
     let prepared = state
         .apply(AppEvent::EnginePrepared {
             request_id: effect.request_id(),
@@ -419,6 +435,7 @@ fn release_before_preview_activation_suppresses_both_start_and_stop_commands() {
     ));
 
     let target_revision = GraphRevision::INITIAL.checked_next().unwrap();
+    advance_engine_admission(&mut state, effect.request_id());
     assert!(state
         .apply(AppEvent::EnginePrepared {
             request_id: effect.request_id(),
@@ -633,6 +650,7 @@ fn asset_assignment_is_correlated_failure_safe_and_ready_only_after_activation()
             })
             .unwrap();
     }
+    advance_engine_admission(&mut state, effect.request_id());
     state
         .apply(AppEvent::EnginePrepared {
             request_id: effect.request_id(),
@@ -972,8 +990,7 @@ fn coordinator_advances_assignment_through_activation_before_committing_the_asse
         .dispatch_action(SemanticAction::OpenRelated)
         .unwrap();
     app_loop.dispatch_action(SemanticAction::Activate).unwrap();
-    assert!(worker_handle.is_pending());
-    assert!(worker_handle.advance());
+    assert!(!worker_handle.is_pending());
     assert_eq!(
         waveform_status(&app_loop.current_graphical_shell()),
         "LOADING"
@@ -998,6 +1015,21 @@ fn coordinator_advances_assignment_through_activation_before_committing_the_asse
             .map(AssetReference::locator),
         Some("Factory.wav")
     );
+
+    let validating = app_loop.advance_structural().unwrap();
+    assert_eq!(
+        validating.engine_selection_lifecycle_advanced(),
+        Some(EngineSelectionStatusKind::Validating)
+    );
+    assert!(!validating.worker_result_polled());
+    let preparing = app_loop.advance_structural().unwrap();
+    assert_eq!(
+        preparing.engine_selection_lifecycle_advanced(),
+        Some(EngineSelectionStatusKind::Preparing)
+    );
+    assert!(!preparing.worker_result_polled());
+    assert!(worker_handle.is_pending());
+    assert!(worker_handle.advance());
 
     let staged = app_loop.advance_structural().unwrap();
     let target_revision = GraphRevision::INITIAL.checked_next().unwrap();

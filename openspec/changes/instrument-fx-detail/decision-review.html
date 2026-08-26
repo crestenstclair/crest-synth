@@ -1,0 +1,1303 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Instrument &amp; FX Detail — Decision Review</title>
+  <style>
+    :root {
+      --page: #090b11;
+      --surface: #11151f;
+      --surface-raised: #181d29;
+      --surface-soft: #0d1018;
+      --line: #31394a;
+      --line-strong: #59657c;
+      --text: #f3f5f8;
+      --muted: #a7b0c1;
+      --quiet: #778197;
+      --purple: #b89cff;
+      --purple-soft: rgba(184, 156, 255, 0.13);
+      --yellow: #f5d76e;
+      --yellow-soft: rgba(245, 215, 110, 0.12);
+      --green: #7fe2a7;
+      --green-soft: rgba(127, 226, 167, 0.12);
+      --orange: #ffb86b;
+      --orange-soft: rgba(255, 184, 107, 0.12);
+      --red: #ff8a96;
+      --focus: #d9caff;
+      --radius: 12px;
+      --shadow: 0 18px 50px rgba(0, 0, 0, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      background: var(--page);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.5;
+    }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background:
+        radial-gradient(circle at 15% -5%, rgba(184, 156, 255, 0.12), transparent 34rem),
+        radial-gradient(circle at 90% 8%, rgba(245, 215, 110, 0.08), transparent 28rem),
+        var(--page);
+    }
+
+    button,
+    input,
+    textarea {
+      font: inherit;
+    }
+
+    button,
+    .file-button {
+      min-height: 44px;
+    }
+
+    button:focus-visible,
+    input:focus-visible,
+    textarea:focus-visible,
+    .file-button:focus-within {
+      outline: 3px solid var(--focus);
+      outline-offset: 2px;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--line);
+      background: rgba(9, 11, 17, 0.92);
+      backdrop-filter: blur(16px);
+    }
+
+    .topbar-inner,
+    main {
+      width: min(1180px, calc(100% - 32px));
+      margin: 0 auto;
+    }
+
+    .topbar-inner {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 12px 0;
+    }
+
+    .brand {
+      min-width: 0;
+    }
+
+    .eyebrow {
+      margin: 0 0 2px;
+      color: var(--purple);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.76rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      margin-bottom: 0;
+      font-size: clamp(1.08rem, 2.4vw, 1.45rem);
+      line-height: 1.2;
+    }
+
+    h2 {
+      margin-bottom: 8px;
+      font-size: clamp(1.18rem, 2.6vw, 1.55rem);
+    }
+
+    h3,
+    legend {
+      font-size: 1rem;
+      font-weight: 700;
+    }
+
+    .progress-block {
+      min-width: min(310px, 42vw);
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 5px 12px;
+      align-items: center;
+    }
+
+    .progress-copy {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .progress-count {
+      color: var(--text);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.82rem;
+    }
+
+    .progress-track {
+      grid-column: 1 / -1;
+      height: 5px;
+      overflow: hidden;
+      background: var(--surface-raised);
+      border-radius: 999px;
+    }
+
+    .progress-fill {
+      width: 0;
+      height: 100%;
+      background: var(--purple);
+      transition: width 180ms ease;
+    }
+
+    main {
+      padding: 36px 0 140px;
+    }
+
+    .intro {
+      display: grid;
+      grid-template-columns: minmax(0, 1.3fr) minmax(250px, 0.7fr);
+      gap: 24px;
+      align-items: start;
+      margin-bottom: 28px;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: linear-gradient(135deg, var(--surface), rgba(17, 21, 31, 0.72));
+      box-shadow: var(--shadow);
+    }
+
+    .intro p:last-child {
+      margin-bottom: 0;
+    }
+
+    .plain-list {
+      margin: 0;
+      padding-left: 20px;
+      color: var(--muted);
+    }
+
+    .plain-list li + li {
+      margin-top: 7px;
+    }
+
+    .meta-field {
+      display: grid;
+      gap: 7px;
+    }
+
+    .meta-field label,
+    .notes-label {
+      color: var(--muted);
+      font-size: 0.84rem;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .meta-field input,
+    textarea {
+      width: 100%;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--surface-soft);
+      color: var(--text);
+    }
+
+    .meta-field input {
+      min-height: 46px;
+      padding: 9px 12px;
+    }
+
+    .meta-field small {
+      color: var(--quiet);
+    }
+
+    .issue {
+      margin-top: 24px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--surface);
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .issue[data-complete="true"] {
+      border-color: rgba(127, 226, 167, 0.52);
+    }
+
+    .issue-header {
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      gap: 14px;
+      align-items: start;
+      padding: 22px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface-raised);
+    }
+
+    .issue-number {
+      display: grid;
+      place-items: center;
+      width: 34px;
+      height: 34px;
+      border-radius: 50%;
+      background: var(--purple-soft);
+      color: var(--purple);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-weight: 800;
+    }
+
+    .issue-heading p {
+      max-width: 76ch;
+      margin-bottom: 0;
+      color: var(--muted);
+    }
+
+    .issue-state {
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      padding: 4px 9px;
+      color: var(--muted);
+      font-size: 0.72rem;
+      font-weight: 800;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+
+    .issue[data-complete="true"] .issue-state {
+      border-color: rgba(127, 226, 167, 0.6);
+      background: var(--green-soft);
+      color: var(--green);
+    }
+
+    .issue-body {
+      padding: 24px;
+    }
+
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-bottom: 24px;
+    }
+
+    .fact {
+      min-width: 0;
+      padding: 16px;
+      border-left: 3px solid var(--line-strong);
+      background: var(--surface-soft);
+    }
+
+    .fact.current {
+      border-left-color: var(--purple);
+      background: var(--purple-soft);
+    }
+
+    .fact.required {
+      border-left-color: var(--yellow);
+      background: var(--yellow-soft);
+    }
+
+    .fact strong {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 0.84rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .fact p {
+      margin-bottom: 0;
+      color: var(--muted);
+    }
+
+    .flow {
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+      margin: 0 0 24px;
+      overflow-x: auto;
+      padding: 4px 2px 10px;
+    }
+
+    .flow-node {
+      min-width: 138px;
+      flex: 1 0 138px;
+      display: grid;
+      align-content: center;
+      gap: 3px;
+      min-height: 82px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--surface-soft);
+    }
+
+    .flow-node strong {
+      font-size: 0.82rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .flow-node span {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .flow-node.warning {
+      border-color: rgba(255, 184, 107, 0.62);
+      background: var(--orange-soft);
+    }
+
+    .flow-node.blocked {
+      border-style: dashed;
+      border-color: rgba(255, 138, 150, 0.68);
+    }
+
+    .flow-arrow {
+      align-self: center;
+      flex: 0 0 auto;
+      color: var(--quiet);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 1.15rem;
+    }
+
+    fieldset {
+      min-width: 0;
+      margin: 0;
+      padding: 0;
+      border: 0;
+    }
+
+    fieldset + fieldset {
+      margin-top: 28px;
+      padding-top: 26px;
+      border-top: 1px solid var(--line);
+    }
+
+    legend {
+      width: 100%;
+      margin-bottom: 5px;
+      padding: 0;
+    }
+
+    .decision-help {
+      margin-bottom: 14px;
+      color: var(--muted);
+    }
+
+    .options {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .option {
+      position: relative;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px;
+      align-content: start;
+      min-height: 152px;
+      padding: 15px;
+      border: 1px solid var(--line);
+      border-radius: 9px;
+      background: var(--surface-soft);
+      cursor: pointer;
+    }
+
+    .option:hover {
+      border-color: var(--line-strong);
+    }
+
+    .option:has(input:checked) {
+      border-color: var(--purple);
+      background: var(--purple-soft);
+      box-shadow: inset 0 0 0 1px rgba(184, 156, 255, 0.28);
+    }
+
+    .option input {
+      width: 18px;
+      height: 18px;
+      margin: 3px 0 0;
+      accent-color: var(--purple);
+    }
+
+    .option-title {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--text);
+      font-weight: 800;
+    }
+
+    .option-impact {
+      display: block;
+      color: var(--muted);
+      font-size: 0.87rem;
+    }
+
+    .impact-line {
+      display: block;
+      margin-top: 10px;
+      color: var(--quiet);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 0.74rem;
+    }
+
+    .notes {
+      display: grid;
+      gap: 7px;
+      margin-top: 22px;
+    }
+
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+      padding: 11px 12px;
+    }
+
+    .task-map {
+      margin: 18px 0 0;
+      color: var(--quiet);
+      font-size: 0.78rem;
+    }
+
+    code {
+      color: var(--yellow);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .export-dock {
+      position: fixed;
+      right: 0;
+      bottom: 0;
+      left: 0;
+      z-index: 12;
+      border-top: 1px solid var(--line);
+      background: rgba(9, 11, 17, 0.94);
+      backdrop-filter: blur(16px);
+    }
+
+    .export-inner {
+      width: min(1180px, calc(100% - 32px));
+      min-height: 84px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 12px 0;
+    }
+
+    .export-status strong,
+    .export-status span {
+      display: block;
+    }
+
+    .export-status span {
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .export-actions {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+
+    button,
+    .file-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      padding: 9px 14px;
+      background: var(--surface-raised);
+      color: var(--text);
+      font-weight: 800;
+      cursor: pointer;
+    }
+
+    button:hover,
+    .file-button:hover {
+      border-color: var(--purple);
+    }
+
+    button.primary {
+      border-color: var(--purple);
+      background: var(--purple);
+      color: #140f1d;
+    }
+
+    .file-button input {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      overflow: hidden;
+      clip: rect(0 0 0 0);
+      clip-path: inset(50%);
+      white-space: nowrap;
+    }
+
+    .json-preview {
+      margin-top: 24px;
+      border-top: 1px solid var(--line);
+      padding-top: 20px;
+    }
+
+    .json-preview summary {
+      cursor: pointer;
+      color: var(--muted);
+      font-weight: 800;
+    }
+
+    pre {
+      max-height: 420px;
+      overflow: auto;
+      padding: 16px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #070910;
+      color: #dce3ef;
+      font: 0.78rem/1.55 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .toast {
+      position: fixed;
+      right: 20px;
+      bottom: 104px;
+      z-index: 20;
+      max-width: min(380px, calc(100% - 40px));
+      padding: 11px 14px;
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      background: var(--surface-raised);
+      color: var(--text);
+      box-shadow: var(--shadow);
+      opacity: 0;
+      transform: translateY(8px);
+      pointer-events: none;
+      transition: opacity 140ms ease, transform 140ms ease;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    @media (max-width: 880px) {
+      .intro,
+      .facts {
+        grid-template-columns: 1fr;
+      }
+
+      .options {
+        grid-template-columns: 1fr;
+      }
+
+      .option {
+        min-height: auto;
+      }
+    }
+
+    @media (max-width: 680px) {
+      .topbar {
+        position: static;
+      }
+
+      .export-dock {
+        position: static;
+      }
+
+      .topbar-inner,
+      .export-inner {
+        align-items: stretch;
+        flex-direction: column;
+      }
+
+      .progress-block {
+        width: 100%;
+        min-width: 0;
+      }
+
+      .issue-header {
+        grid-template-columns: auto minmax(0, 1fr);
+      }
+
+      .issue-state {
+        grid-column: 2;
+        justify-self: start;
+      }
+
+      .issue-body,
+      .issue-header,
+      .intro {
+        padding: 18px;
+      }
+
+      main {
+        padding-top: 20px;
+        padding-bottom: 24px;
+      }
+
+      .export-actions {
+        justify-content: stretch;
+      }
+
+      .export-actions > * {
+        flex: 1 1 140px;
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        scroll-behavior: auto !important;
+        transition-duration: 0.01ms !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <div class="brand">
+        <p class="eyebrow">OpenSpec · instrument-fx-detail</p>
+        <h1>Decision review</h1>
+      </div>
+      <div class="progress-block" aria-live="polite">
+        <span class="progress-copy">Required decisions</span>
+        <span class="progress-count" id="progressCount">0 / 5</span>
+        <div class="progress-track" aria-hidden="true">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main>
+    <section class="intro" aria-labelledby="introTitle">
+      <div>
+        <p class="eyebrow">Why implementation paused</p>
+        <h2 id="introTitle">Four issues need an explicit choice</h2>
+        <p>The Detail renderer and deterministic tests are working. These questions are not ordinary code bugs: the current product model and the written requirement describe different behavior, or the native host cannot provide the required proof.</p>
+        <ul class="plain-list">
+          <li>Read the purple <strong>Current system</strong> fact and yellow <strong>OpenSpec asks for</strong> fact.</li>
+          <li>Choose one option for every decision. No option is preselected.</li>
+          <li><strong>Save JSON</strong> downloads a draft at any time and a final result after all five choices are answered.</li>
+        </ul>
+      </div>
+      <div class="meta-field">
+        <label for="reviewer">Reviewer or decision owner</label>
+        <input id="reviewer" name="reviewer" autocomplete="name" placeholder="Optional name or team">
+        <small>Saved only in the downloaded JSON and this browser's local draft.</small>
+      </div>
+    </section>
+
+    <form id="decisionForm" novalidate>
+      <article class="issue" data-issue="lifecycle" data-complete="false">
+        <header class="issue-header">
+          <span class="issue-number">1</span>
+          <div class="issue-heading">
+            <h2>Lifecycle vocabulary and activation truth</h2>
+            <p>The UI cannot honestly paint states or values that the canonical reducer does not retain.</p>
+          </div>
+          <span class="issue-state">2 choices needed</span>
+        </header>
+        <div class="issue-body">
+          <div class="facts">
+            <div class="fact current">
+              <strong>Current system</strong>
+              <p>Instrument/effect structural changes expose <code>Ready</code>, <code>Preparing</code>, <code>Activating</code>, and <code>Failed</code>. <code>Loading</code>, <code>Validating</code>, and <code>Unavailable</code> belong to Sample assets.</p>
+            </div>
+            <div class="fact required">
+              <strong>OpenSpec asks for</strong>
+              <p>Every Instrument/FX Detail row should distinguish all those phases and keep the old active value beside the requested value until activation finishes.</p>
+            </div>
+          </div>
+
+          <div class="flow" role="img" aria-label="Current lifecycle commits the candidate configuration before audio graph activation acknowledgement">
+            <div class="flow-node"><strong>Ready</strong><span>Active: Engine A</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node"><strong>Preparing</strong><span>Active A · Request B</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node warning"><strong>Activating</strong><span>Config B · Graph switching</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node"><strong>Ready</strong><span>Active: Engine B</span></div>
+          </div>
+
+          <fieldset data-decision="phaseVocabulary">
+            <legend>1A. Which lifecycle vocabulary should Instrument/FX Detail own?</legend>
+            <p class="decision-help">This decides whether Loading, Validating, and Unavailable are real Instrument/FX states or Sample-only states.</p>
+            <div class="options">
+              <label class="option">
+                <input type="radio" name="phaseVocabulary" value="keep-engine-lifecycle">
+                <span>
+                  <span class="option-title">Keep the engine lifecycle</span>
+                  <span class="option-impact">Instrument/FX Detail uses Ready, Preparing, Activating, and Failed. Sample-only phases stay in Sample Detail/Browser.</span>
+                  <span class="impact-line">Impact: adjust OpenSpec · smallest code change</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="phaseVocabulary" value="expand-engine-lifecycle">
+                <span>
+                  <span class="option-title">Expand the engine lifecycle</span>
+                  <span class="option-impact">Add Loading, Validating, and Unavailable to canonical instrument/effect structural requests and project them everywhere.</span>
+                  <span class="impact-line">Impact: reducer + projector + workers + tests</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="phaseVocabulary" value="shared-structural-lifecycle">
+                <span>
+                  <span class="option-title">Create one shared lifecycle</span>
+                  <span class="option-impact">Unify engine/effect and Sample structural status behind one canonical vocabulary while retaining typed subject-specific failure.</span>
+                  <span class="impact-line">Impact: broad model migration · largest scope</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <fieldset data-decision="activationReading">
+            <legend>1B. What should “active” mean while the graph is activating?</legend>
+            <p class="decision-help">Today the prepared configuration is committed before the audio graph acknowledges activation.</p>
+            <div class="options">
+              <label class="option">
+                <input type="radio" name="activationReading" value="retain-old-active-until-ack">
+                <span>
+                  <span class="option-title">Retain old active until acknowledgement</span>
+                  <span class="option-impact">Show Engine A as active and Engine B as requested until the block-boundary graph activation is acknowledged.</span>
+                  <span class="impact-line">Impact: retain candidate separately · change commit timing</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="activationReading" value="candidate-is-current-config">
+                <span>
+                  <span class="option-title">Prepared candidate is current config</span>
+                  <span class="option-impact">Keep today's behavior and label the reading precisely: configuration B is committed while the graph is still activating.</span>
+                  <span class="impact-line">Impact: adjust requirement + UI wording</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="activationReading" value="show-config-and-graph-separately">
+                <span>
+                  <span class="option-title">Show config and graph separately</span>
+                  <span class="option-impact">Preserve current commit timing, but explicitly show “Configured: B” and “Sounding graph: A → B” with their revisions.</span>
+                  <span class="impact-line">Impact: generic projection fields + richer lifecycle UI</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="notes">
+            <label class="notes-label" for="lifecycleNotes">Lifecycle notes</label>
+            <textarea id="lifecycleNotes" name="lifecycleNotes" placeholder="Constraints, rationale, or a different direction…"></textarea>
+          </div>
+          <p class="task-map">Unblocks OpenSpec tasks 2.6, 3.4, and the lifecycle portion of 6.3.</p>
+        </div>
+      </article>
+
+      <article class="issue" data-issue="navigation" data-complete="false">
+        <header class="issue-header">
+          <span class="issue-number">2</span>
+          <div class="issue-heading">
+            <h2>Detail ↔ Utility arrow navigation</h2>
+            <p>The Utility panel is visible beside Detail, but visibility and semantic focus ownership currently disagree.</p>
+          </div>
+          <span class="issue-state">1 choice needed</span>
+        </header>
+        <div class="issue-body">
+          <div class="facts">
+            <div class="fact current">
+              <strong>Current system</strong>
+              <p>Detail and Utility are mutually exclusive semantic surfaces. Up/Down move within Detail. Left closes to the exact Overview origin. Right is rejected.</p>
+            </div>
+            <div class="fact required">
+              <strong>OpenSpec asks for</strong>
+              <p>Unmodified arrows should move directly between the Detail controls and the persistent Utility controls while keeping exactly one focus.</p>
+            </div>
+          </div>
+
+          <div class="flow" role="img" aria-label="Current navigation requires returning to Overview before entering Utility">
+            <div class="flow-node"><strong>Detail</strong><span>Up/Down inside rows</span></div>
+            <span class="flow-arrow" aria-hidden="true">←</span>
+            <div class="flow-node"><strong>Overview origin</strong><span>Exact Engine or FX slot</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node"><strong>Utility</strong><span>Master, Patch, MIDI, Output</span></div>
+            <span class="flow-arrow" aria-hidden="true">|</span>
+            <div class="flow-node blocked"><strong>Missing edge</strong><span>Detail → Utility directly</span></div>
+          </div>
+
+          <fieldset data-decision="detailUtilityNavigation">
+            <legend>2. What should arrows do at the Detail/Utility boundary?</legend>
+            <p class="decision-help">All options remain reducer-owned; none use DOM coordinates or visual position as authority.</p>
+            <div class="options">
+              <label class="option">
+                <input type="radio" name="detailUtilityNavigation" value="single-focus-graph">
+                <span>
+                  <span class="option-title">One combined focus graph</span>
+                  <span class="option-impact">Treat visible Detail and Utility controls as one semantic adjacency graph while Detail is open.</span>
+                  <span class="impact-line">Impact: change focus/surface model · direct arrows</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="detailUtilityNavigation" value="reducer-owned-surface-switch">
+                <span>
+                  <span class="option-title">Reducer-owned surface switch</span>
+                  <span class="option-impact">Keep surfaces exclusive, but Right/Left performs an explicit semantic transition between Detail and Utility and preserves the original return identity.</span>
+                  <span class="impact-line">Impact: new transition semantics · moderate scope</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="detailUtilityNavigation" value="keep-overview-gateway">
+                <span>
+                  <span class="option-title">Keep Overview as the gateway</span>
+                  <span class="option-impact">Detail Left returns to Overview; Overview Right enters Utility. Update OpenSpec so persistent visibility does not promise direct arrow adjacency.</span>
+                  <span class="impact-line">Impact: adjust OpenSpec · current behavior remains</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="notes">
+            <label class="notes-label" for="navigationNotes">Navigation notes</label>
+            <textarea id="navigationNotes" name="navigationNotes" placeholder="Preferred boundary keys, return behavior, or rationale…"></textarea>
+          </div>
+          <p class="task-map">Unblocks OpenSpec task 5.1.</p>
+        </div>
+      </article>
+
+      <article class="issue" data-issue="return-repair" data-complete="false">
+        <header class="issue-header">
+          <span class="issue-number">3</span>
+          <div class="issue-heading">
+            <h2>Return-origin repair and visible status</h2>
+            <p>The requested Detail-specific failure case cannot currently occur.</p>
+          </div>
+          <span class="issue-state">1 choice needed</span>
+        </header>
+        <div class="issue-body">
+          <div class="facts">
+            <div class="fact current">
+              <strong>Current system</strong>
+              <p>Detail opens only from Engine or one of three stable slot-occupancy roots. Current schema changes do not remove those roots. Generic main-path repair exists, but it does not project a repair notice.</p>
+            </div>
+            <div class="fact required">
+              <strong>OpenSpec asks for</strong>
+              <p>Remove or disable the stored Detail origin, choose the nearest enabled sibling deterministically, then show visible status explaining that focus was repaired.</p>
+            </div>
+          </div>
+
+          <div class="flow" role="img" aria-label="Exact return works, while the removed-origin repair branch is unreachable for current Detail origins">
+            <div class="flow-node"><strong>Open Detail</strong><span>Store exact Engine/slot origin</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node"><strong>Schema change</strong><span>Current roots remain present</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node"><strong>Close Detail</strong><span>Exact origin restored</span></div>
+            <span class="flow-arrow" aria-hidden="true">|</span>
+            <div class="flow-node blocked"><strong>Unreachable case</strong><span>Origin removed + repair status</span></div>
+          </div>
+
+          <fieldset data-decision="returnOriginRepair">
+            <legend>3. Where should return repair live?</legend>
+            <p class="decision-help">This decides whether dynamic removal of a Detail origin is part of the product now.</p>
+            <div class="options">
+              <label class="option">
+                <input type="radio" name="returnOriginRepair" value="add-detail-origin-removal-and-status">
+                <span>
+                  <span class="option-title">Add the missing product behavior</span>
+                  <span class="option-impact">Allow a schema transition to remove/disable a Detail origin, repair to the nearest enabled sibling, and project a user-visible repair notice.</span>
+                  <span class="impact-line">Impact: reducer scenario + generic status model + UI</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="returnOriginRepair" value="prove-generic-repair-outside-detail">
+                <span>
+                  <span class="option-title">Use generic repair evidence</span>
+                  <span class="option-impact">Keep Detail origins stable and exact. Prove nearest-sibling repair where removable main paths actually exist, without inventing a Detail notice.</span>
+                  <span class="impact-line">Impact: adjust Detail requirement · targeted test</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="returnOriginRepair" value="defer-dynamic-origin-repair">
+                <span>
+                  <span class="option-title">Defer dynamic-origin repair</span>
+                  <span class="option-impact">Keep exact Detail return in this slice and move repair/status to a future change that introduces user-removable Patch schema roots.</span>
+                  <span class="impact-line">Impact: split scope · no current product mutation</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="notes">
+            <label class="notes-label" for="returnRepairNotes">Return-repair notes</label>
+            <textarea id="returnRepairNotes" name="returnRepairNotes" placeholder="What can remove a root, what status should say, or why this should be deferred…"></textarea>
+          </div>
+          <p class="task-map">Unblocks OpenSpec task 1.5. Exact Engine/slot return is already proven; only the removed-origin/status clause is unresolved.</p>
+        </div>
+      </article>
+
+      <article class="issue" data-issue="native-proof" data-complete="false">
+        <header class="issue-header">
+          <span class="issue-number">4</span>
+          <div class="issue-heading">
+            <h2>Native paint and controller proof</h2>
+            <p>The deterministic renderer passes, but this host does not present a measurable native window.</p>
+          </div>
+          <span class="issue-state">1 choice needed</span>
+        </header>
+        <div class="issue-body">
+          <div class="facts">
+            <div class="fact current">
+              <strong>Observed on this host</strong>
+              <p>The WKWebView harness passed prerequisites and stalled at first paint. The production binary then ran for more than 90 seconds without a registered or inspectable macOS window. This is not an authentication failure.</p>
+            </div>
+            <div class="fact required">
+              <strong>OpenSpec asks for</strong>
+              <p>Measure real DOM geometry across viewports, prove repeat paint identity, and manually exercise keyboard/controller navigation and edits in the production app.</p>
+            </div>
+          </div>
+
+          <div class="flow" role="img" aria-label="Deterministic projection and startup prerequisites pass, but native first paint is not observed">
+            <div class="flow-node"><strong>Reducer + projection</strong><span>25 states pass</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node"><strong>Webview assets</strong><span>CSP, tokens, schema pass</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node blocked"><strong>Native first paint</strong><span>No window/ack observed</span></div>
+            <span class="flow-arrow" aria-hidden="true">→</span>
+            <div class="flow-node blocked"><strong>Manual proof</strong><span>Cannot interact or measure</span></div>
+          </div>
+
+          <fieldset data-decision="nativeVerification">
+            <legend>4. How should native acceptance proceed?</legend>
+            <p class="decision-help">A deterministic-only choice must remain explicit that native visual/controller acceptance has not happened.</p>
+            <div class="options">
+              <label class="option">
+                <input type="radio" name="nativeVerification" value="require-working-native-host">
+                <span>
+                  <span class="option-title">Require a working native host</span>
+                  <span class="option-impact">Keep the current acceptance bar. Diagnose this Mac or run the exact native suite on another suitable Mac before completing the change.</span>
+                  <span class="impact-line">Impact: tasks remain open until native evidence exists</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="nativeVerification" value="add-bounded-paint-diagnostics">
+                <span>
+                  <span class="option-title">Add bounded paint diagnostics first</span>
+                  <span class="option-impact">Add a typed startup/first-paint timeout and diagnostic trace, repair the host path, then rerun the required native evidence.</span>
+                  <span class="impact-line">Impact: shell diagnostics + retry native suite</span>
+                </span>
+              </label>
+              <label class="option">
+                <input type="radio" name="nativeVerification" value="defer-native-acceptance">
+                <span>
+                  <span class="option-title">Defer native acceptance</span>
+                  <span class="option-impact">Close only the deterministic portion here and move DOM measurements/manual controller proof to a separate native-validation change.</span>
+                  <span class="impact-line">Impact: revise scope · Detail remains native-incomplete</span>
+                </span>
+              </label>
+            </div>
+          </fieldset>
+
+          <div class="notes">
+            <label class="notes-label" for="nativeNotes">Native-proof notes</label>
+            <textarea id="nativeNotes" name="nativeNotes" placeholder="Available host, diagnostic expectations, deferral owner, or acceptance conditions…"></textarea>
+          </div>
+          <p class="task-map">Unblocks OpenSpec tasks 6.4–6.7 and 8.4. Relogging is not currently indicated by the observed failure.</p>
+        </div>
+      </article>
+
+      <details class="json-preview">
+        <summary>Preview the JSON that will be saved</summary>
+        <pre id="jsonPreview" aria-live="polite"></pre>
+      </details>
+    </form>
+  </main>
+
+  <footer class="export-dock">
+    <div class="export-inner">
+      <div class="export-status" aria-live="polite">
+        <strong id="exportTitle">Draft — 5 decisions unanswered</strong>
+        <span id="exportHelp">Your selections are autosaved locally in this browser.</span>
+      </div>
+      <div class="export-actions">
+        <label class="file-button">
+          Load JSON
+          <input id="loadJson" type="file" accept="application/json,.json">
+        </label>
+        <button id="copyJson" type="button">Copy JSON</button>
+        <button id="saveJson" class="primary" type="button">Save JSON</button>
+      </div>
+    </div>
+  </footer>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const SCHEMA_VERSION = 1;
+      const CHANGE_NAME = "instrument-fx-detail";
+      const STORAGE_KEY = "crest-synth:instrument-fx-detail:decision-review:v1";
+      const REQUIRED_DECISIONS = [
+        "phaseVocabulary",
+        "activationReading",
+        "detailUtilityNavigation",
+        "returnOriginRepair",
+        "nativeVerification"
+      ];
+      const ISSUE_DECISIONS = {
+        lifecycle: ["phaseVocabulary", "activationReading"],
+        navigation: ["detailUtilityNavigation"],
+        "return-repair": ["returnOriginRepair"],
+        "native-proof": ["nativeVerification"]
+      };
+      const ISSUE_NOTES = {
+        lifecycle: "lifecycleNotes",
+        navigation: "navigationNotes",
+        "return-repair": "returnRepairNotes",
+        "native-proof": "nativeNotes"
+      };
+      const ISSUE_TASKS = {
+        lifecycle: ["2.6", "3.4", "6.3 (lifecycle fixtures)"],
+        navigation: ["5.1"],
+        "return-repair": ["1.5 (repair/status clause)"],
+        "native-proof": ["6.4", "6.5", "6.6", "6.7", "8.4"]
+      };
+
+      const form = document.getElementById("decisionForm");
+      const reviewer = document.getElementById("reviewer");
+      const progressCount = document.getElementById("progressCount");
+      const progressFill = document.getElementById("progressFill");
+      const exportTitle = document.getElementById("exportTitle");
+      const exportHelp = document.getElementById("exportHelp");
+      const jsonPreview = document.getElementById("jsonPreview");
+      const loadJson = document.getElementById("loadJson");
+      const toast = document.getElementById("toast");
+      let toastTimer = null;
+
+      function selectedInput(name) {
+        return form.querySelector(`input[name="${name}"]:checked`);
+      }
+
+      function selectedDecision(name) {
+        const input = selectedInput(name);
+        if (!input) {
+          return null;
+        }
+        const option = input.closest(".option");
+        return {
+          id: input.value,
+          label: option.querySelector(".option-title").textContent.trim(),
+          impact: option.querySelector(".impact-line").textContent.replace(/^Impact:\s*/, "").trim()
+        };
+      }
+
+      function currentResult() {
+        const decisions = {};
+        Object.entries(ISSUE_DECISIONS).forEach(([issue, names]) => {
+          const selections = {};
+          names.forEach((name) => {
+            selections[name] = selectedDecision(name);
+          });
+          decisions[issue] = {
+            selections,
+            notes: form.elements[ISSUE_NOTES[issue]].value.trim(),
+            sourceTasks: ISSUE_TASKS[issue]
+          };
+        });
+
+        const answered = REQUIRED_DECISIONS.filter((name) => selectedInput(name)).length;
+        return {
+          schemaVersion: SCHEMA_VERSION,
+          change: CHANGE_NAME,
+          status: answered === REQUIRED_DECISIONS.length ? "final" : "draft",
+          savedAt: new Date().toISOString(),
+          reviewer: reviewer.value.trim() || null,
+          completion: {
+            answered,
+            total: REQUIRED_DECISIONS.length,
+            unanswered: REQUIRED_DECISIONS.filter((name) => !selectedInput(name))
+          },
+          decisions
+        };
+      }
+
+      function localDraft() {
+        const result = currentResult();
+        result.savedAt = null;
+        return result;
+      }
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.classList.add("show");
+        window.clearTimeout(toastTimer);
+        toastTimer = window.setTimeout(() => toast.classList.remove("show"), 2400);
+      }
+
+      function persistDraft() {
+        try {
+          window.localStorage.setItem(STORAGE_KEY, JSON.stringify(localDraft()));
+          return true;
+        } catch (_error) {
+          return false;
+        }
+      }
+
+      function update() {
+        const result = currentResult();
+        const answered = result.completion.answered;
+        const total = result.completion.total;
+        const remaining = total - answered;
+        progressCount.textContent = `${answered} / ${total}`;
+        progressFill.style.width = `${(answered / total) * 100}%`;
+        exportTitle.textContent = remaining === 0
+          ? "Final — every decision is answered"
+          : `Draft — ${remaining} decision${remaining === 1 ? "" : "s"} unanswered`;
+        exportHelp.textContent = remaining === 0
+          ? "Save this JSON and return it with the change review."
+          : "Save now for a draft, or answer the remaining choices for a final result.";
+
+        document.querySelectorAll(".issue").forEach((issueElement) => {
+          const issue = issueElement.dataset.issue;
+          const names = ISSUE_DECISIONS[issue];
+          const complete = names.every((name) => selectedInput(name));
+          issueElement.dataset.complete = String(complete);
+          const state = issueElement.querySelector(".issue-state");
+          if (complete) {
+            state.textContent = "Resolved";
+          } else {
+            const needed = names.filter((name) => !selectedInput(name)).length;
+            state.textContent = `${needed} choice${needed === 1 ? "" : "s"} needed`;
+          }
+        });
+
+        jsonPreview.textContent = JSON.stringify(result, null, 2);
+        persistDraft();
+      }
+
+      function applyResult(result) {
+        if (!result || result.schemaVersion !== SCHEMA_VERSION || result.change !== CHANGE_NAME) {
+          throw new Error("This JSON is not an instrument-fx-detail decision file (schema version 1). ");
+        }
+
+        reviewer.value = typeof result.reviewer === "string" ? result.reviewer : "";
+        Object.entries(ISSUE_DECISIONS).forEach(([issue, names]) => {
+          const selections = result.decisions?.[issue]?.selections || {};
+          names.forEach((name) => {
+            const id = selections[name]?.id;
+            if (typeof id !== "string") {
+              return;
+            }
+            const input = Array.from(form.elements[name] || []).find((candidate) => candidate.value === id);
+            if (input) {
+              input.checked = true;
+            }
+          });
+          const notes = result.decisions?.[issue]?.notes;
+          form.elements[ISSUE_NOTES[issue]].value = typeof notes === "string" ? notes : "";
+        });
+        update();
+      }
+
+      function restoreDraft() {
+        try {
+          const raw = window.localStorage.getItem(STORAGE_KEY);
+          if (raw) {
+            applyResult(JSON.parse(raw));
+          }
+        } catch (_error) {
+          // A blocked or malformed local draft must never prevent the page from loading.
+        }
+      }
+
+      function resultJson() {
+        return JSON.stringify(currentResult(), null, 2) + "\n";
+      }
+
+      function saveJson() {
+        const result = currentResult();
+        const blob = new Blob([JSON.stringify(result, null, 2) + "\n"], { type: "application/json" });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        const date = result.savedAt.slice(0, 10);
+        link.href = url;
+        link.download = `${CHANGE_NAME}-decisions-${result.status}-${date}.json`;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+        showToast(result.status === "final" ? "Final decision JSON saved." : "Draft decision JSON saved.");
+      }
+
+      async function copyJson() {
+        const text = resultJson();
+        try {
+          await navigator.clipboard.writeText(text);
+        } catch (_error) {
+          const fallback = document.createElement("textarea");
+          fallback.value = text;
+          fallback.setAttribute("readonly", "");
+          fallback.style.position = "fixed";
+          fallback.style.opacity = "0";
+          document.body.appendChild(fallback);
+          fallback.select();
+          const copied = document.execCommand("copy");
+          fallback.remove();
+          if (!copied) {
+            throw new Error("Clipboard access is unavailable. Use Save JSON instead.");
+          }
+        }
+        showToast("Decision JSON copied.");
+      }
+
+      form.addEventListener("input", update);
+      reviewer.addEventListener("input", update);
+      document.getElementById("saveJson").addEventListener("click", saveJson);
+      document.getElementById("copyJson").addEventListener("click", () => {
+        copyJson().catch((error) => showToast(error.message));
+      });
+      loadJson.addEventListener("change", async () => {
+        const file = loadJson.files?.[0];
+        if (!file) {
+          return;
+        }
+        try {
+          applyResult(JSON.parse(await file.text()));
+          showToast("Decision JSON loaded.");
+        } catch (error) {
+          showToast(error instanceof Error ? error.message : "Could not load that JSON file.");
+        } finally {
+          loadJson.value = "";
+        }
+      });
+
+      restoreDraft();
+      update();
+    })();
+  </script>
+</body>
+</html>

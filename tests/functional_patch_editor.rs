@@ -3678,7 +3678,7 @@ fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
     assert!(
         rows.iter().all(|row| matches!(
             row.pointer("/status/kind").and_then(Value::as_str),
-            Some("preparing" | "activating")
+            Some("loading" | "validating" | "preparing" | "activating")
         )),
         "a preparing subject reports its typed lifecycle on its own rows"
     );

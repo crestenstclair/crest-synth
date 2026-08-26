@@ -1,25 +1,36 @@
 # Crest Synth — Master Design and As-Built Reference
 
-This is the repository's detailed product and architecture authority. It
-records the system that exists, the invariants that must survive changes, the
-available evidence, and the known mismatch with the authored interface.
-`AGENTS.md` is the short working contract and invariant summary; it does not
-replace this design. This file is not a roadmap, a phase plan, or a claim that
-the product is finished.
+The linked Figma file is the normative product, visual, and interaction source
+of truth. This document is the repository's detailed as-built architecture,
+invariant, and implementation-status authority. It records the system that
+exists, the constraints that must survive changes, the available evidence, and
+the known mismatch with the authored interface. `AGENTS.md` is the short
+working contract and invariant summary; it does not replace this reference.
+This file is not a roadmap, a phase plan, or a claim that the product is
+finished.
 
-Snapshot date: 2026-08-21. The implementation reviewed for this reset began at
+Snapshot date: 2026-08-26. The implementation reviewed for this reset began at
 commit `d2d257f`.
 
 ## Authority and maintenance
 
 Read this file before changing product behavior or architecture.
 
-- Do not introduce a roadmap, OpenSpec change, CUE DSL, planning kit, parallel
-  master design, or generated specification system into this repository.
+- OpenSpec change artifacts may complement Figma with scoped intent,
+  acceptance criteria, design reasoning, and implementation tasks. They are
+  temporary planning material, not a normative product definition or proof of
+  as-built behavior.
+- Keep OpenSpec changes aligned with the live Figma contract and the
+  architecture and invariants recorded here. If they conflict, Figma governs
+  product, visual, and interaction intent, while this document governs the
+  constraints and status of the production implementation until deliberately
+  updated with evidence.
+- Do not introduce a roadmap, CUE DSL, planning kit, parallel master design, or
+  another competing source of truth into this repository.
 - Use source code and production-path tests to describe current behavior. Use
   this file for durable architecture, product invariants, and explicit gaps.
-- Use issues and commit messages for temporary intent, sequencing, acceptance
-  notes, and handoffs.
+- Use OpenSpec, issues, and commit messages for temporary intent, sequencing,
+  acceptance notes, and handoffs.
 - A narrow implementation slice must not redefine the product.
 - Figma examples of engines, effects, patches, files, values, and option counts
   are fixtures. They demonstrate composition and interaction; installed
@@ -40,20 +51,80 @@ spacing, typography, state treatment, and workflow detail than the current UI.
 The Figma responsive contract defines fluid, content-driven Wide, Standard,
 and Compact compositions; its large frames are visual references, not fixed
 canvases. Layout uses bounded tracks, intrinsic sizing, wrapping, and ordered
-stacking while semantic focus and projection remain unchanged. The native
-responsive witness has measured the Patch Overview at 1920×1080, 1440 px,
-1280×800, 900 px, and 1280×800 with 1.25 text scale through the shipped
-webview. Those observations passed structural-mode, target-floor, overflow,
-overlap, scroll-reachability, focus-identity, paint-acknowledgement, and
-repeat-render checks without changing the accepted reducer projection. Native
-visual acceptance is still incomplete: macOS screen captures from that run
-were black, a repeat run timed out before its first animation-frame signal,
-and the bounded physical Patch-editor demo later stalled waiting for a paint
-confirmation. The native input witness observed 52 key transitions and 17
-mapped actions but could not observe the focus-loss edge because the test
-window never acquired key focus. These are environment-dependent exclusions,
-not interface acceptance. Mixer multi-select has a type/state name but no
-defined product semantics and is truthfully reported as not implemented.
+stacking while semantic focus and projection remain unchanged. The current
+native responsive witness has measured Patch Overview and Instrument/FX Detail
+at 1920×1080, 1440×900, 1280×800, 900×800, and 1280×800 with 1.25 text scale
+through the shipped WKWebView. Those observations passed structural-mode,
+48 px target-floor, document and required-content overflow/overlap,
+scroll-endpoint reachability, singular focus identity/treatment,
+paint-acknowledgement, resize-neutral projection, and repeat-render checks.
+Readable native screenshots were captured and the enlarged-text Detail image
+was inspected directly. This is native structural/render evidence, not broad
+visual or workflow parity with Figma. The physical keyboard/controller handoff
+for the Detail slice passed on 2026-08-26 through the production native app,
+including entry, navigation, representative fine/coarse edits, exact
+Engine/effect-slot return, resize invariance, and repeated Shift use; the app
+then exited cleanly. Mixer multi-select has a type/state name but no defined
+product semantics and is truthfully reported as not implemented.
+
+The Instrument/FX Detail slice now uses one `detailShellHtml` composition for
+both reducer-owned `PatchDetailSubject` variants. It reads Patch and subject
+identity, exact return origin, canonical FX position, authored labels, ordered
+sections and controls, scalar bounds/position, units, declared interaction,
+valid actions, lifecycle/error/requested fields, and optional non-focusable
+visualizations from the serialized semantic model. The only generic projection
+addition is `focusRepair`, which names a removed Overview return origin and the
+enabled sibling chosen by reducer-owned path repair. The shared header, section
+hierarchy, flat indexed rows, state keylines/text, independently scrolling
+Detail body, and bounded persistent Utility track were compared with the live
+Instrument Detail `37:7`, FX Detail `38:60`, Responsive `98:2`, and Interaction
+Map `49:3` hierarchy. This is a structural implementation comparison, not
+visual parity.
+
+Deterministic evidence covers differently shaped instrument and effect
+descriptors, every occupied FX position, duplicate effect capabilities, an
+empty slot, long content, visible dependency-disabled controls, and distinct
+Loading, Validating, Preparing, Activating, Unavailable, and Failed states
+across 29 reducer/projector/serialization documents. Production keyboard
+normalization proves Shift+Up entry and Shift+Down close with exact Engine/slot
+return. Focused Rust witnesses prove descriptor order, exactly one visible
+focus while arrows traverse every projected Detail section and switch between
+Detail and Utility, fine/coarse editing, action admission, resize-neutral
+semantic identity, visible return-origin repair, and AppKit `FlagsChanged`
+safety. The headless webview path passes exact serialization, token, CSP, and
+typed-startup checks. After the host restart, the real WKWebView witness passed
+all Detail fixtures at Wide, Standard, Intermediate, Compact, and scaled-text
+conditions, including deterministic repeated observations, exact focus and
+state treatment, 48 px rows, complete independent scrolling, zero document or
+required-content overlap, and six resize-only observations over one unchanged
+serialized projection. That run also retained all sixteen Mixer tracks,
+Inspector correlation, focus identity, and reachability. Visual inspection of
+the first enlarged-text capture exposed a flex-shrink overlap that box-only
+measurement missed; the Detail scroll-column blocks now retain natural wrapped
+height, and the witness measures descendant-painted overlap to prevent its
+return. A scoped `make test-webview-detail-native` target runs this real-window
+Detail/Mixer proof and closes automatically, while honestly skipping unrelated
+soak and deliberately uncloseable fault-injection scenes. Live physical
+keyboard/controller operation remains unverified and is not inferred from the
+native render witness.
+
+Engine selection now exposes the reducer-owned sequence Loading → Validating →
+Preparing → Activating → Ready, with Unavailable and Failed as distinct typed
+outcomes. The acknowledged source capability, configuration, and Overview/
+Detail readings remain canonical during Activating; the complete prepared
+candidate stays separate until graph activation acknowledgement. Compatible
+scalar snapshots target the prepared revision during that interval, while the
+source renderer ignores them by revision. No capability, asset, or value is
+silently substituted.
+
+Detail and Utility share one reducer-owned subordinate session. Unmodified
+Right moves from Detail to Utility, Left restores the exact stable Detail
+focus, and a subsequent Left returns to the exact Overview origin. If schema
+change removes that origin while Detail is open, the reducer repairs the
+return path to the nearest enabled stable Overview sibling and the projection
+publishes the explicit `focusRepair` notice. Remaining visual slices are
+Sample Detail/Browser, Engine and Post-FX option states, Mixer composition, and
+native polish; none is implied complete by this Detail slice.
 
 The old phase/spec system recorded 73 of 79 implementation tasks complete when
 it was retired. The six incomplete items were the two native viewport
@@ -64,7 +135,7 @@ and real-time behavior only; they are not evidence of Figma fidelity.
 
 ## Visual and interaction reference
 
-The normative visual/workflow reference is the live
+The normative product, visual, and interaction source of truth is the live
 [Crest Synth — Controller-First UI Redesign](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=0-1).
 The primary authored nodes are:
 
@@ -457,7 +528,7 @@ evidence. At the documentation reset and the 2026-08-21 responsive Patch
 Overview slice:
 
 - formatting, Clippy with warnings denied, JavaScript syntax validation, and
-  `cargo test --all-targets` passed; the library aggregate reported 743 passed
+  `cargo test --all-targets` passed; the library aggregate reported 744 passed
   and two measurement-only tests ignored, and every integration target
   completed without a deterministic failure;
 - exact selector, no-name-enumeration, graph/callback, reducer/projection,
@@ -481,11 +552,15 @@ Overview slice:
   and clean teardown; it explicitly recorded multi-select as not implemented;
 - the detail/assets implementation has deterministic positive and controlled
   negative tests, and its interactive audio path was manually heard and
-  verified, but the required native visual comparisons and structured final
-  acceptance were not completed.
+  verified; Instrument/FX Detail now also has the shared descriptor-driven DOM
+  composition, 29-state exact serialization matrix, and current native
+  responsive/render measurements described above; its production native
+  physical keyboard/controller handoff also passed as described above.
 
-The next vertical visual slices are Instrument and FX Detail, Sample Detail
-and Browser/option states, Mixer responsive composition, then native scaling
+Instrument and FX Detail have completed their scoped native manual handoff.
+The native responsive DOM measurements and handoff do not claim full Figma
+parity. The other remaining visual slices are Sample Detail and Browser,
+Engine/Post FX option states, Mixer responsive composition, native scaling,
 and visual polish. Their existing functional surfaces are not evidence that
 those visual slices are complete.
 
@@ -534,10 +609,11 @@ make run
 Useful validation entry points are
 `bash scripts/run_exact_test_validation.sh --self-test`,
 `bash scripts/run_exact_test_validation.sh <target> <exact-test> <marker>`,
-`scripts/check_no_name_enumerated_identity.sh`, and
-`cargo test --test webview_projection_shell -- --nocapture`. Native window and
-physical-audio sections may require an interactive macOS host; a typed
-environmental skip is incomplete evidence, not acceptance.
+`scripts/check_no_name_enumerated_identity.sh`,
+`cargo test --test webview_projection_shell -- --nocapture`, and
+`make test-webview-detail-native` for the bounded real-window Detail/Mixer
+witness. Native window and physical-audio sections may require an interactive
+macOS host; a typed environmental skip is incomplete evidence, not acceptance.
 
 ## Change checklist
 
@@ -560,6 +636,7 @@ following in one coherent commit:
 10. actual rendered output is compared directly with the live Figma reference
     before claiming interface fidelity.
 
-Do not reintroduce a competing documentation tree. This file should change only
-when the as-built architecture, durable invariant, verified capability, known
-gap, or reference contract actually changes.
+Do not treat OpenSpec change artifacts or any other planning documentation as a
+competing product authority. This file should change only when the as-built
+architecture, durable invariant, verified capability, known gap, or reference
+contract actually changes.

@@ -1359,7 +1359,7 @@ fn check_every_projected_control_renders_through_the_document() -> usize {
 /// states, `accepts` agrees with the declaration, the union covers the
 /// closed vocabulary, and mute/solo stay mixer-strip-only.
 fn check_state_applicability_declarations() {
-    assert_eq!(COMPONENT_STATE_COUNT, 9);
+    assert_eq!(COMPONENT_STATE_COUNT, 10);
     let union: BTreeSet<&str> = ALL_COMPONENT_CONTROLS
         .into_iter()
         .flat_map(|control| control.applicable_states().iter().copied())

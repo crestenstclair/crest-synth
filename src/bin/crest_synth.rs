@@ -663,6 +663,8 @@ impl DemoSceneObservation {
                     event_variants[7] = true;
                     push_unique(&mut midi_kinds, message.kind());
                 }
+                EventInput::SetPatchOverviewOriginEnabled { .. } => {}
+                EventInput::EngineSelectionLifecycleAdvanced { .. } => {}
                 EventInput::EnginePrepared { .. } => event_variants[8] = true,
                 EventInput::SampleAssetLifecycleAdvanced { .. } => {}
                 EventInput::SampleCatalogRefreshed { .. } => {}
@@ -1172,11 +1174,7 @@ fn event_records_are_exact(records: &[crest_synth::control::event_record::EventR
     let mut expected_graph_revision = GraphRevision::INITIAL;
     for (index, record) in records.iter().enumerate() {
         if record.outcome() == EventOutcome::Accepted {
-            if let EventInput::EnginePrepared {
-                target_graph_revision,
-                ..
-            }
-            | EventInput::TopologyPrepared {
+            if let EventInput::EngineActivationAcknowledged {
                 target_graph_revision,
                 ..
             } = record.input()

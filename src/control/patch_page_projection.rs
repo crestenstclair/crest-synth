@@ -1258,7 +1258,9 @@ impl PatchPageProjection {
         let editable = state.capabilities().descriptors().len() >= 2
             && matches!(
                 engine_selection.kind(),
-                EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed
+                EngineSelectionStatusKind::Ready
+                    | EngineSelectionStatusKind::Unavailable
+                    | EngineSelectionStatusKind::Failed
             );
         let envelope = crate::synth::VoiceEnvelope::surface_descriptor()
             .iter()

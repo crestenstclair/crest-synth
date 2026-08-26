@@ -503,6 +503,16 @@ fn soundfont_preset_selection() {
         },
         EventSource::Worker,
     ) == Err(EventRejection::StaleEngineSelection);
+    for expected in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        let admission = app_loop.advance_structural().unwrap();
+        assert_eq!(
+            admission.engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     worker_handle.fail_next(EngineSelectionFailure::PresetUnavailable);
     assert!(worker_handle.advance());
     let failure_progress = app_loop.advance_structural().unwrap();
@@ -516,7 +526,8 @@ fn soundfont_preset_selection() {
     let controlled_failure_preserved_source = failure_progress.failure_dispatched()
         && app_loop.patches()[0].instrument_config() == &default_config
         && app_loop.graph_revision() == GraphRevision::INITIAL
-        && failed_row.status() == Some(EngineSelectionStatusKind::Failed)
+        && app_loop.engine_selection_status().kind() == EngineSelectionStatusKind::Unavailable
+        && failed_row.status() == Some(EngineSelectionStatusKind::Unavailable)
         && failed_row.failure() == Some(EngineSelectionFailure::PresetUnavailable);
 
     app_loop
@@ -557,21 +568,25 @@ fn soundfont_preset_selection() {
         && source_audio.iter().all(|sample| sample.is_finite())
         && app_loop.patches()[0].instrument_config() == &default_config;
 
+    for expected in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        let admission = app_loop.advance_structural().unwrap();
+        assert_eq!(
+            admission.engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     assert!(worker_handle.advance());
     let prepared = app_loop.advance_structural().unwrap();
     assert!(prepared.worker_result_polled());
     let target_revision = prepared.graph_published().unwrap();
-    let target_config = app_loop.patches()[0].instrument_config().clone();
-    let exact_one_assignment_commit = config_diff_is_only_preset(&default_config, &target_config)
-        && target_config.value(&preset_parameter)
-            == Some(&ParameterValue::Choice(target_choice_id.clone()))
-        && app_loop.patches()[1] == untargeted_before
-        && retry_correlation.intent()
-            == &StructuralEditIntent::ReplaceParameterChoice {
-                capability_id: default_config.capability_id().clone(),
-                parameter_id: preset_parameter.clone(),
-                choice_id: target_choice_id.clone(),
-            };
+    assert_eq!(
+        app_loop.patches()[0].instrument_config(),
+        &default_config,
+        "Activating retains the acknowledged source configuration"
+    );
     let swap_memory = counted_render(&mut renderer, &mut output);
     assert_eq!(renderer.active_revision(), target_revision);
     let scalar_edit_merged = renderer
@@ -583,6 +598,17 @@ fn soundfont_preset_selection() {
         acknowledged.activation_acknowledged(),
         Some(target_revision)
     );
+    let target_config = app_loop.patches()[0].instrument_config().clone();
+    let exact_one_assignment_commit = config_diff_is_only_preset(&default_config, &target_config)
+        && target_config.value(&preset_parameter)
+            == Some(&ParameterValue::Choice(target_choice_id.clone()))
+        && app_loop.patches()[1] == untargeted_before
+        && retry_correlation.intent()
+            == &StructuralEditIntent::ReplaceParameterChoice {
+                capability_id: default_config.capability_id().clone(),
+                parameter_id: preset_parameter.clone(),
+                choice_id: target_choice_id.clone(),
+            };
     app_loop
         .dispatch_from(note(patch_id, channel), EventSource::System)
         .unwrap();
@@ -611,6 +637,16 @@ fn soundfont_preset_selection() {
     app_loop
         .dispatch_from(AppEvent::Adjust(Direction::Left), EventSource::Keyboard)
         .unwrap();
+    for expected in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        let admission = app_loop.advance_structural().unwrap();
+        assert_eq!(
+            admission.engine_selection_lifecycle_advanced(),
+            Some(expected)
+        );
+    }
     assert!(worker_handle.advance());
     let restore_prepared = app_loop.advance_structural().unwrap();
     let restore_revision = restore_prepared.graph_published().unwrap();

@@ -20,7 +20,7 @@ use crate::shell::tokens::{SemanticColor, KEYLINE_EMPHASIS_PX, KEYLINE_RESTING_P
 
 /// A behavioral state a component may be handed.
 ///
-/// The set is closed at nine. Closedness is the feature: a tenth state fails
+/// The set is closed at ten. Closedness is the feature: an eleventh state fails
 /// compilation at every rendering site rather than silently falling through to
 /// the resting appearance.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -36,6 +36,8 @@ pub enum ComponentState {
     Disabled,
     /// A structural edit this component requested is in flight.
     Loading,
+    /// The requested provider or resource cannot currently be supplied.
+    Unavailable,
     /// A structural edit this component requested failed.
     Error,
     /// This component's mixer track is muted.
@@ -53,6 +55,7 @@ pub const ALL_COMPONENT_STATES: [ComponentState; COMPONENT_STATE_COUNT] = [
     ComponentState::Adjusting,
     ComponentState::Disabled,
     ComponentState::Loading,
+    ComponentState::Unavailable,
     ComponentState::Error,
     ComponentState::Muted,
     ComponentState::Soloed,
@@ -63,17 +66,16 @@ pub const ALL_COMPONENT_STATES: [ComponentState; COMPONENT_STATE_COUNT] = [
 ///
 /// Surfaces that must cover every state assert against this rather than
 /// against a number they carry themselves.
-pub const COMPONENT_STATE_COUNT: usize = 9;
+pub const COMPONENT_STATE_COUNT: usize = 10;
 
 /// The authored progress words a [`ComponentState::Loading`] component
 /// carries, in lifecycle order.
 ///
-/// `DESIGN.md` — a targeted structural row displays its active and
-/// requested value plus `Preparing`, then `Activating`. Loading reuses that
-/// vocabulary instead of introducing a second one, so the word a loading
-/// component shows is the same word the structural-edit lifecycle already
-/// reports.
-pub const LOADING_PROGRESS_WORDS: [&str; 2] = ["Preparing", "Activating"];
+/// `DESIGN.md` — a targeted structural row displays its active and requested
+/// value throughout admission, preparation, and block-boundary activation.
+/// The component paints the reducer-owned lifecycle word rather than
+/// collapsing those distinct states into a generic spinner.
+pub const LOADING_PROGRESS_WORDS: [&str; 4] = ["Loading", "Validating", "Preparing", "Activating"];
 
 /// The non-color signal a state carries.
 ///
@@ -171,6 +173,13 @@ impl ComponentState {
                 fills_row: false,
                 signal: NonColorSignal::ProgressWord,
             },
+            Self::Unavailable => StateAppearance {
+                accent: SemanticColor::AccentWarning,
+                keyline_px: KEYLINE_EMPHASIS_PX,
+                draws_halo: false,
+                fills_row: false,
+                signal: NonColorSignal::Word("Unavailable"),
+            },
             Self::Error => StateAppearance {
                 accent: SemanticColor::AccentWarning,
                 keyline_px: KEYLINE_EMPHASIS_PX,
@@ -210,6 +219,7 @@ impl ComponentState {
             Self::Adjusting => "Adjusting",
             Self::Disabled => "Disabled",
             Self::Loading => "Loading",
+            Self::Unavailable => "Unavailable",
             Self::Error => "Error",
             Self::Muted => "Muted",
             Self::Soloed => "Soloed",
@@ -232,8 +242,8 @@ mod tests {
     }
 
     #[test]
-    fn the_state_vocabulary_holds_exactly_nine_states() {
-        assert_eq!(COMPONENT_STATE_COUNT, 9);
+    fn the_state_vocabulary_holds_exactly_ten_states() {
+        assert_eq!(COMPONENT_STATE_COUNT, 10);
         assert_eq!(ALL_COMPONENT_STATES.len(), COMPONENT_STATE_COUNT);
     }
 
@@ -249,6 +259,7 @@ mod tests {
                 ComponentState::Adjusting => "Adjusting",
                 ComponentState::Disabled => "Disabled",
                 ComponentState::Loading => "Loading",
+                ComponentState::Unavailable => "Unavailable",
                 ComponentState::Error => "Error",
                 ComponentState::Muted => "Muted",
                 ComponentState::Soloed => "Soloed",
@@ -301,7 +312,10 @@ mod tests {
             ComponentState::Loading.appearance().signal,
             NonColorSignal::ProgressWord
         );
-        assert_eq!(LOADING_PROGRESS_WORDS, ["Preparing", "Activating"]);
+        assert_eq!(
+            LOADING_PROGRESS_WORDS,
+            ["Loading", "Validating", "Preparing", "Activating"]
+        );
     }
 
     #[test]
@@ -310,6 +324,14 @@ mod tests {
         assert_eq!(error.accent, SemanticColor::AccentWarning);
         assert_eq!(error.signal, NonColorSignal::TypedFailure);
         assert!(error.signal.carries_text());
+    }
+
+    #[test]
+    fn unavailable_pairs_the_warning_accent_with_an_explicit_word() {
+        let unavailable = ComponentState::Unavailable.appearance();
+        assert_eq!(unavailable.accent, SemanticColor::AccentWarning);
+        assert_eq!(unavailable.signal, NonColorSignal::Word("Unavailable"));
+        assert!(unavailable.signal.carries_text());
     }
 
     #[test]
@@ -373,7 +395,7 @@ mod tests {
 
     #[test]
     fn every_state_other_than_resting_reads_without_color() {
-        // Resting is the baseline: it is the absence the other eight read
+        // Resting is the baseline: it is the absence the other nine read
         // against, so it carries no distinguishing mark of its own. Every
         // other state must announce itself with text or with shape.
         for state in ALL_COMPONENT_STATES {
