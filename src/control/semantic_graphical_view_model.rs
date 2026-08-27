@@ -1881,10 +1881,12 @@ fn project_patch_surfaces(
                 PatchControlId::MidiInput => (
                     "MIDI Input".to_owned(),
                     SemanticControlKind::Stepped,
-                    SemanticControlValue::Scalar(f64::from(patch.channel().value())),
+                    // MIDI's serialized wire value is zero-based, while the
+                    // user-facing channel vocabulary is 1..=16.
+                    SemanticControlValue::Scalar(f64::from(patch.channel().value()) + 1.0),
                     Some(SemanticNumericRange::new(
-                        f64::from(MidiChannel::MIN),
-                        f64::from(MidiChannel::MAX),
+                        f64::from(MidiChannel::MIN) + 1.0,
+                        f64::from(MidiChannel::MAX) + 1.0,
                         1.0,
                         1.0,
                     )),
@@ -4503,6 +4505,17 @@ mod projection_enrichment_tests {
             assert_eq!(row.label(), "Master Volume");
             assert_ne!(row.label(), "masterGainDb");
         }
+    }
+
+    #[test]
+    fn midi_input_projects_the_user_facing_one_through_sixteen_channel_vocabulary() {
+        let model = project(&patch_state());
+        let row = control_at(&model, &SemanticControlId::Patch(PatchControlId::MidiInput));
+        assert_eq!(row.value(), &SemanticControlValue::Scalar(1.0));
+        let range = row.numeric_range().expect("MIDI input is bounded");
+        assert_eq!(range.minimum(), 1.0);
+        assert_eq!(range.maximum(), 16.0);
+        assert_eq!(range.fine_step(), 1.0);
     }
 
     // -----------------------------------------------------------------

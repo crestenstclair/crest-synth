@@ -72,7 +72,9 @@ pub use state_snapshot::StateSnapshot;
 pub use text_projection::TextProjection;
 pub use top_level_context::TopLevelContext;
 pub mod app_loop;
-pub use app_loop::{AppLoop, DispatchResult, StructuralAdvanceError, StructuralProgress};
+pub use app_loop::{
+    AppLoop, DispatchResult, MidiFanOutResult, StructuralAdvanceError, StructuralProgress,
+};
 pub mod state_tree;
 pub use state_tree::{StateTree, StateTreeError};
 pub mod event_log;

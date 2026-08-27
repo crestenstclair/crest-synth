@@ -41,9 +41,7 @@ use crest_synth::synth::{CapabilityRegistry, InstrumentCapabilityProvider, Patch
 use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::instrument_part::InstrumentPart;
 use crest_synth::testing::live_demo_scene::LiveDemoScene;
-use crest_synth::testing::midi_event_source::{
-    FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
-};
+use crest_synth::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
 use crest_synth::testing::{
     DeterministicGraphPreparationWorker, DeterministicSampleCatalog, DeterministicSampleDecoder,
     LiveDemoRunner, RuntimeAudioWitness,
@@ -251,7 +249,7 @@ impl MidiEventSource for Phase7MidiSource {
                     96,
                 )
                 .unwrap();
-                output.try_push(TargetedMidiEvent::new(part.index(), message))?;
+                output.try_push(message)?;
             }
             self.emitted = true;
         }

@@ -230,6 +230,9 @@ The application currently provides:
 - descriptor-driven Patch Overview, Detail, generic Choice, Sample Browser,
   waveform/playhead projection, persistent Utility, and persistent Mixer
   Inspector surfaces;
+- channel-based MIDI subscriptions in which any number of installed Patches
+  may share one channel and each incoming message fans out to every matching
+  Patch in stable installation order;
 - level, pan, mute, solo, indexed sends, return occupancy/parameters/levels,
   pre-gate meters, Patch route/trim, and master gain;
 - versioned saved state containing stable asset references and normalized
@@ -238,14 +241,19 @@ The application currently provides:
   commands listed later in this file.
 
 Normal `make run` opens the real application and automatically plays the fixed
-MIDI fixture. The `demo-live-*` commands are bounded autonomous witnesses, not
-open-ended performance sessions; their mapped semantic input is isolated while
-the generation-correlated scene runs.
+MIDI fixture. That fixture is the only MIDI source installed by the current
+production composition; a physical MIDI-device adapter is not yet installed.
+The source emits normalized channel messages, never Patch targets. Control-side
+normalization resolves the current Patch subscribers for each message before
+the existing per-Patch commands cross the real-time event transport. The
+`demo-live-*` commands are bounded autonomous witnesses, not open-ended
+performance sessions; their mapped semantic input is isolated while the
+generation-correlated scene runs.
 
 ## Architecture
 
 ```text
-keyboard / controller / live MIDI / MIDI fixture
+keyboard / controller / normalized MIDI source
                        |
               physical input adapters
                        |
@@ -375,6 +383,11 @@ status and are formatted/handled off callback.
 - A Patch owns a stable `PatchId`, label/MIDI mapping, instrument config,
   per-note `VoiceEnvelope`, up to three ordered post-effect slots, output
   `MixerTrackId`, Patch-local trim, and voice limit.
+- A Patch MIDI channel is a subscription, never an exclusive owner. Multiple
+  Patches may subscribe to the same channel; one incoming message fans out to
+  every current subscriber in stable installation order. Changing a
+  subscription is immediately effective control state and does not rebuild the
+  structural graph. A channel with no subscribers emits no audio command.
 - Mixer state owns exactly sixteen persistent tracks independently of the
   Patch collection. Multiple Patches may share a track and empty tracks remain
   configurable.

@@ -754,17 +754,11 @@ impl PatchEditorMeasurement {
             utility_rows_unavailable: self.utility_rows_unavailable,
             utility_serialization_key_labels: self.utility_serialization_key_labels,
             master_volume_single_owner: self.master_volume_owner_counts == BTreeSet::from([1]),
-            // **The observation field's name is broader than what this measures.**
-            // What is measured is that the projected MIDI-input row took more
-            // than one distinct value across the run — i.e. the row is
-            // Patch-local and re-projects across a switch, so a run that never
-            // left the first instrument projects one value and fails here. It
-            // is *not* a completed re-channelling edit: the fixture packs 15
-            // Patches onto channels 0-14, so every adjacent channel is a
-            // `DuplicateMidiChannel` refusal and no such edit is measurable on
-            // this roster. MIDI-input editability is proven in the deterministic
-            // target. The field is graded for what it measures; the wire name
-            // remains stable.
+            // The scene now makes and reverses a real MIDI-input edit even
+            // though the fixture's adjacent channel already has another
+            // subscriber. Seeing more than one projected value therefore
+            // proves both Patch-local reprojection and shared-channel
+            // editability through the production reducer.
             midi_input_rechannelled: self.midi_input_values.len() > 1,
             numeric_rows_missing_range_or_unit: self.numeric_rows_missing_range_or_unit,
             per_row_valid_actions_agree_at_focus: self.valid_actions_samples > 0

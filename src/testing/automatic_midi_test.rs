@@ -36,7 +36,6 @@ pub enum TestInputError {
     AudioBoundaryFull(BoundaryFull),
     PatchIdentityOverflow { position: usize },
     DuplicatePartIndex { part_index: usize },
-    UnknownPartIndex { part_index: usize },
     AlreadyInitialized,
     NotInitialized,
     AlreadyStarted,
@@ -73,12 +72,6 @@ impl fmt::Display for TestInputError {
                     "fixture contains duplicate part index {part_index}"
                 )
             }
-            Self::UnknownPartIndex { part_index } => {
-                write!(
-                    formatter,
-                    "fixture MIDI targets unknown part index {part_index}"
-                )
-            }
             Self::AlreadyInitialized => {
                 formatter.write_str("automatic MIDI test is already initialized")
             }
@@ -103,7 +96,6 @@ impl std::error::Error for TestInputError {
             Self::AudioBoundaryFull(error) => Some(error),
             Self::PatchIdentityOverflow { .. }
             | Self::DuplicatePartIndex { .. }
-            | Self::UnknownPartIndex { .. }
             | Self::AlreadyInitialized
             | Self::NotInitialized
             | Self::AlreadyStarted
@@ -150,7 +142,6 @@ impl From<BoundaryFull> for TestInputError {
 /// while every fixture event still uses the same reducer path.
 pub struct AutomaticMidiTest<Source> {
     source: Source,
-    patch_ids: Vec<(usize, PatchId)>,
     events: FixedEventBatch,
     initialized: bool,
     started: bool,
@@ -205,7 +196,6 @@ where
     pub fn new(source: Source) -> Self {
         Self {
             source,
-            patch_ids: Vec::new(),
             events: FixedEventBatch::new(),
             initialized: false,
             started: false,
@@ -244,9 +234,9 @@ where
             exact_effect_provider_descriptors(effect_providers, app_loop.effects())?;
 
         let parts = self.source.prepare()?;
-        let mut patch_ids = Vec::new();
+        let mut part_indices = Vec::new();
         let mut patches = Vec::new();
-        patch_ids.try_reserve_exact(parts.len()).map_err(|_| {
+        part_indices.try_reserve_exact(parts.len()).map_err(|_| {
             TestInputError::PatchIdentityOverflow {
                 position: parts.len(),
             }
@@ -258,10 +248,7 @@ where
         })?;
 
         for (position, part) in parts.into_iter().enumerate() {
-            if patch_ids
-                .iter()
-                .any(|(part_index, _)| *part_index == part.index())
-            {
+            if part_indices.contains(&part.index()) {
                 return Err(TestInputError::DuplicatePartIndex {
                     part_index: part.index(),
                 });
@@ -314,12 +301,11 @@ where
                 }
             }
 
-            patch_ids.push((part.index(), patch_id));
+            part_indices.push(part.index());
             patches.push(patch);
         }
 
         app_loop.dispatch_from(AppEvent::InstallPatches(patches), EventSource::Startup)?;
-        self.patch_ids = patch_ids;
         self.events.clear();
         self.initialized = true;
         Ok(())
@@ -359,24 +345,8 @@ where
         self.events.clear();
         self.source.poll(elapsed, &mut self.events)?;
 
-        for event in self.events.iter().copied() {
-            let patch_id = self
-                .patch_ids
-                .iter()
-                .find_map(|(part_index, patch_id)| {
-                    (*part_index == event.part_index()).then_some(*patch_id)
-                })
-                .ok_or(TestInputError::UnknownPartIndex {
-                    part_index: event.part_index(),
-                })?;
-
-            let result = app_loop.dispatch_from(
-                AppEvent::Midi {
-                    patch_id,
-                    message: event.message(),
-                },
-                EventSource::AutomaticMidi,
-            )?;
+        for message in self.events.iter().copied() {
+            let result = app_loop.dispatch_midi_from(message, EventSource::AutomaticMidi)?;
             if let Some(boundary_full) = result.boundary_full() {
                 return Err(boundary_full.into());
             }
@@ -521,9 +491,7 @@ mod tests {
         ParameterValue,
     };
     use crate::testing::instrument_part::InstrumentPart;
-    use crate::testing::midi_event_source::{
-        FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
-    };
+    use crate::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
@@ -531,7 +499,7 @@ mod tests {
 
     struct TestSource {
         parts: Vec<InstrumentPart>,
-        due: Vec<TargetedMidiEvent>,
+        due: Vec<MidiMessage>,
         started: bool,
     }
 
@@ -602,7 +570,7 @@ mod tests {
         .unwrap()
     }
 
-    fn source(parts: Vec<InstrumentPart>, due: Vec<TargetedMidiEvent>) -> TestSource {
+    fn source(parts: Vec<InstrumentPart>, due: Vec<MidiMessage>) -> TestSource {
         TestSource {
             parts,
             due,
@@ -906,8 +874,8 @@ mod tests {
     }
 
     #[test]
-    fn tick_maps_part_identity_and_dispatches_through_app_loop() {
-        let due = TargetedMidiEvent::new(12, message(12, 64));
+    fn tick_routes_the_message_channel_through_app_loop() {
+        let due = message(12, 64);
         let source = source(
             vec![part(4, "Piano", 0), part(12, "Strings", 48)],
             vec![due],
@@ -929,12 +897,95 @@ mod tests {
         let observations = observations.lock().unwrap();
         assert_eq!(
             observations.commands,
-            vec![AudioCommand::patch_midi(
-                PatchId::new(2).unwrap(),
-                due.message()
-            )]
+            vec![AudioCommand::patch_midi(PatchId::new(2).unwrap(), due)]
         );
         assert_eq!(observations.parameters.as_ref().unwrap().generation(), 2);
+    }
+
+    #[test]
+    fn tick_fans_one_channel_out_to_every_subscribed_patch() {
+        let due = message(0, 64);
+        let source = source(
+            vec![part(0, "Layer A", 0), part(1, "Layer B", 48)],
+            vec![due],
+        );
+        let mut service = AutomaticMidiTest::new(source);
+        let (mut app_loop, observations, providers) = app_loop();
+        service.initialize(&providers, &mut app_loop).unwrap();
+
+        // Reassign Patch 2 from channel 1 to channel 0. Shared input
+        // subscriptions are accepted and must not disturb either Patch.
+        app_loop
+            .dispatch(crate::control::app_event::AppEvent::SelectContext(
+                crate::control::TopLevelContext::Patch,
+            ))
+            .unwrap();
+        app_loop
+            .dispatch(crate::control::app_event::AppEvent::SelectPatch(
+                crate::control::Direction::Right,
+            ))
+            .unwrap();
+        app_loop
+            .dispatch(crate::control::app_event::AppEvent::EnterSurface(
+                crate::control::SurfaceId::PatchUtility,
+            ))
+            .unwrap();
+        app_loop
+            .dispatch(crate::control::app_event::AppEvent::Navigate(
+                crate::control::Direction::Down,
+            ))
+            .unwrap();
+        app_loop
+            .dispatch(crate::control::app_event::AppEvent::SetInteractionMode(
+                crate::control::InteractionMode::Adjust,
+            ))
+            .unwrap();
+        app_loop
+            .dispatch(crate::control::app_event::AppEvent::Adjust(
+                crate::control::Direction::Left,
+            ))
+            .unwrap();
+        assert_eq!(
+            app_loop.patches()[0].channel(),
+            MidiChannel::new(0).unwrap()
+        );
+        assert_eq!(
+            app_loop.patches()[1].channel(),
+            MidiChannel::new(0).unwrap()
+        );
+
+        observations.lock().unwrap().commands.clear();
+        service.start().unwrap();
+        service
+            .tick(Duration::from_millis(10), &mut app_loop)
+            .unwrap();
+
+        let observations = observations.lock().unwrap();
+        assert_eq!(
+            observations.commands,
+            vec![
+                AudioCommand::patch_midi(PatchId::new(1).unwrap(), due),
+                AudioCommand::patch_midi(PatchId::new(2).unwrap(), due),
+            ]
+        );
+    }
+
+    #[test]
+    fn tick_ignores_a_channel_with_no_subscribers() {
+        let due = message(7, 60);
+        let source = source(vec![part(0, "Piano", 0)], vec![due]);
+        let mut service = AutomaticMidiTest::new(source);
+        let (mut app_loop, observations, providers) = app_loop();
+        service.initialize(&providers, &mut app_loop).unwrap();
+        let generation = app_loop.state().generation();
+        service.start().unwrap();
+
+        service
+            .tick(Duration::from_millis(1), &mut app_loop)
+            .unwrap();
+
+        assert_eq!(app_loop.state().generation(), generation);
+        assert!(observations.lock().unwrap().commands.is_empty());
     }
 
     #[test]
@@ -1001,22 +1052,5 @@ mod tests {
                 "only the first fixture Patch carries an effect"
             );
         }
-    }
-
-    #[test]
-    fn tick_rejects_unknown_part_targets_without_bypassing_app_loop() {
-        let due = TargetedMidiEvent::new(99, message(0, 60));
-        let source = source(vec![part(0, "Piano", 0)], vec![due]);
-        let mut service = AutomaticMidiTest::new(source);
-        let (mut app_loop, observations, providers) = app_loop();
-        service.initialize(&providers, &mut app_loop).unwrap();
-        service.start().unwrap();
-
-        let error = service
-            .tick(Duration::from_millis(1), &mut app_loop)
-            .unwrap_err();
-
-        assert_eq!(error, TestInputError::UnknownPartIndex { part_index: 99 });
-        assert!(observations.lock().unwrap().commands.is_empty());
     }
 }

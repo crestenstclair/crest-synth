@@ -1,9 +1,7 @@
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::synth::sound_font_instrument::SoundFontInstrument;
 use crate::testing::instrument_part::InstrumentPart;
-use crate::testing::midi_event_source::{
-    FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
-};
+use crate::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
 use midly::{
     Format, Fps, MetaMessage, MidiMessage as MidlyMidiMessage, Smf, Timing, TrackEventKind,
 };
@@ -107,7 +105,7 @@ impl MidiEventSource for FixedMidiEventSource {
 #[derive(Clone, Copy, Debug)]
 struct ScheduledMidiEvent {
     due: Duration,
-    event: TargetedMidiEvent,
+    event: MidiMessage,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -575,10 +573,7 @@ fn push_all_notes_off(
     for part_index in targeted_parts {
         events.push(ScheduledMidiEvent {
             due,
-            event: TargetedMidiEvent::new(
-                part_index,
-                MidiMessage::all_notes_off(parts[part_index].assigned_channel()),
-            ),
+            event: MidiMessage::all_notes_off(parts[part_index].assigned_channel()),
         });
     }
 }
@@ -600,7 +595,7 @@ fn push_message(
         })?;
     events.push(ScheduledMidiEvent {
         due,
-        event: TargetedMidiEvent::new(part_index, message),
+        event: message,
     });
     Ok(())
 }
@@ -685,12 +680,13 @@ mod tests {
             source
                 .poll(Duration::from_millis(20), &mut output)
                 .expect("bounded fixture polling should succeed");
-            for event in output.iter().copied() {
-                let part = &parts[event.part_index()];
-                assert_eq!(event.message().channel(), part.assigned_channel());
-                targeted_parts.insert(event.part_index());
+            for message in output.iter() {
+                let part_index = usize::from(message.channel().value());
+                let part = &parts[part_index];
+                assert_eq!(message.channel(), part.assigned_channel());
+                targeted_parts.insert(part_index);
                 emitted_messages += 1;
-                if event.message().kind() == MidiMessageKind::NoteOn {
+                if message.kind() == MidiMessageKind::NoteOn {
                     note_on_messages += 1;
                 }
             }

@@ -304,12 +304,12 @@ impl Patch {
         self.envelope = envelope;
     }
 
-    /// Re-targets which incoming MIDI part drives this Patch.
+    /// Changes the incoming MIDI channel this Patch subscribes to.
     ///
     /// The channel is already validated into `0..=15` by its own type, so
-    /// there is nothing left to refuse here. Uniqueness across installed
-    /// Patches is a collection-level rule the reducer owns, not one this
-    /// aggregate can see.
+    /// there is nothing left to refuse here. MIDI subscriptions are
+    /// intentionally many-to-many: other installed Patches may use the same
+    /// channel and will receive the same incoming messages.
     pub(crate) fn set_channel(&mut self, channel: MidiChannel) {
         self.channel = channel;
     }

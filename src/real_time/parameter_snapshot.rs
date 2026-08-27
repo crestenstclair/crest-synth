@@ -18,8 +18,9 @@ use serde::{Serialize, Serializer};
 /// The maximum number of Patch parameter values carried across the real-time
 /// boundary.
 ///
-/// SoundFont playback is addressed through MIDI's sixteen bounded channels, so
-/// the callback never needs dynamically sized Patch storage.
+/// The active structural graph currently supports sixteen Patch slots, so the
+/// callback never needs dynamically sized Patch storage. MIDI channels are
+/// shared subscriptions and do not determine this capacity.
 pub const MAX_PATCHES: usize = 16;
 
 /// Fixed descriptor-ordered live instrument values for one Patch.

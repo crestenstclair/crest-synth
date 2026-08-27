@@ -2926,26 +2926,17 @@ fn check_no_projected_screen_string_is_a_serialization_key() -> usize {
     checked
 }
 
-/// The MIDI input row re-targets which incoming part drives the focused Patch,
-/// and changes nothing else.
+/// The MIDI input row lets the focused Patch join another Patch's channel and
+/// changes nothing else.
 ///
-/// There is no channel-to-Patch router to drive: the MIDI source emits one
-/// part per channel and the runtime addresses a Patch by identity, so the
-/// channel *is* the fact that says which part drives which Patch. It is
-/// therefore proved where it is owned — the Patch's own channel, the
-/// uniqueness the reducer enforces on it, and the audio command the reducer
-/// emits for a message arriving on it.
-fn check_the_midi_input_row_retargets_the_incoming_part() {
+/// End-to-end source fan-out is proved at `AutomaticMidiTest`, where one raw
+/// channel message becomes one command per matching Patch. This integration
+/// check owns the complementary reducer fact: shared subscriptions are valid
+/// canonical state and both subscribers accept the same normalized message.
+fn check_the_midi_input_row_accepts_shared_subscriptions() {
     let mut state = fixture_state();
-    // The last Patch, because its neighbour channel is free: on any other the
-    // adjacent channel is already taken and the edit would be refused for the
-    // right reason but prove nothing about re-targeting.
-    for _ in 0..3 {
-        state
-            .apply(AppEvent::SelectPatch(Direction::Right))
-            .unwrap();
-    }
     let patch_id = state.interaction().patch_focus().unwrap();
+    let existing_subscriber = state.patches()[1].id();
     let before = focused_patch(&state).clone();
     let old_channel = before.channel();
     let graph_before = state.engine_selection().active_graph_revision();
@@ -2954,7 +2945,7 @@ fn check_the_midi_input_row_retargets_the_incoming_part() {
     set_mode(&mut state, InteractionMode::Adjust);
     state
         .apply(AppEvent::Adjust(Direction::Right))
-        .expect("the adjacent channel is free");
+        .expect("the Patch may join an already subscribed channel");
     set_mode(&mut state, InteractionMode::Navigate);
 
     let after = focused_patch(&state);
@@ -2964,7 +2955,7 @@ fn check_the_midi_input_row_retargets_the_incoming_part() {
         old_channel.value() + 1,
         "the row edits the focused Patch's own channel by the declared step"
     );
-    // The Patch answers to the new part and no longer to the old one.
+    // Both Patches now subscribe to the same incoming channel.
     assert_eq!(
         state
             .patches()
@@ -2972,62 +2963,34 @@ fn check_the_midi_input_row_retargets_the_incoming_part() {
             .filter(|patch| patch.channel() == new_channel)
             .map(Patch::id)
             .collect::<Vec<_>>(),
-        vec![patch_id],
-        "exactly the edited Patch now answers to the new part"
+        vec![patch_id, existing_subscriber],
+        "the edited Patch layers with the existing channel subscriber"
     );
     assert!(
         state
             .patches()
             .iter()
             .all(|patch| patch.channel() != old_channel),
-        "no installed Patch still answers to the old part"
+        "no installed Patch remains subscribed to the old channel"
     );
-    // And the new part is exclusively this Patch's: another Patch asking for
-    // it is a typed refusal, which is what makes "responds on the new channel
-    // and not the old" a routing fact rather than a field write.
-    let mut collide = state.clone();
-    collide
-        .apply(AppEvent::SelectPatch(Direction::Left))
-        .unwrap();
-    enter_utility_row(&mut collide, &PatchControlId::MidiInput);
-    set_mode(&mut collide, InteractionMode::Adjust);
-    let steps = i32::from(new_channel.value()) - i32::from(collide.patches()[2].channel().value());
-    for step in 0..steps {
-        let outcome = collide.apply(AppEvent::Adjust(Direction::Right));
-        if step == steps - 1 {
-            assert_eq!(
-                outcome,
-                Err(EventRejection::DuplicateMidiChannel),
-                "a second Patch cannot take the part the edited one now owns"
-            );
-        } else {
-            outcome.expect("the intervening channels are free");
+    let message = MidiMessage::try_new(new_channel, MidiMessageKind::NoteOn, 60, 100).unwrap();
+    for subscriber in [patch_id, existing_subscriber] {
+        let outcome = state
+            .apply(AppEvent::Midi {
+                patch_id: subscriber,
+                message,
+            })
+            .expect("each subscribed Patch accepts the same channel message");
+        match outcome.audio_command() {
+            Some(AudioCommand::PatchMidi {
+                patch_id: id,
+                message: dispatched,
+            }) => {
+                assert_eq!(*id, subscriber);
+                assert_eq!(*dispatched, message);
+            }
+            other => panic!("a MIDI event must emit exactly one PatchMidi command, got {other:?}"),
         }
-    }
-    assert_eq!(
-        collide.patches()[3].channel(),
-        new_channel,
-        "the refused collision left the edited Patch's part alone"
-    );
-
-    // A message arriving on the new part reaches this Patch through the
-    // production reducer, and carries the new channel.
-    let outcome = state
-        .apply(AppEvent::Midi {
-            patch_id,
-            message: MidiMessage::try_new(new_channel, MidiMessageKind::NoteOn, 60, 100).unwrap(),
-        })
-        .expect("a message for an installed Patch is accepted");
-    match outcome.audio_command() {
-        Some(AudioCommand::PatchMidi {
-            patch_id: id,
-            message,
-        }) => {
-            assert_eq!(*id, patch_id);
-            assert_eq!(message.channel(), new_channel);
-            assert_ne!(message.channel(), old_channel);
-        }
-        other => panic!("a MIDI event must emit exactly one PatchMidi command, got {other:?}"),
     }
 
     // Identity, config, envelope, effects, routing, and the active graph
@@ -4127,8 +4090,8 @@ fn no_projected_screen_string_is_a_serialization_key() {
 }
 
 #[test]
-fn the_midi_input_row_retargets_the_incoming_part() {
-    check_the_midi_input_row_retargets_the_incoming_part();
+fn the_midi_input_row_accepts_shared_subscriptions() {
+    check_the_midi_input_row_accepts_shared_subscriptions();
 }
 
 #[test]
@@ -4233,7 +4196,7 @@ fn functional_patch_editor_acceptance() {
     check_utility_resolves_five_typed_rows_and_its_hint_line();
     check_one_master_gain_owner();
     let screen_strings = check_no_projected_screen_string_is_a_serialization_key();
-    check_the_midi_input_row_retargets_the_incoming_part();
+    check_the_midi_input_row_accepts_shared_subscriptions();
 
     // T032
     let action_rows = check_per_row_actions_agree_with_the_model_level_list();

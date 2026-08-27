@@ -2253,9 +2253,7 @@ mod tests {
         Patch, PreparedInstrument, PreparedInstrumentError, VoiceEnvelope,
     };
     use crate::testing::instrument_part::InstrumentPart;
-    use crate::testing::midi_event_source::{
-        FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
-    };
+    use crate::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
     use crate::testing::{LiveDemoError, LIVE_DEMO_NO_PROGRESS_TIMEOUT, LIVE_DEMO_TOTAL_TIMEOUT};
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
@@ -2401,7 +2399,7 @@ mod tests {
 
     struct TestSource {
         parts: Vec<InstrumentPart>,
-        due: Vec<TargetedMidiEvent>,
+        due: Vec<MidiMessage>,
         started: bool,
     }
 
@@ -2822,7 +2820,7 @@ mod tests {
     >;
 
     fn application(
-        due: Vec<TargetedMidiEvent>,
+        due: Vec<MidiMessage>,
         engine_state: Arc<Mutex<EngineState>>,
         projection: Arc<Mutex<Option<GraphicalShellProjection>>>,
     ) -> TestApplication<TestWindow, TestOutput> {
@@ -2862,7 +2860,7 @@ mod tests {
     /// composes its own webview window and the injected interactive window
     /// (a plain placeholder here) takes no part in the live run.
     fn live_application(
-        due: Vec<TargetedMidiEvent>,
+        due: Vec<MidiMessage>,
         engine_state: Arc<Mutex<EngineState>>,
         witness: LiveWindowWitness,
     ) -> (TestApplication<TestWindow, LiveTestOutput>, LiveTestWindow) {
@@ -2921,7 +2919,7 @@ mod tests {
             AtomicAudioObservation::default(),
             TestSource {
                 parts: parts(),
-                due: vec![TargetedMidiEvent::new(0, message())],
+                due: vec![message()],
                 started: false,
             },
             TestWindow {
@@ -2961,7 +2959,7 @@ mod tests {
             AtomicAudioObservation::default(),
             TestSource {
                 parts: parts(),
-                due: vec![TargetedMidiEvent::new(0, message())],
+                due: vec![message()],
                 started: false,
             },
             TestWindow {
@@ -2988,7 +2986,7 @@ mod tests {
     fn normal_run_loads_once_and_joins_window_input_to_the_shared_loop() {
         let engine_state = Arc::new(Mutex::new(EngineState::default()));
         let projection = Arc::new(Mutex::new(None));
-        let due = TargetedMidiEvent::new(0, message());
+        let due = message();
 
         application(
             vec![due],
@@ -3011,7 +3009,7 @@ mod tests {
     fn standalone_exhaustive_gui_demo_composes_a_complete_production_trace() {
         let engine_state = Arc::new(Mutex::new(EngineState::default()));
         let report = application(
-            vec![TargetedMidiEvent::new(0, message())],
+            vec![message()],
             Arc::clone(&engine_state),
             Arc::new(Mutex::new(None)),
         )
@@ -3053,11 +3051,8 @@ mod tests {
         let checkpoints_for_callback = Arc::clone(&checkpoints);
         let reports_for_callback = Arc::clone(&witness.reports);
 
-        let (application, live_window) = live_application(
-            vec![TargetedMidiEvent::new(0, message())],
-            Arc::clone(&engine_state),
-            witness.clone(),
-        );
+        let (application, live_window) =
+            live_application(vec![message()], Arc::clone(&engine_state), witness.clone());
         let teardown = application.host_live_demo_scene(
             live_window,
             LiveSceneKind::SixteenTrackMixerRouting,
@@ -3249,7 +3244,7 @@ mod tests {
     #[test]
     fn standalone_exhaustive_gui_demo_control_degeneracy_is_detectable() {
         let report = application(
-            vec![TargetedMidiEvent::new(0, message())],
+            vec![message()],
             Arc::new(Mutex::new(EngineState::default())),
             Arc::new(Mutex::new(None)),
         )
@@ -3265,7 +3260,7 @@ mod tests {
     fn smoke_observation_uses_real_dispatch_and_render_measurements() {
         let engine_state = Arc::new(Mutex::new(EngineState::default()));
         let observation = application(
-            vec![TargetedMidiEvent::new(0, message())],
+            vec![message()],
             Arc::clone(&engine_state),
             Arc::new(Mutex::new(None)),
         )
@@ -3305,14 +3300,14 @@ mod tests {
     #[test]
     fn degenerate_modes_falsify_their_respective_observations() {
         let audio = application(
-            vec![TargetedMidiEvent::new(0, message())],
+            vec![message()],
             Arc::new(Mutex::new(EngineState::default())),
             Arc::new(Mutex::new(None)),
         )
         .run_smoke(Some(DegenerateMode::Audio))
         .unwrap();
         let control = application(
-            vec![TargetedMidiEvent::new(0, message())],
+            vec![message()],
             Arc::new(Mutex::new(EngineState::default())),
             Arc::new(Mutex::new(None)),
         )

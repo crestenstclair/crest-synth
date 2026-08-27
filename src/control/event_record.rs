@@ -1070,7 +1070,6 @@ const fn rejection_name(rejection: EventRejection) -> &'static str {
     match rejection {
         EventRejection::InstallationClosed => "installationClosed",
         EventRejection::TooManyPatches => "tooManyPatches",
-        EventRejection::DuplicateMidiChannel => "duplicateMidiChannel",
         EventRejection::InvalidInstrumentConfig => "invalidInstrumentConfig",
         EventRejection::InvalidEffectConfig => "invalidEffectConfig",
         EventRejection::NoPatchesInstalled => "noPatchesInstalled",

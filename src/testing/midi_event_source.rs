@@ -6,41 +6,10 @@ use std::time::Duration;
 /// Maximum number of due MIDI events that one poll call can append.
 pub const FIXED_EVENT_BATCH_CAPACITY: usize = 256;
 
-/// One normalized MIDI message targeted at a prepared instrument part.
-///
-/// `part_index` is the stable `InstrumentPart::index` returned by `prepare`.
-/// The application service maps that part to the Patch it installed before
-/// dispatching the message through the reducer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TargetedMidiEvent {
-    part_index: usize,
-    message: MidiMessage,
-}
-
-impl TargetedMidiEvent {
-    /// Creates a normalized event for one prepared instrument part.
-    pub const fn new(part_index: usize, message: MidiMessage) -> Self {
-        Self {
-            part_index,
-            message,
-        }
-    }
-
-    /// Returns the stable prepared-part index.
-    pub const fn part_index(self) -> usize {
-        self.part_index
-    }
-
-    /// Returns the normalized MIDI message.
-    pub const fn message(self) -> MidiMessage {
-        self.message
-    }
-}
-
 /// Caller-owned bounded storage reused across source polls.
 #[derive(Clone, Debug)]
 pub struct FixedEventBatch {
-    events: [Option<TargetedMidiEvent>; FIXED_EVENT_BATCH_CAPACITY],
+    events: [Option<MidiMessage>; FIXED_EVENT_BATCH_CAPACITY],
     len: usize,
 }
 
@@ -57,7 +26,7 @@ impl FixedEventBatch {
     }
 
     /// Appends an event without allocation.
-    pub fn try_push(&mut self, event: TargetedMidiEvent) -> Result<(), MidiSourceError> {
+    pub fn try_push(&mut self, event: MidiMessage) -> Result<(), MidiSourceError> {
         if self.len == Self::CAPACITY {
             return Err(MidiSourceError::new(
                 "fixed MIDI event batch capacity was exceeded",
@@ -98,12 +67,12 @@ impl FixedEventBatch {
     }
 
     /// Returns an event by its append order.
-    pub fn get(&self, index: usize) -> Option<&TargetedMidiEvent> {
+    pub fn get(&self, index: usize) -> Option<&MidiMessage> {
         self.events.get(index).and_then(Option::as_ref)
     }
 
     /// Visits appended events in their stable source order.
-    pub fn iter(&self) -> impl Iterator<Item = &TargetedMidiEvent> {
+    pub fn iter(&self) -> impl Iterator<Item = &MidiMessage> {
         self.events[..self.len].iter().filter_map(Option::as_ref)
     }
 }
@@ -171,19 +140,15 @@ pub trait MidiEventSource {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
-        FIXED_EVENT_BATCH_CAPACITY,
-    };
+    use super::{FixedEventBatch, MidiEventSource, MidiSourceError, FIXED_EVENT_BATCH_CAPACITY};
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::testing::instrument_part::InstrumentPart;
     use std::time::Duration;
 
-    fn event(part_index: usize) -> TargetedMidiEvent {
+    fn event(part_index: usize) -> MidiMessage {
         let channel = MidiChannel::new((part_index % 16) as u8).unwrap();
-        let message = MidiMessage::try_new(channel, MidiMessageKind::NoteOn, 60, 100).unwrap();
-        TargetedMidiEvent::new(part_index, message)
+        MidiMessage::try_new(channel, MidiMessageKind::NoteOn, 60, 100).unwrap()
     }
 
     #[test]

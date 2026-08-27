@@ -38,9 +38,7 @@ use crest_synth::testing::automatic_midi_test::{create_soundfont_config, Automat
 use crest_synth::testing::demo_scene::DemoScene;
 use crest_synth::testing::demo_scene_report::DemoSceneReport;
 use crest_synth::testing::instrument_part::InstrumentPart;
-use crest_synth::testing::midi_event_source::{
-    FixedEventBatch, MidiEventSource, MidiSourceError, TargetedMidiEvent,
-};
+use crest_synth::testing::midi_event_source::{FixedEventBatch, MidiEventSource, MidiSourceError};
 use crest_synth::testing::{DeterministicGraphPreparationWorker, ExhaustiveGuiDemo};
 use serde_json::Value;
 use std::time::Duration;
@@ -151,7 +149,7 @@ impl MidiEventSource for FixtureMidiSource {
             let channel = self.parts[0].assigned_channel();
             let message = MidiMessage::try_new(channel, MidiMessageKind::NoteOn, 60, 96)
                 .expect("fixture MIDI bytes are valid");
-            output.try_push(TargetedMidiEvent::new(0, message))?;
+            output.try_push(message)?;
             self.emitted = true;
         }
         Ok(())

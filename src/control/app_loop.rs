@@ -13,6 +13,8 @@ use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
 use crate::control::{GraphicalShellProjection, SampleAssetLifecycle, SemanticAction};
+use crate::kernel::midi_message::MidiMessage;
+use crate::kernel::PatchId;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
 use crate::real_time::{
     ControlStructuralGraphBoundary, GraphPreparationCorrelation, GraphPreparationRequest,
@@ -33,6 +35,26 @@ pub struct DispatchResult {
     accepted: StateAccepted,
     snapshot: StateSnapshot,
     boundary_full: Option<BoundaryFull>,
+}
+
+/// Outcome of resolving one incoming MIDI channel message against the latest
+/// accepted Patch subscriptions.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MidiFanOutResult {
+    subscriber_count: usize,
+    boundary_full: Option<BoundaryFull>,
+}
+
+impl MidiFanOutResult {
+    /// Number of installed Patches that subscribed to the message channel.
+    pub const fn subscriber_count(self) -> usize {
+        self.subscriber_count
+    }
+
+    /// Returns the first command the bounded real-time queue could not accept.
+    pub const fn boundary_full(self) -> Option<BoundaryFull> {
+        self.boundary_full
+    }
 }
 
 /// Bounded observations from one nonblocking structural control tick.
@@ -302,6 +324,50 @@ where
         source: EventSource,
     ) -> Result<DispatchResult, EventRejection> {
         self.dispatch_internal(event, source, None)
+    }
+
+    /// Fans one normalized MIDI message out to every current channel
+    /// subscriber in stable Patch installation order.
+    ///
+    /// Channel resolution lives here rather than in a physical or fixture
+    /// adapter, so every source shares the same many-listener behavior. Each
+    /// recipient still crosses `AppState::apply` as one targeted event before
+    /// its ordered real-time command is published. A channel with no
+    /// subscribers is an accepted no-op with no generation change.
+    pub fn dispatch_midi_from(
+        &mut self,
+        message: MidiMessage,
+        source: EventSource,
+    ) -> Result<MidiFanOutResult, EventRejection> {
+        let mut patch_ids = [None::<PatchId>; crate::real_time::MAX_PATCHES];
+        let mut subscriber_count = 0;
+        for patch in self
+            .state
+            .patches()
+            .iter()
+            .filter(|patch| patch.channel() == message.channel())
+        {
+            *patch_ids
+                .get_mut(subscriber_count)
+                .expect("accepted AppState cannot exceed the fixed Patch capacity") =
+                Some(patch.id());
+            subscriber_count += 1;
+        }
+
+        for patch_id in patch_ids.into_iter().take(subscriber_count).flatten() {
+            let result = self.dispatch_from(AppEvent::Midi { patch_id, message }, source)?;
+            if let Some(boundary_full) = result.boundary_full() {
+                return Ok(MidiFanOutResult {
+                    subscriber_count,
+                    boundary_full: Some(boundary_full),
+                });
+            }
+        }
+
+        Ok(MidiFanOutResult {
+            subscriber_count,
+            boundary_full: None,
+        })
     }
 
     fn dispatch_internal(

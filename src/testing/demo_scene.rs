@@ -3125,7 +3125,7 @@ mod tests {
         assert_eq!(PatchOutput::surface_descriptor().len(), 2);
         assert_eq!(MixerTrackParameters::surface_descriptor().len(), 4);
         assert_eq!(GlobalParameters::surface_descriptor().len(), 1);
-        assert_eq!(EventRejection::surface_descriptor().len(), 17);
+        assert_eq!(EventRejection::surface_descriptor().len(), 16);
         for descriptor in PatchOutput::surface_descriptor() {
             assert!(scene.expected_coverage().contains(&format!(
                 "parameter.patch.{}.output.{}",

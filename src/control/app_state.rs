@@ -137,7 +137,6 @@ impl FocusRepairStatus {
 pub enum EventRejection {
     InstallationClosed,
     TooManyPatches,
-    DuplicateMidiChannel,
     InvalidInstrumentConfig,
     InvalidEffectConfig,
     NoPatchesInstalled,
@@ -196,7 +195,7 @@ impl EventRejectionDescriptor {
     }
 }
 
-const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 17] = [
+const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 16] = [
     EventRejectionDescriptor::new(
         EventRejection::InstallationClosed,
         "installationClosed",
@@ -205,11 +204,6 @@ const EVENT_REJECTION_SURFACE_DESCRIPTOR: [EventRejectionDescriptor; 17] = [
     EventRejectionDescriptor::new(
         EventRejection::TooManyPatches,
         "tooManyPatches",
-        EventRejectionReachability::Scene,
-    ),
-    EventRejectionDescriptor::new(
-        EventRejection::DuplicateMidiChannel,
-        "duplicateMidiChannel",
         EventRejectionReachability::Scene,
     ),
     EventRejectionDescriptor::new(
@@ -295,7 +289,6 @@ impl EventRejection {
         match self {
             Self::InstallationClosed => "installationClosed",
             Self::TooManyPatches => "tooManyPatches",
-            Self::DuplicateMidiChannel => "duplicateMidiChannel",
             Self::InvalidInstrumentConfig => "invalidInstrumentConfig",
             Self::InvalidEffectConfig => "invalidEffectConfig",
             Self::NoPatchesInstalled => "noPatchesInstalled",
@@ -319,7 +312,6 @@ impl fmt::Display for EventRejection {
         let message = match self {
             Self::InstallationClosed => "patch installation is permitted only at startup",
             Self::TooManyPatches => "no more than 16 Patches may be installed",
-            Self::DuplicateMidiChannel => "installed Patches must use distinct MIDI channels",
             Self::InvalidInstrumentConfig => {
                 "an installed Patch instrument config does not match the capability registry"
             }
@@ -359,7 +351,7 @@ impl std::error::Error for EventRejection {}
 pub(crate) fn exercise_reducer_table_rejections(
     capabilities: &CapabilityRegistry,
     instrument_config: &crate::synth::instrument_capability::InstrumentConfig,
-) -> [EventRejection; 9] {
+) -> [EventRejection; 8] {
     fn probe_patch(
         id: u32,
         channel: u8,
@@ -384,14 +376,6 @@ pub(crate) fn exercise_reducer_table_rejections(
                 .collect(),
         ))
         .expect_err("seventeen Patches exceed the reducer bound");
-
-    let mut duplicate = AppState::new(capabilities.clone(), global);
-    let duplicate_channel = duplicate
-        .apply(AppEvent::InstallPatches(vec![
-            probe_patch(1, 0, instrument_config),
-            probe_patch(2, 0, instrument_config),
-        ]))
-        .expect_err("duplicate channels violate installation");
 
     let invalid_config = crate::synth::instrument_capability::InstrumentConfig::from_parts(
         crate::synth::capability_id::CapabilityId::new("instrument.unknown")
@@ -496,7 +480,6 @@ pub(crate) fn exercise_reducer_table_rejections(
 
     [
         too_many,
-        duplicate_channel,
         invalid_instrument,
         invalid_effect,
         no_patch,
@@ -1328,15 +1311,6 @@ impl AppState {
         {
             return Err(EventRejection::InvalidEffectConfig);
         }
-        for (index, patch) in patches.iter().enumerate() {
-            if patches[..index]
-                .iter()
-                .any(|installed| installed.channel() == patch.channel())
-            {
-                return Err(EventRejection::DuplicateMidiChannel);
-            }
-        }
-
         // This is the only installation site with registry access, so it is
         // the only place a Patch can learn what its own engine can honour.
         // Without this, every Patch would carry `Patch::new`'s unconditional
@@ -2934,13 +2908,14 @@ impl AppState {
         Ok(())
     }
 
-    /// Re-targets which incoming MIDI part drives the focused Patch.
+    /// Changes the incoming MIDI channel the focused Patch subscribes to.
     ///
     /// The channel is an adjacent choice over `0..=15` and refuses at both
-    /// ends rather than wrapping, exactly like the output-track row. Nothing
-    /// else on the Patch is touched: identity, instrument config, envelope,
-    /// effect slots, output routing, and the active graph revision all stay
-    /// as they were, because a channel is who plays the Patch, not what it is.
+    /// ends rather than wrapping, exactly like the output-track row. Multiple
+    /// Patches may subscribe to the same channel; an incoming message fans out
+    /// to all of them. Nothing else on the Patch is touched: identity,
+    /// instrument config, envelope, effect slots, output routing, and the
+    /// active graph revision all stay as they were.
     fn adjust_patch_midi_input(&mut self, direction: Direction) -> Result<(), EventRejection> {
         if matches!(direction, Direction::Up | Direction::Down) {
             return Err(EventRejection::ActionUnavailableInContext);
@@ -2964,16 +2939,6 @@ impl AppState {
         }
         .ok_or(EventRejection::ParameterAtBoundary)?;
         let channel = MidiChannel::new(channel).map_err(|_| EventRejection::ParameterAtBoundary)?;
-        // Two Patches driven by one part would make the incoming stream
-        // ambiguous, which installation already refuses; the same rule holds
-        // for an edit that would create the collision.
-        if self
-            .patches
-            .iter()
-            .any(|other| other.id() != patch_id && other.channel() == channel)
-        {
-            return Err(EventRejection::DuplicateMidiChannel);
-        }
         self.patches
             .iter_mut()
             .find(|patch| patch.id() == patch_id)
@@ -4308,7 +4273,7 @@ mod tests {
     #[test]
     fn rejection_descriptor_is_unique_and_reducer_table_exercises_its_partition() {
         let descriptor = EventRejection::surface_descriptor();
-        assert_eq!(descriptor.len(), 17);
+        assert_eq!(descriptor.len(), 16);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(!descriptor[..index].iter().any(|prior| prior.rejection()
                 == entry.rejection()
@@ -4318,7 +4283,6 @@ mod tests {
             let expected_reachability = match entry.rejection() {
                 EventRejection::InstallationClosed
                 | EventRejection::TooManyPatches
-                | EventRejection::DuplicateMidiChannel
                 | EventRejection::InvalidInstrumentConfig
                 | EventRejection::UnknownPatch
                 | EventRejection::ParameterAtBoundary
@@ -4339,7 +4303,6 @@ mod tests {
 
         let expected = [
             EventRejection::TooManyPatches,
-            EventRejection::DuplicateMidiChannel,
             EventRejection::InvalidInstrumentConfig,
             EventRejection::InvalidEffectConfig,
             EventRejection::NoPatchesInstalled,
@@ -4912,18 +4875,23 @@ mod tests {
     }
 
     #[test]
-    fn app_state_installation_rejects_duplicate_midi_channels() {
+    fn app_state_installation_accepts_shared_midi_channels() {
         let mut state = AppState::new(registry(), global_parameters());
-        let initial = state.clone();
-
-        assert_eq!(
-            state.apply(AppEvent::InstallPatches(vec![
+        state
+            .apply(AppEvent::InstallPatches(vec![
                 patch_on_channel(1, 0.0, 3),
                 patch_on_channel(2, -3.0, 3),
-            ])),
-            Err(EventRejection::DuplicateMidiChannel)
+            ]))
+            .unwrap();
+
+        assert_eq!(state.patches().len(), 2);
+        assert!(
+            state
+                .patches()
+                .iter()
+                .all(|patch| patch.channel() == MidiChannel::new(3).unwrap()),
+            "every Patch may subscribe to the same MIDI channel"
         );
-        assert_eq!(state, initial);
     }
 
     #[test]
@@ -5699,10 +5667,10 @@ mod tests {
         assert_eq!(range.coarse_step(), f64::from(descriptor.coarse_step()));
     }
 
-    /// T009: a MIDI channel change re-targets which incoming part drives the
-    /// Patch and changes nothing else about it.
+    /// T009: a MIDI channel change may join another Patch's channel and
+    /// changes nothing else about the edited Patch.
     #[test]
-    fn midi_input_retargets_the_patch_and_touches_nothing_else() {
+    fn midi_input_accepts_a_shared_channel_and_touches_nothing_else() {
         let mut state = installed_state();
         let before = state.patches()[0].clone();
         let graph_before = state.engine_selection().projection_graph_revision();
@@ -5711,21 +5679,20 @@ mod tests {
         state
             .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
             .unwrap();
-        // Patch 2 already holds channel 1, so stepping up collides and is
-        // refused from the existing typed vocabulary, unchanged.
-        let collided = state.clone();
-        assert_eq!(
-            state.apply(AppEvent::Adjust(Direction::Right)),
-            Err(EventRejection::DuplicateMidiChannel)
-        );
-        assert_eq!(state, collided);
+        // Patch 2 already holds channel 1. Patch 1 joins it: a MIDI channel is
+        // a shared subscription, not an exclusive owner.
+        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_eq!(state.patches()[0].channel(), state.patches()[1].channel());
+        let shared = state.patches()[0].clone();
 
-        // Patch 1 is on channel 0, the lower bound: stepping down refuses.
+        // Return to channel 0, then prove the lower bound still refuses.
+        state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+        let restored = state.clone();
         assert_eq!(
             state.apply(AppEvent::Adjust(Direction::Left)),
             Err(EventRejection::ParameterAtBoundary)
         );
-        assert_eq!(state, collided);
+        assert_eq!(state, restored);
 
         // Vertical adjustment is not this row's gesture.
         assert_eq!(
@@ -5733,29 +5700,19 @@ mod tests {
             Err(EventRejection::ActionUnavailableInContext)
         );
 
-        // A free channel is accepted and moves only the channel.
-        let mut free = AppState::new(registry(), global_parameters());
-        free.apply(AppEvent::InstallPatches(vec![patch_on_channel(1, 0.0, 4)]))
-            .unwrap();
-        let before_free = free.patches()[0].clone();
-        focus_utility_row(&mut free, &PatchControlId::MidiInput);
-        free.apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
-            .unwrap();
-        free.apply(AppEvent::Adjust(Direction::Right)).unwrap();
-        let after = &free.patches()[0];
-        assert_eq!(after.channel().value(), 5);
-        assert_eq!(after.id(), before_free.id());
-        assert_eq!(after.instrument_config(), before_free.instrument_config());
-        assert_eq!(after.envelope(), before_free.envelope());
-        assert_eq!(after.effect_slots(), before_free.effect_slots());
-        assert_eq!(after.output(), before_free.output());
-        assert_eq!(after.voice_limit(), before_free.voice_limit());
+        assert_eq!(shared.channel().value(), 1);
+        assert_eq!(shared.id(), before.id());
+        assert_eq!(shared.instrument_config(), before.instrument_config());
+        assert_eq!(shared.envelope(), before.envelope());
+        assert_eq!(shared.effect_slots(), before.effect_slots());
+        assert_eq!(shared.output(), before.output());
+        assert_eq!(shared.voice_limit(), before.voice_limit());
         assert_eq!(
-            free.engine_selection().projection_graph_revision(),
+            state.engine_selection().projection_graph_revision(),
             graph_before,
             "a channel change publishes no new graph"
         );
-        assert_eq!(before.id(), state.patches()[0].id());
+        assert_eq!(state.patches()[0], before);
     }
 
     /// T009: the voice limit honours the descriptor's own fine and coarse

@@ -262,6 +262,13 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
     assert_eq!(page.patch().id(), patch.id());
     assert_eq!(page.patch().name(), patch.name());
     assert_eq!(page.patch().midi_channel(), patch.channel());
+    let midi_input = page
+        .output()
+        .iter()
+        .find(|row| row.control_id() == PatchControlId::MidiInput)
+        .expect("PATCH Utility projects MIDI Input");
+    let expected_channel = (u16::from(patch.channel().value()) + 1).to_string();
+    assert_eq!(midi_input.choice_value(), Some(expected_channel.as_str()));
     assert_eq!(page.engine().active_capability_id(), descriptor.id());
     assert_eq!(page.engine().active_label(), descriptor.label());
     assert!(page.engine().editable());
