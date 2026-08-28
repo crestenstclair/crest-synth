@@ -402,12 +402,65 @@ fn page_row_state(control: &Value, mode: &str) -> String {
     }
 }
 
+fn page_normalized_percentage(control: &Value) -> bool {
+    if control.get("unit").is_some_and(|unit| !unit.is_null()) {
+        return false;
+    }
+    matches!(
+        (
+            control
+                .pointer("/numericRange/minimum")
+                .and_then(Value::as_f64),
+            control
+                .pointer("/numericRange/maximum")
+                .and_then(Value::as_f64),
+        ),
+        (Some(0.0), Some(1.0)) | (Some(-1.0), Some(1.0))
+    )
+}
+
+fn page_numeric_value_text(control: &Value, value: f64) -> String {
+    if !value.is_finite() {
+        return UNAVAILABLE_MARK.to_owned();
+    }
+    let scale = if page_normalized_percentage(control) {
+        100.0
+    } else {
+        1.0
+    };
+    let step = control
+        .pointer("/numericRange/fineStep")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.001)
+        * scale;
+    let step_places = if !step.is_finite() || step <= 0.0 {
+        3
+    } else {
+        (0..=6)
+            .find(|places| {
+                let scaled = step * 10_f64.powi(*places);
+                (scaled - scaled.round()).abs() < 0.000_000_1
+            })
+            .unwrap_or(6) as usize
+    };
+    let mut text = format!("{:.*}", step_places.max(3), value * scale);
+    if text.contains('.') {
+        while text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+    }
+    if text == "-0" {
+        "0".to_owned()
+    } else {
+        text
+    }
+}
+
 /// Renders one serialized control's value exactly as the committed render
-/// script does (`controlValueText` in `webview-page/page.js`): continuous
-/// values read to three places, toggles read ON/OFF, identities and
-/// summaries read as themselves, assets read their locator, and an unknown
-/// kind is an explicit `?kind` marker — never a fabricated number and never
-/// a blank.
+/// script does (`controlValueText` in `webview-page/page.js`).
 fn page_value_text(control: &Value) -> String {
     fn display(value: &Value) -> String {
         match value {
@@ -419,15 +472,23 @@ fn page_value_text(control: &Value) -> String {
         return UNAVAILABLE_MARK.to_owned();
     };
     match value.get("kind").and_then(Value::as_str) {
-        Some("scalar") => format!("{:.3}", value["value"].as_f64().unwrap_or(f64::NAN)),
+        Some("scalar") => {
+            let number = value["value"].as_f64().unwrap_or(f64::NAN);
+            if control.get("kind").and_then(Value::as_str) == Some("stepped") {
+                format!("{}", number.round() as i64)
+            } else {
+                page_numeric_value_text(control, number)
+            }
+        }
         Some("parameter") => {
             let Some(parameter) = value.get("value").filter(|value| value.is_object()) else {
                 return UNAVAILABLE_MARK.to_owned();
             };
             match parameter.get("kind").and_then(Value::as_str) {
-                Some("continuous") => {
-                    format!("{:.3}", parameter["value"].as_f64().unwrap_or(f64::NAN))
-                }
+                Some("continuous") => page_numeric_value_text(
+                    control,
+                    parameter["value"].as_f64().unwrap_or(f64::NAN),
+                ),
                 Some("stepped") => display(&parameter["value"]),
                 // A choice reads its projected authored name, falling back to
                 // the stored id only when the descriptor declared none. The

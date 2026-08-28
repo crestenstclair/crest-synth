@@ -1,7 +1,9 @@
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, InteractionMode,
-    PatchControlId, SampleAssetLifecycle, SemanticAction, StructuralEditIntent, SurfaceId,
+    MidiConnectionRequestId, MidiConnectionRevision, MidiDeviceFailure, MidiInputDescriptor,
+    MidiInputDeviceId, MidiInputPreference, MidiInputScanId, PatchControlId, SampleAssetLifecycle,
+    SemanticAction, StructuralEditIntent, SurfaceId,
 };
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
@@ -59,6 +61,16 @@ pub enum AppEventPayloadShape {
     BusId,
     OptionalEffectEntry,
     PatchControlId,
+    MidiInputPreference,
+    MidiInputScanId,
+    MidiInputDescriptorList,
+    MidiInputDeviceId,
+    MidiConnectionRequestId,
+    MidiConnectionRevision,
+    MidiDeviceFailure,
+    OptionalMidiDeviceFailure,
+    OptionalMidiConnectionRequestId,
+    OptionalMidiConnectionRevision,
 }
 
 /// One typed entry in the exhaustive application-event surface.
@@ -83,6 +95,7 @@ pub enum AppEventSurfaceDescriptor {
         mode: InteractionMode,
     },
     OpenRelated,
+    OpenMidiSettings,
     Activate,
     PreviewStart,
     PreviewStop,
@@ -165,9 +178,50 @@ pub enum AppEventSurfaceDescriptor {
         target_graph_revision: AppEventPayloadShape,
         failure: AppEventPayloadShape,
     },
+    MidiInputPreferenceRestored {
+        preference: AppEventPayloadShape,
+        failure: AppEventPayloadShape,
+    },
+    MidiInputPreferenceStoreFailed {
+        failure: AppEventPayloadShape,
+    },
+    MidiInputScanStarted,
+    MidiInputScanSucceeded {
+        scan_id: AppEventPayloadShape,
+        descriptors: AppEventPayloadShape,
+    },
+    MidiInputScanFailed {
+        scan_id: AppEventPayloadShape,
+        failure: AppEventPayloadShape,
+    },
+    MidiInputConnectRequested {
+        identity: AppEventPayloadShape,
+    },
+    MidiInputConnectionPrepared {
+        request_id: AppEventPayloadShape,
+        revision: AppEventPayloadShape,
+    },
+    MidiInputActivationAcknowledged {
+        request_id: AppEventPayloadShape,
+        revision: AppEventPayloadShape,
+    },
+    MidiInputDisconnectRequested {
+        identity: AppEventPayloadShape,
+    },
+    MidiInputConnectionLost {
+        identity: AppEventPayloadShape,
+        revision: AppEventPayloadShape,
+    },
+    MidiInputOperationFailed {
+        identity: AppEventPayloadShape,
+        request_id: AppEventPayloadShape,
+        revision: AppEventPayloadShape,
+        failure: AppEventPayloadShape,
+    },
+    MidiInputShutdownRequested,
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 35] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 48] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -211,6 +265,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 35] = [
         mode: InteractionMode::Adjust,
     },
     AppEventSurfaceDescriptor::OpenRelated,
+    AppEventSurfaceDescriptor::OpenMidiSettings,
     AppEventSurfaceDescriptor::Activate,
     AppEventSurfaceDescriptor::PreviewStart,
     AppEventSurfaceDescriptor::PreviewStop,
@@ -299,6 +354,47 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 35] = [
         target_graph_revision: AppEventPayloadShape::GraphRevision,
         failure: AppEventPayloadShape::EngineSelectionFailure,
     },
+    AppEventSurfaceDescriptor::MidiInputPreferenceRestored {
+        preference: AppEventPayloadShape::MidiInputPreference,
+        failure: AppEventPayloadShape::OptionalMidiDeviceFailure,
+    },
+    AppEventSurfaceDescriptor::MidiInputPreferenceStoreFailed {
+        failure: AppEventPayloadShape::MidiDeviceFailure,
+    },
+    AppEventSurfaceDescriptor::MidiInputScanStarted,
+    AppEventSurfaceDescriptor::MidiInputScanSucceeded {
+        scan_id: AppEventPayloadShape::MidiInputScanId,
+        descriptors: AppEventPayloadShape::MidiInputDescriptorList,
+    },
+    AppEventSurfaceDescriptor::MidiInputScanFailed {
+        scan_id: AppEventPayloadShape::MidiInputScanId,
+        failure: AppEventPayloadShape::MidiDeviceFailure,
+    },
+    AppEventSurfaceDescriptor::MidiInputConnectRequested {
+        identity: AppEventPayloadShape::MidiInputDeviceId,
+    },
+    AppEventSurfaceDescriptor::MidiInputConnectionPrepared {
+        request_id: AppEventPayloadShape::MidiConnectionRequestId,
+        revision: AppEventPayloadShape::MidiConnectionRevision,
+    },
+    AppEventSurfaceDescriptor::MidiInputActivationAcknowledged {
+        request_id: AppEventPayloadShape::MidiConnectionRequestId,
+        revision: AppEventPayloadShape::MidiConnectionRevision,
+    },
+    AppEventSurfaceDescriptor::MidiInputDisconnectRequested {
+        identity: AppEventPayloadShape::MidiInputDeviceId,
+    },
+    AppEventSurfaceDescriptor::MidiInputConnectionLost {
+        identity: AppEventPayloadShape::MidiInputDeviceId,
+        revision: AppEventPayloadShape::MidiConnectionRevision,
+    },
+    AppEventSurfaceDescriptor::MidiInputOperationFailed {
+        identity: AppEventPayloadShape::MidiInputDeviceId,
+        request_id: AppEventPayloadShape::OptionalMidiConnectionRequestId,
+        revision: AppEventPayloadShape::OptionalMidiConnectionRevision,
+        failure: AppEventPayloadShape::MidiDeviceFailure,
+    },
+    AppEventSurfaceDescriptor::MidiInputShutdownRequested,
 ];
 /// The closed semantic input union accepted by the application reducer.
 ///
@@ -322,6 +418,7 @@ pub enum AppEvent {
     /// Select the reducer-owned interpretation of subsequent directions.
     SetInteractionMode(InteractionMode),
     OpenRelated,
+    OpenMidiSettings,
     Activate,
     PreviewStart,
     PreviewStop,
@@ -431,6 +528,60 @@ pub enum AppEvent {
         target_graph_revision: GraphRevision,
         failure: EngineSelectionFailure,
     },
+    /// Restores the separately persisted selected-input preference, or its
+    /// typed load/decode failure, through the sole mutation boundary.
+    MidiInputPreferenceRestored {
+        preference: Option<MidiInputPreference>,
+        failure: Option<MidiDeviceFailure>,
+    },
+    /// Records a typed post-acceptance preference write failure.
+    MidiInputPreferenceStoreFailed {
+        failure: MidiDeviceFailure,
+    },
+    /// Allocates and starts one reducer-correlated discovery scan.
+    MidiInputScanStarted,
+    /// Reconciles one exact successful scan result by opaque identity.
+    MidiInputScanSucceeded {
+        scan_id: MidiInputScanId,
+        descriptors: Vec<MidiInputDescriptor>,
+    },
+    /// Records a typed discovery failure without treating it as device loss.
+    MidiInputScanFailed {
+        scan_id: MidiInputScanId,
+        failure: MidiDeviceFailure,
+    },
+    /// Requests a connection to one exact present opaque identity.
+    MidiInputConnectRequested {
+        identity: MidiInputDeviceId,
+    },
+    /// Records a prepared disabled candidate; no callback data is active yet.
+    MidiInputConnectionPrepared {
+        request_id: MidiConnectionRequestId,
+        revision: MidiConnectionRevision,
+    },
+    /// Commits one matching candidate after controlled switch/recovery work.
+    MidiInputActivationAcknowledged {
+        request_id: MidiConnectionRequestId,
+        revision: MidiConnectionRevision,
+    },
+    /// Explicitly disconnects the selected active identity for this process.
+    MidiInputDisconnectRequested {
+        identity: MidiInputDeviceId,
+    },
+    /// Invalidates one exact active revision after definitive device loss.
+    MidiInputConnectionLost {
+        identity: MidiInputDeviceId,
+        revision: MidiConnectionRevision,
+    },
+    /// Reports a typed correlated worker/transport/retirement failure.
+    MidiInputOperationFailed {
+        identity: MidiInputDeviceId,
+        request_id: Option<MidiConnectionRequestId>,
+        revision: Option<MidiConnectionRevision>,
+        failure: MidiDeviceFailure,
+    },
+    /// Invalidates every physical-input correlation before runtime teardown.
+    MidiInputShutdownRequested,
 }
 
 impl AppEvent {
@@ -443,6 +594,7 @@ impl AppEvent {
             SemanticAction::Adjust(direction) => Self::Adjust(direction),
             SemanticAction::SetInteractionMode(mode) => Self::SetInteractionMode(mode),
             SemanticAction::OpenRelated => Self::OpenRelated,
+            SemanticAction::OpenMidiSettings => Self::OpenMidiSettings,
             SemanticAction::Activate => Self::Activate,
             SemanticAction::PreviewStart => Self::PreviewStart,
             SemanticAction::PreviewStop => Self::PreviewStop,
@@ -476,6 +628,7 @@ impl AppEvent {
                 | Self::Navigate(_)
                 | Self::SetInteractionMode(_)
                 | Self::OpenRelated
+                | Self::OpenMidiSettings
                 | Self::PreviewStart
                 | Self::PreviewStop
                 | Self::SetPatchOverviewOriginEnabled { .. }
@@ -484,6 +637,18 @@ impl AppEvent {
                 | Self::SampleCatalogRefreshed { .. }
                 | Self::EnterSurface(_)
                 | Self::Return
+                | Self::MidiInputPreferenceRestored { .. }
+                | Self::MidiInputPreferenceStoreFailed { .. }
+                | Self::MidiInputScanStarted
+                | Self::MidiInputScanSucceeded { .. }
+                | Self::MidiInputScanFailed { .. }
+                | Self::MidiInputConnectRequested { .. }
+                | Self::MidiInputConnectionPrepared { .. }
+                | Self::MidiInputActivationAcknowledged { .. }
+                | Self::MidiInputDisconnectRequested { .. }
+                | Self::MidiInputConnectionLost { .. }
+                | Self::MidiInputOperationFailed { .. }
+                | Self::MidiInputShutdownRequested
         )
     }
 
@@ -514,6 +679,7 @@ impl AppEvent {
                 AppEventSurfaceDescriptor::SetInteractionMode { mode: *mode }
             }
             Self::OpenRelated => AppEventSurfaceDescriptor::OpenRelated,
+            Self::OpenMidiSettings => AppEventSurfaceDescriptor::OpenMidiSettings,
             Self::Activate => AppEventSurfaceDescriptor::Activate,
             Self::PreviewStart => AppEventSurfaceDescriptor::PreviewStart,
             Self::PreviewStop => AppEventSurfaceDescriptor::PreviewStop,
@@ -610,6 +776,67 @@ impl AppEvent {
                     failure: AppEventPayloadShape::EngineSelectionFailure,
                 }
             }
+            Self::MidiInputPreferenceRestored { .. } => {
+                AppEventSurfaceDescriptor::MidiInputPreferenceRestored {
+                    preference: AppEventPayloadShape::MidiInputPreference,
+                    failure: AppEventPayloadShape::OptionalMidiDeviceFailure,
+                }
+            }
+            Self::MidiInputPreferenceStoreFailed { .. } => {
+                AppEventSurfaceDescriptor::MidiInputPreferenceStoreFailed {
+                    failure: AppEventPayloadShape::MidiDeviceFailure,
+                }
+            }
+            Self::MidiInputScanStarted => AppEventSurfaceDescriptor::MidiInputScanStarted,
+            Self::MidiInputScanSucceeded { .. } => {
+                AppEventSurfaceDescriptor::MidiInputScanSucceeded {
+                    scan_id: AppEventPayloadShape::MidiInputScanId,
+                    descriptors: AppEventPayloadShape::MidiInputDescriptorList,
+                }
+            }
+            Self::MidiInputScanFailed { .. } => AppEventSurfaceDescriptor::MidiInputScanFailed {
+                scan_id: AppEventPayloadShape::MidiInputScanId,
+                failure: AppEventPayloadShape::MidiDeviceFailure,
+            },
+            Self::MidiInputConnectRequested { .. } => {
+                AppEventSurfaceDescriptor::MidiInputConnectRequested {
+                    identity: AppEventPayloadShape::MidiInputDeviceId,
+                }
+            }
+            Self::MidiInputConnectionPrepared { .. } => {
+                AppEventSurfaceDescriptor::MidiInputConnectionPrepared {
+                    request_id: AppEventPayloadShape::MidiConnectionRequestId,
+                    revision: AppEventPayloadShape::MidiConnectionRevision,
+                }
+            }
+            Self::MidiInputActivationAcknowledged { .. } => {
+                AppEventSurfaceDescriptor::MidiInputActivationAcknowledged {
+                    request_id: AppEventPayloadShape::MidiConnectionRequestId,
+                    revision: AppEventPayloadShape::MidiConnectionRevision,
+                }
+            }
+            Self::MidiInputDisconnectRequested { .. } => {
+                AppEventSurfaceDescriptor::MidiInputDisconnectRequested {
+                    identity: AppEventPayloadShape::MidiInputDeviceId,
+                }
+            }
+            Self::MidiInputConnectionLost { .. } => {
+                AppEventSurfaceDescriptor::MidiInputConnectionLost {
+                    identity: AppEventPayloadShape::MidiInputDeviceId,
+                    revision: AppEventPayloadShape::MidiConnectionRevision,
+                }
+            }
+            Self::MidiInputOperationFailed { .. } => {
+                AppEventSurfaceDescriptor::MidiInputOperationFailed {
+                    identity: AppEventPayloadShape::MidiInputDeviceId,
+                    request_id: AppEventPayloadShape::OptionalMidiConnectionRequestId,
+                    revision: AppEventPayloadShape::OptionalMidiConnectionRevision,
+                    failure: AppEventPayloadShape::MidiDeviceFailure,
+                }
+            }
+            Self::MidiInputShutdownRequested => {
+                AppEventSurfaceDescriptor::MidiInputShutdownRequested
+            }
         }
     }
 }
@@ -659,7 +886,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 35);
+        assert_eq!(descriptor.len(), 48);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),

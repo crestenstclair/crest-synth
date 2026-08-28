@@ -4,6 +4,9 @@ pub mod engine_selection;
 pub mod event_record;
 pub mod graphical_shell_projection;
 pub mod interaction_state;
+pub mod midi_device;
+pub mod midi_device_worker;
+pub mod midi_scan_scheduler;
 pub mod patch_control_id;
 pub mod patch_page_projection;
 pub mod sample_browser_state;
@@ -38,8 +41,27 @@ pub use graphical_shell_projection::{
     ShellIdentityHeader, ShellMainRegion, ShellSideRegion, ShellWorkspace,
 };
 pub use interaction_state::{
-    InteractionState, PatchSubordinateSession, Selection, SelectionSection,
+    InteractionState, MidiSettingsSession, PatchSubordinateSession, Selection, SelectionSection,
 };
+pub use midi_device::{
+    ActiveMidiInput, ConnectMidiInput, MidiActiveInputIdentity, MidiActivityObservation,
+    MidiActivitySnapshot, MidiCallbackDiagnostics, MidiConnectionFailureClass,
+    MidiConnectionRequestId, MidiConnectionRevision, MidiDeviceContractError, MidiDeviceEffect,
+    MidiDeviceFailure, MidiIdentifierKind, MidiInputConnectionIntent, MidiInputConnectionStatus,
+    MidiInputDescriptor, MidiInputDeviceId, MidiInputDevicePort, MidiInputPortFacts,
+    MidiInputPreference, MidiInputPreferencePort, MidiInputRegistryEntry, MidiInputRowAction,
+    MidiInputRowState, MidiInputScanId, MidiInputScanState, MidiInputState, MidiInputStatusMarker,
+    MidiInputTransport, MidiMessageDiagnosticClass, MidiPreferredInput, MidiStaleOperation,
+    MidiTransportCapacityStage, PhysicalMidiEvent, PhysicalMidiIngress, PhysicalMidiIngressControl,
+    PhysicalMidiIngressOutcome, MAX_MIDI_DEVICE_ID_BYTES, MAX_MIDI_DISPLAY_NAME_BYTES,
+    MAX_MIDI_IDENTITY_SCHEMA_BYTES, MAX_MIDI_PORT_FACT_BYTES, MIDI_INPUT_PREFERENCE_VERSION,
+    PHYSICAL_MIDI_DRAIN_BUDGET, PHYSICAL_MIDI_QUEUE_CAPACITY,
+};
+pub use midi_device_worker::{
+    MidiDeviceWorker, MidiDeviceWorkerBusy, MidiDeviceWorkerBusyReason, MidiDeviceWorkerCommand,
+    MidiDeviceWorkerResult, MidiDeviceWorkerShutdownError,
+};
+pub use midi_scan_scheduler::{MidiScanScheduler, MIDI_SCAN_INTERVAL_MICROS};
 pub use patch_control_id::PatchControlId;
 pub use patch_page_projection::{
     PatchPageEffectSlot, PatchPageEngine, PatchPageEngineChoice, PatchPageEnvelopeRow,
@@ -58,13 +80,14 @@ pub use semantic_focus::{
     PatchChoiceSubject, PatchDetailSubject, ReturnPath, SemanticControlId, SurfaceId,
 };
 pub use semantic_graphical_view_model::{
-    SemanticBrowserMetadata, SemanticBrowserMetadataStatus, SemanticControlKind,
-    SemanticControlValue, SemanticControlViewModel, SemanticError, SemanticErrorCode,
-    SemanticFocusRepairStatus, SemanticGraphicalViewModel, SemanticGraphicalViewModelError,
-    SemanticLifecycleStatus, SemanticNumericRange, SemanticSurfaceControlSummaryViewModel,
-    SemanticSurfaceRole, SemanticSurfaceSectionViewModel, SemanticSurfaceSummary,
-    SemanticSurfaceViewModel, SemanticVisualizationData, SemanticVisualizationViewModel,
-    SemanticWaveformLandmark, SemanticWaveformPair,
+    MidiInputInspectorViewModel, MidiInputSettingsRowViewModel, SemanticBrowserMetadata,
+    SemanticBrowserMetadataStatus, SemanticControlKind, SemanticControlValue,
+    SemanticControlViewModel, SemanticError, SemanticErrorCode, SemanticFocusRepairStatus,
+    SemanticGraphicalViewModel, SemanticGraphicalViewModelError, SemanticLifecycleStatus,
+    SemanticNumericRange, SemanticSurfaceControlSummaryViewModel, SemanticSurfaceRole,
+    SemanticSurfaceSectionViewModel, SemanticSurfaceSummary, SemanticSurfaceViewModel,
+    SemanticVisualizationData, SemanticVisualizationViewModel, SemanticWaveformLandmark,
+    SemanticWaveformPair,
 };
 pub use semantic_resolver::{ResolvedChoiceOption, ResolvedChoiceSource, SemanticResolver};
 pub use state_projector::{StateProjectionError, StateProjector};
@@ -73,7 +96,8 @@ pub use text_projection::TextProjection;
 pub use top_level_context::TopLevelContext;
 pub mod app_loop;
 pub use app_loop::{
-    AppLoop, DispatchResult, MidiFanOutResult, StructuralAdvanceError, StructuralProgress,
+    AppLoop, DispatchResult, MidiDeviceAdvanceError, MidiDeviceProgress, MidiFanOutResult,
+    StructuralAdvanceError, StructuralProgress,
 };
 pub mod state_tree;
 pub use state_tree::{StateTree, StateTreeError};

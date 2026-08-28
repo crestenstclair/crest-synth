@@ -48,6 +48,7 @@ fn source_name(source: EventSource) -> &'static str {
         EventSource::Startup => "startup",
         EventSource::Keyboard => "keyboard",
         EventSource::AutomaticMidi => "automatic-midi",
+        EventSource::PhysicalMidi => "physical-midi",
         EventSource::DemoScene => "demo-scene",
         EventSource::Worker => "worker",
         EventSource::System => "system",
@@ -97,16 +98,16 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         47
     );
     // The eleven WP-era reducer events, the five WP06 occupancy lifecycle and
-    // topology outcomes, SelectPatch, and Phase 7's OpenRelated, Activate,
-    // PreviewStart, and PreviewStop — every current player/worker-reachable
-    // event kind declared by the exhaustive scene.
+    // topology outcomes, SelectPatch, and Phase 7's OpenRelated, MIDI Settings,
+    // Activate, PreviewStart, and PreviewStop — every current
+    // player/worker-reachable event kind declared by the exhaustive scene.
     assert_eq!(
         report
             .coverage()
             .group(DemoCoverageGroup::Events)
             .exercised()
             .len(),
-        21
+        22
     );
     assert_eq!(
         report

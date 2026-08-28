@@ -620,6 +620,24 @@ impl<'a> SemanticResolver<'a> {
             .ok_or(EventRejection::InvalidSelection)
     }
 
+    pub fn midi_input_settings_paths(&self) -> Result<Vec<FocusPath>, EventRejection> {
+        let context = self.state.context();
+        let paths = if self.state.midi_input().registry().is_empty() {
+            vec![FocusPath::midi_device_settings_root(context)]
+        } else {
+            self.state
+                .midi_input()
+                .registry()
+                .iter()
+                .map(|entry| {
+                    FocusPath::midi_device_settings(context, entry.descriptor().id().clone())
+                })
+                .collect()
+        };
+        ensure_unique(&paths)?;
+        Ok(paths)
+    }
+
     /// Returns the canonical focus order for a main surface. Side surfaces
     /// always contain their single read-only root anchor.
     pub fn ordered_paths(&self, surface: SurfaceId) -> Result<Vec<FocusPath>, EventRejection> {
@@ -664,6 +682,7 @@ impl<'a> SemanticResolver<'a> {
             },
             SurfaceId::SampleBrowser => self.sample_browser_paths(),
             SurfaceId::MixerInspector => self.mixer_inspector_paths(self.selected_mixer_track()?),
+            SurfaceId::MidiDeviceSettings => self.midi_input_settings_paths(),
         }
     }
 
@@ -830,6 +849,7 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
             ("Unavailable mode", None)
         }
         SemanticAction::OpenRelated => ("Open related", Some("Shift+W")),
+        SemanticAction::OpenMidiSettings => ("Open MIDI Devices", Some("Shift+Start")),
         SemanticAction::Activate => ("Choose", Some("Return")),
         SemanticAction::PreviewStart => ("Preview", Some("hold Space")),
         SemanticAction::PreviewStop => ("Stop preview", Some("release Space")),
@@ -841,7 +861,10 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         | SemanticAction::EnterSurface(SurfaceId::SampleBrowser) => ("Unavailable surface", None),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)
-        | SemanticAction::EnterSurface(SurfaceId::MixerMain) => ("Unavailable surface", None),
+        | SemanticAction::EnterSurface(SurfaceId::MixerMain)
+        | SemanticAction::EnterSurface(SurfaceId::MidiDeviceSettings) => {
+            ("Unavailable surface", None)
+        }
         SemanticAction::Return => ("Return", Some("A / Return")),
     }
 }

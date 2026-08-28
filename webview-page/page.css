@@ -66,6 +66,7 @@ body {
       var(--shell-footer-max)
     );
   overflow: hidden;
+  container: shell / inline-size;
 }
 
 /* ---- authored type styles (from the generated table) ------------------ */
@@ -197,8 +198,7 @@ body {
   overflow: auto;
 }
 
-.caption-row,
-.hint-row {
+.caption-row {
   position: relative;
   display: flex;
   align-items: center;
@@ -211,11 +211,6 @@ body {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
-}
-
-.hint-row {
-  padding-top: var(--space-12);
-  border-top: var(--keyline-resting) solid var(--color-border-default);
 }
 
 /* ---- the sixteen-column strip bank ------------------------------------ */
@@ -513,9 +508,7 @@ body {
   border-inline-start: var(--keyline-emphasis) solid var(--color-border-strong);
   display: grid;
   grid-template-columns: minmax(8rem, 0.75fr) minmax(10rem, 1.25fr) auto;
-  grid-template-areas:
-    "label value summary"
-    "hints hints hints";
+  grid-template-areas: "label value summary";
   align-items: center;
   gap: var(--space-4) var(--space-16);
   overflow-wrap: anywhere;
@@ -538,14 +531,6 @@ body {
 .overview-control-summary {
   grid-area: summary;
   justify-self: end;
-}
-
-.overview-control-hints {
-  grid-area: hints;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-8) var(--space-12);
 }
 
 .overview-control > .lifecycle {
@@ -594,20 +579,15 @@ body {
  * Detail, Choice, Browser, and Utility reuse one token-bound row grammar.
  * Required content wraps or scrolls inside its owning region. */
 
-/* One listed row, on two lines inside one interactive target: the shipped
- * parameter-row anatomy reads across line one — label left, state mark or
- * position indicator in the middle, value (and unit, and projected bounds)
- * right — and the row's own valid actions take line two. The left keyline
- * carries the state's declared emphasis; rows separate with hairlines, not
- * cards. */
+/* One listed row: label left, state mark or position indicator in the middle,
+ * value (and unit, and projected bounds) right. The left keyline carries the
+ * state's declared emphasis; rows separate with hairlines, not cards. Action
+ * guidance is centralized in the persistent footer. */
 .prow {
   display: flex;
   align-items: center;
   flex-wrap: wrap;
-  /* Column rhythm is the authored inter-part step; the row rhythm is the
-   * tightest declared step, because the row's second line is the hint run and
-   * both lines together must stay inside the declared interactive minimum
-   * rather than growing the row past it. */
+  /* Column rhythm is the authored inter-part step. */
   gap: var(--space-4) var(--space-16);
   min-height: var(--min-interactive-target);
   padding: 0 var(--space-12);
@@ -617,39 +597,6 @@ body {
 
 .prow .prow-range {
   white-space: nowrap;
-}
-
-/* The row's own valid actions take the row's second line, whole.
- *
- * The run is the exact presentation of the projected list — nine to ten
- * actions on every PATCH row — which is wider than the position rail, the
- * label, the value, the unit and the bounds put together. Sharing one line
- * with the rail does not work: the rail is the only growing item and grows
- * from a zero basis, so it never forces a wrap and the run takes whatever it
- * asks for, leaving the rail the remainder (measured: 4.28 px on the focused
- * row). A full-basis item wraps by the layout engine's own rule, so line one
- * belongs to the row's reading — label, rail, value, unit, bounds — and line
- * two to its grammar.
- *
- * It costs the row no height: one 20 px value line plus one 16 px hint line
- * on the 4 px row step is 40 px inside the declared 48 px minimum target, so
- * a row with a hint run is exactly as tall as a row without one. */
-.prow .prow-hints {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: var(--space-8);
-  flex-basis: 100%;
-}
-
-/* The row's own hint run is a secondary reading of the same list the footer
- * carries in the focus accent, so the footer stays the primary statement of
- * the grammar and a strip of rows does not read as a wall of accent — the
- * tone split the design file draws between its row hints and its footer
- * hints. Content is identical; only the colour role differs. */
-.prow .prow-hints .type-hint {
-  color: var(--color-text-muted);
 }
 
 /* The capability-declared read-only mark: the word plus the dashed keyline
@@ -911,23 +858,36 @@ body {
 }
 
 .envelope-shape {
-  height: calc(var(--min-interactive-target) + var(--space-24));
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  align-items: end;
-  border-bottom: var(--keyline-resting) solid var(--color-border-strong);
-}
-
-.envelope-shape span {
   display: block;
-  border-top: var(--keyline-emphasis) solid var(--color-accent-patch);
-  transform-origin: left center;
+  width: 100%;
+  height: calc(
+    var(--min-interactive-target) + var(--min-interactive-target) +
+      var(--space-16)
+  );
+  overflow: visible;
 }
 
-.envelope-shape span:nth-child(1) { height: calc(var(--min-interactive-target) + var(--space-8)); transform: skewY(-28deg); }
-.envelope-shape span:nth-child(2) { height: calc(var(--space-32) + var(--space-4)); transform: skewY(16deg); }
-.envelope-shape span:nth-child(3) { height: calc(var(--space-32) + var(--space-4)); }
-.envelope-shape span:nth-child(4) { height: calc(var(--keyline-resting) + var(--keyline-resting)); transform: skewY(20deg); }
+.envelope-baseline {
+  stroke: var(--color-border-strong);
+  stroke-width: var(--keyline-resting);
+  vector-effect: non-scaling-stroke;
+}
+
+.envelope-path {
+  fill: none;
+  stroke: var(--color-accent-patch);
+  stroke-width: var(--keyline-emphasis);
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+.envelope-node {
+  fill: var(--color-bg-canvas);
+  stroke: var(--color-accent-patch);
+  stroke-width: var(--keyline-emphasis);
+  vector-effect: non-scaling-stroke;
+}
 
 .waveform-shape {
   position: relative;
@@ -1259,8 +1219,7 @@ body {
 
 .option-modal .modal-option-label,
 .option-modal .modal-option-availability,
-.option-modal .modal-option-current,
-.option-modal .modal-option-actions {
+.option-modal .modal-option-current {
   min-width: 0;
   overflow: visible;
   text-overflow: clip;
@@ -1282,25 +1241,6 @@ body {
 .option-modal .option-row.is-disabled .modal-option-availability,
 .option-modal .option-row.is-unavailable .modal-option-availability {
   color: var(--color-accent-warning);
-}
-
-.option-modal .modal-option-actions {
-  grid-column: 2 / -1;
-  grid-row: 3;
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-4) var(--space-12);
-}
-
-.option-footer {
-  min-width: 0;
-  min-height: var(--space-16);
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: var(--space-4) var(--space-16);
-  overflow-wrap: anywhere;
 }
 
 /* ---- Utility panel rows ------------------------------------------------
@@ -1332,13 +1272,6 @@ body {
 #inspector .prow .prow-range,
 #inspector .prow .prow-unit {
   flex: 0 0 auto;
-}
-
-/* The panel's own authored hint line, beneath the identity caption. */
-#inspector .panel-hint {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-8);
 }
 
 /* ---- the persistent Inspector ------------------------------------------ */
@@ -1438,4 +1371,150 @@ body {
   flex-wrap: wrap;
   overflow: auto;
   border-top: var(--keyline-resting) solid var(--color-border-default);
+}
+
+#footer .footer-guidance {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--space-8) var(--space-16);
+  flex-wrap: wrap;
+}
+
+/* ---- temporary MIDI Devices system workspace -------------------------- */
+
+body.settings-active #main-region {
+  grid-template-columns:
+    minmax(var(--shell-side-track-min), 4fr)
+    minmax(var(--shell-side-track-min), var(--shell-side-track-max));
+  grid-template-rows: minmax(0, 1fr);
+  grid-template-areas: "workspace side";
+  column-gap: clamp(
+    var(--shell-region-gap-min),
+    var(--shell-region-gap-preferred),
+    var(--shell-region-gap-max)
+  );
+}
+
+.midi-device-list {
+  flex: 1;
+  min-height: 0;
+  margin-block: var(--space-16);
+  border-top: var(--keyline-resting) solid var(--color-border-default);
+  overflow: auto;
+}
+
+.midi-device-row,
+.midi-empty {
+  min-height: var(--shell-row-height-min);
+  display: flex;
+  align-items: center;
+  gap: var(--space-16);
+  padding: var(--space-8) var(--space-12);
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.midi-device-row.focused,
+.midi-empty:focus-within {
+  background: var(--color-bg-selected);
+  box-shadow: inset var(--keyline-emphasis) 0 0 var(--color-accent-focus);
+}
+
+.midi-status-marker {
+  flex: 0 0 var(--space-24);
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.midi-device-row[data-marker="filledCircle"] .midi-status-marker {
+  color: var(--color-accent-positive);
+}
+
+.midi-device-row[data-marker="progressRing"] .midi-status-marker,
+.midi-device-row[data-marker="errorDiamond"] .midi-status-marker {
+  color: var(--color-accent-warning);
+}
+
+.midi-device-row[data-marker="slashedCircle"],
+.midi-device-row[data-marker="stopSquare"] {
+  border-left: var(--keyline-emphasis) dashed var(--color-border-strong);
+}
+
+.midi-row-identity,
+.midi-empty > div {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.midi-row-status {
+  color: var(--color-text-secondary);
+}
+
+.midi-row-action {
+  min-width: var(--min-interactive-target);
+  text-align: right;
+}
+
+.midi-inline-marker {
+  color: var(--color-accent-positive);
+}
+
+.midi-facts {
+  width: 100%;
+}
+
+.midi-facts td:last-child {
+  color: var(--color-text-primary);
+}
+
+.midi-facts [data-midi-activity-state="receiving"] {
+  color: var(--color-accent-positive);
+}
+
+.midi-activity-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-8);
+  margin-top: var(--space-16);
+  padding: var(--space-12);
+  border: var(--keyline-resting) solid var(--color-border-default);
+  border-left: var(--keyline-emphasis) dashed var(--color-border-strong);
+}
+
+.midi-activity-card[data-midi-activity-state="receiving"] {
+  border-left-style: solid;
+  border-left-color: var(--color-accent-positive);
+}
+
+.midi-activity-value {
+  position: relative;
+  height: var(--space-8);
+  overflow: hidden;
+  background: var(--color-bg-selected);
+  border: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.midi-activity-value-fill {
+  width: calc(var(--position, 0) * 100%);
+  height: 100%;
+  background: var(--color-accent-positive);
+}
+
+/* The stack threshold is a function of the two declared 320 px region
+ * minima plus their required gap. It is a container condition, not one of the
+ * named viewport/density modes used by the performance workspaces. */
+@container shell (inline-size < 45rem) {
+  body.settings-active #main-region {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(20rem, auto) minmax(20rem, auto);
+    grid-template-areas: "workspace" "side";
+    row-gap: var(--shell-region-gap-min);
+  }
+
+  body.settings-active #inspector {
+    border-left: 0;
+  }
 }

@@ -375,6 +375,9 @@ impl StateProjector {
         state: &AppState,
         state_hash: &str,
     ) -> Result<Option<PatchPageProjection>, StateProjectionError> {
+        if state.interaction().active_surface() == crate::control::SurfaceId::MidiDeviceSettings {
+            return Ok(None);
+        }
         match state.context() {
             crate::control::TopLevelContext::Mixer => Ok(None),
             crate::control::TopLevelContext::Patch => {
@@ -486,6 +489,15 @@ impl StateProjector {
         page: Option<&PatchPageProjection>,
         state_hash: &str,
     ) -> Result<TextProjection, StateProjectionError> {
+        if state.interaction.active_focus.surface() == crate::control::SurfaceId::MidiDeviceSettings
+        {
+            return Ok(TextProjection::for_context(
+                state.interaction.active_focus.context(),
+                "SETTINGS · MIDI DEVICES\nWATCHING FOR PHYSICAL INPUTS".to_owned(),
+                0,
+                state_hash.to_owned(),
+            ));
+        }
         if selection_from_serialized(state)? != selection {
             return Err(StateProjectionError::SelectionDoesNotMatchSnapshot);
         }
@@ -547,8 +559,19 @@ impl StateProjector {
         if page.is_some_and(|page| Some(page.patch().id()) != snapshot_patch) {
             return Err(StateProjectionError::InvalidSelection);
         }
-        let status_label = semantic.status().label();
-        let context_line = ShellContextLine::new("CREST SYNTH", context.label(), status_label);
+        let settings_active =
+            semantic.active_surface() == crate::control::SurfaceId::MidiDeviceSettings;
+        let status_label = if settings_active {
+            "WATCHING"
+        } else {
+            semantic.status().label()
+        };
+        let context_label = if settings_active {
+            "SETTINGS"
+        } else {
+            context.label()
+        };
+        let context_line = ShellContextLine::new("CREST SYNTH", context_label, status_label);
         let action_hints = semantic
             .valid_actions()
             .iter()
@@ -558,87 +581,103 @@ impl StateProjector {
             })
             .collect::<Vec<_>>();
 
-        let (identity_header, main_label, side_label, footer) = match context {
-            crate::control::TopLevelContext::Patch => {
-                let page = page.ok_or(StateProjectionError::InvalidSelection)?;
-                if page.context() != context || page.state_hash() != state_hash {
-                    return Err(StateProjectionError::InvalidSelection);
+        let (identity_header, main_label, side_label, footer) = if settings_active {
+            (
+                ShellIdentityHeader::new("SETTINGS · MIDI DEVICES", "PHYSICAL INPUT"),
+                "AVAILABLE INPUTS".to_owned(),
+                "INPUT INSPECTOR".to_owned(),
+                ShellFooter::new(footer_path_label(semantic), action_hints),
+            )
+        } else {
+            match context {
+                crate::control::TopLevelContext::Patch => {
+                    let page = page.ok_or(StateProjectionError::InvalidSelection)?;
+                    if page.context() != context || page.state_hash() != state_hash {
+                        return Err(StateProjectionError::InvalidSelection);
+                    }
+                    let patch = page.patch();
+                    let primary = format!("PATCH {:02} · {}", patch.id().value(), patch.name());
+                    let secondary = format!(
+                        "MIDI CH {:02} · {}",
+                        u16::from(patch.midi_channel().value()) + 1,
+                        page.engine().active_label()
+                    );
+                    match semantic.focus_path().control_id() {
+                        SemanticControlId::Patch(_) | SemanticControlId::Modal(_) => {}
+                        SemanticControlId::SurfaceRoot
+                            if semantic.active_surface()
+                                == crate::control::SurfaceId::PatchUtility => {}
+                        SemanticControlId::Mixer(_)
+                        | SemanticControlId::MidiInputDevice(_)
+                        | SemanticControlId::MidiInputListRoot
+                        | SemanticControlId::SurfaceRoot => {
+                            return Err(StateProjectionError::InvalidSelection)
+                        }
+                    }
+                    let path = footer_path_label(semantic);
+                    (
+                        ShellIdentityHeader::new(primary, secondary),
+                        format!("PATCH WORKSPACE · {}", patch.name()),
+                        "UTILITY".to_owned(),
+                        ShellFooter::new(path, action_hints),
+                    )
                 }
-                let patch = page.patch();
-                let primary = format!("PATCH {:02} · {}", patch.id().value(), patch.name());
-                let secondary = format!(
-                    "MIDI CH {:02} · {}",
-                    u16::from(patch.midi_channel().value()) + 1,
-                    page.engine().active_label()
-                );
-                match semantic.focus_path().control_id() {
-                    SemanticControlId::Patch(_) | SemanticControlId::Modal(_) => {}
-                    SemanticControlId::SurfaceRoot
-                        if semantic.active_surface() == crate::control::SurfaceId::PatchUtility => {
+                crate::control::TopLevelContext::Mixer => {
+                    if page.is_some() {
+                        return Err(StateProjectionError::InvalidSelection);
                     }
-                    SemanticControlId::Mixer(_) | SemanticControlId::SurfaceRoot => {
-                        return Err(StateProjectionError::InvalidSelection)
-                    }
+                    let routed_for = |track_id: &crate::mixer::mixer_track_id::MixerTrackId| {
+                        state
+                            .patches
+                            .iter()
+                            .filter(|patch| patch.output.track_id() == *track_id)
+                            .map(|patch| format!("{:02}", patch.id))
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    };
+                    let (primary, secondary) = match semantic.focus_path().control_id() {
+                        SemanticControlId::Mixer(
+                            MixerControlId::Track { track_id, .. }
+                            | MixerControlId::Send { track_id, .. },
+                        ) => (
+                            format!("MIXER · {track_id}"),
+                            format!("ROUTED PATCHES · {}", routed_for(track_id)),
+                        ),
+                        SemanticControlId::Mixer(
+                            MixerControlId::ReturnOccupancy { .. }
+                            | MixerControlId::ReturnLevel { .. }
+                            | MixerControlId::ReturnEffect { .. },
+                        ) => (
+                            "MIXER · RETURNS".to_owned(),
+                            format!("{} PATCHES · BUS RETURNS", state.patches.len()),
+                        ),
+                        SemanticControlId::Mixer(MixerControlId::Global { .. }) => (
+                            "MIXER · GLOBAL".to_owned(),
+                            format!("{} PATCHES · MASTER OUTPUT", state.patches.len()),
+                        ),
+                        SemanticControlId::SurfaceRoot => (
+                            "MIXER · INSPECTOR".to_owned(),
+                            format!("{} PATCHES · READ ONLY", state.patches.len()),
+                        ),
+                        SemanticControlId::Patch(_) => {
+                            return Err(StateProjectionError::InvalidSelection)
+                        }
+                        SemanticControlId::Modal(_) => {
+                            return Err(StateProjectionError::InvalidSelection)
+                        }
+                        SemanticControlId::MidiInputDevice(_)
+                        | SemanticControlId::MidiInputListRoot => {
+                            return Err(StateProjectionError::InvalidSelection)
+                        }
+                    };
+                    let path = footer_path_label(semantic);
+                    (
+                        ShellIdentityHeader::new(primary, secondary),
+                        "MIXER WORKSPACE".to_owned(),
+                        "INSPECTOR".to_owned(),
+                        ShellFooter::new(path, action_hints),
+                    )
                 }
-                let path = footer_path_label(semantic);
-                (
-                    ShellIdentityHeader::new(primary, secondary),
-                    format!("PATCH WORKSPACE · {}", patch.name()),
-                    "UTILITY".to_owned(),
-                    ShellFooter::new(path, action_hints),
-                )
-            }
-            crate::control::TopLevelContext::Mixer => {
-                if page.is_some() {
-                    return Err(StateProjectionError::InvalidSelection);
-                }
-                let routed_for = |track_id: &crate::mixer::mixer_track_id::MixerTrackId| {
-                    state
-                        .patches
-                        .iter()
-                        .filter(|patch| patch.output.track_id() == *track_id)
-                        .map(|patch| format!("{:02}", patch.id))
-                        .collect::<Vec<_>>()
-                        .join(", ")
-                };
-                let (primary, secondary) = match semantic.focus_path().control_id() {
-                    SemanticControlId::Mixer(
-                        MixerControlId::Track { track_id, .. }
-                        | MixerControlId::Send { track_id, .. },
-                    ) => (
-                        format!("MIXER · {track_id}"),
-                        format!("ROUTED PATCHES · {}", routed_for(track_id)),
-                    ),
-                    SemanticControlId::Mixer(
-                        MixerControlId::ReturnOccupancy { .. }
-                        | MixerControlId::ReturnLevel { .. }
-                        | MixerControlId::ReturnEffect { .. },
-                    ) => (
-                        "MIXER · RETURNS".to_owned(),
-                        format!("{} PATCHES · BUS RETURNS", state.patches.len()),
-                    ),
-                    SemanticControlId::Mixer(MixerControlId::Global { .. }) => (
-                        "MIXER · GLOBAL".to_owned(),
-                        format!("{} PATCHES · MASTER OUTPUT", state.patches.len()),
-                    ),
-                    SemanticControlId::SurfaceRoot => (
-                        "MIXER · INSPECTOR".to_owned(),
-                        format!("{} PATCHES · READ ONLY", state.patches.len()),
-                    ),
-                    SemanticControlId::Patch(_) => {
-                        return Err(StateProjectionError::InvalidSelection)
-                    }
-                    SemanticControlId::Modal(_) => {
-                        return Err(StateProjectionError::InvalidSelection)
-                    }
-                };
-                let path = footer_path_label(semantic);
-                (
-                    ShellIdentityHeader::new(primary, secondary),
-                    "MIXER WORKSPACE".to_owned(),
-                    "INSPECTOR".to_owned(),
-                    ShellFooter::new(path, action_hints),
-                )
             }
         };
 
@@ -678,7 +717,12 @@ fn footer_path_label(semantic: &SemanticGraphicalViewModel) -> String {
         || semantic.active_surface().label().to_owned(),
         |control| control.label().to_owned(),
     );
-    format!("{} / {leaf}", semantic.context().label())
+    let root = if semantic.active_surface() == crate::control::SurfaceId::MidiDeviceSettings {
+        "SETTINGS"
+    } else {
+        semantic.context().label()
+    };
+    format!("{root} / {leaf}")
 }
 
 fn selection_from_serialized(
@@ -702,6 +746,8 @@ fn selection_from_serialized(
         SemanticControlId::Mixer(_)
         | SemanticControlId::Patch(_)
         | SemanticControlId::Modal(_)
+        | SemanticControlId::MidiInputDevice(_)
+        | SemanticControlId::MidiInputListRoot
         | SemanticControlId::SurfaceRoot => Err(StateProjectionError::InvalidSelection),
     }
 }

@@ -1,6 +1,7 @@
 use crate::control::{
-    FocusPath, FocusPathError, InteractionMode, MixerControlId, PatchChoiceSubject, PatchControlId,
-    PatchDetailSubject, ReturnPath, SemanticControlId, SurfaceId, TopLevelContext,
+    FocusPath, FocusPathError, InteractionMode, MidiInputDeviceId, MixerControlId,
+    PatchChoiceSubject, PatchControlId, PatchDetailSubject, ReturnPath, SemanticControlId,
+    SurfaceId, TopLevelContext,
 };
 use crate::kernel::PatchId;
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -103,6 +104,34 @@ impl PatchSubordinateSession {
     }
 }
 
+/// Complete interaction snapshot suspended while MIDI Devices Settings owns
+/// the one active semantic focus.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MidiSettingsSession {
+    suspended_focus: FocusPath,
+    suspended_mode: InteractionMode,
+    suspended_return_path: Option<ReturnPath>,
+    suspended_subordinate_session: Option<PatchSubordinateSession>,
+}
+
+impl MidiSettingsSession {
+    pub const fn suspended_focus(&self) -> &FocusPath {
+        &self.suspended_focus
+    }
+
+    pub const fn suspended_mode(&self) -> InteractionMode {
+        self.suspended_mode
+    }
+
+    pub const fn suspended_return_path(&self) -> Option<&ReturnPath> {
+        self.suspended_return_path.as_ref()
+    }
+
+    pub const fn suspended_subordinate_session(&self) -> Option<&PatchSubordinateSession> {
+        self.suspended_subordinate_session.as_ref()
+    }
+}
+
 /// Reducer-owned singular semantic focus, remembered roots, mode, return, and
 /// at most one PATCH subordinate session.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -115,6 +144,9 @@ pub struct InteractionState {
     /// Deliberately private: surface, subject, and suspended origin may only
     /// move together through this type's transitions.
     subordinate_session: Option<PatchSubordinateSession>,
+    /// Present only while the temporary MIDI Devices system surface owns
+    /// `active_focus`; it is the exact performance interaction to restore.
+    midi_settings_session: Option<MidiSettingsSession>,
 }
 
 impl InteractionState {
@@ -128,6 +160,7 @@ impl InteractionState {
             mode: InteractionMode::Navigate,
             return_path: None,
             subordinate_session: None,
+            midi_settings_session: None,
         }
     }
 
@@ -191,6 +224,21 @@ impl InteractionState {
         }
     }
 
+    pub fn midi_settings_invariant_holds(&self) -> bool {
+        match (&self.midi_settings_session, self.active_focus.surface()) {
+            (None, SurfaceId::MidiDeviceSettings) => false,
+            (None, _) => true,
+            (Some(session), SurfaceId::MidiDeviceSettings) => {
+                self.mode == InteractionMode::Navigate
+                    && self.return_path.is_none()
+                    && self.subordinate_session.is_none()
+                    && session.suspended_focus.surface() != SurfaceId::MidiDeviceSettings
+                    && session.suspended_focus.context() == self.active_focus.context()
+            }
+            (Some(_), _) => false,
+        }
+    }
+
     /// Backward-compatible witness name used by the earlier acceptance suite.
     pub fn detail_invariant_holds(&self) -> bool {
         self.subordinate_invariant_holds()
@@ -198,7 +246,7 @@ impl InteractionState {
 
     fn assert_subordinate_invariant(&self) {
         debug_assert!(
-            self.subordinate_invariant_holds(),
+            self.subordinate_invariant_holds() && self.midi_settings_invariant_holds(),
             "subordinate surface, subject, mode, and return must agree: \
              surface={:?} session={:?} return={:?} mode={:?}",
             self.active_focus.surface(),
@@ -240,6 +288,10 @@ impl InteractionState {
         self.subordinate_session.as_ref()
     }
 
+    pub const fn midi_settings_session(&self) -> Option<&MidiSettingsSession> {
+        self.midi_settings_session.as_ref()
+    }
+
     /// Returns the capability whose schema the open detail surface shows, or
     /// `None` when no detail entry is open.
     pub const fn detail_subject(&self) -> Option<&PatchDetailSubject> {
@@ -270,10 +322,14 @@ impl InteractionState {
                     SemanticControlId::Patch(control) => Some(control.clone()),
                     SemanticControlId::Mixer(_)
                     | SemanticControlId::Modal(_)
+                    | SemanticControlId::MidiInputDevice(_)
+                    | SemanticControlId::MidiInputListRoot
                     | SemanticControlId::SurfaceRoot => None,
                 });
         }
-        let path = if self.active_focus.context() == TopLevelContext::Patch {
+        let path = if !self.active_focus.surface().is_system()
+            && self.active_focus.context() == TopLevelContext::Patch
+        {
             &self.active_focus
         } else {
             self.remembered_patch_main.as_ref()?
@@ -282,12 +338,16 @@ impl InteractionState {
             SemanticControlId::Patch(control) => Some(control.clone()),
             SemanticControlId::Mixer(_)
             | SemanticControlId::Modal(_)
+            | SemanticControlId::MidiInputDevice(_)
+            | SemanticControlId::MidiInputListRoot
             | SemanticControlId::SurfaceRoot => None,
         }
     }
 
     pub fn mixer_control_focus(&self) -> &MixerControlId {
-        let path = if self.active_focus.context() == TopLevelContext::Mixer {
+        let path = if !self.active_focus.surface().is_system()
+            && self.active_focus.context() == TopLevelContext::Mixer
+        {
             &self.active_focus
         } else {
             &self.remembered_mixer_main
@@ -296,6 +356,8 @@ impl InteractionState {
             SemanticControlId::Mixer(control) => control,
             SemanticControlId::Patch(_)
             | SemanticControlId::Modal(_)
+            | SemanticControlId::MidiInputDevice(_)
+            | SemanticControlId::MidiInputListRoot
             | SemanticControlId::SurfaceRoot => {
                 unreachable!("remembered MixerMain path is always a Mixer control")
             }
@@ -312,6 +374,9 @@ impl InteractionState {
     /// A main path is by definition not a detail path, so the subject is
     /// cleared with the return path rather than left to outlive its surface.
     pub(super) fn set_active_main(&mut self, focus: FocusPath) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         focus.validate()?;
         if !focus.surface().is_main() {
             return Err(FocusPathError::ControlSurfaceMismatch);
@@ -330,6 +395,9 @@ impl InteractionState {
         &mut self,
         context: TopLevelContext,
     ) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         self.active_focus = match context {
             TopLevelContext::Patch => self
                 .remembered_patch_main
@@ -346,6 +414,9 @@ impl InteractionState {
     }
 
     pub(super) fn set_mode(&mut self, mode: InteractionMode) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         let modal_surface = matches!(
             self.active_focus.surface(),
             SurfaceId::PatchChoice | SurfaceId::SampleBrowser
@@ -371,9 +442,12 @@ impl InteractionState {
     /// `PatchUtility` or `PatchDetail` is not main, so neither can stack a
     /// second origin on the other.
     pub(super) fn enter_surface(&mut self, surface: SurfaceId) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         if !surface.is_persistent_side()
             || !self.active_focus.surface().is_main()
-            || self.active_focus.context() != surface.context()
+            || surface.context() != Some(self.active_focus.context())
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }
@@ -399,7 +473,8 @@ impl InteractionState {
             | SurfaceId::PatchChoice
             | SurfaceId::SampleBrowser
             | SurfaceId::PatchMain
-            | SurfaceId::MixerMain => return Err(FocusPathError::ControlSurfaceMismatch),
+            | SurfaceId::MixerMain
+            | SurfaceId::MidiDeviceSettings => return Err(FocusPathError::ControlSurfaceMismatch),
         };
         self.mode = InteractionMode::Navigate;
         self.assert_subordinate_invariant();
@@ -418,6 +493,9 @@ impl InteractionState {
         subject: PatchDetailSubject,
         focus: FocusPath,
     ) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         if !self.active_focus.surface().is_main()
             || self.active_focus.context() != TopLevelContext::Patch
         {
@@ -510,6 +588,9 @@ impl InteractionState {
         subject: PatchChoiceSubject,
         focus: FocusPath,
     ) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         self.enter_modal_surface(subject.patch_id(), focus, |detail, suspended_return| {
             PatchSubordinateSession::Choice {
                 subject,
@@ -527,6 +608,9 @@ impl InteractionState {
         asset_parameter_id: ParameterId,
         focus: FocusPath,
     ) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         self.enter_modal_surface(patch_id, focus, |detail, suspended_return| {
             PatchSubordinateSession::SampleBrowser {
                 patch_id,
@@ -588,6 +672,9 @@ impl InteractionState {
     /// The return path and the detail subject are cleared together, so leaving
     /// a detail surface can never strand its subject.
     pub(super) fn return_to_origin(&mut self) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
         let path = self
             .return_path
             .take()
@@ -621,6 +708,151 @@ impl InteractionState {
             }
         }
         self.mode = InteractionMode::Navigate;
+        self.assert_subordinate_invariant();
+        Ok(())
+    }
+
+    /// Suspends the complete performance interaction and gives Settings the
+    /// one active focus. Admission policy remains reducer-owned.
+    pub(super) fn open_midi_settings(
+        &mut self,
+        settings_focus: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some()
+            || self.active_focus.surface() == SurfaceId::MidiDeviceSettings
+        {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
+        settings_focus.validate()?;
+        if settings_focus.surface() != SurfaceId::MidiDeviceSettings
+            || settings_focus.context() != self.active_focus.context()
+        {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        let session = MidiSettingsSession {
+            suspended_focus: self.active_focus.clone(),
+            suspended_mode: self.mode,
+            suspended_return_path: self.return_path.take(),
+            suspended_subordinate_session: self.subordinate_session.take(),
+        };
+        self.active_focus = settings_focus;
+        self.mode = InteractionMode::Navigate;
+        self.midi_settings_session = Some(session);
+        self.assert_subordinate_invariant();
+        Ok(())
+    }
+
+    /// Restores the exact performance interaction suspended on Settings entry.
+    pub(super) fn return_from_midi_settings(&mut self) -> Result<(), FocusPathError> {
+        if self.active_focus.surface() != SurfaceId::MidiDeviceSettings {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        let session = self
+            .midi_settings_session
+            .take()
+            .ok_or(FocusPathError::ContextSurfaceMismatch)?;
+        self.active_focus = session.suspended_focus;
+        self.mode = session.suspended_mode;
+        self.return_path = session.suspended_return_path;
+        self.subordinate_session = session.suspended_subordinate_session;
+        self.assert_subordinate_invariant();
+        Ok(())
+    }
+
+    /// Reconciles Settings focus by exact identity, then the next surviving
+    /// old identity, then the previous surviving identity, then the root.
+    pub(super) fn reconcile_midi_settings_focus(
+        &mut self,
+        old_order: &[MidiInputDeviceId],
+        new_order: &[MidiInputDeviceId],
+    ) -> Result<Option<(FocusPath, FocusPath)>, FocusPathError> {
+        if self.active_focus.surface() != SurfaceId::MidiDeviceSettings
+            || self.midi_settings_session.is_none()
+        {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        let context = self.active_focus.context();
+        let old_focus = self.active_focus.clone();
+        let replacement = match self.active_focus.control_id() {
+            SemanticControlId::MidiInputDevice(identity) => {
+                if new_order.contains(identity) {
+                    return Ok(None);
+                }
+                let old_index = old_order
+                    .iter()
+                    .position(|candidate| candidate == identity)
+                    .ok_or(FocusPathError::ControlSurfaceMismatch)?;
+                old_order[old_index + 1..]
+                    .iter()
+                    .find(|candidate| new_order.contains(candidate))
+                    .or_else(|| {
+                        old_order[..old_index]
+                            .iter()
+                            .rev()
+                            .find(|candidate| new_order.contains(candidate))
+                    })
+                    .cloned()
+                    .map_or_else(
+                        || FocusPath::midi_device_settings_root(context),
+                        |identity| FocusPath::midi_device_settings(context, identity),
+                    )
+            }
+            SemanticControlId::MidiInputListRoot => new_order.first().cloned().map_or_else(
+                || FocusPath::midi_device_settings_root(context),
+                |identity| FocusPath::midi_device_settings(context, identity),
+            ),
+            _ => return Err(FocusPathError::ControlSurfaceMismatch),
+        };
+        replacement.validate()?;
+        if replacement == old_focus {
+            return Ok(None);
+        }
+        self.active_focus = replacement.clone();
+        self.assert_subordinate_invariant();
+        Ok(Some((old_focus, replacement)))
+    }
+
+    /// Repairs the performance focus suspended under Settings after a schema
+    /// change removes its exact origin.
+    pub(super) fn replace_midi_settings_suspended_focus(
+        &mut self,
+        focus: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        focus.validate()?;
+        let session = self
+            .midi_settings_session
+            .as_mut()
+            .ok_or(FocusPathError::ContextSurfaceMismatch)?;
+        if focus.surface().is_system() || focus.context() != self.active_focus.context() {
+            return Err(FocusPathError::ContextSurfaceMismatch);
+        }
+        session.suspended_focus = focus;
+        self.assert_subordinate_invariant();
+        Ok(())
+    }
+
+    /// Repairs the main return origin nested inside the suspended PATCH
+    /// subordinate state without changing its subject or current row.
+    pub(super) fn replace_midi_settings_suspended_return_origin(
+        &mut self,
+        origin: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        let session = self
+            .midi_settings_session
+            .as_mut()
+            .ok_or(FocusPathError::ContextSurfaceMismatch)?;
+        let Some(return_path) = session.suspended_return_path.as_ref() else {
+            return Ok(());
+        };
+        session.suspended_return_path = Some(ReturnPath::new(
+            origin.clone(),
+            return_path.entered_surface(),
+        )?);
+        if let Some(PatchSubordinateSession::UtilityFromDetail { detail_return, .. }) =
+            session.suspended_subordinate_session.as_mut()
+        {
+            *detail_return = ReturnPath::new(origin, SurfaceId::PatchDetail)?;
+        }
         self.assert_subordinate_invariant();
         Ok(())
     }
@@ -914,5 +1146,190 @@ mod tests {
         state.return_to_origin().unwrap();
         assert_eq!(state.focus_path(), &origin);
         assert!(state.subordinate_invariant_holds());
+    }
+
+    #[test]
+    fn midi_settings_round_trip_restores_exact_mixer_focus_and_mode_without_stacking() {
+        let mut state = InteractionState::new();
+        let origin =
+            FocusPath::mixer_track(MixerTrackId::new(9).unwrap(), MixerTrackParameter::Pan);
+        state.set_active_main(origin.clone()).unwrap();
+        state.set_mode(InteractionMode::Adjust).unwrap();
+        let settings = FocusPath::midi_device_settings_root(TopLevelContext::Mixer);
+
+        state.open_midi_settings(settings.clone()).unwrap();
+        assert_eq!(state.focus_path(), &settings);
+        assert_eq!(state.mode(), InteractionMode::Navigate);
+        assert_eq!(
+            state.midi_settings_session().unwrap().suspended_focus(),
+            &origin
+        );
+        assert_eq!(
+            state.midi_settings_session().unwrap().suspended_mode(),
+            InteractionMode::Adjust
+        );
+        let before_recursive = state.clone();
+        assert!(state.open_midi_settings(settings).is_err());
+        assert_eq!(state, before_recursive);
+
+        state.return_from_midi_settings().unwrap();
+        assert_eq!(state.focus_path(), &origin);
+        assert_eq!(state.mode(), InteractionMode::Adjust);
+        assert!(state.midi_settings_session().is_none());
+        assert!(state.midi_settings_invariant_holds());
+    }
+
+    #[test]
+    fn midi_settings_round_trip_restores_patch_detail_subject_and_return_identity() {
+        let patch_id = PatchId::new(7).unwrap();
+        let capability = crate::synth::CapabilityId::new("instrument.test").unwrap();
+        let parameter = crate::synth::ParameterId::new("test.parameter").unwrap();
+        let origin = FocusPath::patch_main(
+            patch_id,
+            Some(FocusCapabilityId::Instrument(capability.clone())),
+            PatchControlId::Capability(parameter.clone()),
+        );
+        let detail_focus = FocusPath::patch_detail(
+            patch_id,
+            FocusCapabilityId::Instrument(capability.clone()),
+            PatchControlId::Capability(parameter),
+        );
+        let subject = PatchDetailSubject::instrument(capability);
+        let mut state = InteractionState::new();
+        state.initialize_patch_focus(Some(origin.clone()));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        state
+            .enter_detail(subject.clone(), detail_focus.clone())
+            .unwrap();
+        let detail_return = state.return_path().cloned();
+
+        state
+            .open_midi_settings(FocusPath::midi_device_settings_root(TopLevelContext::Patch))
+            .unwrap();
+        let session = state.midi_settings_session().unwrap();
+        assert_eq!(session.suspended_focus(), &detail_focus);
+        assert_eq!(session.suspended_return_path(), detail_return.as_ref());
+        assert_eq!(
+            session.suspended_subordinate_session(),
+            Some(&PatchSubordinateSession::Detail {
+                subject: subject.clone()
+            })
+        );
+
+        state.return_from_midi_settings().unwrap();
+        assert_eq!(state.focus_path(), &detail_focus);
+        assert_eq!(state.return_path(), detail_return.as_ref());
+        assert_eq!(state.detail_subject(), Some(&subject));
+        state.return_to_origin().unwrap();
+        assert_eq!(state.focus_path(), &origin);
+    }
+
+    #[test]
+    fn midi_settings_focus_reconciles_exact_then_next_then_previous_then_root() {
+        use crate::control::MidiInputDeviceId;
+
+        let id = |value| MidiInputDeviceId::new("midir-v1", value).unwrap();
+        let a = id("a");
+        let b = id("b");
+        let c = id("c");
+        let old = vec![a.clone(), b.clone(), c.clone()];
+        let mut state = InteractionState::new();
+        state
+            .open_midi_settings(FocusPath::midi_device_settings(
+                TopLevelContext::Mixer,
+                b.clone(),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            state
+                .reconcile_midi_settings_focus(&old, &[c.clone(), b.clone(), a.clone()])
+                .unwrap(),
+            None,
+            "reorder retains exact semantic identity"
+        );
+        assert_eq!(state.focus_path().midi_input_device_id(), Some(&b));
+
+        let repair = state
+            .reconcile_midi_settings_focus(&old, &[a.clone(), c.clone()])
+            .unwrap()
+            .unwrap();
+        assert_eq!(repair.1.midi_input_device_id(), Some(&c));
+
+        state.active_focus = FocusPath::midi_device_settings(TopLevelContext::Mixer, b.clone());
+        let repair = state
+            .reconcile_midi_settings_focus(&old, std::slice::from_ref(&a))
+            .unwrap()
+            .unwrap();
+        assert_eq!(repair.1.midi_input_device_id(), Some(&a));
+
+        state.active_focus = FocusPath::midi_device_settings(TopLevelContext::Mixer, b.clone());
+        let repair = state
+            .reconcile_midi_settings_focus(&old, &[])
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            repair.1.control_id(),
+            crate::control::SemanticControlId::MidiInputListRoot
+        ));
+
+        let repair = state
+            .reconcile_midi_settings_focus(&[], std::slice::from_ref(&c))
+            .unwrap()
+            .unwrap();
+        assert_eq!(repair.1.midi_input_device_id(), Some(&c));
+    }
+
+    #[test]
+    fn midi_settings_preserves_retained_unavailable_identity_and_repairs_return_origin() {
+        use crate::control::MidiInputDeviceId;
+
+        let unavailable = MidiInputDeviceId::new("midir-v1", "missing").unwrap();
+        let mut state = InteractionState::new();
+        let patch_id = PatchId::new(4).unwrap();
+        let old_origin = FocusPath::patch_main(patch_id, None, PatchControlId::Engine);
+        let replacement_origin = FocusPath::patch_main(
+            patch_id,
+            None,
+            PatchControlId::EffectSlot(
+                crate::synth::effect_slot_id::EffectSlotIndex::new(0).unwrap(),
+            ),
+        );
+        let capability = crate::synth::CapabilityId::new("instrument.test").unwrap();
+        let parameter = crate::synth::ParameterId::new("test.parameter").unwrap();
+        let detail = FocusPath::patch_detail(
+            patch_id,
+            FocusCapabilityId::Instrument(capability.clone()),
+            PatchControlId::Capability(parameter),
+        );
+        state.initialize_patch_focus(Some(old_origin));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        state
+            .enter_detail(PatchDetailSubject::instrument(capability), detail.clone())
+            .unwrap();
+        state
+            .open_midi_settings(FocusPath::midi_device_settings(
+                TopLevelContext::Patch,
+                unavailable.clone(),
+            ))
+            .unwrap();
+
+        assert_eq!(
+            state
+                .reconcile_midi_settings_focus(
+                    std::slice::from_ref(&unavailable),
+                    std::slice::from_ref(&unavailable),
+                )
+                .unwrap(),
+            None,
+            "a selected/focused unavailable tombstone retains exact focus"
+        );
+        state
+            .replace_midi_settings_suspended_return_origin(replacement_origin.clone())
+            .unwrap();
+        state.return_from_midi_settings().unwrap();
+        assert_eq!(state.focus_path(), &detail);
+        state.return_to_origin().unwrap();
+        assert_eq!(state.focus_path(), &replacement_origin);
     }
 }

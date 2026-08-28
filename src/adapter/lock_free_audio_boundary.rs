@@ -4,6 +4,8 @@ use crate::real_time::audio_boundary::{
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use triple_buffer::{triple_buffer, Input, Output};
 
 /// A complete lock-free control/audio seam backed by fixed-capacity primitives.
@@ -15,17 +17,24 @@ pub struct LockFreeAudioBoundary {
 impl LockFreeAudioBoundary {
     /// Allocates all boundary storage before either handle reaches the audio callback.
     pub fn new(command_capacity: usize, initial_parameters: ParameterSnapshot) -> Self {
+        assert!(
+            command_capacity >= 2,
+            "the audio command boundary requires one normal slot and one recovery reserve"
+        );
         let (command_producer, command_consumer) = RingBuffer::new(command_capacity);
         let (parameter_input, parameter_output) = triple_buffer(&initial_parameters);
+        let recovery_pending = Arc::new(AtomicBool::new(false));
 
         Self {
             control: LockFreeControlHandle {
                 commands: command_producer,
                 parameters: parameter_input,
+                recovery_pending: Arc::clone(&recovery_pending),
             },
             audio: LockFreeAudioHandle {
                 commands: command_consumer,
                 parameters: parameter_output,
+                recovery_pending,
             },
         }
     }
@@ -46,14 +55,36 @@ impl AudioBoundary for LockFreeAudioBoundary {
 pub struct LockFreeControlHandle {
     commands: Producer<AudioCommand>,
     parameters: Input<ParameterSnapshot>,
+    recovery_pending: Arc<AtomicBool>,
 }
 
 impl ControlAudioBoundary for LockFreeControlHandle {
     fn push_command(&mut self, command: AudioCommand) -> Result<(), BoundaryFull> {
+        let reserved = usize::from(!self.recovery_pending.load(Ordering::Acquire));
+        if self.commands.slots() <= reserved {
+            return Err(BoundaryFull::new(command));
+        }
         match self.commands.push(command) {
             Ok(()) => Ok(()),
             Err(PushError::Full(command)) => Err(BoundaryFull::new(command)),
         }
+    }
+
+    fn push_recovery_command(&mut self) -> Result<(), BoundaryFull> {
+        if self.recovery_pending.swap(true, Ordering::AcqRel) {
+            return Ok(());
+        }
+        match self.commands.push(AudioCommand::all_notes_off()) {
+            Ok(()) => Ok(()),
+            Err(PushError::Full(command)) => {
+                self.recovery_pending.store(false, Ordering::Release);
+                Err(BoundaryFull::new(command))
+            }
+        }
+    }
+
+    fn has_recovery_reserve(&self) -> bool {
+        true
     }
 
     fn publish_parameters(&mut self, parameters: ParameterSnapshot) {
@@ -67,11 +98,16 @@ impl ControlAudioBoundary for LockFreeControlHandle {
 pub struct LockFreeAudioHandle {
     commands: Consumer<AudioCommand>,
     parameters: Output<ParameterSnapshot>,
+    recovery_pending: Arc<AtomicBool>,
 }
 
 impl AudioThreadBoundary for LockFreeAudioHandle {
     fn pop_command(&mut self) -> Option<AudioCommand> {
-        self.commands.pop().ok()
+        let command = self.commands.pop().ok()?;
+        if command == AudioCommand::AllNotesOff {
+            self.recovery_pending.store(false, Ordering::Release);
+        }
+        Some(command)
     }
 
     fn read_latest_parameters(&mut self) -> ParameterSnapshot {
@@ -117,7 +153,7 @@ mod tests {
 
     #[test]
     fn bounded_commands_remain_fifo_and_return_rejected_values() {
-        let boundary = LockFreeAudioBoundary::new(2, parameters(0));
+        let boundary = LockFreeAudioBoundary::new(3, parameters(0));
         let (mut control, mut audio) = boundary.into_handles();
 
         control.push_command(command(60)).unwrap();
@@ -134,13 +170,34 @@ mod tests {
 
     #[test]
     fn parameter_publication_is_latest_wins_and_complete() {
-        let boundary = LockFreeAudioBoundary::new(1, parameters(0));
+        let boundary = LockFreeAudioBoundary::new(2, parameters(0));
         let (mut control, mut audio) = boundary.into_handles();
 
         control.publish_parameters(parameters(1));
         control.publish_parameters(parameters(2));
 
         assert_eq!(audio.read_latest_parameters().generation(), 2);
+    }
+
+    #[test]
+    fn final_slot_is_reserved_and_duplicate_recovery_is_coalesced() {
+        let boundary = LockFreeAudioBoundary::new(2, parameters(0));
+        let (mut control, mut audio) = boundary.into_handles();
+
+        assert!(control.has_recovery_reserve());
+        control.push_command(command(60)).unwrap();
+        assert_eq!(
+            control.push_command(command(62)),
+            Err(BoundaryFull::new(command(62)))
+        );
+        control.push_recovery_command().unwrap();
+        control.push_recovery_command().unwrap();
+
+        assert_eq!(audio.pop_command(), Some(command(60)));
+        assert_eq!(audio.pop_command(), Some(AudioCommand::AllNotesOff));
+        assert_eq!(audio.pop_command(), None);
+        control.push_recovery_command().unwrap();
+        assert_eq!(audio.pop_command(), Some(AudioCommand::AllNotesOff));
     }
 
     #[test]

@@ -1126,10 +1126,10 @@ fn production_mixer_zero_level_state() -> AppState {
     state
 }
 
-/// The PATCH Detail fixture with the first envelope control raised a few
-/// coarse steps, so the focused row's projected position fraction is
-/// deterministically nonzero.
-fn production_patch_geometry_state() -> AppState {
+/// A PATCH Detail fixture with the first envelope control raised by an exact
+/// number of coarse 100 ms steps. The native SVG witnesses use both 100 ms and
+/// 5 s so the logarithmic display scale proves its short- and long-time shape.
+fn production_patch_geometry_state(attack_coarse_steps: usize) -> AppState {
     let mut state = production_patch_instrument_detail_state();
     for _ in 0..32 {
         if state.interaction().patch_control_focus()
@@ -1146,7 +1146,7 @@ fn production_patch_geometry_state() -> AppState {
     state
         .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
         .expect("the focused envelope control enters Adjust mode");
-    for _ in 0..3 {
+    for _ in 0..attack_coarse_steps {
         state
             .apply(AppEvent::Adjust(Direction::Up))
             .expect("the focused envelope control accepts a coarse increase");
@@ -1686,8 +1686,14 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
     let (_, patch_geometry_document) = check_state_fidelity(
         &projector,
         &mut geometry_channel,
-        &production_patch_geometry_state(),
-        "WP03 raised-position PATCH fixture",
+        &production_patch_geometry_state(1),
+        "WP03 100 ms envelope PATCH fixture",
+    );
+    let (_, patch_long_geometry_document) = check_state_fidelity(
+        &projector,
+        &mut geometry_channel,
+        &production_patch_geometry_state(50),
+        "WP03 5 s envelope PATCH fixture",
     );
     assert_geometry_fixture_documents(&document_a, &zero_level_document, &patch_geometry_document);
 
@@ -1707,7 +1713,7 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
          {patch_generation_d}/{patch_generation_e}/{patch_generation_f}/\
          {patch_generation_g}/{patch_generation_h}/{patch_generation_i}/\
          {patch_generation_j}/{patch_generation_k}/{patch_generation_l}, \
-         plus seven Detail shape/position fixtures, emit path byte-identical + \
+         plus eight Detail shape/position fixtures, emit path byte-identical + \
          structural round-trip + declared key surface)"
     );
     FidelityEvidence {
@@ -1727,6 +1733,8 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-detail-failure", patch_detail_failure),
             ("patch-long-instrument-detail", patch_long_instrument_detail),
             ("patch-braids-detail", patch_braids_detail),
+            ("patch-envelope-geometry", patch_geometry_document.clone()),
+            ("patch-envelope-long-geometry", patch_long_geometry_document),
             ("patch-effect-position-0", patch_effect_position_0),
             ("patch-effect-position-1", patch_effect_position_1),
             ("patch-effect-position-2", patch_effect_position_2),
@@ -4289,6 +4297,25 @@ fn assert_observation_structure(
             "{label}: band {band} must be painted with nonzero area"
         );
     }
+    assert_eq!(
+        observation
+            .pointer("/actionGuidance/offFooterCount")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: MIXER action guidance appears only in the persistent footer"
+    );
+    assert!(
+        observation
+            .pointer("/footer/guidance")
+            .and_then(Value::as_str)
+            .is_some_and(|guidance| !guidance.is_empty()),
+        "{label}: the footer retains the current valid-action guidance"
+    );
+    assert_eq!(
+        observation.pointer("/inspector/hintLine"),
+        Some(&Value::Null),
+        "{label}: the Inspector does not repeat footer action guidance"
+    );
 
     let viewport_width = observation
         .pointer("/viewport/widthPx")
@@ -4546,7 +4573,8 @@ fn assert_observation_structure(
         "{label}: the Inspector cursor must name the focused track (got {cursor:?})"
     );
 
-    // Inspector sends in the document's declared order for the focused track.
+    // Send controls remain in the semantic document but are intentionally not
+    // painted while their visual treatment is deferred.
     let expected_sends: Vec<String> = document
         .get("surfaces")
         .and_then(Value::as_array)
@@ -4592,16 +4620,12 @@ fn assert_observation_structure(
         .collect();
     assert!(
         !expected_sends.is_empty(),
-        "{label}: the fixture document declares sends for the focused track"
-    );
-    assert_eq!(
-        painted_sends, expected_sends,
-        "{label}: Inspector sends must paint in the document's declared order"
+        "{label}: the backend projection retains sends for the focused track"
     );
     assert_eq!(
         painted_sends.len(),
-        8,
-        "{label}: the focused track exposes all eight indexed sends"
+        0,
+        "{label}: deferred Inspector send visuals must stay hidden"
     );
 
     let expected_routes: Vec<(String, String)> = inspector_surface
@@ -4653,7 +4677,13 @@ fn assert_observation_structure(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
+        .filter(|control| {
+            control.get("visible").and_then(Value::as_bool) == Some(true)
+                && control
+                    .pointer("/path/controlId/id/kind")
+                    .and_then(Value::as_str)
+                    != Some("send")
+        })
         .map(|control| {
             control
                 .pointer("/path/controlId/id")
@@ -4671,7 +4701,7 @@ fn assert_observation_structure(
         .collect();
     assert_eq!(
         painted_control_order, expected_control_order,
-        "{label}: Inspector rows stay in canonical send → return → global order"
+        "{label}: painted Inspector rows retain canonical return → global order"
     );
 
     // The persistent side region honors the authored floor.
@@ -4804,6 +4834,20 @@ fn assert_patch_observation_structure(
             "{label}: band {band} must be painted with nonzero area"
         );
     }
+    assert_eq!(
+        observation
+            .pointer("/actionGuidance/offFooterCount")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: PATCH action guidance appears only in the persistent footer"
+    );
+    assert!(
+        observation
+            .pointer("/footer/guidance")
+            .and_then(Value::as_str)
+            .is_some_and(|guidance| !guidance.is_empty()),
+        "{label}: the footer retains the current valid-action guidance"
+    );
 
     let mode = document
         .get("interactionMode")
@@ -5169,9 +5213,10 @@ fn assert_patch_observation_structure(
         "{label}: the section annotation names the focused entry"
     );
 
-    // The focused control's hint run is the model-level run. The two
-    // agree by construction; the assertion is that neither was special-cased.
-    let focused_hints = observation
+    // Action guidance has one painted owner: the persistent shell footer.
+    // Overview controls retain their validActions semantically without
+    // repeating the legend in every row.
+    assert!(observation
         .pointer("/overview/sections")
         .and_then(Value::as_array)
         .into_iter()
@@ -5183,14 +5228,7 @@ fn assert_patch_observation_structure(
                 .cloned()
                 .unwrap_or_default()
         })
-        .find(|control| control.get("control").and_then(Value::as_str) == Some(document_focus))
-        .and_then(|control| {
-            control
-                .get("hints")
-                .and_then(Value::as_str)
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| panic!("{label}: the focused Overview control paints its hints"));
+        .all(|control| control.get("hints").is_some_and(Value::is_null)));
     let footer_hints: String = document
         .get("validActions")
         .and_then(Value::as_array)
@@ -5218,9 +5256,21 @@ fn assert_patch_observation_structure(
         })
         .unwrap_or_default();
     assert_eq!(
-        focused_hints.split_whitespace().collect::<Vec<_>>(),
+        observation
+            .pointer("/footer/guidance")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .split_whitespace()
+            .collect::<Vec<_>>(),
         footer_hints.split_whitespace().collect::<Vec<_>>(),
-        "{label}: the focused Overview hints are the model-level hint run"
+        "{label}: the footer alone paints the model-level hint run"
+    );
+    assert_eq!(
+        observation
+            .pointer("/actionGuidance/offFooterCount")
+            .and_then(Value::as_u64),
+        Some(0),
+        "{label}: action hints do not repeat outside the footer"
     );
 
     assert_patch_utility_panel(observation, document, inspector_width_at_least, label);
@@ -5282,10 +5332,7 @@ fn assert_patch_modal_composition(
             expected_slot,
             "{label}: Post FX position comes from the stable subject control"
         );
-        assert_eq!(
-            modal.get("entry").and_then(Value::as_str),
-            Some("EDIT + UP")
-        );
+        assert!(modal.get("entry").is_some_and(Value::is_null));
         assert!(
             modal
                 .get("source")
@@ -5399,6 +5446,7 @@ fn assert_patch_modal_composition(
                 Some(expected_state)
             );
             assert_eq!(painted.get("validActions"), projected.get("validActions"));
+            assert!(painted.get("actionText").is_some_and(Value::is_null));
             assert!(
                 painted
                     .pointer("/bounds/heightPx")
@@ -5461,6 +5509,7 @@ fn assert_patch_modal_composition(
                 .and_then(Value::as_u64),
             Some(0)
         );
+        assert!(modal.get("footerGuidance").is_some_and(Value::is_null));
         return;
     }
 
@@ -5595,13 +5644,8 @@ fn assert_patch_modal_composition(
 ///
 /// Two facts no text observation can see:
 ///
-/// - **The position rail keeps its width with a hint run present.** The rail is
-///   the primary visual readout of a numeric parameter and it is the only
-///   growing item on its line, so anything that shares that line takes the
-///   rail's width rather than its own. Asserted on every painted rail, at both
-///   representative viewports, on every PATCH document — the pre-existing `rail > 5`
-///   check in T011 measures one fixture only, and this package is what put a
-///   nine-action run on every row.
+/// - **The position rail keeps useful width with action guidance centralized
+///   in the footer.** No subordinate row paints a duplicate action run.
 /// - **What the workspace body got, and what it needed.** Reported at both
 ///   viewports; subordinate rows may scroll inside their owning region.
 fn assert_patch_workspace_geometry(
@@ -5626,31 +5670,9 @@ fn assert_patch_workspace_geometry(
             )
     };
     for row in painted_rows() {
-        // The hint run takes the row's second line, whole. Asserted
-        // structurally — the run's top edge is at or below the label's bottom
-        // edge — rather than as a width threshold, because a threshold is only
-        // as discriminating as the widest fixture that happens to reach it.
-        // Sharing line one is the defect; a number is only its symptom.
-        let (Some(label_bottom), Some(hints_top)) = (
-            row.pointer("/labelEdges/bottomPx").and_then(Value::as_f64),
-            row.pointer("/hintEdges/topPx").and_then(Value::as_f64),
-        ) else {
-            continue; // a row with no valid actions paints no hint run
-        };
-        assert!(
-            hints_top >= label_bottom,
-            "{label}: row {} paints its {}px hint run on the row's first line (run top \
-             {hints_top}px against a label bottom of {label_bottom}px) — the run and the \
-             position rail are competing for one line, and the rail is the item that loses \
-             (rail {}px)",
-            row.get("control").and_then(Value::as_str).unwrap_or("?"),
-            row.get("hintsPx")
-                .and_then(Value::as_f64)
-                .unwrap_or_default(),
-            row.get("railPx")
-                .and_then(Value::as_f64)
-                .map_or_else(|| "no ".to_owned(), |rail| format!("{rail}")),
-        );
+        assert!(row.get("hints").is_some_and(Value::is_null));
+        assert!(row.get("hintsPx").is_some_and(Value::is_null));
+        assert!(row.get("hintEdges").is_some_and(Value::is_null));
         if let Some(rail) = row.get("railPx").and_then(Value::as_f64) {
             assert!(
                 rail > 5.0,
@@ -5835,8 +5857,32 @@ fn assert_patch_utility_panel(
              never a serialization key (got {row_label:?})"
         );
     }
+    for row in observation
+        .pointer("/inspector/utility")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let control = row.get("control").and_then(Value::as_str).unwrap_or("");
+        let value = row.get("value").and_then(Value::as_str).unwrap_or("");
+        assert!(
+            !value.ends_with(".000"),
+            "{label}: Utility row {control} does not paint arbitrary fixed precision ({value:?})"
+        );
+        if matches!(
+            control,
+            "patch.global.masterGainDb" | "patch.output.trimGainDb"
+        ) {
+            assert_eq!(
+                row.get("unit").and_then(Value::as_str),
+                Some("dB"),
+                "{label}: gain row {control} paints its canonical unit"
+            );
+        }
+    }
 
-    // The authored identity caption and hint line (design file 36:51, 36:52).
+    // The authored identity caption remains, while action guidance stays in
+    // the persistent footer rather than repeating in the panel.
     let patch_id = utility_surface
         .pointer("/summary/patchId")
         .and_then(Value::as_u64)
@@ -5856,26 +5902,11 @@ fn assert_patch_utility_panel(
         "{label}: the Utility caption paints the projected identity and the \
          projected name — never a capability identity"
     );
-    let modal_active = matches!(
-        document.get("activeSurface").and_then(Value::as_str),
-        Some("patchChoice" | "sampleBrowser")
+    assert_eq!(
+        observation.pointer("/inspector/hintLine"),
+        Some(&Value::Null),
+        "{label}: the Utility/Inspector panel does not duplicate footer guidance"
     );
-    if modal_active {
-        assert_eq!(
-            observation.pointer("/inspector/hintLine"),
-            Some(&Value::Null),
-            "{label}: an inactive Utility panel invents no modal action hint"
-        );
-    } else {
-        assert!(
-            observation
-                .pointer("/inspector/hintLine")
-                .and_then(Value::as_str)
-                .is_some_and(|line| line.contains("return")),
-            "{label}: the panel paints its projected hint line (got {:?})",
-            observation.pointer("/inspector/hintLine")
-        );
-    }
 
     // The persistent side region honors the responsive floor, and the meter
     // paints nothing when no mixer track is focused.
@@ -6037,6 +6068,48 @@ fn assert_patch_detail_composition(
         painted, expected,
         "{label}: the detail composition paints the projected rows, in projected order"
     );
+    for (row, control) in detail
+        .get("rows")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .zip(
+            detail_surface
+                .get("controls")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true)),
+        )
+    {
+        if control.get("numericRange").is_none_or(Value::is_null) {
+            continue;
+        }
+        let control_id = row.get("control").and_then(Value::as_str).unwrap_or("");
+        let value = row.get("value").and_then(Value::as_str).unwrap_or("");
+        let range = row.get("range").and_then(Value::as_str).unwrap_or("");
+        assert!(
+            !value.ends_with(".000") && !range.contains(".000"),
+            "{label}: Detail row {control_id} uses unit-aware compact numbers ({value:?}, {range:?})"
+        );
+        let projected_unit = control.get("unit").and_then(Value::as_str);
+        let normalized = matches!(
+            (
+                control
+                    .pointer("/numericRange/minimum")
+                    .and_then(Value::as_f64),
+                control
+                    .pointer("/numericRange/maximum")
+                    .and_then(Value::as_f64),
+            ),
+            (Some(0.0), Some(1.0)) | (Some(-1.0), Some(1.0))
+        );
+        assert_eq!(
+            row.get("unit").and_then(Value::as_str),
+            projected_unit.or(normalized.then_some("%")),
+            "{label}: Detail row {control_id} paints its physical unit or normalized percentage"
+        );
+    }
     assert!(
         detail
             .get("rows")
@@ -6113,12 +6186,13 @@ fn assert_patch_detail_composition(
     let expected_visualizations = detail_surface
         .get("visualizations")
         .and_then(Value::as_array)
-        .map_or(0, Vec::len);
+        .cloned()
+        .unwrap_or_default();
     let painted_visualizations = detail
         .get("visualizations")
         .and_then(Value::as_array)
         .unwrap_or_else(|| panic!("{label}: Detail reports its optional visualizations"));
-    assert_eq!(painted_visualizations.len(), expected_visualizations);
+    assert_eq!(painted_visualizations.len(), expected_visualizations.len());
     assert!(
         painted_visualizations.iter().all(|visualization| {
             visualization.get("focusable").and_then(Value::as_bool) == Some(false)
@@ -6126,6 +6200,177 @@ fn assert_patch_detail_composition(
         }),
         "{label}: projected Detail visualizations are explicitly outside focus order"
     );
+    for (painted, projected) in painted_visualizations.iter().zip(&expected_visualizations) {
+        assert_eq!(painted.get("id"), projected.get("id"));
+        assert_eq!(painted.get("kind"), projected.pointer("/data/kind"));
+        if projected.pointer("/data/kind").and_then(Value::as_str) != Some("envelope") {
+            continue;
+        }
+        let envelope = painted
+            .get("envelope")
+            .filter(|value| !value.is_null())
+            .unwrap_or_else(|| panic!("{label}: Envelope paints computed SVG geometry"));
+        for (painted_key, projected_key) in [
+            ("attackMilliseconds", "attackMilliseconds"),
+            ("attackMaximumMilliseconds", "attackMaximumMilliseconds"),
+            ("decayMilliseconds", "decayMilliseconds"),
+            ("decayMaximumMilliseconds", "decayMaximumMilliseconds"),
+            ("sustain", "sustain"),
+            ("releaseMilliseconds", "releaseMilliseconds"),
+            ("releaseMaximumMilliseconds", "releaseMaximumMilliseconds"),
+        ] {
+            let actual = envelope
+                .get(painted_key)
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("{label}: painted Envelope reports {painted_key}"));
+            let expected = projected
+                .pointer(&format!("/data/{projected_key}"))
+                .and_then(Value::as_f64)
+                .unwrap_or_else(|| panic!("{label}: projected Envelope reports {projected_key}"));
+            assert!(
+                (actual - expected).abs() < 0.001,
+                "{label}: SVG {painted_key} {actual} follows projected value {expected}"
+            );
+        }
+        let points = envelope
+            .get("points")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: Envelope SVG reports its stage points"))
+            .split_whitespace()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            points.len(),
+            6,
+            "{label}: the ADSR path has start, attack, decay, sustain, release, and viewport-end points"
+        );
+        let parsed_points = points
+            .iter()
+            .map(|point| {
+                let (x, y) = point
+                    .split_once(',')
+                    .unwrap_or_else(|| panic!("{label}: SVG point {point:?} is x,y"));
+                (
+                    x.parse::<f64>()
+                        .unwrap_or_else(|error| panic!("{label}: point x {x:?}: {error}")),
+                    y.parse::<f64>()
+                        .unwrap_or_else(|error| panic!("{label}: point y {y:?}: {error}")),
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            envelope.get("timeCoordinate").and_then(Value::as_str),
+            Some("log1p-milliseconds"),
+            "{label}: the parameterized SVG declares its stable logarithmic millisecond scale"
+        );
+        let attack_maximum = envelope
+            .get("attackMaximumMilliseconds")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: SVG reports the canonical Attack maximum"));
+        let decay_maximum = envelope
+            .get("decayMaximumMilliseconds")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: SVG reports the canonical Decay maximum"));
+        let release_maximum = envelope
+            .get("releaseMaximumMilliseconds")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: SVG reports the canonical Release maximum"));
+        let phase_span = envelope
+            .get("phaseSpanUnits")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: SVG reports its stable timed-phase span"));
+        let sustain_preview_span = envelope
+            .get("sustainPreviewSpanUnits")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: SVG reports its non-temporal sustain preview"));
+        let viewbox_width = envelope
+            .get("viewBoxWidthUnits")
+            .and_then(Value::as_f64)
+            .unwrap_or_else(|| panic!("{label}: SVG reports its fixed display width"));
+        assert_eq!(attack_maximum, 10_000.0);
+        assert_eq!(decay_maximum, 10_000.0);
+        assert_eq!(release_maximum, 10_000.0);
+        assert_eq!(phase_span, 1_000.0);
+        assert_eq!(sustain_preview_span, 1_000.0);
+        assert_eq!(viewbox_width, 4_000.0);
+        let attack = envelope["attackMilliseconds"].as_f64().unwrap();
+        let decay = envelope["decayMilliseconds"].as_f64().unwrap();
+        let sustain = envelope["sustain"].as_f64().unwrap();
+        let release = envelope["releaseMilliseconds"].as_f64().unwrap();
+        let timed_span =
+            |milliseconds: f64, maximum: f64| phase_span * milliseconds.ln_1p() / maximum.ln_1p();
+        let attack_span = timed_span(attack, attack_maximum);
+        let decay_span = timed_span(decay, decay_maximum);
+        let release_span = timed_span(release, release_maximum);
+        let expected_x = [
+            0.0,
+            attack_span,
+            attack_span + decay_span,
+            attack_span + decay_span + sustain_preview_span,
+            attack_span + decay_span + sustain_preview_span + release_span,
+            viewbox_width,
+        ];
+        let sustain_y = 960.0 - 920.0 * sustain;
+        let expected_y = [960.0, 40.0, sustain_y, sustain_y, 960.0, 960.0];
+        for (index, ((actual_x, actual_y), (expected_x, expected_y))) in parsed_points
+            .iter()
+            .zip(expected_x.into_iter().zip(expected_y))
+            .enumerate()
+        {
+            assert!(
+                (*actual_x - expected_x).abs() < 0.001
+                    && (*actual_y - expected_y).abs() < 0.001,
+                "{label}: SVG point {index} ({actual_x}, {actual_y}) follows the stable log1p-ms ADSR point ({expected_x}, {expected_y})"
+            );
+        }
+        let attack_width_percent = parsed_points[1].0 / viewbox_width * 100.0;
+        if (attack - 100.0).abs() < 0.001 {
+            assert!(
+                (12.4..=12.7).contains(&attack_width_percent),
+                "{label}: 100 ms Attack occupies about 12.5% of the stable plot, got {attack_width_percent}%"
+            );
+        }
+        if (attack - 5_000.0).abs() < 0.001 {
+            assert!(
+                (23.0..=23.3).contains(&attack_width_percent),
+                "{label}: 5 s Attack occupies about 23.1% of the stable plot, got {attack_width_percent}%"
+            );
+        }
+        assert!(
+            envelope
+                .get("path")
+                .and_then(Value::as_str)
+                .is_some_and(|path| path.starts_with("M 0.000 960.000 L ")),
+            "{label}: parameterized stage points drive one SVG path"
+        );
+        let value_text = envelope
+            .get("valueText")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: Envelope paints its value readout"));
+        assert_eq!(
+            value_text.matches(" ms").count(),
+            3,
+            "{label}: A, D, and R are presented explicitly in milliseconds"
+        );
+        assert!(
+            value_text.contains('%'),
+            "{label}: sustain is presented as a level percentage"
+        );
+        let shape = painted
+            .get("shapeBounds")
+            .filter(|value| !value.is_null())
+            .unwrap_or_else(|| panic!("{label}: Envelope SVG has painted bounds"));
+        assert!(
+            shape
+                .get("widthPx")
+                .and_then(Value::as_f64)
+                .is_some_and(|width| width > 0.0)
+                && shape
+                    .get("heightPx")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|height| height > 0.0),
+            "{label}: Envelope SVG occupies a real aligned plot area"
+        );
+    }
 
     // A row the capability declared read-only is distinguishable with the
     // colour removed. SoundFont's detail carries both a ReadOnly row and a

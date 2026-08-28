@@ -52,6 +52,7 @@
 pub mod frame_stream;
 pub mod input_capture;
 pub mod meter_channel;
+pub mod midi_activity_channel;
 pub mod projection_channel;
 pub mod token_export;
 pub mod window;

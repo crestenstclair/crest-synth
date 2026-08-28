@@ -180,6 +180,11 @@ struct MidiTreeTemplate {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     ///
+    /// Version 19: reducer-owned physical MIDI registry, preference intent,
+    /// scan, request, and active-revision facts joined the canonical trace.
+    /// Runtime handles, callback queues, timestamps, and observations remain
+    /// outside the tree.
+    ///
     /// Version 17: Sample Browser file controls gained typed catalog metadata
     /// status, admitted format fields, duration/channel data, and explicit
     /// failure text. The frame still contains no decoded PCM or absolute path.
@@ -217,7 +222,7 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 18;
+    pub const SCHEMA_VERSION: u32 = 19;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -244,6 +249,7 @@ impl StateTree {
         "engineSelection.correlation.sourceGraphRevision",
         "engineSelection.correlation.targetGraphRevision",
         "engineSelection.failure",
+        "midiInput",
         "patchPage",
         "graphicalShell",
         "projection.context",
@@ -574,6 +580,47 @@ impl StateTree {
         "parameters.returns[].scalars[]",
         "parameters.returns[].returnLevel",
         "parameters.global.masterGainDb",
+        "midiInput.active",
+        "midiInput.active.identity.identity",
+        "midiInput.active.identity.identitySchema",
+        "midiInput.active.revision",
+        "midiInput.connectionIntent",
+        "midiInput.lastRequestId",
+        "midiInput.lastRevision",
+        "midiInput.lastScanId",
+        "midiInput.operationFailure",
+        "midiInput.operationFailure.identity.identity",
+        "midiInput.operationFailure.identity.identitySchema",
+        "midiInput.operationFailure.kind",
+        "midiInput.operationFailure.revision",
+        "midiInput.operationFailureIdentity",
+        "midiInput.operationFailureIdentity.identity",
+        "midiInput.operationFailureIdentity.identitySchema",
+        "midiInput.preferenceFailure",
+        "midiInput.preferenceFailure.kind",
+        "midiInput.preferenceLoaded",
+        "midiInput.registry[].descriptor.displayName",
+        "midiInput.registry[].descriptor.id.identity",
+        "midiInput.registry[].descriptor.id.identitySchema",
+        "midiInput.registry[].descriptor.portFacts.manufacturer",
+        "midiInput.registry[].descriptor.portFacts.product",
+        "midiInput.registry[].descriptor.portFacts.transport",
+        "midiInput.registry[].present",
+        "midiInput.requestPrepared",
+        "midiInput.requested",
+        "midiInput.requested.identity.identity",
+        "midiInput.requested.identity.identitySchema",
+        "midiInput.requested.requestId",
+        "midiInput.requested.revision",
+        "midiInput.scan.failure.kind",
+        "midiInput.scan.kind",
+        "midiInput.scan.lastSuccessfulScanId",
+        "midiInput.scan.scanId",
+        "midiInput.selected",
+        "midiInput.selected.identity",
+        "midiInput.selected.identitySchema",
+        "midiInput.selected.lastKnownDisplayName",
+        "midiInput.shuttingDown",
     ];
 
     /// Returns the production-owned stable StateTree property surface.
@@ -602,6 +649,8 @@ impl StateTree {
                 "interaction.activeFocus.controlId.id",
                 "interaction.activeFocus.controlId.id.bus",
                 "interaction.activeFocus.controlId.id.id",
+                "interaction.activeFocus.controlId.id.identity",
+                "interaction.activeFocus.controlId.id.identitySchema",
                 "interaction.activeFocus.controlId.id.kind",
                 "interaction.activeFocus.controlId.id.parameter",
                 "interaction.activeFocus.controlId.id.trackId",
@@ -1255,6 +1304,7 @@ struct SerializableStateTree<'a> {
     returns: &'a crate::control::serialized_state::SerializedBusReturns,
     interaction: &'a SerializedInteractionState,
     engine_selection: &'a EngineSelectionStatus,
+    midi_input: &'a crate::control::MidiInputState,
     patch_page: Option<&'a PatchPageProjection>,
     graphical_shell: &'a GraphicalShellProjection,
     projection: &'a TextProjection,
@@ -1280,6 +1330,7 @@ impl<'a> SerializableStateTree<'a> {
             returns: &state.returns,
             interaction: &state.interaction,
             engine_selection: &state.engine_selection,
+            midi_input: &state.midi_input,
             patch_page,
             graphical_shell,
             projection,
@@ -1542,7 +1593,7 @@ mod tests {
         assert_eq!(tree.state_hash(), snapshot.hash());
 
         let root = value.as_object().unwrap();
-        assert_eq!(root.len(), 14);
+        assert_eq!(root.len(), 15);
         for property in [
             "schemaVersion",
             "generation",
@@ -1554,6 +1605,7 @@ mod tests {
             "returns",
             "interaction",
             "engineSelection",
+            "midiInput",
             "patchPage",
             "graphicalShell",
             "projection",

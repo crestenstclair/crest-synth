@@ -146,6 +146,15 @@ impl SampleBrowserState {
         self.preview_request_id
     }
 
+    pub const fn preview_is_held(&self) -> bool {
+        matches!(
+            self.preview,
+            SamplePreviewState::Held { .. }
+                | SamplePreviewState::Preparing { held: true, .. }
+                | SamplePreviewState::Playing { .. }
+        )
+    }
+
     pub fn row(&self, id: &str) -> Option<&SampleBrowserRow> {
         self.rows.iter().find(|row| row.id() == id)
     }

@@ -6,7 +6,10 @@ use crate::control::engine_selection::{
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::text_projection::TextProjection;
 use crate::control::top_level_context::TopLevelContext;
-use crate::control::{InteractionMode, SurfaceId};
+use crate::control::{
+    InteractionMode, MidiConnectionRequestId, MidiConnectionRevision, MidiDeviceFailure,
+    MidiInputDescriptor, MidiInputDeviceId, MidiInputPreference, MidiInputScanId, SurfaceId,
+};
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::GraphRevision;
@@ -24,16 +27,18 @@ pub enum EventSource {
     Startup,
     Keyboard,
     AutomaticMidi,
+    PhysicalMidi,
     DemoScene,
     Worker,
     System,
 }
 
 impl EventSource {
-    pub const ALL: [Self; 6] = [
+    pub const ALL: [Self; 7] = [
         Self::Startup,
         Self::Keyboard,
         Self::AutomaticMidi,
+        Self::PhysicalMidi,
         Self::DemoScene,
         Self::Worker,
         Self::System,
@@ -48,6 +53,7 @@ impl EventSource {
             Self::Startup => "startup",
             Self::Keyboard => "keyboard",
             Self::AutomaticMidi => "automaticMidi",
+            Self::PhysicalMidi => "physicalMidi",
             Self::DemoScene => "demoScene",
             Self::Worker => "worker",
             Self::System => "system",
@@ -286,6 +292,7 @@ pub enum EventInput {
         mode: InteractionMode,
     },
     OpenRelated,
+    OpenMidiSettings,
     Activate,
     PreviewStart,
     PreviewStop,
@@ -396,6 +403,52 @@ pub enum EventInput {
         target_graph_revision: GraphRevision,
         failure: EngineSelectionFailure,
     },
+    MidiInputPreferenceRestored {
+        preference: Option<MidiInputPreference>,
+        failure: Option<MidiDeviceFailure>,
+    },
+    MidiInputPreferenceStoreFailed {
+        failure: MidiDeviceFailure,
+    },
+    MidiInputScanStarted,
+    MidiInputScanSucceeded {
+        #[serde(rename = "scanId")]
+        scan_id: MidiInputScanId,
+        descriptors: Vec<MidiInputDescriptor>,
+    },
+    MidiInputScanFailed {
+        #[serde(rename = "scanId")]
+        scan_id: MidiInputScanId,
+        failure: MidiDeviceFailure,
+    },
+    MidiInputConnectRequested {
+        identity: MidiInputDeviceId,
+    },
+    MidiInputConnectionPrepared {
+        #[serde(rename = "requestId")]
+        request_id: MidiConnectionRequestId,
+        revision: MidiConnectionRevision,
+    },
+    MidiInputActivationAcknowledged {
+        #[serde(rename = "requestId")]
+        request_id: MidiConnectionRequestId,
+        revision: MidiConnectionRevision,
+    },
+    MidiInputDisconnectRequested {
+        identity: MidiInputDeviceId,
+    },
+    MidiInputConnectionLost {
+        identity: MidiInputDeviceId,
+        revision: MidiConnectionRevision,
+    },
+    MidiInputOperationFailed {
+        identity: MidiInputDeviceId,
+        #[serde(rename = "requestId")]
+        request_id: Option<MidiConnectionRequestId>,
+        revision: Option<MidiConnectionRevision>,
+        failure: MidiDeviceFailure,
+    },
+    MidiInputShutdownRequested,
 }
 
 impl From<&AppEvent> for EventInput {
@@ -413,6 +466,7 @@ impl From<&AppEvent> for EventInput {
             },
             AppEvent::SetInteractionMode(mode) => Self::SetInteractionMode { mode: *mode },
             AppEvent::OpenRelated => Self::OpenRelated,
+            AppEvent::OpenMidiSettings => Self::OpenMidiSettings,
             AppEvent::Activate => Self::Activate,
             AppEvent::PreviewStart => Self::PreviewStart,
             AppEvent::PreviewStop => Self::PreviewStop,
@@ -551,6 +605,70 @@ impl From<&AppEvent> for EventInput {
                 target_graph_revision: *target_graph_revision,
                 failure: *failure,
             },
+            AppEvent::MidiInputPreferenceRestored {
+                preference,
+                failure,
+            } => Self::MidiInputPreferenceRestored {
+                preference: preference.clone(),
+                failure: failure.clone(),
+            },
+            AppEvent::MidiInputPreferenceStoreFailed { failure } => {
+                Self::MidiInputPreferenceStoreFailed {
+                    failure: failure.clone(),
+                }
+            }
+            AppEvent::MidiInputScanStarted => Self::MidiInputScanStarted,
+            AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors,
+            } => Self::MidiInputScanSucceeded {
+                scan_id: *scan_id,
+                descriptors: descriptors.clone(),
+            },
+            AppEvent::MidiInputScanFailed { scan_id, failure } => Self::MidiInputScanFailed {
+                scan_id: *scan_id,
+                failure: failure.clone(),
+            },
+            AppEvent::MidiInputConnectRequested { identity } => Self::MidiInputConnectRequested {
+                identity: identity.clone(),
+            },
+            AppEvent::MidiInputConnectionPrepared {
+                request_id,
+                revision,
+            } => Self::MidiInputConnectionPrepared {
+                request_id: *request_id,
+                revision: *revision,
+            },
+            AppEvent::MidiInputActivationAcknowledged {
+                request_id,
+                revision,
+            } => Self::MidiInputActivationAcknowledged {
+                request_id: *request_id,
+                revision: *revision,
+            },
+            AppEvent::MidiInputDisconnectRequested { identity } => {
+                Self::MidiInputDisconnectRequested {
+                    identity: identity.clone(),
+                }
+            }
+            AppEvent::MidiInputConnectionLost { identity, revision } => {
+                Self::MidiInputConnectionLost {
+                    identity: identity.clone(),
+                    revision: *revision,
+                }
+            }
+            AppEvent::MidiInputOperationFailed {
+                identity,
+                request_id,
+                revision,
+                failure,
+            } => Self::MidiInputOperationFailed {
+                identity: identity.clone(),
+                request_id: *request_id,
+                revision: *revision,
+                failure: failure.clone(),
+            },
+            AppEvent::MidiInputShutdownRequested => Self::MidiInputShutdownRequested,
         }
     }
 }
@@ -565,6 +683,7 @@ impl EventInput {
                 | Self::Navigate { .. }
                 | Self::SetInteractionMode { .. }
                 | Self::OpenRelated
+                | Self::OpenMidiSettings
                 | Self::PreviewStart
                 | Self::PreviewStop
                 | Self::SetPatchOverviewOriginEnabled { .. }
@@ -573,6 +692,18 @@ impl EventInput {
                 | Self::SampleCatalogRefreshed { .. }
                 | Self::EnterSurface { .. }
                 | Self::Return
+                | Self::MidiInputPreferenceRestored { .. }
+                | Self::MidiInputPreferenceStoreFailed { .. }
+                | Self::MidiInputScanStarted
+                | Self::MidiInputScanSucceeded { .. }
+                | Self::MidiInputScanFailed { .. }
+                | Self::MidiInputConnectRequested { .. }
+                | Self::MidiInputConnectionPrepared { .. }
+                | Self::MidiInputActivationAcknowledged { .. }
+                | Self::MidiInputDisconnectRequested { .. }
+                | Self::MidiInputConnectionLost { .. }
+                | Self::MidiInputOperationFailed { .. }
+                | Self::MidiInputShutdownRequested
         )
     }
 }
@@ -1648,9 +1779,9 @@ mod tests {
     }
 
     #[test]
-    fn event_source_surface_includes_worker_with_stable_serialized_names() {
+    fn event_source_surface_includes_physical_midi_with_stable_serialized_names() {
         let descriptor = EventSource::surface_descriptor();
-        assert_eq!(descriptor.len(), 6);
+        assert_eq!(descriptor.len(), 7);
         for (index, source) in descriptor.iter().enumerate() {
             assert!(!descriptor[..index].contains(source));
             assert_eq!(
@@ -1659,6 +1790,8 @@ mod tests {
             );
         }
         assert!(descriptor.contains(&EventSource::Worker));
+        assert!(descriptor.contains(&EventSource::PhysicalMidi));
+        assert_ne!(EventSource::PhysicalMidi, EventSource::AutomaticMidi);
     }
 
     #[test]
@@ -1734,6 +1867,27 @@ mod tests {
         assert_eq!(json["input"]["patchId"], 1);
         assert_eq!(json["input"]["message"]["kind"], "noteOn");
         assert_eq!(json["rejection"], serde_json::Value::Null);
+
+        let physical_record = EventRecord::accepted(
+            8,
+            EventSource::PhysicalMidi,
+            &event,
+            generation_before,
+            "previous-state-hash",
+            outcome.accepted(),
+            &snapshot,
+            state.generation(),
+            GraphRevision::INITIAL,
+            true,
+            &projection,
+            outcome.audio_command().copied(),
+            outcome.engine_selection_effect().cloned(),
+        )
+        .unwrap();
+        let physical_json: serde_json::Value =
+            serde_json::from_str(&physical_record.to_json().unwrap()).unwrap();
+        assert_eq!(physical_record.source(), EventSource::PhysicalMidi);
+        assert_eq!(physical_json["source"], "physicalMidi");
     }
 
     #[test]

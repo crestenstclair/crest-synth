@@ -37,7 +37,7 @@ use crest_synth::real_time::structural_graph_boundary::{
 use crest_synth::real_time::structural_graph_coordinator::StructuralGraphCoordinator;
 use crest_synth::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-    ProjectionCallback, TickCallback, WindowError,
+    MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
 };
 use crest_synth::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
@@ -367,6 +367,7 @@ impl AppWindow for OneTickWindow {
         _on_input: AppInputCallback,
         projection: ProjectionCallback,
         _audio_observation: AudioObservationCallback,
+        _midi_activity: MidiActivityObservationCallback,
         mut on_tick: TickCallback,
         _on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError> {

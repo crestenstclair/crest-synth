@@ -11,12 +11,11 @@
 // persistent side region, footer); nothing forks the schema and no field is
 // invented.
 //
-// The one carve-out is presentation-only meter animation:
-// the crest://meters listener repaints ONLY the meter element from the
-// latest AudioObservationSnapshot frame, mirroring the retired-shell rule — a
-// reading shows only when the frame's parameterGeneration and
-// activeGraphRevision both match the document on screen; a missing or stale
-// frame reads the zero state.
+// The presentation-only carve-outs are the latest observation channels.
+// crest://meters repaints only meter elements when its generations match the
+// document on screen; crest://midi-activity repaints only the active MIDI
+// inspector when its connection revision matches. Missing or stale frames
+// render explicit resting states and never mutate the projected model.
 //
 // This page registers no key handler and captures no input; keys are
 // captured Rust-side (WP01/WP02 boundary). Listener glue (tauri events →
@@ -27,6 +26,7 @@
 (function pageModule() {
   var PROJECTION_EVENT = "crest://projection";
   var METER_EVENT = "crest://meters";
+  var MIDI_ACTIVITY_EVENT = "crest://midi-activity";
   var PAINTED_EVENT = "crest://painted";
   var READY_EVENT = "crest://ready";
   var RENDER_ERROR_EVENT = "crest://render-error";
@@ -174,6 +174,13 @@
 
   function persistentSideSurface(model) {
     return surfaceByRole(model, "persistentSide");
+  }
+
+  function midiSettingsSurface(model) {
+    var surface = surfaceById(model, "midiDeviceSettings");
+    return surface && surface.summary && surface.summary.kind === "midiDeviceSettings"
+      ? surface
+      : null;
   }
 
   // The serialized identity of one projected control ("patch.engine",
@@ -377,7 +384,7 @@
         continue; // null hints never render (spike defect, kept fixed)
       }
       spans.push(
-        '<span class="type-hint focus">' +
+        '<span class="type-hint focus action-hint" data-role="action-hint">' +
           escapeHtml(action.hint) +
           ":" +
           escapeHtml(hintLabel(action)) +
@@ -385,17 +392,6 @@
       );
     }
     return spans.join(" ");
-  }
-
-  function actionsOfKind(model, kind) {
-    var out = [];
-    var actions = model.validActions || [];
-    for (var i = 0; i < actions.length; i += 1) {
-      if (actions[i].action && actions[i].action.kind === kind) {
-        out.push(actions[i]);
-      }
-    }
-    return out;
   }
 
   // ---- the shared control-state vocabulary --------------------------------
@@ -462,11 +458,11 @@
     return String(mode) === "adjust" ? "adjusting" : "focused";
   }
 
-  // Renders one typed document value as finished text, mirroring the shipped
-  // row's presentation (parameter_row::value_text): continuous values read to
-  // three places, toggles read ON/OFF, identities and summaries read as
-  // themselves, assets read their locator. An unknown value kind is an
-  // explicit `?kind` marker, never an empty cell.
+  // Renders one typed document value as finished text. Numeric presentation is
+  // driven by the row's projected range, edit step, and unit: milliseconds and
+  // physical units stay in their native scale, while authored unitless
+  // normalized/bipolar ranges become percentages. Arbitrary fixed precision is
+  // never part of the display contract.
   function controlValueText(control) {
     var value = control && control.value;
     if (!value || typeof value !== "object") {
@@ -480,13 +476,13 @@
       // "0.000" and a voice limit "64.000".
       return control.kind === "stepped"
         ? String(Math.round(Number(value.value)))
-        : Number(value.value).toFixed(3);
+        : numericValueText(control, Number(value.value));
     }
     if (value.kind === "parameter") {
       var parameter = value.value;
       if (parameter && typeof parameter === "object") {
         if (parameter.kind === "continuous") {
-          return Number(parameter.value).toFixed(3);
+          return numericValueText(control, Number(parameter.value));
         }
         if (parameter.kind === "stepped") {
           return String(parameter.value);
@@ -525,6 +521,67 @@
     return "?" + String(value.kind);
   }
 
+  function normalizedPercentage(control) {
+    var range = control && control.numericRange;
+    if (control && control.unit) {
+      return false;
+    }
+    if (
+      !range ||
+      typeof range.minimum !== "number" ||
+      typeof range.maximum !== "number"
+    ) {
+      return false;
+    }
+    return (
+      (range.minimum === 0 && range.maximum === 1) ||
+      (range.minimum === -1 && range.maximum === 1)
+    );
+  }
+
+  function decimalPlacesForStep(step) {
+    if (!Number.isFinite(step) || step <= 0) {
+      return 3;
+    }
+    for (var places = 0; places <= 6; places += 1) {
+      var scaled = step * Math.pow(10, places);
+      if (Math.abs(scaled - Math.round(scaled)) < 0.0000001) {
+        return places;
+      }
+    }
+    return 6;
+  }
+
+  function compactNumericText(value, step) {
+    if (!Number.isFinite(value)) {
+      return UNAVAILABLE_MARK;
+    }
+    var places = Math.max(3, decimalPlacesForStep(step));
+    var text = value
+      .toFixed(places)
+      .replace(/\.0+$/, "")
+      .replace(/(\.\d*?[1-9])0+$/, "$1");
+    return text === "-0" ? "0" : text;
+  }
+
+  function numericValueText(control, value) {
+    var percentage = normalizedPercentage(control);
+    var scale = percentage ? 100 : 1;
+    var range = control && control.numericRange;
+    var step =
+      range && typeof range.fineStep === "number"
+        ? range.fineStep * scale
+        : 0.001 * scale;
+    return compactNumericText(value * scale, step);
+  }
+
+  function controlUnitText(control) {
+    if (control && control.unit) {
+      return String(control.unit);
+    }
+    return normalizedPercentage(control) ? "%" : "";
+  }
+
   // The non-color signal a state carries beside its row (state.rs
   // NonColorSignal): Disabled says "Locked", Loading says the document's own
   // lifecycle word, Error says the typed failure text, an unknown state says
@@ -553,6 +610,15 @@
   // ---- band renderers (pure: document in, HTML string out) ---------------
 
   function contextLineHtml(model) {
+    var settings = midiSettingsSurface(model);
+    if (settings) {
+      return (
+        '<span class="type-heading">CREST SYNTH</span>' +
+        '<span class="spring"></span>' +
+        '<span class="type-label focus context-entry" data-context="settings" data-active="true"><span class="patch">*</span> SETTINGS</span>' +
+        '<span class="type-label positive" data-role="status">WATCHING</span>'
+      );
+    }
     // The two declared top-level contexts; the active one carries the
     // authored "*" marker so activity is legible beyond color.
     var contexts = ["patch", "mixer"];
@@ -600,6 +666,17 @@
   // metadata content differs, and it comes from the document's own surface
   // summaries, never from a page-side fork.
   function identityHeaderHtml(model, columns) {
+    var settings = midiSettingsSurface(model);
+    if (settings) {
+      return (
+        '<span class="type-display">MIDI DEVICES</span>' +
+        '<span class="type-label muted">/ PHYSICAL INPUT</span>' +
+        '<span class="spring"></span>' +
+        '<span class="type-value focus" data-role="focus-annotation">' +
+        escapeHtml(focusIdentity(model)) +
+        "</span>"
+      );
+    }
     var metadata;
     if (model.context === "patch") {
       var main = surfaceById(model, "patchMain");
@@ -779,25 +856,19 @@
   }
 
   // The shared workspace scaffold both contexts ride: one caption row
-  // (context-specific left run, the meter, a spring, a context-specific
-  // right run, the navigate hints), the workspace body, and one mode hint
-  // row. The rows are structural bands, not per-context forks.
+  // (context-specific left run, the meter, a spring, and a context-specific
+  // right run) followed by the workspace body. Current action guidance has
+  // one visual owner, the persistent shell footer; repeating subsets here
+  // makes the workspace compete with the controls it is meant to explain.
   function workspaceScaffold(model, leftHtml, rightHtml, bodyHtml) {
-    var navigate = actionsOfKind(model, "navigate");
-    var mode = actionsOfKind(model, "setInteractionMode");
     return (
       '<div class="caption-row">' +
       leftHtml +
       meterHtml(model) +
       '<span class="spring"></span>' +
       rightHtml +
-      hintRun(navigate) +
       "</div>" +
-      bodyHtml +
-      '<div class="hint-row">' +
-      hintRun(mode) +
-      '<span class="spring"></span>' +
-      "</div>"
+      bodyHtml
     );
   }
 
@@ -826,15 +897,128 @@
     );
   }
 
+  function midiMarkerGlyph(marker) {
+    return {
+      openCircle: "○",
+      progressRing: "◌",
+      filledCircle: "●",
+      slashedCircle: "⊘",
+      stopSquare: "■",
+      errorDiamond: "◆",
+    }[marker] || "◇";
+  }
+
+  function midiFact(value) {
+    return value === null || value === undefined || value === ""
+      ? "UNKNOWN / NOT REPORTED"
+      : String(value).toUpperCase();
+  }
+
+  function midiSettingsWorkspaceHtml(model) {
+    var surface = midiSettingsSurface(model);
+    var summary = surface ? surface.summary : null;
+    var rows = (summary && summary.rows) || [];
+    var controls = (surface && surface.controls) || [];
+    var body = "";
+    if (rows.length === 0) {
+      var root = controls.length > 0 ? controls[0] : null;
+      body =
+        '<div class="midi-empty" data-focus-path="' +
+        escapeHtml(JSON.stringify((root && root.path) || null)) +
+        '"><span class="midi-status-marker" data-marker="openCircle">○</span>' +
+        '<div><span class="type-label">NO MIDI INPUTS FOUND</span>' +
+        '<span class="type-hint muted">WATCHING FOR DEVICES</span></div></div>';
+    } else {
+      for (var i = 0; i < rows.length; i += 1) {
+        var row = rows[i];
+        var control = controls[i] || null;
+        var facts = (row.descriptor && row.descriptor.portFacts) || null;
+        var focused = Boolean(row.focused);
+        body +=
+          '<div class="midi-device-row' +
+          (focused ? " focused" : "") +
+          '" data-midi-status="' +
+          escapeHtml(String(row.statusText || "")) +
+          '" data-marker="' +
+          escapeHtml(String(row.marker || "")) +
+          '" data-focus-path="' +
+          escapeHtml(JSON.stringify((control && control.path) || null)) +
+          '">' +
+          '<span class="midi-status-marker" aria-label="' +
+          escapeHtml(String(row.statusText || "UNKNOWN")) +
+          '">' +
+          midiMarkerGlyph(row.marker) +
+          "</span>" +
+          '<div class="midi-row-identity"><span class="type-value ' +
+          (focused ? "focus" : "secondary") +
+          '">' +
+          escapeHtml(String(row.descriptor.displayName || UNAVAILABLE)) +
+          '</span><span class="type-hint muted">' +
+          midiFact(facts && facts.manufacturer) +
+          HINT_SEPARATOR +
+          midiFact(facts && facts.transport) +
+          "</span></div>" +
+          '<span class="midi-row-status type-label">' +
+          escapeHtml(String(row.statusText || "UNKNOWN")) +
+          "</span>" +
+          (row.action
+            ? '<span class="type-hint secondary midi-row-action">' +
+              escapeHtml(String(row.action).toUpperCase()) +
+              "</span>"
+            : "") +
+          "</div>";
+      }
+    }
+    return workspaceScaffold(
+      model,
+      '<span class="type-label muted">AVAILABLE INPUTS</span>',
+      '<span class="type-hint positive">' +
+        escapeHtml(String((summary && summary.summary) || "WATCHING")) +
+        "</span>",
+      '<div class="midi-device-list" data-role="midi-device-list">' + body + "</div>"
+    );
+  }
+
+  function midiInputInspectorHtml(model) {
+    var surface = midiSettingsSurface(model);
+    var summary = surface ? surface.summary : null;
+    var inspector = summary && summary.activeInspector;
+    if (!inspector) {
+      return (
+        '<div class="inspector-pinned"><span class="type-label muted">ACTIVE INPUT</span>' +
+        '<span class="type-display secondary">NONE</span></div>' +
+        '<span class="type-hint muted">Connect one available input to inspect its acknowledged identity and live activity.</span>'
+      );
+    }
+    var descriptor = inspector.descriptor || {};
+    var facts = descriptor.portFacts || {};
+    return (
+      '<div class="inspector-pinned" data-midi-revision="' +
+      escapeHtml(String(inspector.revision)) +
+      '"><span class="type-label muted">ACTIVE INPUT</span>' +
+      '<span class="type-heading positive">' +
+      escapeHtml(String(descriptor.displayName || UNAVAILABLE)) +
+      '</span><span class="type-hint secondary">CONNECTED <span class="midi-inline-marker">●</span></span></div>' +
+      '<table class="type-hint secondary midi-facts"><tbody>' +
+      '<tr><td>TRANSPORT</td><td>' +
+      escapeHtml(midiFact(facts.transport)) +
+      '</td></tr><tr><td>MANUFACTURER</td><td>' +
+      escapeHtml(midiFact(facts.manufacturer)) +
+      '</td></tr><tr><td>PRODUCT</td><td>' +
+      escapeHtml(midiFact(facts.product)) +
+      '</td></tr><tr><td>ACTIVITY</td><td id="midi-activity-state" data-midi-activity-state="stale">WAITING</td></tr></tbody></table>' +
+      '<div class="midi-activity-card" id="midi-activity-card" data-midi-activity-state="stale">' +
+      '<span class="type-label muted">LIVE ACTIVITY</span>' +
+      '<span class="type-hint secondary">WAITING FOR MATCHING INPUT</span></div>'
+    );
+  }
+
   // ---- shared PATCH control rows -----------------------------------------
 
-  // One projected range endpoint in the row's own presentation: a continuous
-  // row reads its bounds to three places exactly as it reads its value, every
-  // other kind reads its bounds as themselves. No bound is inferred and no
-  // unit is formatted the document did not supply.
+  // One projected range endpoint in the same unit and precision as its value.
   function rangeEndpointText(control, value) {
     return control.kind === "continuous"
-      ? Number(value).toFixed(3)
+      ? numericValueText(control, Number(value))
       : String(value);
   }
 
@@ -924,28 +1108,15 @@
             position.toFixed(6) +
             '"></div></div>';
     }
-    var unit = control.unit
+    var unitText = controlUnitText(control);
+    var unit = unitText
       ? '<span class="prow-unit type-hint muted">' +
-        escapeHtml(String(control.unit)) +
+        escapeHtml(unitText) +
         "</span>"
       : "";
     var lockedMark = locked
       ? '<span class="prow-readonly type-hint muted" data-role="read-only">' +
         READ_ONLY_MARK +
-        "</span>"
-      : "";
-    // The row's own accepted actions, presented exactly as the footer
-    // presents the model-level list — same function, same projected labels
-    // and hints. At the focused row the two lists are the same value by
-    // construction, so neither is special-cased against the other. The
-    // Utility rows are excluded: the panel states its affordances once on its
-    // own authored hint line, and a nine-hint run does not seat in a 320 px
-    // side region.
-    var hintRunHtml =
-      role === "panel" ? "" : hintRun(control.validActions || []);
-    var hints = hintRunHtml
-      ? '<span class="prow-hints" data-role="row-hints">' +
-        hintRunHtml +
         "</span>"
       : "";
     var indexed = ordinal !== null && ordinal !== undefined;
@@ -992,7 +1163,6 @@
       unit +
       rangeHtml(control) +
       lockedMark +
-      hints +
       "</div>";
     return row + lifecycleHtml(control, id);
   }
@@ -1047,6 +1217,8 @@
         ? controlValueText({
             kind: control.kind,
             value: requested,
+            numericRange: control.numericRange,
+            unit: control.unit,
             // The requested value's own authored name, so the band never
             // paints a choice id beneath a row whose active value reads its
             // name (F-33, the requested half).
@@ -1139,7 +1311,6 @@
         ? ""
         : String(parameterCount) + (parameterCount === 1 ? " PARAM" : " PARAMS");
     var mark = stateMarkHtml(control, state);
-    var hints = hintRun(control.validActions || []);
     return (
       '<article class="overview-control" data-control="' +
       escapeHtml(id) +
@@ -1165,9 +1336,6 @@
         ? '<div class="overview-control-summary type-hint muted" data-role="parameter-summary">' +
           escapeHtml(summaryText) +
           "</div>"
-        : "") +
-      (hints
-        ? '<div class="overview-control-hints" data-role="overview-hints">' + hints + "</div>"
         : "") +
       lifecycleHtml(control, id) +
       "</article>"
@@ -1372,17 +1540,46 @@
     var data = visualization.data || { kind: "status", text: UNAVAILABLE };
     var body = "";
     if (data.kind === "envelope") {
-      body =
-        '<div class="envelope-shape" aria-hidden="true"><span></span><span></span><span></span><span></span></div>' +
-        '<span class="type-hint">A ' +
-        escapeHtml(Number(data.attackMilliseconds || 0).toFixed(1)) +
-        " / D " +
-        escapeHtml(Number(data.decayMilliseconds || 0).toFixed(1)) +
-        " / S " +
-        escapeHtml(Number(data.sustain || 0).toFixed(3)) +
-        " / R " +
-        escapeHtml(Number(data.releaseMilliseconds || 0).toFixed(1)) +
-        "</span>";
+      var attackMaximumMilliseconds = finiteClampedNumber(
+        data.attackMaximumMilliseconds,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
+      var attackMilliseconds = finiteClampedNumber(
+        data.attackMilliseconds,
+        0,
+        attackMaximumMilliseconds
+      );
+      var decayMaximumMilliseconds = finiteClampedNumber(
+        data.decayMaximumMilliseconds,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
+      var decayMilliseconds = finiteClampedNumber(
+        data.decayMilliseconds,
+        0,
+        decayMaximumMilliseconds
+      );
+      var sustain = finiteClampedNumber(data.sustain, 0, 1);
+      var releaseMaximumMilliseconds = finiteClampedNumber(
+        data.releaseMaximumMilliseconds,
+        1,
+        Number.MAX_SAFE_INTEGER
+      );
+      var releaseMilliseconds = finiteClampedNumber(
+        data.releaseMilliseconds,
+        0,
+        releaseMaximumMilliseconds
+      );
+      body = envelopeSvgHtml({
+        attackMilliseconds: attackMilliseconds,
+        attackMaximumMilliseconds: attackMaximumMilliseconds,
+        decayMilliseconds: decayMilliseconds,
+        decayMaximumMilliseconds: decayMaximumMilliseconds,
+        sustain: sustain,
+        releaseMilliseconds: releaseMilliseconds,
+        releaseMaximumMilliseconds: releaseMaximumMilliseconds,
+      });
     } else if (data.kind === "waveform") {
       var pairs = data.pairs || [];
       var bars = "";
@@ -1432,6 +1629,179 @@
     );
   }
 
+  // A finite projected scalar constrained to its declared envelope bounds.
+  // Invalid transport data never reaches SVG geometry as NaN/Infinity.
+  function finiteClampedNumber(value, minimum, maximum) {
+    var number = Number(value);
+    if (!Number.isFinite(number)) {
+      number = minimum;
+    }
+    return Math.max(minimum, Math.min(maximum, number));
+  }
+
+  // The parameterized ADSR SVG keeps real milliseconds in its data/readout,
+  // but compresses each timed phase logarithmically for display. Envelope
+  // times span several orders of magnitude, so a direct 31-second axis made
+  // musically meaningful short values disappear. Every timed phase can
+  // consume one stable graphical span at its projected canonical maximum;
+  // Sustain consumes one equal, explicitly non-temporal preview span. Because
+  // the scale is fixed rather than normalized against the current values,
+  // changing one phase never rescales any other phase.
+  var ENVELOPE_PHASE_SPAN_UNITS = 1000;
+  var ENVELOPE_SUSTAIN_PREVIEW_SPAN_UNITS = 1000;
+  var ENVELOPE_VIEWBOX_WIDTH_UNITS =
+    ENVELOPE_PHASE_SPAN_UNITS * 3 +
+    ENVELOPE_SUSTAIN_PREVIEW_SPAN_UNITS;
+
+  function envelopeSvgHtml(parameters) {
+    var geometry = envelopeSvgGeometry(parameters);
+    var millisecondsLabel =
+      "A " +
+      formatEnvelopeMilliseconds(parameters.attackMilliseconds) +
+      " / D " +
+      formatEnvelopeMilliseconds(parameters.decayMilliseconds) +
+      " / S " +
+      formatEnvelopeSustain(parameters.sustain) +
+      " / R " +
+      formatEnvelopeMilliseconds(parameters.releaseMilliseconds);
+    return (
+      '<svg class="envelope-shape" data-role="envelope-shape" aria-hidden="true"' +
+      ' viewBox="0 0 ' +
+      String(ENVELOPE_VIEWBOX_WIDTH_UNITS) +
+      ' 1000" preserveAspectRatio="none"' +
+      ' data-time-coordinate="log1p-milliseconds"' +
+      ' data-attack-maximum-milliseconds="' +
+      parameters.attackMaximumMilliseconds.toFixed(3) +
+      '" data-decay-maximum-milliseconds="' +
+      parameters.decayMaximumMilliseconds.toFixed(3) +
+      '" data-release-maximum-milliseconds="' +
+      parameters.releaseMaximumMilliseconds.toFixed(3) +
+      '" data-phase-span-units="' +
+      String(ENVELOPE_PHASE_SPAN_UNITS) +
+      '" data-sustain-preview-span-units="' +
+      String(ENVELOPE_SUSTAIN_PREVIEW_SPAN_UNITS) +
+      '" data-viewbox-width-units="' +
+      String(ENVELOPE_VIEWBOX_WIDTH_UNITS) +
+      '" data-attack-milliseconds="' +
+      parameters.attackMilliseconds.toFixed(3) +
+      '" data-decay-milliseconds="' +
+      parameters.decayMilliseconds.toFixed(3) +
+      '" data-sustain="' +
+      parameters.sustain.toFixed(6) +
+      '" data-release-milliseconds="' +
+      parameters.releaseMilliseconds.toFixed(3) +
+      '" data-stage-points="' +
+      geometry.points +
+      '">' +
+      '<line class="envelope-baseline" x1="0" y1="960" x2="' +
+      String(ENVELOPE_VIEWBOX_WIDTH_UNITS) +
+      '" y2="960"></line>' +
+      '<path class="envelope-path" data-role="envelope-path" d="' +
+      geometry.path +
+      '"></path>' +
+      geometry.nodes +
+      "</svg>" +
+      '<span class="type-hint" data-role="envelope-values">' +
+      millisecondsLabel +
+      "</span>"
+    );
+  }
+
+  function envelopeTimeSpanUnits(milliseconds, maximumMilliseconds) {
+    var clamped = finiteClampedNumber(
+      milliseconds,
+      0,
+      maximumMilliseconds
+    );
+    return (
+      ENVELOPE_PHASE_SPAN_UNITS *
+      (Math.log1p(clamped) / Math.log1p(maximumMilliseconds))
+    );
+  }
+
+  function envelopeSvgGeometry(parameters) {
+    var peakY = 40;
+    var baselineY = 960;
+    var nodeRadius = 24;
+    var sustainY =
+      baselineY - (baselineY - peakY) * parameters.sustain;
+    var attackEndX = envelopeTimeSpanUnits(
+      parameters.attackMilliseconds,
+      parameters.attackMaximumMilliseconds
+    );
+    var decayEndX =
+      attackEndX +
+      envelopeTimeSpanUnits(
+        parameters.decayMilliseconds,
+        parameters.decayMaximumMilliseconds
+      );
+    var releaseStartX =
+      decayEndX + ENVELOPE_SUSTAIN_PREVIEW_SPAN_UNITS;
+    var releaseEndX =
+      releaseStartX +
+      envelopeTimeSpanUnits(
+        parameters.releaseMilliseconds,
+        parameters.releaseMaximumMilliseconds
+      );
+    var points = [
+      [0, baselineY],
+      [attackEndX, peakY],
+      [decayEndX, sustainY],
+      [releaseStartX, sustainY],
+      [releaseEndX, baselineY],
+      [ENVELOPE_VIEWBOX_WIDTH_UNITS, baselineY],
+    ];
+    var serializedPoints = points
+      .map(function (point) {
+        return point[0].toFixed(3) + "," + point[1].toFixed(3);
+      })
+      .join(" ");
+    var path = points
+      .map(function (point, index) {
+        return (
+          (index === 0 ? "M " : "L ") +
+          point[0].toFixed(3) +
+          " " +
+          point[1].toFixed(3)
+        );
+      })
+      .join(" ");
+    var nodes = points
+      .slice(1, 5)
+      .map(function (point) {
+        return (
+          '<circle class="envelope-node" cx="' +
+          point[0].toFixed(3) +
+          '" cy="' +
+          point[1].toFixed(3) +
+          '" r="' +
+          String(nodeRadius) +
+          '"></circle>'
+        );
+      })
+      .join("");
+    return { path: path, points: serializedPoints, nodes: nodes };
+  }
+
+  function formatEnvelopeMilliseconds(milliseconds) {
+    var rounded = Math.round(milliseconds);
+    var text =
+      Math.abs(milliseconds - rounded) < 0.0005
+        ? String(rounded)
+        : milliseconds.toFixed(3).replace(/0+$/, "").replace(/\.$/, "");
+    return text + " ms";
+  }
+
+  function formatEnvelopeSustain(sustain) {
+    var percentage = sustain * 100;
+    var rounded = Math.round(percentage);
+    return (
+      (Math.abs(percentage - rounded) < 0.0005
+        ? String(rounded)
+        : percentage.toFixed(1).replace(/\.0$/, "")) + "%"
+    );
+  }
+
   // Reads a serialized SemanticControlId/PatchControlId without inventing a
   // second identity vocabulary. The stable id is used only for structure and
   // data attributes; it is never painted as a display name.
@@ -1454,6 +1824,8 @@
       kind: control.kind,
       value: control.requestedValue,
       selectedLabel: control.requestedLabel,
+      numericRange: control.numericRange,
+      unit: control.unit,
     });
   }
 
@@ -1730,11 +2102,6 @@
         (current
           ? '<span class="type-hint muted modal-option-current"><span aria-hidden="true">■</span> CURRENT</span>'
           : "") +
-        ((option.validActions || []).length > 0
-          ? '<span class="modal-option-actions" data-role="option-actions">' +
-            hintRun(option.validActions || []) +
-            "</span>"
-          : "") +
         "</div>";
     }
     if (!optionRows) {
@@ -1756,8 +2123,6 @@
       '<span class="type-heading option-title" data-role="option-title">' +
       escapeHtml(title) +
       "</span>" +
-      '<span class="spring"></span>' +
-      '<span class="type-hint focus" data-role="option-entry">EDIT + UP</span>' +
       "</header>" +
       '<div class="type-hint muted option-source" data-role="option-source">' +
       escapeHtml(sourceAnnotation) +
@@ -1766,10 +2131,7 @@
       '<div class="option-rule" aria-hidden="true"></div>' +
       '<div class="modal-options" data-role="modal-options">' +
       optionRows +
-      "</div>" +
-      '<footer class="option-footer" data-role="option-footer">' +
-      hintRun(model.validActions || []) +
-      "</footer></div>"
+      "</div></div>"
     );
   }
 
@@ -1839,54 +2201,6 @@
     );
   }
 
-  // The panel's own authored hint line (design file `Utility Panel` 36:52,
-  // "D-pad Right:enter   D-pad Left:return"): how an operator enters the panel
-  // and how they leave it.
-  //
-  // Both facts are projected, one on each side of the boundary — the action
-  // that enters this surface rides the rows an operator enters it *from*, and
-  // the action that leaves it rides the panel's own rows. So the line is
-  // gathered by walking the document in its declared order and keeping the
-  // `enterSurface`-into-this-surface and `return` actions, deduplicated. The
-  // page composes no action vocabulary of its own: the same `hintRun` renders
-  // the same projected hints and labels the footer renders.
-  function sideRegionHintLine(model, surface) {
-    var actions = [];
-    var seen = {};
-    var surfaces = model.surfaces || [];
-    for (var s = 0; s < surfaces.length; s += 1) {
-      var controls = surfaces[s].controls || [];
-      for (var c = 0; c < controls.length; c += 1) {
-        var valid = controls[c].validActions || [];
-        for (var a = 0; a < valid.length; a += 1) {
-          var action = valid[a];
-          var kind = action.action && action.action.kind;
-          var entersThis =
-            kind === "enterSurface" &&
-            action.action.payload === (surface && surface.id);
-          var leavesThis = kind === "return" && surfaces[s].id === surface.id;
-          if (!entersThis && !leavesThis) {
-            continue;
-          }
-          var key = String(action.hint) + "\u0000" + String(action.label);
-          if (seen[key]) {
-            continue;
-          }
-          seen[key] = true;
-          actions.push(action);
-        }
-      }
-    }
-    if (actions.length === 0) {
-      return "";
-    }
-    return (
-      '<span class="panel-hint" data-role="utility-hint">' +
-      hintRun(actions) +
-      "</span>"
-    );
-  }
-
   // The PATCH Utility panel follows the projected surface order. Labels,
   // identities, visibility, values, state, and actions all come from the
   // canonical document; the page owns no parallel entry registry.
@@ -1922,7 +2236,6 @@
       escapeHtml(String(surface.label || "UTILITY")) +
       "</span>" +
       identity +
-      sideRegionHintLine(model, surface) +
       rows
     );
   }
@@ -2034,7 +2347,14 @@
     var controlRows = "";
     var controls = inspector.controls || [];
     for (var c = 0; c < controls.length; c += 1) {
-      if (controls[c].visible) {
+      var controlId =
+        controls[c].path &&
+        controls[c].path.controlId &&
+        controls[c].path.controlId.id;
+      // Send controls remain in the semantic projection and reducer; only
+      // their current visual treatment is deferred.
+      var isSend = controlId && controlId.kind === "send";
+      if (controls[c].visible && !isSend) {
         controlRows += patchRowHtml(controls[c], model.interactionMode, "panel");
       }
     }
@@ -2061,14 +2381,15 @@
       routing +
       "</div>" +
       '<div class="inspector-controls" data-role="inspector-controls">' +
-      sideRegionHintLine(model, inspector) +
       controlRows +
       "</div>"
     );
   }
 
   function footerHtml(model) {
-    var breadcrumb = String(model.context || "").toUpperCase();
+    var breadcrumb = midiSettingsSurface(model)
+      ? "SETTINGS"
+      : String(model.context || "").toUpperCase();
     var identity = focusIdentity(model);
     if (identity) {
       breadcrumb += " / " + identity;
@@ -2078,7 +2399,9 @@
       escapeHtml(breadcrumb) +
       "</span>" +
       '<span class="spring"></span>' +
-      hintRun(model.validActions || [])
+      '<span class="footer-guidance" data-role="footer-guidance">' +
+      hintRun(model.validActions || []) +
+      "</span>"
     );
   }
 
@@ -2138,16 +2461,22 @@
     latestModel = model;
     var main = surfaceById(model, "mixerMain");
     var columns = trackColumns(main);
+    var settings = midiSettingsSurface(model);
+    doc.body.classList.toggle("settings-active", Boolean(settings));
     doc.getElementById("context-line").innerHTML = contextLineHtml(model);
     doc.getElementById("identity-header").innerHTML = identityHeaderHtml(
       model,
       columns
     );
     doc.getElementById("workspace").innerHTML =
-      model.context === "patch"
+      settings
+        ? midiSettingsWorkspaceHtml(model)
+        : model.context === "patch"
         ? patchWorkspaceHtml(model)
         : mixerWorkspaceHtml(model, columns);
-    doc.getElementById("inspector").innerHTML = sideRegionHtml(model);
+    doc.getElementById("inspector").innerHTML = settings
+      ? midiInputInspectorHtml(model)
+      : sideRegionHtml(model);
     doc.getElementById("footer").innerHTML = footerHtml(model);
     // Final step, after ALL five region insertions: apply the dynamic
     // geometry in the same paint, on the initial render and every re-render
@@ -2517,6 +2846,15 @@
       ) {
         var detailVisualizationNode =
           detailVisualizationNodes[detailVisualizationIndex];
+        var envelopeShape = detailVisualizationNode.querySelector(
+          '[data-role="envelope-shape"]'
+        );
+        var envelopePath = detailVisualizationNode.querySelector(
+          '[data-role="envelope-path"]'
+        );
+        var envelopeValues = detailVisualizationNode.querySelector(
+          '[data-role="envelope-values"]'
+        );
         detailVisualizations.push({
           id: detailVisualizationNode.getAttribute("data-visualization"),
           kind: detailVisualizationNode.getAttribute(
@@ -2526,6 +2864,57 @@
             detailVisualizationNode.getAttribute("data-focusable") !== "false",
           focusPath: detailVisualizationNode.getAttribute("data-focus-path"),
           bounds: rectOf(detailVisualizationNode),
+          shapeBounds: rectOf(envelopeShape),
+          envelope: envelopeShape
+            ? {
+                attackMilliseconds: Number(
+                  envelopeShape.getAttribute("data-attack-milliseconds")
+                ),
+                decayMilliseconds: Number(
+                  envelopeShape.getAttribute("data-decay-milliseconds")
+                ),
+                sustain: Number(envelopeShape.getAttribute("data-sustain")),
+                releaseMilliseconds: Number(
+                  envelopeShape.getAttribute("data-release-milliseconds")
+                ),
+                timeCoordinate: envelopeShape.getAttribute(
+                  "data-time-coordinate"
+                ),
+                attackMaximumMilliseconds: Number(
+                  envelopeShape.getAttribute(
+                    "data-attack-maximum-milliseconds"
+                  )
+                ),
+                decayMaximumMilliseconds: Number(
+                  envelopeShape.getAttribute(
+                    "data-decay-maximum-milliseconds"
+                  )
+                ),
+                releaseMaximumMilliseconds: Number(
+                  envelopeShape.getAttribute(
+                    "data-release-maximum-milliseconds"
+                  )
+                ),
+                phaseSpanUnits: Number(
+                  envelopeShape.getAttribute(
+                    "data-phase-span-units"
+                  )
+                ),
+                sustainPreviewSpanUnits: Number(
+                  envelopeShape.getAttribute(
+                    "data-sustain-preview-span-units"
+                  )
+                ),
+                viewBoxWidthUnits: Number(
+                  envelopeShape.getAttribute("data-viewbox-width-units")
+                ),
+                points: envelopeShape.getAttribute("data-stage-points"),
+                path: envelopePath ? envelopePath.getAttribute("d") : null,
+                valueText: envelopeValues
+                  ? envelopeValues.textContent.replace(/\s+/g, " ").trim()
+                  : null,
+              }
+            : null,
         });
       }
       var slotPositionAttribute = detailNode.getAttribute("data-slot-position");
@@ -2851,6 +3240,13 @@
       Math.min(workspaceRect.bottom, inspectorRect.bottom) -
         Math.max(workspaceRect.top, inspectorRect.top)
     );
+    var actionHintNodes = doc.querySelectorAll('[data-role="action-hint"]');
+    var offFooterActionHintCount = 0;
+    for (var actionHintIndex = 0; actionHintIndex < actionHintNodes.length; actionHintIndex += 1) {
+      if (!actionHintNodes[actionHintIndex].closest("#footer")) {
+        offFooterActionHintCount += 1;
+      }
+    }
     return {
       generation: model.generation,
       stateHash: model.stateHash,
@@ -2889,6 +3285,14 @@
       focusRepair: textOf(doc, '[data-role="focus-repair"]'),
       sectionAnnotation: textOf(doc, '[data-role="section-annotation"]'),
       patchIdentity: textOf(doc, '[data-role="patch-identity"]'),
+      footer: {
+        breadcrumb: textOf(doc, '#footer [data-role="breadcrumb"]'),
+        guidance: textOf(doc, '#footer [data-role="footer-guidance"]'),
+      },
+      actionGuidance: {
+        count: actionHintNodes.length,
+        offFooterCount: offFooterActionHintCount,
+      },
       focus: {
         target: textOf(inspectorElement, '[data-role="cursor"]'),
         trackId: focusedNode
@@ -2960,6 +3364,95 @@
   // latest snapshot frame. Never read by render().
   var latestModel = null;
   var latestFrame = null;
+  var latestMidiActivity = null;
+
+  function midiActivityValue(message) {
+    if (!message) {
+      return null;
+    }
+    if (message.kind === "pitchBend") {
+      return Math.min(16383, Number(message.data1) + Number(message.data2) * 128) / 16383;
+    }
+    if (
+      message.kind === "noteOn" ||
+      message.kind === "noteOff" ||
+      message.kind === "controlChange"
+    ) {
+      return Number(message.data2) / 127;
+    }
+    if (message.kind === "programChange" || message.kind === "channelPressure") {
+      return Number(message.data1) / 127;
+    }
+    return null;
+  }
+
+  // Repaints only the presentation-owned activity card. Exact revision
+  // equality is mandatory; missing/mismatched snapshots remain visibly stale
+  // and cannot borrow a prior input's count or message.
+  function updateMidiActivity() {
+    var doc = window.document;
+    var surface = latestModel && midiSettingsSurface(latestModel);
+    var inspector = surface && surface.summary && surface.summary.activeInspector;
+    var state = doc.getElementById("midi-activity-state");
+    var card = doc.getElementById("midi-activity-card");
+    if (!state || !card || !inspector) {
+      return;
+    }
+    var observation = latestMidiActivity;
+    var snapshot = observation && observation.snapshot;
+    var compatible =
+      snapshot &&
+      JSON.stringify(snapshot.revision) === JSON.stringify(inspector.revision);
+    if (!compatible) {
+      state.textContent = "WAITING";
+      state.setAttribute("data-midi-activity-state", "stale");
+      card.setAttribute("data-midi-activity-state", "stale");
+      card.innerHTML =
+        '<span class="type-label muted">LIVE ACTIVITY</span>' +
+        '<span class="type-hint secondary">WAITING FOR MATCHING INPUT</span>';
+      return;
+    }
+    var receiving = Boolean(observation.receiving);
+    var event = snapshot.lastEvent;
+    var message = event && event.message;
+    var position = midiActivityValue(message);
+    state.textContent = receiving ? "RECEIVING" : "WAITING";
+    state.setAttribute(
+      "data-midi-activity-state",
+      receiving ? "receiving" : "waiting"
+    );
+    card.setAttribute(
+      "data-midi-activity-state",
+      receiving ? "receiving" : "waiting"
+    );
+    card.innerHTML =
+      '<span class="type-label muted">LIVE ACTIVITY</span>' +
+      '<span class="type-value secondary">' +
+      escapeHtml(String(snapshot.acceptedCount)) +
+      " ACCEPTED</span>" +
+      (message
+        ? '<span class="type-hint secondary">' +
+          escapeHtml(String(message.kind).toUpperCase()) +
+          " · CH " +
+          escapeHtml(String(Number(message.channel) + 1)) +
+          " · " +
+          escapeHtml(String(message.data1)) +
+          " / " +
+          escapeHtml(String(message.data2)) +
+          "</span>"
+        : '<span class="type-hint secondary">NO ACCEPTED MESSAGE</span>') +
+      (position === null
+        ? ""
+        : '<div class="midi-activity-value" data-position="' +
+          Math.min(1, Math.max(0, position)).toFixed(6) +
+          '"><div class="midi-activity-value-fill"></div></div>');
+    applyDynamicGeometry(doc);
+  }
+
+  function observeMidiActivity(observation) {
+    latestMidiActivity = observation;
+    updateMidiActivity();
+  }
 
   function graphRevisionsMatch(frame, model) {
     return (
@@ -3196,6 +3689,7 @@
           render(model);
           updateMeter();
           updatePreviewObservation();
+          updateMidiActivity();
         } catch (error) {
           emitRenderError(error, model);
           return; // a failed render must NOT ack
@@ -3215,7 +3709,13 @@
     var meterListener = tauri.event.listen(METER_EVENT, function (event) {
       observeAudio(event.payload);
     });
-    Promise.all([projectionListener, meterListener])
+    var midiActivityListener = tauri.event.listen(
+      MIDI_ACTIVITY_EVENT,
+      function (event) {
+        observeMidiActivity(event.payload);
+      }
+    );
+    Promise.all([projectionListener, meterListener, midiActivityListener])
       .then(function () {
         return tauri.event.emit(READY_EVENT, { ready: true });
       })
@@ -3254,6 +3754,7 @@
     render: render,
     renderObservation: renderObservation,
     observeAudio: observeAudio,
+    observeMidiActivity: observeMidiActivity,
   };
   attachTransports();
 })();

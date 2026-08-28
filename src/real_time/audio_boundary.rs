@@ -41,6 +41,18 @@ impl std::error::Error for BoundaryFull {}
 pub trait ControlAudioBoundary: Send {
     fn push_command(&mut self, command: AudioCommand) -> Result<(), BoundaryFull>;
 
+    /// Publishes the coalesced global recovery command through its reserved
+    /// transport capacity. Boundaries that do not advertise a reserve retain
+    /// their legacy behavior through this default implementation.
+    fn push_recovery_command(&mut self) -> Result<(), BoundaryFull> {
+        self.push_command(AudioCommand::all_notes_off())
+    }
+
+    /// Whether normal commands are prevented from consuming the final slot.
+    fn has_recovery_reserve(&self) -> bool {
+        false
+    }
+
     fn publish_parameters(&mut self, parameters: ParameterSnapshot);
 }
 

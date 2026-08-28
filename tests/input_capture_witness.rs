@@ -434,7 +434,15 @@ mod witness {
         });
 
         let window = TauriWebviewWindow::new("crest-synth input-capture witness");
-        if let Err(error) = window.run(on_input, projection_cb, audio, on_tick, on_frame) {
+        let midi_activity = Box::new(crest_synth::control::MidiActivityObservation::default);
+        if let Err(error) = window.run(
+            on_input,
+            projection_cb,
+            audio,
+            midi_activity,
+            on_tick,
+            on_frame,
+        ) {
             println!(
                 "CREST_KEY_WITNESS_SKIP this environment cannot host the webview \
                  witness window: {error}"

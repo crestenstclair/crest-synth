@@ -2346,6 +2346,8 @@ fn edited_parameter_of(focus: &FocusPath) -> Option<PatchControlId> {
         crate::control::SemanticControlId::Patch(control) => Some(control.clone()),
         crate::control::SemanticControlId::Mixer(_)
         | crate::control::SemanticControlId::Modal(_)
+        | crate::control::SemanticControlId::MidiInputDevice(_)
+        | crate::control::SemanticControlId::MidiInputListRoot
         | crate::control::SemanticControlId::SurfaceRoot => None,
     }
 }

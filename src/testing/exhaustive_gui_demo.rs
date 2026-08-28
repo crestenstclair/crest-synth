@@ -1616,6 +1616,9 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             EventInput::OpenRelated => {
                 observed.insert("event.openRelated".to_owned());
             }
+            EventInput::OpenMidiSettings => {
+                observed.insert("event.openMidiSettings".to_owned());
+            }
             EventInput::Activate => {
                 observed.insert("event.activate".to_owned());
             }
@@ -1666,6 +1669,18 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             EventInput::TopologyPreparationFailed { .. } => {
                 observed.insert("event.topologyPreparationFailed".to_owned());
             }
+            EventInput::MidiInputPreferenceRestored { .. }
+            | EventInput::MidiInputPreferenceStoreFailed { .. }
+            | EventInput::MidiInputScanStarted
+            | EventInput::MidiInputScanSucceeded { .. }
+            | EventInput::MidiInputScanFailed { .. }
+            | EventInput::MidiInputConnectRequested { .. }
+            | EventInput::MidiInputConnectionPrepared { .. }
+            | EventInput::MidiInputActivationAcknowledged { .. }
+            | EventInput::MidiInputDisconnectRequested { .. }
+            | EventInput::MidiInputConnectionLost { .. }
+            | EventInput::MidiInputOperationFailed { .. }
+            | EventInput::MidiInputShutdownRequested => {}
         }
 
         if let Some(rejection) = record.rejection() {

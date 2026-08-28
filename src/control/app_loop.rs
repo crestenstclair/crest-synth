@@ -12,7 +12,12 @@ use crate::control::state_projector::{MidiProjectionSeed, StateProjectionError, 
 use crate::control::state_snapshot::StateSnapshot;
 use crate::control::state_tree::StateTree;
 use crate::control::text_projection::TextProjection;
-use crate::control::{GraphicalShellProjection, SampleAssetLifecycle, SemanticAction};
+use crate::control::{
+    ActiveMidiInput, ConnectMidiInput, GraphicalShellProjection, MidiActivitySnapshot,
+    MidiDeviceEffect, MidiDeviceFailure, MidiDeviceWorker, MidiDeviceWorkerCommand,
+    MidiDeviceWorkerResult, MidiScanScheduler, PhysicalMidiIngress, PhysicalMidiIngressControl,
+    SampleAssetLifecycle, SemanticAction, SurfaceId, PHYSICAL_MIDI_DRAIN_BUDGET,
+};
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::PatchId;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
@@ -26,8 +31,12 @@ use crate::shell::audio_output::AudioDeviceConfig;
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::DescriptorDefaultConfigFactory;
 use core::fmt;
+use std::collections::VecDeque;
 
 const DEFAULT_EVENT_LOG_CAPACITY: usize = 1024;
+const MIDI_DEVICE_EFFECT_BUDGET: usize = 8;
+const MIDI_ACTIVITY_PUBLISH_INTERVAL_MICROS: u64 = 33_334;
+const MIDI_RECEIVING_WINDOW_MICROS: u64 = 500_000;
 
 /// Observable effects of one accepted application event.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +78,53 @@ pub struct StructuralProgress {
     activation_acknowledged: Option<GraphRevision>,
     collected_count: u64,
     rejected_worker_event: Option<EventRejection>,
+}
+
+/// Bounded observations from one physical MIDI control tick.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MidiDeviceProgress {
+    scan_requested: bool,
+    worker_result_polled: bool,
+    effect_advanced: bool,
+    drained_events: usize,
+    stale_events: usize,
+    audio_saturated: bool,
+    ingress_overflowed: bool,
+    rejected_worker_event: Option<EventRejection>,
+}
+
+impl MidiDeviceProgress {
+    pub const fn scan_requested(self) -> bool {
+        self.scan_requested
+    }
+
+    pub const fn worker_result_polled(self) -> bool {
+        self.worker_result_polled
+    }
+
+    pub const fn effect_advanced(self) -> bool {
+        self.effect_advanced
+    }
+
+    pub const fn drained_events(self) -> usize {
+        self.drained_events
+    }
+
+    pub const fn stale_events(self) -> usize {
+        self.stale_events
+    }
+
+    pub const fn audio_saturated(self) -> bool {
+        self.audio_saturated
+    }
+
+    pub const fn ingress_overflowed(self) -> bool {
+        self.ingress_overflowed
+    }
+
+    pub const fn rejected_worker_event(self) -> Option<EventRejection> {
+        self.rejected_worker_event
+    }
 }
 
 impl StructuralProgress {
@@ -122,6 +178,30 @@ pub enum StructuralAdvanceError {
     WorkerShutdown(WorkerShutdownError),
 }
 
+/// Configuration or teardown failure at the physical MIDI orchestration seam.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MidiDeviceAdvanceError {
+    AlreadyConfigured,
+    RecoveryReserveUnavailable,
+    WorkerUnavailable,
+    WorkerShutdown,
+}
+
+impl fmt::Display for MidiDeviceAdvanceError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::AlreadyConfigured => "physical MIDI orchestration is already configured",
+            Self::RecoveryReserveUnavailable => {
+                "the audio command boundary has no all-notes-off recovery reserve"
+            }
+            Self::WorkerUnavailable => "the MIDI device worker is unavailable",
+            Self::WorkerShutdown => "the MIDI device worker failed during shutdown",
+        })
+    }
+}
+
+impl std::error::Error for MidiDeviceAdvanceError {}
+
 impl fmt::Display for StructuralAdvanceError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -153,6 +233,48 @@ struct EngineSelectionRuntime {
     coordinator: StructuralGraphCoordinator<Box<dyn ControlStructuralGraphBoundary>>,
     audio_config: AudioDeviceConfig,
     activation_record_sequence: Option<(EngineSelectionRequestId, u64)>,
+}
+
+struct OwnedMidiConnection {
+    request: ConnectMidiInput,
+    ingress: PhysicalMidiIngressControl,
+    active: ActiveMidiInput,
+}
+
+struct MidiDeviceRuntime {
+    worker: Box<dyn MidiDeviceWorker>,
+    scheduler: MidiScanScheduler,
+    deferred_command: Option<MidiDeviceWorkerCommand>,
+    pending_ingress: Option<(ConnectMidiInput, PhysicalMidiIngressControl)>,
+    candidate: Option<OwnedMidiConnection>,
+    active: Option<OwnedMidiConnection>,
+    retiring: Vec<OwnedMidiConnection>,
+    accepted_count: u64,
+    last_event: Option<crate::control::PhysicalMidiEvent>,
+    last_control_receipt_micros: u64,
+    observed_overflow_epoch: u64,
+    last_activity_publish_micros: Option<u64>,
+    latest_activity: Option<MidiActivitySnapshot>,
+}
+
+impl MidiDeviceRuntime {
+    fn new(worker: Box<dyn MidiDeviceWorker>) -> Self {
+        Self {
+            worker,
+            scheduler: MidiScanScheduler::default(),
+            deferred_command: None,
+            pending_ingress: None,
+            candidate: None,
+            active: None,
+            retiring: Vec::new(),
+            accepted_count: 0,
+            last_event: None,
+            last_control_receipt_micros: 0,
+            observed_overflow_epoch: 0,
+            last_activity_publish_micros: None,
+            latest_activity: None,
+        }
+    }
 }
 
 impl DispatchResult {
@@ -203,6 +325,8 @@ where
     pending_engine_selection_request: Option<EngineSelectionEffect>,
     deferred_engine_failure: Option<AppEvent>,
     deferred_revision_error: Option<GraphRevisionError>,
+    midi_device_runtime: Option<MidiDeviceRuntime>,
+    pending_midi_device_effects: VecDeque<MidiDeviceEffect>,
 }
 
 impl<Boundary> AppLoop<Boundary>
@@ -261,6 +385,499 @@ where
             pending_engine_selection_request: None,
             deferred_engine_failure: None,
             deferred_revision_error: None,
+            midi_device_runtime: None,
+            pending_midi_device_effects: VecDeque::new(),
+        })
+    }
+
+    /// Installs the one physical MIDI worker and starts preference restoration.
+    pub fn configure_midi_devices<Worker>(
+        &mut self,
+        worker: Worker,
+    ) -> Result<(), MidiDeviceAdvanceError>
+    where
+        Worker: MidiDeviceWorker + 'static,
+    {
+        if self.midi_device_runtime.is_some() {
+            return Err(MidiDeviceAdvanceError::AlreadyConfigured);
+        }
+        if !self.boundary.has_recovery_reserve() {
+            return Err(MidiDeviceAdvanceError::RecoveryReserveUnavailable);
+        }
+        let mut runtime = MidiDeviceRuntime::new(Box::new(worker));
+        runtime
+            .worker
+            .try_submit(MidiDeviceWorkerCommand::LoadPreference)
+            .map_err(|_| MidiDeviceAdvanceError::WorkerUnavailable)?;
+        self.midi_device_runtime = Some(runtime);
+        Ok(())
+    }
+
+    /// Advances physical MIDI orchestration in a fixed, bounded order:
+    /// scheduling, deferred/effect submission, one worker result, resulting
+    /// effects, one 64-event ingress drain, then a decimated observation.
+    pub fn advance_midi_devices(
+        &mut self,
+        now_micros: u64,
+    ) -> Result<MidiDeviceProgress, MidiDeviceAdvanceError> {
+        let Some(mut runtime) = self.midi_device_runtime.take() else {
+            return Ok(MidiDeviceProgress::default());
+        };
+        let mut progress = MidiDeviceProgress::default();
+
+        let settings_open =
+            self.state.interaction().active_surface() == SurfaceId::MidiDeviceSettings;
+        if !self.state.midi_input().shutting_down()
+            && runtime.scheduler.tick(
+                now_micros,
+                settings_open,
+                self.state.midi_input().scan().in_flight(),
+            )
+        {
+            match self.dispatch_from(AppEvent::MidiInputScanStarted, EventSource::System) {
+                Ok(_) => progress.scan_requested = true,
+                Err(rejection) => progress.rejected_worker_event = Some(rejection),
+            }
+        }
+
+        if let Some(command) = runtime.deferred_command.take() {
+            progress.effect_advanced |= submit_midi_worker_command(&mut runtime, command);
+        }
+        for _ in 0..MIDI_DEVICE_EFFECT_BUDGET {
+            if runtime.deferred_command.is_some() {
+                break;
+            }
+            let Some(effect) = self.pending_midi_device_effects.pop_front() else {
+                break;
+            };
+            progress.effect_advanced |=
+                self.advance_midi_device_effect(&mut runtime, effect, &mut progress);
+        }
+
+        if let Some(result) = runtime.worker.try_poll() {
+            progress.worker_result_polled = true;
+            self.handle_midi_worker_result(&mut runtime, result, &mut progress);
+        }
+
+        for _ in 0..MIDI_DEVICE_EFFECT_BUDGET {
+            if runtime.deferred_command.is_some() {
+                break;
+            }
+            let Some(effect) = self.pending_midi_device_effects.pop_front() else {
+                break;
+            };
+            progress.effect_advanced |=
+                self.advance_midi_device_effect(&mut runtime, effect, &mut progress);
+        }
+
+        self.drain_physical_midi(&mut runtime, now_micros, &mut progress);
+        publish_midi_activity(&mut runtime, now_micros);
+        self.midi_device_runtime = Some(runtime);
+        Ok(progress)
+    }
+
+    fn advance_midi_device_effect(
+        &mut self,
+        runtime: &mut MidiDeviceRuntime,
+        effect: MidiDeviceEffect,
+        progress: &mut MidiDeviceProgress,
+    ) -> bool {
+        match effect {
+            MidiDeviceEffect::Scan { scan_id } => {
+                submit_midi_worker_command(runtime, MidiDeviceWorkerCommand::Scan { scan_id })
+            }
+            MidiDeviceEffect::Connect { request } => {
+                if runtime.pending_ingress.is_some() || runtime.candidate.is_some() {
+                    self.pending_midi_device_effects
+                        .push_front(MidiDeviceEffect::Connect { request });
+                    return false;
+                }
+                let (ingress, control) = PhysicalMidiIngress::bounded(request.revision());
+                runtime.pending_ingress = Some((request.clone(), control));
+                submit_midi_worker_command(
+                    runtime,
+                    MidiDeviceWorkerCommand::Connect { request, ingress },
+                )
+            }
+            MidiDeviceEffect::Activate { request } => {
+                let matches_candidate = runtime
+                    .candidate
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.request == request);
+                if !matches_candidate {
+                    progress.rejected_worker_event =
+                        Some(EventRejection::MismatchedEngineSelection);
+                    return false;
+                }
+                if let Some(old) = runtime.active.as_mut() {
+                    old.ingress.disable();
+                    old.ingress.discard_all();
+                    if self.boundary.push_recovery_command().is_err() {
+                        self.pending_midi_device_effects
+                            .push_front(MidiDeviceEffect::Activate { request });
+                        return false;
+                    }
+                }
+                match self.dispatch_from(
+                    AppEvent::MidiInputActivationAcknowledged {
+                        request_id: request.request_id(),
+                        revision: request.revision(),
+                    },
+                    EventSource::Worker,
+                ) {
+                    Ok(_) => {
+                        let candidate = runtime
+                            .candidate
+                            .take()
+                            .expect("matching candidate was checked above");
+                        if let Some(old) = runtime.active.replace(candidate) {
+                            runtime.retiring.push(old);
+                        }
+                        let active = runtime.active.as_ref().expect("candidate was installed");
+                        active.ingress.enable();
+                        runtime.accepted_count = 0;
+                        runtime.last_event = None;
+                        runtime.last_control_receipt_micros = 0;
+                        runtime.observed_overflow_epoch = active.ingress.overflow_epoch();
+                        runtime.last_activity_publish_micros = None;
+                        runtime.latest_activity = None;
+                        true
+                    }
+                    Err(rejection) => {
+                        progress.rejected_worker_event = Some(rejection);
+                        if let Some(candidate) = runtime.candidate.take() {
+                            retire_midi_connection(runtime, candidate);
+                        }
+                        false
+                    }
+                }
+            }
+            MidiDeviceEffect::Recover { revision, .. } => {
+                disable_revision(runtime, revision);
+                if self.boundary.push_recovery_command().is_err() {
+                    self.pending_midi_device_effects.push_front(effect);
+                    false
+                } else {
+                    true
+                }
+            }
+            MidiDeviceEffect::Retire { revision, .. } => {
+                if let Some(connection) = take_midi_connection(runtime, revision) {
+                    retire_midi_connection(runtime, connection)
+                } else {
+                    true
+                }
+            }
+            MidiDeviceEffect::CancelCandidate { request } => {
+                if let Some((pending, control)) = runtime.pending_ingress.as_mut() {
+                    if pending == &request {
+                        control.disable();
+                        control.discard_all();
+                    }
+                }
+                if runtime
+                    .candidate
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.request == request)
+                {
+                    let candidate = runtime.candidate.take().expect("checked above");
+                    retire_midi_connection(runtime, candidate)
+                } else {
+                    true
+                }
+            }
+            MidiDeviceEffect::Persist { preference } => submit_midi_worker_command(
+                runtime,
+                MidiDeviceWorkerCommand::StorePreference { preference },
+            ),
+            MidiDeviceEffect::Shutdown => true,
+        }
+    }
+
+    fn handle_midi_worker_result(
+        &mut self,
+        runtime: &mut MidiDeviceRuntime,
+        result: MidiDeviceWorkerResult,
+        progress: &mut MidiDeviceProgress,
+    ) {
+        let event = match result {
+            MidiDeviceWorkerResult::ScanSucceeded {
+                scan_id,
+                descriptors,
+            } => Some(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors,
+            }),
+            MidiDeviceWorkerResult::ScanFailed { scan_id, failure } => {
+                Some(AppEvent::MidiInputScanFailed { scan_id, failure })
+            }
+            MidiDeviceWorkerResult::ConnectionPrepared { request, active } => {
+                let control = match runtime.pending_ingress.take() {
+                    Some((pending, control)) if pending == request => Some(control),
+                    Some(other) => {
+                        runtime.pending_ingress = Some(other);
+                        None
+                    }
+                    None => None,
+                };
+                let current = self
+                    .state
+                    .midi_input()
+                    .requested()
+                    .is_some_and(|pending| pending == &request);
+                if current {
+                    if let Some(control) = control {
+                        runtime.candidate = Some(OwnedMidiConnection {
+                            request: request.clone(),
+                            ingress: control,
+                            active,
+                        });
+                        Some(AppEvent::MidiInputConnectionPrepared {
+                            request_id: request.request_id(),
+                            revision: request.revision(),
+                        })
+                    } else {
+                        submit_midi_worker_command(
+                            runtime,
+                            MidiDeviceWorkerCommand::Retire { active },
+                        );
+                        progress.rejected_worker_event =
+                            Some(EventRejection::MismatchedEngineSelection);
+                        None
+                    }
+                } else {
+                    if let Some(mut control) = control {
+                        control.disable();
+                        control.discard_all();
+                    }
+                    submit_midi_worker_command(runtime, MidiDeviceWorkerCommand::Retire { active });
+                    progress.rejected_worker_event = Some(EventRejection::StaleEngineSelection);
+                    None
+                }
+            }
+            MidiDeviceWorkerResult::ConnectionFailed { request, failure } => {
+                if runtime
+                    .pending_ingress
+                    .as_ref()
+                    .is_some_and(|(pending, _)| pending == &request)
+                {
+                    if let Some((_pending, mut control)) = runtime.pending_ingress.take() {
+                        control.disable();
+                        control.discard_all();
+                    }
+                }
+                Some(AppEvent::MidiInputOperationFailed {
+                    identity: request.identity().clone(),
+                    request_id: Some(request.request_id()),
+                    revision: Some(request.revision()),
+                    failure,
+                })
+            }
+            MidiDeviceWorkerResult::Retired {
+                identity,
+                request_id,
+                revision,
+                failure: Some(failure),
+            } => Some(AppEvent::MidiInputOperationFailed {
+                identity,
+                request_id: Some(request_id),
+                revision: Some(revision),
+                failure,
+            }),
+            MidiDeviceWorkerResult::Retired { failure: None, .. } => None,
+            MidiDeviceWorkerResult::PreferenceLoaded {
+                preference,
+                failure,
+            } => Some(AppEvent::MidiInputPreferenceRestored {
+                preference,
+                failure,
+            }),
+            MidiDeviceWorkerResult::PreferenceStored {
+                preference: _,
+                failure: Some(failure),
+            } => Some(AppEvent::MidiInputPreferenceStoreFailed { failure }),
+            MidiDeviceWorkerResult::PreferenceStored { failure: None, .. } => None,
+        };
+        if let Some(event) = event {
+            if let Err(rejection) = self.dispatch_from(event, EventSource::Worker) {
+                progress.rejected_worker_event = Some(rejection);
+            }
+        }
+    }
+
+    fn drain_physical_midi(
+        &mut self,
+        runtime: &mut MidiDeviceRuntime,
+        now_micros: u64,
+        progress: &mut MidiDeviceProgress,
+    ) {
+        let Some(active) = runtime.active.as_mut() else {
+            return;
+        };
+        let canonical_revision = self
+            .state
+            .midi_input()
+            .active()
+            .map(|identity| identity.revision());
+        if canonical_revision != Some(active.request.revision()) {
+            active.ingress.disable();
+            progress.stale_events += active.ingress.discard_all();
+            return;
+        }
+
+        let overflow_epoch = active.ingress.overflow_epoch();
+        if overflow_epoch != runtime.observed_overflow_epoch {
+            let dropped = overflow_epoch.saturating_sub(runtime.observed_overflow_epoch);
+            runtime.observed_overflow_epoch = overflow_epoch;
+            active.ingress.disable();
+            active.ingress.discard_all();
+            progress.ingress_overflowed = true;
+            if let Err(rejection) = self.dispatch_from(
+                AppEvent::MidiInputOperationFailed {
+                    identity: active.request.identity().clone(),
+                    request_id: None,
+                    revision: Some(active.request.revision()),
+                    failure: MidiDeviceFailure::TransportCapacity {
+                        stage: crate::control::MidiTransportCapacityStage::PhysicalIngress,
+                        dropped,
+                    },
+                },
+                EventSource::Worker,
+            ) {
+                progress.rejected_worker_event = Some(rejection);
+            }
+            return;
+        }
+
+        for _ in 0..PHYSICAL_MIDI_DRAIN_BUDGET {
+            let Some(event) = active.ingress.try_pop() else {
+                break;
+            };
+            if event.revision() != canonical_revision.expect("checked above") {
+                progress.stale_events += 1;
+                continue;
+            }
+            progress.drained_events += 1;
+            runtime.accepted_count = runtime.accepted_count.saturating_add(1);
+            runtime.last_event = Some(event);
+            runtime.last_control_receipt_micros = now_micros;
+            match self.dispatch_midi_from(event.message(), EventSource::PhysicalMidi) {
+                Ok(result) if result.boundary_full().is_none() => {}
+                Ok(_) => {
+                    active.ingress.disable();
+                    progress.audio_saturated = true;
+                    if let Err(rejection) = self.dispatch_from(
+                        AppEvent::MidiInputOperationFailed {
+                            identity: active.request.identity().clone(),
+                            request_id: None,
+                            revision: Some(active.request.revision()),
+                            failure: MidiDeviceFailure::TransportCapacity {
+                                stage: crate::control::MidiTransportCapacityStage::AudioCommand,
+                                dropped: 1,
+                            },
+                        },
+                        EventSource::Worker,
+                    ) {
+                        progress.rejected_worker_event = Some(rejection);
+                    }
+                    break;
+                }
+                Err(rejection) => {
+                    progress.rejected_worker_event = Some(rejection);
+                    break;
+                }
+            }
+        }
+    }
+
+    /// Latest decimated activity only when its revision is still canonical.
+    pub fn current_midi_activity(&self) -> Option<MidiActivitySnapshot> {
+        let snapshot = self.midi_device_runtime.as_ref()?.latest_activity?;
+        self.state
+            .midi_input()
+            .active()
+            .is_some_and(|active| active.revision() == snapshot.revision())
+            .then_some(snapshot)
+    }
+
+    /// Presentation-only Receiving state; it never crosses the reducer.
+    pub fn midi_is_receiving(&self, now_micros: u64) -> bool {
+        self.current_midi_activity().is_some_and(|snapshot| {
+            snapshot.last_event().is_some()
+                && now_micros.saturating_sub(snapshot.last_control_receipt_micros())
+                    <= MIDI_RECEIVING_WINDOW_MICROS
+        })
+    }
+
+    /// Reads the latest-compatible display observation without changing the
+    /// reducer or any product serialization.
+    pub fn current_midi_activity_observation(
+        &self,
+        now_micros: u64,
+    ) -> crate::control::MidiActivityObservation {
+        let snapshot = self.current_midi_activity();
+        crate::control::MidiActivityObservation::new(
+            snapshot,
+            snapshot.is_some() && self.midi_is_receiving(now_micros),
+        )
+    }
+
+    /// Stops physical MIDI ownership on the calling control thread after all
+    /// gates are disabled and active/candidate handles have been transferred
+    /// to the device worker for consuming retirement.
+    pub fn shutdown_midi_devices_on_control(&mut self) -> Result<(), MidiDeviceAdvanceError> {
+        if self.midi_device_runtime.is_none() {
+            return Ok(());
+        }
+        if !self.state.midi_input().shutting_down() {
+            let _ = self.dispatch_from(AppEvent::MidiInputShutdownRequested, EventSource::System);
+        }
+        let mut runtime = self
+            .midi_device_runtime
+            .take()
+            .expect("configuration was checked above");
+        if let Some((_request, mut ingress)) = runtime.pending_ingress.take() {
+            ingress.disable();
+            ingress.discard_all();
+        }
+        let mut retirements = Vec::new();
+        if let Some(MidiDeviceWorkerCommand::Retire { active }) = runtime.deferred_command.take() {
+            retirements.push(active);
+        }
+        for mut connection in runtime
+            .candidate
+            .take()
+            .into_iter()
+            .chain(runtime.active.take())
+            .chain(core::mem::take(&mut runtime.retiring))
+        {
+            connection.ingress.disable();
+            connection.ingress.discard_all();
+            retirements.push(connection.active);
+        }
+        let _ = self.boundary.push_recovery_command();
+        runtime
+            .worker
+            .shutdown_with_retirements_on_control(retirements)
+            .map_err(|_| MidiDeviceAdvanceError::WorkerShutdown)?;
+        self.pending_midi_device_effects.clear();
+        Ok(())
+    }
+
+    pub const fn midi_devices_configured(&self) -> bool {
+        self.midi_device_runtime.is_some()
+    }
+
+    /// Counts control-owned backend handles. Completed teardown reports zero.
+    pub fn owned_midi_connections_on_control(&self) -> usize {
+        self.midi_device_runtime.as_ref().map_or(0, |runtime| {
+            usize::from(runtime.candidate.is_some())
+                + usize::from(runtime.active.is_some())
+                + runtime.retiring.len()
+                + usize::from(matches!(
+                    runtime.deferred_command,
+                    Some(MidiDeviceWorkerCommand::Retire { .. })
+                ))
         })
     }
 
@@ -429,6 +1046,7 @@ where
         let accepted = outcome.accepted();
         let audio_command = outcome.audio_command().copied();
         let engine_selection_effect = outcome.engine_selection_effect().cloned();
+        let midi_device_effects = outcome.midi_device_effects().to_vec();
         let record_sequence = self.event_log.next_sequence();
         let published_parameters = if parameters_published
             && self.state.engine_selection().kind() == EngineSelectionStatusKind::Activating
@@ -474,6 +1092,7 @@ where
         {
             self.pending_engine_selection_request = Some(effect);
         }
+        self.pending_midi_device_effects.extend(midi_device_effects);
 
         Ok(DispatchResult {
             accepted,
@@ -1203,8 +1822,115 @@ where
         &mut self,
         command: crate::real_time::audio_command::AudioCommand,
     ) -> Result<(), BoundaryFull> {
-        self.boundary.push_command(command)
+        debug_assert_eq!(
+            command,
+            crate::real_time::audio_command::AudioCommand::AllNotesOff
+        );
+        self.boundary.push_recovery_command()
     }
+}
+
+fn submit_midi_worker_command(
+    runtime: &mut MidiDeviceRuntime,
+    command: MidiDeviceWorkerCommand,
+) -> bool {
+    match runtime.worker.try_submit(command) {
+        Ok(()) => true,
+        Err(busy) => {
+            runtime.deferred_command = Some(busy.into_command());
+            false
+        }
+    }
+}
+
+fn disable_revision(
+    runtime: &mut MidiDeviceRuntime,
+    revision: crate::control::MidiConnectionRevision,
+) {
+    if let Some(active) = runtime
+        .active
+        .as_mut()
+        .filter(|active| active.request.revision() == revision)
+    {
+        active.ingress.disable();
+        active.ingress.discard_all();
+    }
+    if let Some(candidate) = runtime
+        .candidate
+        .as_mut()
+        .filter(|candidate| candidate.request.revision() == revision)
+    {
+        candidate.ingress.disable();
+        candidate.ingress.discard_all();
+    }
+    for retiring in runtime
+        .retiring
+        .iter_mut()
+        .filter(|retiring| retiring.request.revision() == revision)
+    {
+        retiring.ingress.disable();
+        retiring.ingress.discard_all();
+    }
+}
+
+fn take_midi_connection(
+    runtime: &mut MidiDeviceRuntime,
+    revision: crate::control::MidiConnectionRevision,
+) -> Option<OwnedMidiConnection> {
+    if runtime
+        .active
+        .as_ref()
+        .is_some_and(|active| active.request.revision() == revision)
+    {
+        return runtime.active.take();
+    }
+    if runtime
+        .candidate
+        .as_ref()
+        .is_some_and(|candidate| candidate.request.revision() == revision)
+    {
+        return runtime.candidate.take();
+    }
+    let index = runtime
+        .retiring
+        .iter()
+        .position(|retiring| retiring.request.revision() == revision)?;
+    Some(runtime.retiring.remove(index))
+}
+
+fn retire_midi_connection(
+    runtime: &mut MidiDeviceRuntime,
+    mut connection: OwnedMidiConnection,
+) -> bool {
+    connection.ingress.disable();
+    connection.ingress.discard_all();
+    submit_midi_worker_command(
+        runtime,
+        MidiDeviceWorkerCommand::Retire {
+            active: connection.active,
+        },
+    )
+}
+
+fn publish_midi_activity(runtime: &mut MidiDeviceRuntime, now_micros: u64) {
+    let Some(active) = runtime.active.as_ref() else {
+        return;
+    };
+    if runtime
+        .last_activity_publish_micros
+        .is_some_and(|last| now_micros.saturating_sub(last) < MIDI_ACTIVITY_PUBLISH_INTERVAL_MICROS)
+    {
+        return;
+    }
+    runtime.latest_activity = Some(MidiActivitySnapshot::new(
+        active.request.revision(),
+        runtime.accepted_count,
+        runtime.last_event,
+        runtime.last_control_receipt_micros,
+        active.ingress.diagnostics(),
+        active.ingress.overflow_epoch(),
+    ));
+    runtime.last_activity_publish_micros = Some(now_micros);
 }
 
 /// Derives the layout-admission scope for one correlated replacement.
@@ -1330,7 +2056,12 @@ mod tests {
     };
     use crate::control::event_record::{EmittedEvent, EventOutcome, EventSource};
     use crate::control::state_projector::StateProjector;
-    use crate::control::{PatchControlId, SurfaceId, TopLevelContext};
+    use crate::control::{
+        ActiveMidiInput, MidiDeviceWorker, MidiDeviceWorkerBusy, MidiDeviceWorkerBusyReason,
+        MidiDeviceWorkerCommand, MidiDeviceWorkerResult, MidiInputDescriptor, MidiInputDeviceId,
+        PatchControlId, PhysicalMidiIngress, PhysicalMidiIngressOutcome, SemanticAction,
+        SemanticSurfaceSummary, SurfaceId, TopLevelContext,
+    };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
     use crate::kernel::patch_id::PatchId;
@@ -1356,6 +2087,7 @@ mod tests {
     };
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use crate::testing::DeterministicGraphPreparationWorker;
+    use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -1450,6 +2182,131 @@ mod tests {
             let mut observations = self.observations.lock().unwrap();
             observations.order.push("parameters");
             observations.parameters.push(parameters);
+        }
+
+        fn has_recovery_reserve(&self) -> bool {
+            true
+        }
+    }
+
+    #[derive(Default)]
+    struct FakeMidiWorkerState {
+        ingress: Option<PhysicalMidiIngress>,
+        retired: usize,
+        stored: usize,
+    }
+
+    #[derive(Clone)]
+    struct FakeMidiWorkerHandle(Arc<Mutex<FakeMidiWorkerState>>);
+
+    impl FakeMidiWorkerHandle {
+        fn receive_raw(&self, timestamp_micros: u64, raw: &[u8]) -> PhysicalMidiIngressOutcome {
+            self.0
+                .lock()
+                .unwrap()
+                .ingress
+                .as_mut()
+                .expect("the fake connection is active")
+                .receive_raw(timestamp_micros, raw)
+        }
+    }
+
+    struct FakeMidiWorker {
+        shared: Arc<Mutex<FakeMidiWorkerState>>,
+        descriptor: MidiInputDescriptor,
+        results: VecDeque<MidiDeviceWorkerResult>,
+        shutdown: bool,
+    }
+
+    impl FakeMidiWorker {
+        fn new(descriptor: MidiInputDescriptor) -> (Self, FakeMidiWorkerHandle) {
+            let shared = Arc::new(Mutex::new(FakeMidiWorkerState::default()));
+            (
+                Self {
+                    shared: Arc::clone(&shared),
+                    descriptor,
+                    results: VecDeque::new(),
+                    shutdown: false,
+                },
+                FakeMidiWorkerHandle(shared),
+            )
+        }
+    }
+
+    impl MidiDeviceWorker for FakeMidiWorker {
+        fn try_submit(
+            &mut self,
+            command: MidiDeviceWorkerCommand,
+        ) -> Result<(), MidiDeviceWorkerBusy> {
+            if self.shutdown {
+                return Err(MidiDeviceWorkerBusy::new(
+                    MidiDeviceWorkerBusyReason::Shutdown,
+                    command,
+                ));
+            }
+            match command {
+                MidiDeviceWorkerCommand::Scan { scan_id } => {
+                    self.results
+                        .push_back(MidiDeviceWorkerResult::ScanSucceeded {
+                            scan_id,
+                            descriptors: vec![self.descriptor.clone()],
+                        });
+                }
+                MidiDeviceWorkerCommand::Connect { request, ingress } => {
+                    self.shared.lock().unwrap().ingress = Some(ingress);
+                    let active = ActiveMidiInput::from_backend(&request, ());
+                    self.results
+                        .push_back(MidiDeviceWorkerResult::ConnectionPrepared { request, active });
+                }
+                MidiDeviceWorkerCommand::Retire { active } => {
+                    self.shared.lock().unwrap().ingress = None;
+                    let identity = active.identity().clone();
+                    let request_id = active.request_id();
+                    let revision = active.revision();
+                    assert!(active.into_backend::<()>().is_ok());
+                    self.shared.lock().unwrap().retired += 1;
+                    self.results.push_back(MidiDeviceWorkerResult::Retired {
+                        identity,
+                        request_id,
+                        revision,
+                        failure: None,
+                    });
+                }
+                MidiDeviceWorkerCommand::LoadPreference => {
+                    self.results
+                        .push_back(MidiDeviceWorkerResult::PreferenceLoaded {
+                            preference: None,
+                            failure: None,
+                        });
+                }
+                MidiDeviceWorkerCommand::StorePreference { preference } => {
+                    self.shared.lock().unwrap().stored += 1;
+                    self.results
+                        .push_back(MidiDeviceWorkerResult::PreferenceStored {
+                            preference,
+                            failure: None,
+                        });
+                }
+            }
+            Ok(())
+        }
+
+        fn try_poll(&mut self) -> Option<MidiDeviceWorkerResult> {
+            self.results.pop_front()
+        }
+
+        fn shutdown_with_retirements_on_control(
+            &mut self,
+            retirements: Vec<ActiveMidiInput>,
+        ) -> Result<(), crate::control::MidiDeviceWorkerShutdownError> {
+            for active in retirements {
+                assert!(active.into_backend::<()>().is_ok());
+                self.shared.lock().unwrap().retired += 1;
+            }
+            self.shutdown = true;
+            self.shared.lock().unwrap().ingress = None;
+            self.results.clear();
+            Ok(())
         }
     }
 
@@ -2608,5 +3465,155 @@ mod tests {
 
         drop(renderer);
         app_loop.shutdown_engine_selection_on_control().unwrap();
+    }
+
+    #[test]
+    fn physical_worker_activation_and_bounded_drain_use_the_production_fan_out() {
+        let (mut app_loop, observations) = loop_with_observations();
+        let identity = MidiInputDeviceId::new("midir-v1", "physical-a").unwrap();
+        let descriptor = MidiInputDescriptor::new(identity.clone(), "Physical A", None).unwrap();
+        let (worker, handle) = FakeMidiWorker::new(descriptor);
+        app_loop.configure_midi_devices(worker).unwrap();
+
+        assert!(app_loop.advance_midi_devices(0).unwrap().scan_requested());
+        app_loop.advance_midi_devices(1).unwrap();
+        assert!(app_loop
+            .state()
+            .midi_input()
+            .entry(&identity)
+            .is_some_and(|entry| entry.present()));
+
+        app_loop
+            .dispatch_from(
+                AppEvent::MidiInputConnectRequested {
+                    identity: identity.clone(),
+                },
+                EventSource::Keyboard,
+            )
+            .unwrap();
+        app_loop.advance_midi_devices(2).unwrap();
+        app_loop.advance_midi_devices(3).unwrap();
+        assert_eq!(
+            app_loop.state().midi_input().active().unwrap().identity(),
+            &identity
+        );
+        assert!(app_loop.current_midi_activity().is_some());
+
+        for timestamp in 0..65 {
+            assert_eq!(
+                handle.receive_raw(timestamp, &[0x90, 60, 100]),
+                PhysicalMidiIngressOutcome::Accepted
+            );
+        }
+        let first = app_loop.advance_midi_devices(34_000).unwrap();
+        assert_eq!(first.drained_events(), 64);
+        assert!(app_loop.midi_is_receiving(34_000));
+        let activity = app_loop.current_midi_activity_observation(34_000);
+        let snapshot = activity.snapshot().unwrap();
+        assert!(activity.receiving());
+        assert_eq!(
+            snapshot.revision(),
+            app_loop.state().midi_input().active().unwrap().revision()
+        );
+        assert_eq!(snapshot.accepted_count(), 64);
+        assert_eq!(
+            snapshot.last_event().unwrap().message().kind(),
+            MidiMessageKind::NoteOn
+        );
+        assert_eq!(
+            serde_json::to_value(activity).unwrap()["snapshot"]["lastEvent"]["message"]["channel"],
+            0
+        );
+        assert!(!app_loop
+            .current_midi_activity_observation(534_001)
+            .receiving());
+        let second = app_loop.advance_midi_devices(34_001).unwrap();
+        assert_eq!(second.drained_events(), 1);
+
+        let records = app_loop.event_log_ref().records();
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.source() == EventSource::PhysicalMidi)
+                .count(),
+            65
+        );
+        assert_eq!(
+            observations
+                .lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| matches!(command, AudioCommand::PatchMidi { .. }))
+                .count(),
+            65
+        );
+
+        let old_revision = app_loop.state().midi_input().active().unwrap().revision();
+        for timestamp in 100..(100 + crate::control::PHYSICAL_MIDI_QUEUE_CAPACITY as u64) {
+            assert_eq!(
+                handle.receive_raw(timestamp, &[0x90, 61, 99]),
+                PhysicalMidiIngressOutcome::Accepted
+            );
+        }
+        assert_eq!(
+            handle.receive_raw(10_000, &[0x90, 61, 99]),
+            PhysicalMidiIngressOutcome::CapacityFailure
+        );
+        let overflow = app_loop.advance_midi_devices(68_000).unwrap();
+        assert!(overflow.ingress_overflowed());
+        assert!(app_loop.state().midi_input().active().is_none());
+        assert!(app_loop
+            .state()
+            .midi_input()
+            .requested()
+            .is_some_and(|request| request.revision() > old_revision));
+        assert_eq!(
+            app_loop
+                .current_midi_activity_observation(68_000)
+                .snapshot(),
+            None
+        );
+
+        app_loop.advance_midi_devices(68_001).unwrap();
+        app_loop.advance_midi_devices(68_002).unwrap();
+        assert!(observations
+            .lock()
+            .unwrap()
+            .commands
+            .contains(&AudioCommand::AllNotesOff));
+        assert!(app_loop
+            .state()
+            .midi_input()
+            .active()
+            .is_some_and(|active| active.revision() > old_revision));
+
+        app_loop.shutdown_midi_devices_on_control().unwrap();
+        assert!(!app_loop.midi_devices_configured());
+        assert_eq!(app_loop.owned_midi_connections_on_control(), 0);
+        assert_eq!(handle.0.lock().unwrap().retired, 2);
+    }
+
+    #[test]
+    fn settings_action_reprojects_the_complete_system_surface_through_app_loop() {
+        let (mut app_loop, _) = loop_with_observations();
+        app_loop
+            .dispatch_action(SemanticAction::OpenMidiSettings)
+            .unwrap();
+
+        let model = app_loop.current_semantic_model();
+        assert_eq!(model.active_surface(), SurfaceId::MidiDeviceSettings);
+        let surface = model.surface(SurfaceId::MidiDeviceSettings).unwrap();
+        assert!(matches!(
+            surface.summary(),
+            SemanticSurfaceSummary::MidiDeviceSettings { rows, .. } if rows.is_empty()
+        ));
+        assert_eq!(
+            app_loop
+                .current_graphical_shell()
+                .identity_header()
+                .primary_label(),
+            "SETTINGS · MIDI DEVICES"
+        );
     }
 }

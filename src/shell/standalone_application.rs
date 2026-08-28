@@ -1,8 +1,11 @@
 use crate::adapter::threaded_graph_preparation_worker::{
     ThreadedGraphPreparationWorker, ThreadedGraphPreparationWorkerError,
 };
+use crate::adapter::threaded_midi_device_worker::{
+    ThreadedMidiDeviceWorker, ThreadedMidiDeviceWorkerError,
+};
 use crate::control::app_event::{AppEvent, Direction};
-use crate::control::app_loop::{AppLoop, StructuralAdvanceError};
+use crate::control::app_loop::{AppLoop, MidiDeviceAdvanceError, StructuralAdvanceError};
 use crate::control::app_state::{AppState, EventRejection};
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventInput, EventSource, PatchInput};
@@ -31,7 +34,7 @@ use crate::real_time::structural_graph_boundary::{
 };
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-    ProjectionCallback, TickCallback, WindowError,
+    MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::audio_device_status::{AudioDeviceStatusBoundary, AudioDeviceStatusReader};
 use crate::shell::audio_output::{
@@ -147,11 +150,18 @@ impl<Window: AppWindow + ?Sized> AppWindow for Box<Window> {
         on_input: AppInputCallback,
         projection: ProjectionCallback,
         audio_observation: AudioObservationCallback,
+        midi_activity: MidiActivityObservationCallback,
         on_tick: TickCallback,
         on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError> {
-        self.as_ref()
-            .run(on_input, projection, audio_observation, on_tick, on_frame)
+        self.as_ref().run(
+            on_input,
+            projection,
+            audio_observation,
+            midi_activity,
+            on_tick,
+            on_frame,
+        )
     }
 }
 
@@ -442,6 +452,8 @@ pub enum ApplicationError {
     Instrument(InstrumentPreparationError),
     Graph(GraphPreparationError),
     GraphWorker(ThreadedGraphPreparationWorkerError),
+    MidiDeviceWorker(ThreadedMidiDeviceWorkerError),
+    MidiDevice(MidiDeviceAdvanceError),
     Structural(StructuralAdvanceError),
     StateProjection(StateProjectionError),
     TestInput(TestInputError),
@@ -492,6 +504,10 @@ impl fmt::Display for ApplicationError {
             Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
             Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
             Self::GraphWorker(error) => write!(formatter, "graph worker setup failed: {error}"),
+            Self::MidiDeviceWorker(error) => {
+                write!(formatter, "MIDI device worker setup failed: {error}")
+            }
+            Self::MidiDevice(error) => write!(formatter, "physical MIDI control failed: {error}"),
             Self::Structural(error) => write!(formatter, "structural control failed: {error}"),
             Self::StateProjection(error) => {
                 write!(formatter, "initial control projection failed: {error}")
@@ -551,6 +567,8 @@ impl std::error::Error for ApplicationError {
             Self::Instrument(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::GraphWorker(error) => Some(error),
+            Self::MidiDeviceWorker(error) => Some(error),
+            Self::MidiDevice(error) => Some(error),
             Self::Structural(error) => Some(error),
             Self::StateProjection(error) => Some(error),
             Self::TestInput(error) => Some(error),
@@ -590,6 +608,18 @@ impl From<GraphPreparationError> for ApplicationError {
 impl From<ThreadedGraphPreparationWorkerError> for ApplicationError {
     fn from(error: ThreadedGraphPreparationWorkerError) -> Self {
         Self::GraphWorker(error)
+    }
+}
+
+impl From<ThreadedMidiDeviceWorkerError> for ApplicationError {
+    fn from(error: ThreadedMidiDeviceWorkerError) -> Self {
+        Self::MidiDeviceWorker(error)
+    }
+}
+
+impl From<MidiDeviceAdvanceError> for ApplicationError {
+    fn from(error: MidiDeviceAdvanceError) -> Self {
+        Self::MidiDevice(error)
     }
 }
 
@@ -704,6 +734,7 @@ pub struct StandaloneApplication<Boundary, Structural, Observation, Source, Wind
     window: Window,
     audio_output: Output,
     config: ApplicationConfig,
+    system_midi_devices: bool,
 }
 
 impl<Boundary, Structural, Observation, Source, Window, Output>
@@ -770,7 +801,17 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
             window,
             audio_output,
             config,
+            system_midi_devices: false,
         })
+    }
+
+    /// Enables the production system MIDI adapter, device worker, and
+    /// per-user preference capability for the interactive `run` path.
+    /// Deterministic and autonomous scene constructors remain isolated from
+    /// host devices unless the production composition root opts in.
+    pub fn with_system_midi_devices(mut self) -> Self {
+        self.system_midi_devices = true;
+        self
     }
 }
 
@@ -1010,12 +1051,13 @@ where
             window,
             audio_output,
             config,
+            system_midi_devices,
         } = self;
 
         let negotiated_audio = audio_output.negotiate()?;
         let device_config = negotiated_audio.config();
         let PreparedStartup {
-            app_loop,
+            mut app_loop,
             mut automatic,
             audio_boundary,
             structural_audio,
@@ -1033,6 +1075,14 @@ where
                 worker: StartupWorker::Threaded,
             },
         )?;
+        if system_midi_devices {
+            let midi_worker = ThreadedMidiDeviceWorker::new(
+                crate::adapter::midir_input_device::system_midi_input_device(),
+                crate::adapter::filesystem_midi_input_preference::per_user_midi_input_preference_store(
+                ),
+            )?;
+            app_loop.configure_midi_devices(midi_worker)?;
+        }
         let (observation_writer, observation_reader) = observation.into_handles();
         let mut renderer = AudioRenderer::with_observation(
             audio_boundary,
@@ -1052,23 +1102,37 @@ where
             automatic,
             app_loop,
             device_status,
+            midi_clock_micros: 0,
             error: None,
         }));
         let on_input = input_callback(Rc::clone(&runtime));
         let projection = projection_callback(Rc::clone(&runtime));
         let audio_observation: AudioObservationCallback =
             Box::new(move || observation_reader.read_latest_on_control());
+        let midi_activity = midi_activity_observation_callback(Rc::clone(&runtime));
         let on_tick = tick_callback(Rc::clone(&runtime));
         let on_frame: FrameObservationCallback = Box::new(|_observation| {});
 
-        let window_result = window.run(on_input, projection, audio_observation, on_tick, on_frame);
+        let window_result = window.run(
+            on_input,
+            projection,
+            audio_observation,
+            midi_activity,
+            on_tick,
+            on_frame,
+        );
         let runtime_error = runtime.borrow_mut().error.take();
+        let midi_shutdown_result = runtime
+            .borrow_mut()
+            .app_loop
+            .shutdown_midi_devices_on_control();
         drop(audio_stream);
         let shutdown_result = runtime
             .borrow_mut()
             .app_loop
             .shutdown_engine_selection_on_control();
         window_result?;
+        midi_shutdown_result?;
         shutdown_result?;
 
         if let Some(error) = runtime_error {
@@ -1141,6 +1205,7 @@ where
             window: _,
             audio_output,
             config,
+            system_midi_devices: _,
         } = self;
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
             .expect("the declared live EventLog capacity is nonzero");
@@ -1243,11 +1308,19 @@ where
         let on_input = live_input_sink();
         let projection = live_projection_callback(Rc::clone(&runtime));
         let audio_observation = live_audio_observation_callback(Rc::clone(&runtime));
+        let midi_activity: MidiActivityObservationCallback =
+            Box::new(crate::control::MidiActivityObservation::default);
         let on_tick = live_tick_callback(Rc::clone(&runtime));
         let on_frame = live_frame_callback(Rc::clone(&runtime));
 
-        let window_result =
-            live_window.run(on_input, projection, audio_observation, on_tick, on_frame);
+        let window_result = live_window.run(
+            on_input,
+            projection,
+            audio_observation,
+            midi_activity,
+            on_tick,
+            on_frame,
+        );
         let runtime_error = {
             let mut runtime = runtime.borrow_mut();
             if runtime.runner.completed_report().is_none() {
@@ -1318,6 +1391,7 @@ where
             window: _,
             audio_output: _,
             config,
+            system_midi_devices: _,
         } = self;
         let global_parameters = config.global_parameters();
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
@@ -1402,6 +1476,7 @@ where
             window: _,
             audio_output: _,
             config,
+            system_midi_devices: _,
         } = self;
 
         let PreparedStartup {
@@ -1961,6 +2036,7 @@ where
     automatic: AutomaticMidiTest<Source>,
     app_loop: AppLoop<Boundary>,
     device_status: AudioDeviceStatusReader,
+    midi_clock_micros: u64,
     error: Option<ApplicationError>,
 }
 
@@ -2013,6 +2089,21 @@ where
     Box::new(move || runtime.borrow().app_loop.current_graphical_shell())
 }
 
+fn midi_activity_observation_callback<Source, Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
+) -> MidiActivityObservationCallback
+where
+    Source: MidiEventSource + 'static,
+    Boundary: ControlAudioBoundary + 'static,
+{
+    Box::new(move || {
+        let runtime = runtime.borrow();
+        runtime
+            .app_loop
+            .current_midi_activity_observation(runtime.midi_clock_micros)
+    })
+}
+
 fn tick_callback<Source, Boundary>(
     runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
 ) -> TickCallback
@@ -2034,9 +2125,16 @@ where
             automatic,
             app_loop,
             device_status: _,
+            midi_clock_micros,
             error,
         } = &mut *runtime;
         if let Err(failure) = app_loop.advance_structural() {
+            *error = Some(failure.into());
+            return false;
+        }
+        let elapsed_micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
+        *midi_clock_micros = midi_clock_micros.saturating_add(elapsed_micros);
+        if let Err(failure) = app_loop.advance_midi_devices(*midi_clock_micros) {
             *error = Some(failure.into());
             return false;
         }
@@ -2238,7 +2336,7 @@ mod tests {
     use crate::real_time::{GraphHandoffStatus, GraphRevision};
     use crate::shell::app_window::{
         AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-        ProjectionCallback, TickCallback, WindowError,
+        MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
     };
     use crate::shell::audio_output::{
         AudioDeviceConfig, AudioDeviceStatusCallback, AudioOutput, AudioOutputError,
@@ -2443,6 +2541,7 @@ mod tests {
             _on_input: AppInputCallback,
             projection: ProjectionCallback,
             _audio_observation: AudioObservationCallback,
+            _midi_activity: MidiActivityObservationCallback,
             _on_tick: TickCallback,
             _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -2457,6 +2556,7 @@ mod tests {
             mut on_input: AppInputCallback,
             projection: ProjectionCallback,
             _audio_observation: AudioObservationCallback,
+            _midi_activity: MidiActivityObservationCallback,
             mut on_tick: TickCallback,
             _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -2593,6 +2693,7 @@ mod tests {
             _on_input: AppInputCallback,
             _projection: ProjectionCallback,
             _audio_observation: AudioObservationCallback,
+            _midi_activity: MidiActivityObservationCallback,
             mut on_tick: TickCallback,
             _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -2629,6 +2730,7 @@ mod tests {
             mut on_input: AppInputCallback,
             projection: ProjectionCallback,
             audio_observation: AudioObservationCallback,
+            _midi_activity: MidiActivityObservationCallback,
             mut on_tick: TickCallback,
             mut on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {

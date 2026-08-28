@@ -1611,6 +1611,7 @@ fn build_mixer_track_steps(
             }
         }
         steps.push(LiveDemoStep::accepted_event(AppEvent::Return));
+
         if track_id != MixerTrackId::ALL[MixerTrackId::COUNT - 1] {
             for _ in 1..MixerTrackParameter::MAIN.len() {
                 steps.push(LiveDemoStep::accepted_event(AppEvent::Navigate(

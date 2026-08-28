@@ -1,6 +1,7 @@
 use crate::control::app_state::AppState;
 use crate::control::{
-    EngineSelectionStatus, FocusPath, InteractionMode, PatchDetailSubject, ReturnPath,
+    EngineSelectionStatus, FocusPath, InteractionMode, MidiInputState, PatchDetailSubject,
+    ReturnPath,
 };
 use crate::mixer::bus_id::MAX_BUS_RETURNS;
 use crate::mixer::bus_return::BusReturnBank;
@@ -37,6 +38,8 @@ pub(crate) struct SerializedState<'a> {
     #[serde(default)]
     pub(crate) interaction: SerializedInteractionState,
     pub(crate) engine_selection: EngineSelectionStatus,
+    #[serde(default)]
+    pub(crate) midi_input: MidiInputState,
 }
 
 impl<'a> From<&'a AppState> for SerializedState<'a> {
@@ -51,6 +54,7 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
             returns: SerializedBusReturns::from(state.bus_returns()),
             interaction: SerializedInteractionState::from_state(state),
             engine_selection: state.engine_selection().clone(),
+            midi_input: state.midi_input().clone(),
         }
     }
 }

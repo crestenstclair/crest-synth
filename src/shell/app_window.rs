@@ -1,4 +1,4 @@
-use crate::control::{GraphicalShellProjection, SemanticAction};
+use crate::control::{GraphicalShellProjection, MidiActivityObservation, SemanticAction};
 use crate::real_time::AudioObservationSnapshot;
 use crate::shell::ShellFrameObservation;
 use core::fmt;
@@ -12,6 +12,9 @@ pub type ProjectionCallback = Box<dyn Fn() -> GraphicalShellProjection + 'static
 
 /// Latest immutable numeric audio observation requested by a window adapter.
 pub type AudioObservationCallback = Box<dyn Fn() -> AudioObservationSnapshot + 'static>;
+
+/// Latest compatible physical-MIDI activity requested by a window adapter.
+pub type MidiActivityObservationCallback = Box<dyn Fn() -> MidiActivityObservation + 'static>;
 
 /// Periodic control-side work requested by a window adapter.
 ///
@@ -64,6 +67,7 @@ pub trait AppWindow {
         on_input: AppInputCallback,
         projection: ProjectionCallback,
         audio_observation: AudioObservationCallback,
+        midi_activity: MidiActivityObservationCallback,
         on_tick: TickCallback,
         on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError>;
@@ -73,7 +77,7 @@ pub trait AppWindow {
 mod tests {
     use super::{
         AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-        ProjectionCallback, TickCallback, WindowError,
+        MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
     };
     use crate::control::app_event::Direction;
     use crate::control::{
@@ -95,6 +99,7 @@ mod tests {
             mut on_input: AppInputCallback,
             projection: ProjectionCallback,
             audio_observation: AudioObservationCallback,
+            midi_activity: MidiActivityObservationCallback,
             mut on_tick: TickCallback,
             mut on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -103,6 +108,7 @@ mod tests {
             let projection = projection();
             assert_eq!(projection.workspace().diagnostic().body(), "KEYS: test");
             assert_eq!(audio_observation().sequence(), 0);
+            assert_eq!(midi_activity().snapshot(), None);
             on_frame(frame_observation(&projection));
             Ok(())
         }
@@ -185,6 +191,8 @@ mod tests {
         });
         let audio_observation: AudioObservationCallback =
             Box::new(crate::real_time::AudioObservationSnapshot::default);
+        let midi_activity: MidiActivityObservationCallback =
+            Box::new(crate::control::MidiActivityObservation::default);
 
         let ticks_for_callback = Rc::clone(&ticks);
         let on_tick: TickCallback = Box::new(move |duration| {
@@ -198,7 +206,14 @@ mod tests {
 
         let window: &dyn AppWindow = &TestWindow;
         window
-            .run(on_input, projection, audio_observation, on_tick, on_frame)
+            .run(
+                on_input,
+                projection,
+                audio_observation,
+                midi_activity,
+                on_tick,
+                on_frame,
+            )
             .expect("test window should run");
 
         assert_eq!(

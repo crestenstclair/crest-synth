@@ -14,6 +14,7 @@ pub enum ControllerGesture {
     Edit,
     Select,
     Start,
+    ShiftStart,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,23 +68,34 @@ impl ControllerInput {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ControllerInputTranslator {
     start_held: bool,
+    shift_start_held: bool,
 }
 
 impl ControllerInputTranslator {
     pub const fn new() -> Self {
-        Self { start_held: false }
+        Self {
+            start_held: false,
+            shift_start_held: false,
+        }
     }
 
     pub fn translate(&mut self, input: ControllerInput) -> Option<SemanticAction> {
         match input.kind() {
-            ControllerInputKind::Disconnected => self.start_held.then(|| {
-                self.start_held = false;
-                SemanticAction::PreviewStop
-            }),
+            ControllerInputKind::Disconnected => {
+                self.shift_start_held = false;
+                self.start_held.then(|| {
+                    self.start_held = false;
+                    SemanticAction::PreviewStop
+                })
+            }
             ControllerInputKind::Released => {
                 if input.gesture() == ControllerGesture::Start && self.start_held {
                     self.start_held = false;
                     Some(SemanticAction::PreviewStop)
+                } else if input.gesture() == ControllerGesture::ShiftStart && self.shift_start_held
+                {
+                    self.shift_start_held = false;
+                    None
                 } else {
                     None
                 }
@@ -112,6 +124,11 @@ impl ControllerInputTranslator {
                 ControllerGesture::Start => {
                     self.start_held = true;
                     Some(SemanticAction::PreviewStart)
+                }
+                ControllerGesture::ShiftStart if self.shift_start_held => None,
+                ControllerGesture::ShiftStart => {
+                    self.shift_start_held = true;
+                    Some(SemanticAction::OpenMidiSettings)
                 }
             },
         }
@@ -210,6 +227,31 @@ mod tests {
         assert_eq!(
             translator.translate(ControllerInput::disconnected()),
             Some(SemanticAction::PreviewStop)
+        );
+    }
+
+    #[test]
+    fn shift_start_is_one_non_repeating_settings_action_and_has_no_preview_release() {
+        let mut translator = ControllerInputTranslator::new();
+        let shift_start = ControllerInput::pressed(ControllerGesture::ShiftStart);
+        assert_eq!(
+            translator.translate(shift_start),
+            Some(SemanticAction::OpenMidiSettings)
+        );
+        assert_eq!(translator.translate(shift_start), None);
+        assert_eq!(
+            translator.translate(ControllerInput::released(ControllerGesture::ShiftStart)),
+            None
+        );
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
+                Direction::Down
+            ))),
+            Some(SemanticAction::Return)
+        );
+        assert_eq!(
+            translator.translate(ControllerInput::pressed(ControllerGesture::Start)),
+            Some(SemanticAction::PreviewStart)
         );
     }
 }

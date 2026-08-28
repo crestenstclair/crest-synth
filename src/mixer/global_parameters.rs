@@ -42,6 +42,7 @@ impl fmt::Display for GlobalParameter {
 pub struct GlobalParameterDescriptor {
     parameter: GlobalParameter,
     label: &'static str,
+    unit: &'static str,
     minimum: f32,
     maximum: f32,
     fine_step: f32,
@@ -52,6 +53,7 @@ impl GlobalParameterDescriptor {
     const fn new(
         parameter: GlobalParameter,
         label: &'static str,
+        unit: &'static str,
         minimum: f32,
         maximum: f32,
         fine_step: f32,
@@ -60,6 +62,7 @@ impl GlobalParameterDescriptor {
         Self {
             parameter,
             label,
+            unit,
             minimum,
             maximum,
             fine_step,
@@ -93,6 +96,10 @@ impl GlobalParameterDescriptor {
         self.label
     }
 
+    pub const fn unit(&self) -> &'static str {
+        self.unit
+    }
+
     pub const fn minimum(&self) -> f32 {
         self.minimum
     }
@@ -118,6 +125,7 @@ const GLOBAL_PARAMETER_SURFACE_DESCRIPTOR: [GlobalParameterDescriptor; 1] =
     [GlobalParameterDescriptor::new(
         GlobalParameter::MasterGainDb,
         "Master Volume",
+        "dB",
         -60.0,
         6.0,
         1.0,
@@ -196,6 +204,7 @@ mod tests {
             &[GlobalParameterDescriptor::new(
                 GlobalParameter::MasterGainDb,
                 "Master Volume",
+                "dB",
                 -60.0,
                 6.0,
                 1.0,
@@ -208,6 +217,7 @@ mod tests {
         // string: `name` addresses the value in the state tree and the
         // parameter snapshot, `label` is the only one a surface may show.
         assert_eq!(descriptor[0].label(), "Master Volume");
+        assert_eq!(descriptor[0].unit(), "dB");
         assert_ne!(descriptor[0].label(), descriptor[0].name());
         assert!(descriptor[0].fine_step() > 0.0);
         assert!(descriptor[0].coarse_step() >= descriptor[0].fine_step());

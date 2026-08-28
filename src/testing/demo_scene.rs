@@ -617,6 +617,13 @@ fn build_steps(
         steps.push(DemoSceneStep::WindowInput(*input));
     }
 
+    // Shift+Start in the exhaustive vocabulary opens global MIDI Settings.
+    // Return through the semantic boundary so the remainder of the scene
+    // resumes at the exact reducer-owned origin, then exercise unmodified
+    // Start independently so PreviewStart and PreviewStop remain covered.
+    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
+    push_key_press(&mut steps, WindowKey::Space);
+
     // Prove that focus loss clears modifier state, then restore the canonical
     // T00/Level startup focus after the exhaustive vocabulary's T01/Pan end.
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
@@ -2406,6 +2413,9 @@ fn build_expected_coverage(
             crate::control::app_event::AppEventSurfaceDescriptor::OpenRelated => {
                 expected.push("event.openRelated".to_owned());
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::OpenMidiSettings => {
+                expected.push("event.openMidiSettings".to_owned());
+            }
             crate::control::app_event::AppEventSurfaceDescriptor::Activate => {
                 expected.push("event.activate".to_owned());
             }
@@ -2476,6 +2486,37 @@ fn build_expected_coverage(
                 ..
             } => {
                 expected.push("event.topologyPreparationFailed".to_owned());
+            }
+            crate::control::app_event::AppEventSurfaceDescriptor::MidiInputPreferenceRestored {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputPreferenceStoreFailed {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputScanSucceeded {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputScanFailed { .. }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputConnectRequested {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputConnectionPrepared {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputActivationAcknowledged {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputDisconnectRequested {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputConnectionLost {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputOperationFailed {
+                ..
+            }
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputScanStarted
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputShutdownRequested => {
             }
         }
     }
@@ -3116,7 +3157,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 47);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            35
+            48
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

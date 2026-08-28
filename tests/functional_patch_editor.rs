@@ -499,6 +499,78 @@ fn page_control_id(control: &Value) -> String {
     }
 }
 
+fn page_normalized_percentage(control: &Value) -> bool {
+    if control.get("unit").is_some_and(|unit| !unit.is_null()) {
+        return false;
+    }
+    matches!(
+        (
+            control
+                .pointer("/numericRange/minimum")
+                .and_then(Value::as_f64),
+            control
+                .pointer("/numericRange/maximum")
+                .and_then(Value::as_f64),
+        ),
+        (Some(0.0), Some(1.0)) | (Some(-1.0), Some(1.0))
+    )
+}
+
+fn page_numeric_scale(control: &Value) -> f64 {
+    if page_normalized_percentage(control) {
+        100.0
+    } else {
+        1.0
+    }
+}
+
+fn page_decimal_places_for_step(step: f64) -> usize {
+    if !step.is_finite() || step <= 0.0 {
+        return 3;
+    }
+    (0..=6)
+        .find(|places| {
+            let scaled = step * 10_f64.powi(*places);
+            (scaled - scaled.round()).abs() < 0.000_000_1
+        })
+        .unwrap_or(6) as usize
+}
+
+fn page_numeric_value_text(control: &Value, value: f64) -> String {
+    if !value.is_finite() {
+        return UNAVAILABLE_MARK.to_owned();
+    }
+    let scale = page_numeric_scale(control);
+    let step = control
+        .pointer("/numericRange/fineStep")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.001)
+        * scale;
+    let places = page_decimal_places_for_step(step).max(3);
+    let mut text = format!("{:.*}", places, value * scale);
+    if text.contains('.') {
+        while text.ends_with('0') {
+            text.pop();
+        }
+        if text.ends_with('.') {
+            text.pop();
+        }
+    }
+    if text == "-0" {
+        "0".to_owned()
+    } else {
+        text
+    }
+}
+
+fn page_unit_text(control: &Value) -> Option<String> {
+    control
+        .get("unit")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| page_normalized_percentage(control).then(|| "%".to_owned()))
+}
+
 /// `controlValueText` — one typed document value as finished screen text.
 ///
 /// The choice arm is the one this mission changed: it reads the projected
@@ -522,7 +594,7 @@ fn page_value_text(control: &Value) -> String {
             if kind == "stepped" {
                 format!("{}", number.round() as i64)
             } else {
-                format!("{number:.3}")
+                page_numeric_value_text(control, number)
             }
         }
         Some("parameter") => {
@@ -530,9 +602,10 @@ fn page_value_text(control: &Value) -> String {
                 return UNAVAILABLE_MARK.to_owned();
             };
             match parameter.get("kind").and_then(Value::as_str) {
-                Some("continuous") => {
-                    format!("{:.3}", parameter["value"].as_f64().unwrap_or(f64::NAN))
-                }
+                Some("continuous") => page_numeric_value_text(
+                    control,
+                    parameter["value"].as_f64().unwrap_or(f64::NAN),
+                ),
                 Some("stepped") => display(&parameter["value"]),
                 Some("choice") => control
                     .get("selectedLabel")
@@ -566,6 +639,8 @@ fn page_requested_value_text(control: &Value) -> Option<String> {
         "kind": control.get("kind").cloned().unwrap_or(Value::Null),
         "value": requested.clone(),
         "selectedLabel": control.get("requestedLabel").cloned().unwrap_or(Value::Null),
+        "numericRange": control.get("numericRange").cloned().unwrap_or(Value::Null),
+        "unit": control.get("unit").cloned().unwrap_or(Value::Null),
     })))
 }
 
@@ -577,7 +652,7 @@ fn page_range_text(control: &Value) -> Option<String> {
     let maximum = range.get("maximum").and_then(Value::as_f64)?;
     let endpoint = |value: f64| {
         if control.get("kind").and_then(Value::as_str) == Some("continuous") {
-            format!("{value:.3}")
+            page_numeric_value_text(control, value)
         } else {
             format!("{value}")
         }
@@ -1397,8 +1472,8 @@ fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
             "            selectedLabel: control.requestedLabel,",
         ),
         (
-            "continuous range precision",
-            "    return control.kind === \"continuous\"\n      ? Number(value).toFixed(3)\n      : String(value);",
+            "continuous values and ranges share unit-aware presentation",
+            "    return control.kind === \"continuous\"\n      ? numericValueText(control, Number(value))\n      : String(value);",
         ),
         (
             "read-only discriminator",
@@ -2898,7 +2973,13 @@ fn check_one_master_gain_owner() {
 fn check_no_projected_screen_string_is_a_serialization_key() -> usize {
     let mut checked = 0_usize;
     let mut covered = BTreeSet::new();
-    for (fixture, state) in screen_string_fixtures() {
+    let mut fixtures = screen_string_fixtures();
+    let mut midi_settings = fixture_state();
+    midi_settings
+        .apply_semantic_action(SemanticAction::OpenMidiSettings)
+        .expect("the fixture opens the global MIDI device Settings surface");
+    fixtures.push(("MIDI Device Settings", midi_settings));
+    for (fixture, state) in fixtures {
         let keys = serialization_keys(&state);
         for surface in semantic(&state).surfaces() {
             covered.insert(format!("{:?}", surface.id()));
@@ -3146,16 +3227,9 @@ fn check_requested_value_is_present_only_while_an_edit_is_in_flight() {
 ///
 /// **How much each half is read back is three tiers, not two** (F-70). Values
 /// are read back in full. Ranges are read back only *structurally*: the
-/// comparison below parses the painted endpoint and compares it to
-/// `numericRange.minimum` — which is the number the transcription painted it
-/// from — so it proves the separator and the endpoint arm split, and *not* that
-/// the painted bound carries the projected bound's precision. That precision
-/// rule rides on the pin (*the endpoint's continuous three places*), which does
-/// discriminate: `toFixed(3)` → `toFixed(1)` fails the pin table. Units rest on
-/// the pin alone (*the painted unit span*), because the page paints
-/// `String(control.unit)` unmodified and there is no rule to transcribe —
-/// manufacturing one for symmetry would re-commit F-65's `HINT_SEPARATOR`
-/// defect, a pin standing for a rule this file does not copy.
+/// comparison below parses the painted endpoints after applying the renderer's
+/// unit scale. It therefore proves both native-unit bounds and normalized
+/// percentage bounds, while the formatter correspondence covers precision.
 fn check_ranges_and_units_are_rendered() -> usize {
     let mut rendered = 0_usize;
     let mut units = 0_usize;
@@ -3178,17 +3252,18 @@ fn check_ranges_and_units_are_rendered() -> usize {
                 });
                 let minimum = range["minimum"].as_f64().unwrap();
                 let maximum = range["maximum"].as_f64().unwrap();
+                let scale = page_numeric_scale(&control);
                 let (low, high) = painted.split_once(" — ").unwrap_or_else(|| {
                     panic!("{fixture}: {id} paints {painted} with no separator")
                 });
                 assert_eq!(
                     low.parse::<f64>().unwrap(),
-                    minimum,
+                    minimum * scale,
                     "{fixture}: {id} paints a lower bound the projection does not declare"
                 );
                 assert_eq!(
                     high.parse::<f64>().unwrap(),
-                    maximum,
+                    maximum * scale,
                     "{fixture}: {id} paints an upper bound the projection does not declare"
                 );
                 assert!(
@@ -3197,7 +3272,7 @@ fn check_ranges_and_units_are_rendered() -> usize {
                     "{fixture}: {id} projects a range with no step"
                 );
                 rendered += 1;
-                if let Some(unit) = control.get("unit").and_then(Value::as_str) {
+                if let Some(unit) = page_unit_text(&control) {
                     assert!(!unit.is_empty(), "{fixture}: {id} projects an empty unit");
                     units += 1;
                 }

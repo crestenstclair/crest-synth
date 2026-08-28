@@ -481,6 +481,52 @@ mod tests {
         );
     }
 
+    #[test]
+    fn version_two_has_exact_top_level_fields_and_no_midi_device_runtime_data() {
+        let value = serde_json::to_value(SavedSession::capture(&state())).unwrap();
+        let object = value.as_object().unwrap();
+        let mut fields = object.keys().map(String::as_str).collect::<Vec<_>>();
+        fields.sort_unstable();
+        assert_eq!(
+            fields,
+            ["masterGainDb", "mixer", "patches", "returns", "version"]
+        );
+        assert_eq!(object["version"], SAVED_SESSION_VERSION);
+
+        fn reject_midi_runtime_fields(value: &serde_json::Value) {
+            match value {
+                serde_json::Value::Object(object) => {
+                    for (key, nested) in object {
+                        let normalized = key.to_ascii_lowercase();
+                        for forbidden in [
+                            "midiinput",
+                            "mididevice",
+                            "preference",
+                            "descriptor",
+                            "handle",
+                            "connection",
+                            "callback",
+                            "queue",
+                            "timestamp",
+                            "observation",
+                        ] {
+                            assert!(
+                                !normalized.contains(forbidden),
+                                "SavedSession unexpectedly contains `{key}`"
+                            );
+                        }
+                        reject_midi_runtime_fields(nested);
+                    }
+                }
+                serde_json::Value::Array(values) => {
+                    values.iter().for_each(reject_midi_runtime_fields)
+                }
+                _ => {}
+            }
+        }
+        reject_midi_runtime_fields(&value);
+    }
+
     fn decoded(asset: &str) -> crate::synth::DecodedSample {
         let samples = vec![0.0_f32; 128];
         crate::synth::DecodedSample::new(

@@ -7,7 +7,11 @@ use crate::control::engine_selection::{
 use crate::control::interaction_state::{InteractionState, Selection, SelectionSection};
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
-    FocusPath, MixerControlId, ModalControlId, PatchControlId, PatchSubordinateSession,
+    ConnectMidiInput, FocusPath, MidiActiveInputIdentity, MidiConnectionRequestId,
+    MidiConnectionRevision, MidiDeviceContractError, MidiDeviceEffect, MidiDeviceFailure,
+    MidiInputConnectionIntent, MidiInputDescriptor, MidiInputDeviceId, MidiInputPreference,
+    MidiInputRegistryEntry, MidiInputRowAction, MidiInputScanState, MidiInputState,
+    MidiPreferredInput, MixerControlId, ModalControlId, PatchControlId, PatchSubordinateSession,
     SampleBrowserState, SamplePreviewState, SemanticAction, SemanticControlId, SemanticResolver,
     SurfaceId,
 };
@@ -88,6 +92,7 @@ pub struct ApplyOutcome {
     accepted: StateAccepted,
     audio_command: Option<AudioCommand>,
     engine_selection_effect: Option<EngineSelectionEffect>,
+    midi_device_effects: Vec<MidiDeviceEffect>,
 }
 
 impl ApplyOutcome {
@@ -103,6 +108,14 @@ impl ApplyOutcome {
         self.engine_selection_effect.as_ref()
     }
 
+    pub fn midi_device_effects(&self) -> &[MidiDeviceEffect] {
+        &self.midi_device_effects
+    }
+
+    pub fn into_midi_device_effects(self) -> Vec<MidiDeviceEffect> {
+        self.midi_device_effects
+    }
+
     pub fn into_audio_command(self) -> Option<AudioCommand> {
         self.audio_command
     }
@@ -112,6 +125,7 @@ impl ApplyOutcome {
 struct ReducerEffects {
     audio_command: Option<AudioCommand>,
     engine_selection_effect: Option<EngineSelectionEffect>,
+    midi_device_effects: Vec<MidiDeviceEffect>,
 }
 
 /// One visible deterministic repair caused by an enabled-origin schema change.
@@ -439,6 +453,7 @@ pub(crate) fn exercise_reducer_table_rejections(
         disabled_patch_overview_origins: std::collections::BTreeSet::new(),
         focus_repair_status: None,
         sample_browser: SampleBrowserState::default(),
+        midi_input: MidiInputState::default(),
         pending_instrument_config: None,
         sample_visualizations: std::collections::BTreeMap::new(),
         pending_sample_visualization: None,
@@ -526,6 +541,7 @@ pub struct AppState {
     focus_repair_status: Option<FocusRepairStatus>,
     engine_selection: EngineSelectionStatus,
     sample_browser: SampleBrowserState,
+    midi_input: MidiInputState,
     /// Complete prepared instrument candidate retained off callback until the
     /// corresponding graph activation is acknowledged. This is transient
     /// control-thread state and is never serialized as acknowledged product state.
@@ -664,6 +680,7 @@ impl AppState {
             focus_repair_status: None,
             engine_selection: EngineSelectionStatus::ready(active_graph_revision),
             sample_browser: SampleBrowserState::default(),
+            midi_input: MidiInputState::default(),
             pending_instrument_config: None,
             sample_visualizations: std::collections::BTreeMap::new(),
             pending_sample_visualization: None,
@@ -744,6 +761,10 @@ impl AppState {
 
     pub const fn sample_browser(&self) -> &SampleBrowserState {
         &self.sample_browser
+    }
+
+    pub const fn midi_input(&self) -> &MidiInputState {
+        &self.midi_input
     }
 
     /// Resolves one MIXER global row's current value: master gain alone.
@@ -980,6 +1001,7 @@ impl AppState {
                 accepted: StateAccepted { generation },
                 audio_command: Some(AudioCommand::PatchMidi { patch_id, message }),
                 engine_selection_effect: None,
+                midi_device_effects: Vec::new(),
             });
         }
 
@@ -992,6 +1014,7 @@ impl AppState {
             accepted: StateAccepted { generation },
             audio_command: effects.audio_command,
             engine_selection_effect: effects.engine_selection_effect,
+            midi_device_effects: effects.midi_device_effects,
         })
     }
 
@@ -1004,6 +1027,7 @@ impl AppState {
                 | AppEvent::Adjust(_)
                 | AppEvent::SetInteractionMode(_)
                 | AppEvent::OpenRelated
+                | AppEvent::OpenMidiSettings
                 | AppEvent::Activate
                 | AppEvent::PreviewStart
                 | AppEvent::PreviewStop
@@ -1030,13 +1054,18 @@ impl AppState {
                 } else {
                     None
                 };
-                match self.context() {
-                    TopLevelContext::Mixer => self.navigate(direction)?,
-                    TopLevelContext::Patch => self.navigate_patch_control(direction)?,
+                if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
+                    self.navigate_midi_settings(direction)?;
+                } else {
+                    match self.context() {
+                        TopLevelContext::Mixer => self.navigate(direction)?,
+                        TopLevelContext::Patch => self.navigate_patch_control(direction)?,
+                    }
                 }
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: None,
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::Adjust(direction) => match self.context() {
@@ -1053,12 +1082,20 @@ impl AppState {
                 self.open_related_surface()?;
                 Ok(ReducerEffects::default())
             }
+            AppEvent::OpenMidiSettings => {
+                self.open_midi_settings()?;
+                Ok(ReducerEffects {
+                    midi_device_effects: self.start_midi_input_scan()?,
+                    ..ReducerEffects::default()
+                })
+            }
             AppEvent::Activate => self.activate_focused_subordinate(),
             AppEvent::PreviewStart => {
                 let engine_selection_effect = self.preview_start()?;
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(engine_selection_effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::PreviewStop => {
@@ -1066,6 +1103,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: None,
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::EnterSurface(SurfaceId::PatchDetail) => {
@@ -1079,6 +1117,12 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::Return => {
+                if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
+                    self.interaction
+                        .return_from_midi_settings()
+                        .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                    return Ok(ReducerEffects::default());
+                }
                 let audio_command = if self.interaction.active_surface() == SurfaceId::SampleBrowser
                 {
                     self.preview_stop_command()
@@ -1094,6 +1138,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: None,
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::InstallPatches(patches) => {
@@ -1141,6 +1186,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(engine_selection_effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::SampleAssetLifecycleAdvanced {
@@ -1184,6 +1230,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: None,
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::EnginePreparationFailed {
@@ -1226,6 +1273,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: Some(engine_selection_effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::SetSlotOccupancy {
@@ -1242,6 +1290,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::SetReturnOccupancy { bus, entry } => {
@@ -1253,6 +1302,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::TopologyPrepared {
@@ -1270,6 +1320,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             AppEvent::TopologyPreparationFailed {
@@ -1288,6 +1339,610 @@ impl AppState {
                 )?;
                 Ok(ReducerEffects::default())
             }
+            AppEvent::MidiInputPreferenceRestored {
+                preference,
+                failure,
+            } => {
+                self.restore_midi_input_preference(preference, failure)?;
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::MidiInputPreferenceStoreFailed { failure } => {
+                if !matches!(
+                    failure,
+                    MidiDeviceFailure::PreferenceWriteFailed
+                        | MidiDeviceFailure::PreferenceReadFailed
+                        | MidiDeviceFailure::PreferenceDecodeFailed
+                        | MidiDeviceFailure::PreferenceVersionUnsupported
+                ) {
+                    return Err(EventRejection::InvalidSelection);
+                }
+                self.midi_input.set_preference_failure(Some(failure));
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::MidiInputScanStarted => Ok(ReducerEffects {
+                midi_device_effects: self.start_midi_input_scan()?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors,
+            } => Ok(ReducerEffects {
+                midi_device_effects: self.midi_input_scan_succeeded(scan_id, descriptors)?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputScanFailed { scan_id, failure } => {
+                self.midi_input_scan_failed(scan_id, failure)?;
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::MidiInputConnectRequested { identity } => Ok(ReducerEffects {
+                midi_device_effects: self.request_midi_input_connection(identity)?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputConnectionPrepared {
+                request_id,
+                revision,
+            } => Ok(ReducerEffects {
+                midi_device_effects: self.midi_input_connection_prepared(request_id, revision)?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputActivationAcknowledged {
+                request_id,
+                revision,
+            } => Ok(ReducerEffects {
+                midi_device_effects: self
+                    .midi_input_activation_acknowledged(request_id, revision)?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputDisconnectRequested { identity } => Ok(ReducerEffects {
+                midi_device_effects: self.disconnect_midi_input(identity)?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputConnectionLost { identity, revision } => Ok(ReducerEffects {
+                midi_device_effects: self.lose_midi_input(identity, revision)?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputOperationFailed {
+                identity,
+                request_id,
+                revision,
+                failure,
+            } => Ok(ReducerEffects {
+                midi_device_effects: self
+                    .midi_input_operation_failed(identity, request_id, revision, failure)?,
+                ..ReducerEffects::default()
+            }),
+            AppEvent::MidiInputShutdownRequested => Ok(ReducerEffects {
+                midi_device_effects: self.shutdown_midi_input()?,
+                ..ReducerEffects::default()
+            }),
+        }
+    }
+
+    fn open_midi_settings(&mut self) -> Result<(), EventRejection> {
+        if self.interaction.mode() != crate::control::InteractionMode::Navigate
+            || self.interaction.active_surface() == SurfaceId::MidiDeviceSettings
+            || self.interaction.midi_settings_session().is_some()
+            || self.sample_browser.preview_is_held()
+        {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let context = self.context();
+        let focus = self
+            .midi_input
+            .selected()
+            .map(MidiPreferredInput::device_id)
+            .filter(|identity| self.midi_input.entry(identity).is_some())
+            .or_else(|| {
+                self.midi_input
+                    .registry()
+                    .first()
+                    .map(|entry| entry.descriptor().id().clone())
+            })
+            .map_or_else(
+                || FocusPath::midi_device_settings_root(context),
+                |identity| FocusPath::midi_device_settings(context, identity),
+            );
+        self.interaction
+            .open_midi_settings(focus)
+            .map_err(|_| EventRejection::ActionUnavailableInContext)
+    }
+
+    fn start_midi_input_scan(&mut self) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        if self.midi_input.shutting_down() {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if self.midi_input.scan().in_flight() {
+            return Ok(Vec::new());
+        }
+        let scan_id = self
+            .midi_input
+            .next_scan_id()
+            .map_err(Self::map_midi_identifier_error)?;
+        let last_successful_scan_id = self.midi_input.scan().last_successful_scan_id();
+        self.midi_input.set_last_scan_id(scan_id);
+        self.midi_input.set_scan(MidiInputScanState::Scanning {
+            scan_id,
+            last_successful_scan_id,
+        });
+        Ok(vec![MidiDeviceEffect::Scan { scan_id }])
+    }
+
+    fn restore_midi_input_preference(
+        &mut self,
+        preference: Option<MidiInputPreference>,
+        failure: Option<MidiDeviceFailure>,
+    ) -> Result<(), EventRejection> {
+        if self.midi_input.preference_loaded()
+            || (preference.is_some() && failure.is_some())
+            || self.midi_input.selected().is_some()
+            || self.midi_input.requested().is_some()
+            || self.midi_input.active().is_some()
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        self.midi_input.set_preference_loaded(true);
+        self.midi_input.set_preference_failure(failure);
+        let Some(preference) = preference else {
+            return Ok(());
+        };
+        let selected = preference.selected_input().clone();
+        let identity = selected.device_id();
+        let descriptor =
+            MidiInputDescriptor::new(identity, selected.last_known_display_name(), None)
+                .map_err(|_| EventRejection::InvalidSelection)?;
+        self.midi_input.set_selected(Some(selected));
+        self.midi_input
+            .set_connection_intent(MidiInputConnectionIntent::Enabled);
+        self.midi_input
+            .set_registry(vec![MidiInputRegistryEntry::new(descriptor, false)]);
+        Ok(())
+    }
+
+    fn midi_input_scan_succeeded(
+        &mut self,
+        scan_id: crate::control::MidiInputScanId,
+        mut descriptors: Vec<MidiInputDescriptor>,
+    ) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        if !matches!(
+            self.midi_input.scan(),
+            MidiInputScanState::Scanning {
+                scan_id: current,
+                ..
+            } if *current == scan_id
+        ) {
+            return Err(EventRejection::StaleEngineSelection);
+        }
+        let mut unique = std::collections::BTreeSet::new();
+        if descriptors
+            .iter()
+            .any(|descriptor| !unique.insert(descriptor.id().clone()))
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        descriptors.sort_by(|left, right| {
+            left.display_name()
+                .to_lowercase()
+                .cmp(&right.display_name().to_lowercase())
+                .then_with(|| left.id().cmp(right.id()))
+        });
+
+        let old_order = self.midi_input.ordered_identities();
+        let focused = match self.interaction.focus_path().control_id() {
+            SemanticControlId::MidiInputDevice(identity) => Some(identity.clone()),
+            _ => None,
+        };
+        let selected = self
+            .midi_input
+            .selected()
+            .map(MidiPreferredInput::device_id);
+        let mut remaining = descriptors;
+        let mut registry = Vec::new();
+        for old in self.midi_input.registry() {
+            if let Some(index) = remaining
+                .iter()
+                .position(|descriptor| descriptor.id() == old.descriptor().id())
+            {
+                registry.push(MidiInputRegistryEntry::new(remaining.remove(index), true));
+            } else if selected.as_ref() == Some(old.descriptor().id())
+                || (focused.as_ref() == Some(old.descriptor().id()) && old.present())
+            {
+                registry.push(MidiInputRegistryEntry::new(old.descriptor().clone(), false));
+            }
+        }
+        registry.extend(
+            remaining
+                .into_iter()
+                .map(|descriptor| MidiInputRegistryEntry::new(descriptor, true)),
+        );
+        self.midi_input.set_registry(registry);
+        self.midi_input
+            .set_scan(MidiInputScanState::Ready { scan_id });
+
+        let new_order = self.midi_input.ordered_identities();
+        if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
+            if let Some((removed_origin, replacement_origin)) = self
+                .interaction
+                .reconcile_midi_settings_focus(&old_order, &new_order)
+                .map_err(|_| EventRejection::InvalidSelection)?
+            {
+                self.focus_repair_status = Some(FocusRepairStatus {
+                    removed_origin,
+                    replacement_origin,
+                });
+            }
+        }
+
+        let mut effects = Vec::new();
+        if let Some(active) = self.midi_input.active().cloned() {
+            if self
+                .midi_input
+                .entry(active.identity())
+                .is_none_or(|entry| !entry.present())
+            {
+                effects.extend(self.lose_midi_input(active.identity().clone(), active.revision())?);
+            }
+        }
+        if let Some(request) = self.midi_input.requested().cloned() {
+            if self
+                .midi_input
+                .entry(request.identity())
+                .is_none_or(|entry| !entry.present())
+            {
+                let identity = request.identity().clone();
+                self.midi_input.set_requested(None);
+                self.midi_input.set_operation_failure(
+                    Some(identity.clone()),
+                    Some(MidiDeviceFailure::IdentityUnavailable {
+                        identity: identity.clone(),
+                    }),
+                );
+                effects.push(MidiDeviceEffect::CancelCandidate { request });
+            }
+        }
+
+        if let Some(selected) = self.midi_input.selected().cloned() {
+            let identity = selected.device_id();
+            if let Some(entry) = self
+                .midi_input
+                .entry(&identity)
+                .filter(|entry| entry.present())
+            {
+                if entry.descriptor().display_name() != selected.last_known_display_name() {
+                    let updated = MidiPreferredInput::new(
+                        identity.clone(),
+                        entry.descriptor().display_name(),
+                    )
+                    .map_err(|_| EventRejection::InvalidSelection)?;
+                    let preference = MidiInputPreference::new(updated.clone());
+                    self.midi_input.set_selected(Some(updated));
+                    effects.push(MidiDeviceEffect::Persist { preference });
+                }
+                if self.midi_input.connection_intent() == MidiInputConnectionIntent::Enabled
+                    && self.midi_input.active().is_none()
+                    && self.midi_input.requested().is_none()
+                {
+                    effects.extend(self.request_midi_input_connection(identity)?);
+                }
+            }
+        }
+        Ok(effects)
+    }
+
+    fn midi_input_scan_failed(
+        &mut self,
+        scan_id: crate::control::MidiInputScanId,
+        failure: MidiDeviceFailure,
+    ) -> Result<(), EventRejection> {
+        let MidiInputScanState::Scanning {
+            scan_id: current,
+            last_successful_scan_id,
+        } = self.midi_input.scan()
+        else {
+            return Err(EventRejection::StaleEngineSelection);
+        };
+        if *current != scan_id {
+            return Err(EventRejection::StaleEngineSelection);
+        }
+        let last_successful_scan_id = *last_successful_scan_id;
+        self.midi_input.set_scan(MidiInputScanState::Failed {
+            scan_id,
+            last_successful_scan_id,
+            failure,
+        });
+        Ok(())
+    }
+
+    fn request_midi_input_connection(
+        &mut self,
+        identity: MidiInputDeviceId,
+    ) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        if self.midi_input.shutting_down()
+            || self.midi_input.requested().is_some()
+            || self
+                .midi_input
+                .active()
+                .is_some_and(|active| active.identity() == &identity)
+        {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let descriptor = self
+            .midi_input
+            .entry(&identity)
+            .filter(|entry| entry.present())
+            .map(|entry| entry.descriptor().clone())
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let (request_id, revision) = self
+            .midi_input
+            .next_connection_correlation()
+            .map_err(Self::map_midi_identifier_error)?;
+        let request = ConnectMidiInput::new(identity.clone(), request_id, revision);
+        let mut effects = Vec::new();
+        if self.midi_input.selected().is_none() {
+            let selected = MidiPreferredInput::new(identity, descriptor.display_name())
+                .map_err(|_| EventRejection::InvalidSelection)?;
+            let preference = MidiInputPreference::new(selected.clone());
+            self.midi_input.set_selected(Some(selected));
+            effects.push(MidiDeviceEffect::Persist { preference });
+        }
+        self.midi_input
+            .set_connection_intent(MidiInputConnectionIntent::Enabled);
+        self.midi_input
+            .set_last_connection_correlation(request_id, revision);
+        self.midi_input.set_requested(Some(request.clone()));
+        self.midi_input.set_operation_failure(None, None);
+        effects.push(MidiDeviceEffect::Connect { request });
+        Ok(effects)
+    }
+
+    fn midi_input_connection_prepared(
+        &mut self,
+        request_id: MidiConnectionRequestId,
+        revision: MidiConnectionRevision,
+    ) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        let request = self
+            .midi_input
+            .requested()
+            .filter(|request| request.request_id() == request_id && request.revision() == revision)
+            .cloned()
+            .ok_or(EventRejection::MismatchedEngineSelection)?;
+        if self.midi_input.request_is_prepared() {
+            return Err(EventRejection::StaleEngineSelection);
+        }
+        self.midi_input.set_request_prepared(true);
+        Ok(vec![MidiDeviceEffect::Activate { request }])
+    }
+
+    fn midi_input_activation_acknowledged(
+        &mut self,
+        request_id: MidiConnectionRequestId,
+        revision: MidiConnectionRevision,
+    ) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        let request = self
+            .midi_input
+            .requested()
+            .filter(|request| request.request_id() == request_id && request.revision() == revision)
+            .cloned()
+            .ok_or(EventRejection::MismatchedEngineSelection)?;
+        if !self.midi_input.request_is_prepared() {
+            return Err(EventRejection::MismatchedEngineSelection);
+        }
+        let descriptor = self
+            .midi_input
+            .entry(request.identity())
+            .filter(|entry| entry.present())
+            .map(|entry| entry.descriptor().clone())
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let old_active = self.midi_input.active().cloned();
+        let selected =
+            MidiPreferredInput::new(request.identity().clone(), descriptor.display_name())
+                .map_err(|_| EventRejection::InvalidSelection)?;
+        let preference_changed = self.midi_input.selected() != Some(&selected);
+        self.midi_input.set_selected(Some(selected.clone()));
+        self.midi_input
+            .set_connection_intent(MidiInputConnectionIntent::Enabled);
+        self.midi_input
+            .set_active(Some(MidiActiveInputIdentity::new(
+                request.identity().clone(),
+                revision,
+            )));
+        self.midi_input.set_requested(None);
+        self.midi_input.set_operation_failure(None, None);
+
+        let mut effects = Vec::new();
+        if let Some(old) = old_active.filter(|old| old.revision() != revision) {
+            effects.push(MidiDeviceEffect::Retire {
+                identity: old.identity().clone(),
+                request_id: None,
+                revision: old.revision(),
+            });
+        }
+        if preference_changed {
+            effects.push(MidiDeviceEffect::Persist {
+                preference: MidiInputPreference::new(selected),
+            });
+        }
+        Ok(effects)
+    }
+
+    fn disconnect_midi_input(
+        &mut self,
+        identity: MidiInputDeviceId,
+    ) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        if self.midi_input.requested().is_some() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let active = self
+            .midi_input
+            .active()
+            .filter(|active| active.identity() == &identity)
+            .cloned()
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        self.midi_input.set_active(None);
+        self.midi_input
+            .set_connection_intent(MidiInputConnectionIntent::ManuallyDisconnected);
+        self.midi_input.set_operation_failure(None, None);
+        Ok(vec![
+            MidiDeviceEffect::Recover {
+                identity: identity.clone(),
+                revision: active.revision(),
+            },
+            MidiDeviceEffect::Retire {
+                identity,
+                request_id: None,
+                revision: active.revision(),
+            },
+        ])
+    }
+
+    fn lose_midi_input(
+        &mut self,
+        identity: MidiInputDeviceId,
+        revision: MidiConnectionRevision,
+    ) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        let active = self
+            .midi_input
+            .active()
+            .filter(|active| active.identity() == &identity && active.revision() == revision)
+            .cloned()
+            .ok_or(EventRejection::StaleEngineSelection)?;
+        let registry = self
+            .midi_input
+            .registry()
+            .iter()
+            .cloned()
+            .map(|entry| {
+                if entry.descriptor().id() == &identity {
+                    MidiInputRegistryEntry::new(entry.descriptor().clone(), false)
+                } else {
+                    entry
+                }
+            })
+            .collect();
+        self.midi_input.set_registry(registry);
+        self.midi_input.set_active(None);
+        self.midi_input.set_operation_failure(
+            Some(identity.clone()),
+            Some(MidiDeviceFailure::DeviceLost {
+                identity: identity.clone(),
+                revision,
+            }),
+        );
+        Ok(vec![
+            MidiDeviceEffect::Recover {
+                identity: identity.clone(),
+                revision: active.revision(),
+            },
+            MidiDeviceEffect::Retire {
+                identity,
+                request_id: None,
+                revision,
+            },
+        ])
+    }
+
+    fn midi_input_operation_failed(
+        &mut self,
+        identity: MidiInputDeviceId,
+        request_id: Option<MidiConnectionRequestId>,
+        revision: Option<MidiConnectionRevision>,
+        failure: MidiDeviceFailure,
+    ) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        if matches!(
+            failure,
+            MidiDeviceFailure::MalformedMessage { .. }
+                | MidiDeviceFailure::UnsupportedMessage { .. }
+        ) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if let Some(request) = self.midi_input.requested().cloned() {
+            if request.identity() != &identity
+                || Some(request.request_id()) != request_id
+                || Some(request.revision()) != revision
+            {
+                return Err(EventRejection::MismatchedEngineSelection);
+            }
+            self.midi_input.set_requested(None);
+            self.midi_input
+                .set_operation_failure(Some(identity.clone()), Some(failure));
+            return Ok(vec![MidiDeviceEffect::Retire {
+                identity,
+                request_id,
+                revision: request.revision(),
+            }]);
+        }
+        if matches!(failure, MidiDeviceFailure::DisconnectionFailed { .. })
+            && self.midi_input.entry(&identity).is_some()
+        {
+            self.midi_input
+                .set_operation_failure(Some(identity), Some(failure));
+            return Ok(Vec::new());
+        }
+        let active = self
+            .midi_input
+            .active()
+            .filter(|active| active.identity() == &identity && Some(active.revision()) == revision)
+            .cloned()
+            .ok_or(EventRejection::StaleEngineSelection)?;
+        self.midi_input.set_active(None);
+        self.midi_input
+            .set_operation_failure(Some(identity.clone()), Some(failure.clone()));
+        let mut effects = vec![
+            MidiDeviceEffect::Recover {
+                identity: identity.clone(),
+                revision: active.revision(),
+            },
+            MidiDeviceEffect::Retire {
+                identity: identity.clone(),
+                request_id,
+                revision: active.revision(),
+            },
+        ];
+        if matches!(failure, MidiDeviceFailure::TransportCapacity { .. })
+            && self.midi_input.connection_intent() == MidiInputConnectionIntent::Enabled
+            && self
+                .midi_input
+                .entry(&identity)
+                .is_some_and(|entry| entry.present())
+        {
+            effects.extend(self.request_midi_input_connection(identity.clone())?);
+            self.midi_input
+                .set_operation_failure(Some(identity), Some(failure));
+        }
+        Ok(effects)
+    }
+
+    fn shutdown_midi_input(&mut self) -> Result<Vec<MidiDeviceEffect>, EventRejection> {
+        if self.midi_input.shutting_down() {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        self.midi_input.set_shutting_down(true);
+        let mut effects = Vec::new();
+        if let Some(request) = self.midi_input.requested().cloned() {
+            self.midi_input.set_requested(None);
+            effects.push(MidiDeviceEffect::CancelCandidate { request });
+        }
+        if let Some(active) = self.midi_input.active().cloned() {
+            self.midi_input.set_active(None);
+            effects.push(MidiDeviceEffect::Recover {
+                identity: active.identity().clone(),
+                revision: active.revision(),
+            });
+            effects.push(MidiDeviceEffect::Retire {
+                identity: active.identity().clone(),
+                request_id: None,
+                revision: active.revision(),
+            });
+        }
+        self.midi_input
+            .set_connection_intent(MidiInputConnectionIntent::ManuallyDisconnected);
+        effects.push(MidiDeviceEffect::Shutdown);
+        Ok(effects)
+    }
+
+    fn map_midi_identifier_error(error: MidiDeviceContractError) -> EventRejection {
+        match error {
+            MidiDeviceContractError::IdentifierExhausted(_) => EventRejection::RequestIdOverflow,
+            _ => EventRejection::InvalidSelection,
         }
     }
 
@@ -1383,7 +2038,8 @@ impl AppState {
             | SurfaceId::PatchChoice
             | SurfaceId::SampleBrowser
             | SurfaceId::MixerMain
-            | SurfaceId::MixerInspector => Err(EventRejection::ActionUnavailableInContext),
+            | SurfaceId::MixerInspector
+            | SurfaceId::MidiDeviceSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
@@ -1459,6 +2115,30 @@ impl AppState {
     }
 
     fn activate_focused_subordinate(&mut self) -> Result<ReducerEffects, EventRejection> {
+        if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
+            let identity = match self.interaction.focus_path().control_id() {
+                SemanticControlId::MidiInputDevice(identity) => identity.clone(),
+                SemanticControlId::MidiInputListRoot => {
+                    return Err(EventRejection::ActionUnavailableInContext)
+                }
+                _ => return Err(EventRejection::InvalidSelection),
+            };
+            let action = self
+                .midi_input
+                .row_state(&identity)
+                .and_then(|row| row.action())
+                .ok_or(EventRejection::ActionUnavailableInContext)?;
+            let midi_device_effects = match action {
+                MidiInputRowAction::Connect | MidiInputRowAction::Retry => {
+                    self.request_midi_input_connection(identity)?
+                }
+                MidiInputRowAction::Disconnect => self.disconnect_midi_input(identity)?,
+            };
+            return Ok(ReducerEffects {
+                midi_device_effects,
+                ..ReducerEffects::default()
+            });
+        }
         if matches!(
             self.interaction.subordinate_session(),
             Some(PatchSubordinateSession::SampleBrowser { .. })
@@ -1578,6 +2258,7 @@ impl AppState {
         Ok(ReducerEffects {
             audio_command: None,
             engine_selection_effect: effect,
+            midi_device_effects: Vec::new(),
         })
     }
 
@@ -1604,6 +2285,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: None,
+                    midi_device_effects: Vec::new(),
                 })
             }
             SampleBrowserRowKind::File(asset_id) => {
@@ -1616,6 +2298,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: Some(effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             SampleBrowserRowKind::Cancel => {
@@ -1626,6 +2309,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command,
                     engine_selection_effect: None,
+                    midi_device_effects: Vec::new(),
                 })
             }
         }
@@ -2458,8 +3142,17 @@ impl AppState {
             | SurfaceId::PatchUtility
             | SurfaceId::PatchDetail
             | SurfaceId::PatchChoice
-            | SurfaceId::SampleBrowser => Err(EventRejection::ActionUnavailableInContext),
+            | SurfaceId::SampleBrowser
+            | SurfaceId::MidiDeviceSettings => Err(EventRejection::ActionUnavailableInContext),
         }
+    }
+
+    fn navigate_midi_settings(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        if !matches!(direction, Direction::Up | Direction::Down) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let paths = SemanticResolver::new(self).midi_input_settings_paths()?;
+        self.navigate_side_nonwrapping(&paths, direction == Direction::Down)
     }
 
     fn navigate_patch_control(&mut self, direction: Direction) -> Result<(), EventRejection> {
@@ -2564,7 +3257,7 @@ impl AppState {
                         .map_err(|_| EventRejection::InvalidSelection)
                 }
             },
-            SurfaceId::MixerMain | SurfaceId::MixerInspector => {
+            SurfaceId::MixerMain | SurfaceId::MixerInspector | SurfaceId::MidiDeviceSettings => {
                 Err(EventRejection::ActionUnavailableInContext)
             }
         }
@@ -2627,6 +3320,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(engine_selection_effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             Some(crate::control::PatchControlId::Envelope(parameter)) => {
@@ -2647,6 +3341,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(structural_effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             Some(crate::control::PatchControlId::EffectSlot(slot)) => {
@@ -2654,6 +3349,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(structural_effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             Some(crate::control::PatchControlId::Effect(slot_id, parameter_id)) => {
@@ -2836,6 +3532,7 @@ impl AppState {
                     Ok(ReducerEffects {
                         audio_command: None,
                         engine_selection_effect: Some(engine_selection_effect),
+                        midi_device_effects: Vec::new(),
                     })
                 } else {
                     self.adjust_instrument_parameter(&parameter_id, direction)?;
@@ -3355,6 +4052,7 @@ impl AppState {
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
+                    midi_device_effects: Vec::new(),
                 })
             }
             MixerControlId::ReturnLevel { bus } => {
@@ -3664,7 +4362,8 @@ impl AppState {
                 | SurfaceId::PatchDetail
                 | SurfaceId::PatchChoice
                 | SurfaceId::SampleBrowser
-                | SurfaceId::MixerInspector => return Err(EventRejection::InvalidSelection),
+                | SurfaceId::MixerInspector
+                | SurfaceId::MidiDeviceSettings => return Err(EventRejection::InvalidSelection),
             };
             SemanticResolver::recover(path, old_order, new_order)
                 .ok_or(EventRejection::InvalidSelection)
@@ -3681,6 +4380,21 @@ impl AppState {
             .return_path()
             .map(|path| repair(path.origin()))
             .transpose()?;
+        let suspended_focus = self
+            .interaction
+            .midi_settings_session()
+            .map(|session| session.suspended_focus().clone());
+        let repaired_suspended_focus = suspended_focus
+            .as_ref()
+            .filter(|focus| focus.surface().is_main())
+            .map(&repair)
+            .transpose()?;
+        let repaired_suspended_return_origin = self
+            .interaction
+            .midi_settings_session()
+            .and_then(|session| session.suspended_return_path())
+            .map(|path| repair(path.origin()))
+            .transpose()?;
 
         if let Some(path) = repaired_patch {
             self.interaction.replace_remembered_patch_main(path);
@@ -3690,6 +4404,16 @@ impl AppState {
         if let Some(origin) = repaired_return_origin {
             self.interaction
                 .replace_return_origin(origin)
+                .map_err(|_| EventRejection::InvalidSelection)?;
+        }
+        if let Some(focus) = repaired_suspended_focus {
+            self.interaction
+                .replace_midi_settings_suspended_focus(focus)
+                .map_err(|_| EventRejection::InvalidSelection)?;
+        }
+        if let Some(origin) = repaired_suspended_return_origin {
+            self.interaction
+                .replace_midi_settings_suspended_return_origin(origin)
                 .map_err(|_| EventRejection::InvalidSelection)?;
         }
         self.leave_stale_detail_surface();
@@ -6564,6 +7288,787 @@ mod tests {
         assert_ne!(
             landed, destination_order[0],
             "the retained third-slot identity is not a first-row fallback"
+        );
+    }
+
+    #[test]
+    fn midi_settings_round_trips_exact_patch_and_mixer_interaction_through_apply() {
+        let mut mixer = installed_state();
+        mixer
+            .apply(AppEvent::SelectContext(TopLevelContext::Mixer))
+            .unwrap();
+        mixer.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        let mixer_origin = mixer.interaction().clone();
+        let opened = mixer
+            .apply_semantic_action(SemanticAction::OpenMidiSettings)
+            .unwrap();
+        assert_eq!(opened.audio_command(), None);
+        assert_eq!(opened.engine_selection_effect(), None);
+        assert_eq!(mixer.context(), TopLevelContext::Mixer);
+        assert_eq!(
+            mixer.interaction().active_surface(),
+            SurfaceId::MidiDeviceSettings
+        );
+        let returned = mixer.apply_semantic_action(SemanticAction::Return).unwrap();
+        assert_eq!(returned.audio_command(), None);
+        assert_eq!(returned.engine_selection_effect(), None);
+        assert_eq!(mixer.interaction(), &mixer_origin);
+
+        let mut patch = installed_state();
+        patch
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        patch
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        let patch_origin = patch.interaction().clone();
+        patch
+            .apply_semantic_action(SemanticAction::OpenMidiSettings)
+            .unwrap();
+        assert_eq!(
+            patch.interaction().active_surface(),
+            SurfaceId::MidiDeviceSettings
+        );
+        patch.apply_semantic_action(SemanticAction::Return).unwrap();
+        assert_eq!(patch.interaction(), &patch_origin);
+        assert!(patch.interaction().detail_invariant_holds());
+    }
+
+    #[test]
+    fn midi_settings_entry_rejections_are_transactional_for_every_unsafe_state() {
+        fn assert_rejected_unchanged(state: &mut AppState) {
+            let before = state.clone();
+            assert_eq!(
+                state.apply_semantic_action(SemanticAction::OpenMidiSettings),
+                Err(EventRejection::ActionUnavailableInContext)
+            );
+            assert_eq!(
+                state, &before,
+                "generation, focus, return state, and pending effects must remain unchanged"
+            );
+        }
+
+        let mut adjusting = installed_state();
+        adjusting
+            .apply_semantic_action(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        assert_rejected_unchanged(&mut adjusting);
+
+        let mut modal = mixed_state();
+        modal.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        assert_eq!(modal.interaction().mode(), InteractionMode::Modal);
+        assert_rejected_unchanged(&mut modal);
+
+        let mut held_preview = installed_state();
+        held_preview.sample_browser.preview_requested(
+            SampleAssetId::new("test/held-preview.wav").unwrap(),
+            EngineSelectionRequestId::FIRST,
+        );
+        assert!(held_preview.sample_browser.preview_is_held());
+        assert_rejected_unchanged(&mut held_preview);
+
+        let mut recursive = installed_state();
+        recursive
+            .apply_semantic_action(SemanticAction::OpenMidiSettings)
+            .unwrap();
+        assert_rejected_unchanged(&mut recursive);
+    }
+
+    fn midi_test_id(value: &str) -> MidiInputDeviceId {
+        MidiInputDeviceId::new("midir-v1", value).unwrap()
+    }
+
+    fn midi_test_descriptor(value: &str, name: &str) -> MidiInputDescriptor {
+        MidiInputDescriptor::new(midi_test_id(value), name, None).unwrap()
+    }
+
+    fn start_midi_test_scan(state: &mut AppState) -> crate::control::MidiInputScanId {
+        let outcome = state.apply(AppEvent::MidiInputScanStarted).unwrap();
+        let [MidiDeviceEffect::Scan { scan_id }] = outcome.midi_device_effects() else {
+            panic!("one reducer-allocated scan effect is required")
+        };
+        *scan_id
+    }
+
+    fn install_midi_test_registry(state: &mut AppState, descriptors: Vec<MidiInputDescriptor>) {
+        let scan_id = start_midi_test_scan(state);
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors,
+            })
+            .unwrap();
+    }
+
+    fn connected_midi_test_state() -> (AppState, MidiInputDeviceId, MidiInputDeviceId) {
+        let mut state = installed_state();
+        let first = midi_test_id("port-a");
+        let second = midi_test_id("port-b");
+        install_midi_test_registry(
+            &mut state,
+            vec![
+                midi_test_descriptor("port-b", "Beta"),
+                midi_test_descriptor("port-a", "Alpha"),
+            ],
+        );
+        state
+            .apply(AppEvent::MidiInputConnectRequested {
+                identity: first.clone(),
+            })
+            .unwrap();
+        let request = state.midi_input().requested().unwrap().clone();
+        state
+            .apply(AppEvent::MidiInputConnectionPrepared {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::MidiInputActivationAcknowledged {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        (state, first, second)
+    }
+
+    #[test]
+    fn midi_registry_reconciliation_preserves_order_focus_tombstones_and_scan_staleness() {
+        let mut state = installed_state();
+        let opened = state
+            .apply_semantic_action(SemanticAction::OpenMidiSettings)
+            .unwrap();
+        let [MidiDeviceEffect::Scan { scan_id }] = opened.midi_device_effects() else {
+            panic!("Settings entry schedules exactly one scan")
+        };
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id: *scan_id,
+                descriptors: vec![
+                    midi_test_descriptor("port-b", "beta"),
+                    midi_test_descriptor("port-a", "Alpha"),
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            state.midi_input().ordered_identities(),
+            vec![midi_test_id("port-a"), midi_test_id("port-b")]
+        );
+        assert_eq!(
+            state.interaction().focus_path().midi_input_device_id(),
+            Some(&midi_test_id("port-a"))
+        );
+
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        assert_eq!(
+            state.interaction().focus_path().midi_input_device_id(),
+            Some(&midi_test_id("port-b"))
+        );
+        let scan_id = start_midi_test_scan(&mut state);
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![
+                    midi_test_descriptor("port-c", "Aardvark"),
+                    midi_test_descriptor("port-b", "Beta renamed"),
+                    midi_test_descriptor("port-a", "Zulu renamed"),
+                ],
+            })
+            .unwrap();
+        assert_eq!(
+            state.midi_input().ordered_identities(),
+            vec![
+                midi_test_id("port-a"),
+                midi_test_id("port-b"),
+                midi_test_id("port-c")
+            ],
+            "existing relative order wins and normalized new identities append"
+        );
+        assert_eq!(
+            state.interaction().focus_path().midi_input_device_id(),
+            Some(&midi_test_id("port-b"))
+        );
+
+        let scan_id = start_midi_test_scan(&mut state);
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![
+                    midi_test_descriptor("port-a", "Alpha"),
+                    midi_test_descriptor("port-c", "Charlie"),
+                ],
+            })
+            .unwrap();
+        let retained = state.midi_input().entry(&midi_test_id("port-b")).unwrap();
+        assert!(!retained.present());
+        assert_eq!(
+            state.interaction().focus_path().midi_input_device_id(),
+            Some(&midi_test_id("port-b")),
+            "a focused disappearance gets one stable unavailable tombstone"
+        );
+
+        let scan_id = start_midi_test_scan(&mut state);
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![
+                    midi_test_descriptor("port-a", "Alpha"),
+                    midi_test_descriptor("port-c", "Charlie"),
+                ],
+            })
+            .unwrap();
+        assert!(state.midi_input().entry(&midi_test_id("port-b")).is_none());
+        assert_eq!(
+            state.interaction().focus_path().midi_input_device_id(),
+            Some(&midi_test_id("port-c")),
+            "permanent removal repairs next before previous"
+        );
+        assert!(state.focus_repair_status().is_some());
+
+        let stable_registry = state.midi_input().registry().to_vec();
+        let scan_id = start_midi_test_scan(&mut state);
+        state
+            .apply(AppEvent::MidiInputScanFailed {
+                scan_id,
+                failure: MidiDeviceFailure::EnumerationFailed,
+            })
+            .unwrap();
+        assert_eq!(state.midi_input().registry(), stable_registry);
+        assert!(state.midi_input().scan().is_stale());
+        assert_eq!(
+            state.midi_input().scan().last_successful_scan_id(),
+            scan_id
+                .value()
+                .checked_sub(1)
+                .and_then(|value| { crate::control::MidiInputScanId::new(value).ok() })
+        );
+    }
+
+    #[test]
+    fn midi_scan_duplicate_and_stale_results_are_transactional_rejections() {
+        let mut state = installed_state();
+        let scan_id = start_midi_test_scan(&mut state);
+        let before_duplicate = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![
+                    midi_test_descriptor("same", "One"),
+                    midi_test_descriptor("same", "Two"),
+                ],
+            }),
+            Err(EventRejection::InvalidSelection)
+        );
+        assert_eq!(state, before_duplicate);
+
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![midi_test_descriptor("same", "One")],
+            })
+            .unwrap();
+        let accepted = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::MidiInputScanFailed {
+                scan_id,
+                failure: MidiDeviceFailure::EnumerationFailed,
+            }),
+            Err(EventRejection::StaleEngineSelection)
+        );
+        assert_eq!(state, accepted);
+    }
+
+    #[test]
+    fn midi_connect_prepare_activate_and_switch_are_exactly_correlated() {
+        let mut state = installed_state();
+        let first = midi_test_id("port-a");
+        let second = midi_test_id("port-b");
+        install_midi_test_registry(
+            &mut state,
+            vec![
+                midi_test_descriptor("port-b", "Beta"),
+                midi_test_descriptor("port-a", "Alpha"),
+            ],
+        );
+
+        let connect = state
+            .apply(AppEvent::MidiInputConnectRequested {
+                identity: first.clone(),
+            })
+            .unwrap();
+        assert!(matches!(
+            connect.midi_device_effects(),
+            [
+                MidiDeviceEffect::Persist { .. },
+                MidiDeviceEffect::Connect { .. }
+            ]
+        ));
+        let first_request = state.midi_input().requested().unwrap().clone();
+        assert_eq!(first_request.request_id(), MidiConnectionRequestId::FIRST);
+        assert_eq!(first_request.revision(), MidiConnectionRevision::FIRST);
+        assert_eq!(
+            state.midi_input().row_state(&first).unwrap().status_text(),
+            "CONNECTING"
+        );
+
+        for identity in [first.clone(), second.clone()] {
+            let before = state.clone();
+            assert_eq!(
+                state.apply(AppEvent::MidiInputConnectRequested { identity }),
+                Err(EventRejection::StructuralEditBusy)
+            );
+            assert_eq!(state, before);
+        }
+        let before_unavailable = state.clone();
+        state.midi_input.set_requested(None);
+        let no_request = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::MidiInputConnectRequested {
+                identity: midi_test_id("missing"),
+            }),
+            Err(EventRejection::ActionUnavailableInContext)
+        );
+        assert_eq!(state, no_request);
+        state = before_unavailable;
+
+        let stale = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::MidiInputConnectionPrepared {
+                request_id: MidiConnectionRequestId::new(99).unwrap(),
+                revision: first_request.revision(),
+            }),
+            Err(EventRejection::MismatchedEngineSelection)
+        );
+        assert_eq!(state, stale);
+        let prepared = state
+            .apply(AppEvent::MidiInputConnectionPrepared {
+                request_id: first_request.request_id(),
+                revision: first_request.revision(),
+            })
+            .unwrap();
+        assert!(matches!(
+            prepared.midi_device_effects(),
+            [MidiDeviceEffect::Activate { .. }]
+        ));
+        assert!(state.midi_input().active().is_none());
+        state
+            .apply(AppEvent::MidiInputActivationAcknowledged {
+                request_id: first_request.request_id(),
+                revision: first_request.revision(),
+            })
+            .unwrap();
+        assert_eq!(state.midi_input().active().unwrap().identity(), &first);
+
+        state
+            .apply(AppEvent::MidiInputConnectRequested {
+                identity: second.clone(),
+            })
+            .unwrap();
+        let second_request = state.midi_input().requested().unwrap().clone();
+        assert_eq!(state.midi_input().active().unwrap().identity(), &first);
+        assert_eq!(
+            state.midi_input().selected().unwrap().device_id(),
+            first,
+            "candidate switch cannot move acknowledged selection"
+        );
+        state
+            .apply(AppEvent::MidiInputOperationFailed {
+                identity: second.clone(),
+                request_id: Some(second_request.request_id()),
+                revision: Some(second_request.revision()),
+                failure: MidiDeviceFailure::ConnectionFailed {
+                    identity: second.clone(),
+                    class: crate::control::MidiConnectionFailureClass::Busy,
+                },
+            })
+            .unwrap();
+        assert_eq!(state.midi_input().active().unwrap().identity(), &first);
+        let failed = state.midi_input().row_state(&second).unwrap();
+        assert_eq!(failed.status_text(), "FAILED");
+        assert_eq!(failed.action(), Some(MidiInputRowAction::Retry));
+
+        state
+            .apply(AppEvent::MidiInputConnectRequested {
+                identity: second.clone(),
+            })
+            .unwrap();
+        let retry = state.midi_input().requested().unwrap().clone();
+        assert!(retry.request_id() > second_request.request_id());
+        assert!(retry.revision() > second_request.revision());
+        state
+            .apply(AppEvent::MidiInputConnectionPrepared {
+                request_id: retry.request_id(),
+                revision: retry.revision(),
+            })
+            .unwrap();
+        let switched = state
+            .apply(AppEvent::MidiInputActivationAcknowledged {
+                request_id: retry.request_id(),
+                revision: retry.revision(),
+            })
+            .unwrap();
+        assert_eq!(state.midi_input().active().unwrap().identity(), &second);
+        assert_eq!(state.midi_input().selected().unwrap().device_id(), second);
+        assert!(matches!(
+            switched.midi_device_effects(),
+            [
+                MidiDeviceEffect::Retire { .. },
+                MidiDeviceEffect::Persist { .. }
+            ]
+        ));
+
+        let switched_state = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::MidiInputActivationAcknowledged {
+                request_id: first_request.request_id(),
+                revision: first_request.revision(),
+            }),
+            Err(EventRejection::MismatchedEngineSelection)
+        );
+        assert_eq!(state, switched_state);
+    }
+
+    #[test]
+    fn midi_disconnect_loss_return_overflow_and_shutdown_never_reuse_a_revision() {
+        let (mut disconnected, first, _) = connected_midi_test_state();
+        let disconnected_effects = disconnected
+            .apply(AppEvent::MidiInputDisconnectRequested {
+                identity: first.clone(),
+            })
+            .unwrap();
+        assert!(matches!(
+            disconnected_effects.midi_device_effects(),
+            [
+                MidiDeviceEffect::Recover { .. },
+                MidiDeviceEffect::Retire { .. }
+            ]
+        ));
+        assert!(disconnected.midi_input().active().is_none());
+        assert_eq!(
+            disconnected.midi_input().connection_intent(),
+            MidiInputConnectionIntent::ManuallyDisconnected
+        );
+        let disconnected_row = disconnected.midi_input().row_state(&first).unwrap();
+        assert_eq!(disconnected_row.status_text(), "DISCONNECTED");
+        assert_eq!(disconnected_row.action(), Some(MidiInputRowAction::Connect));
+        let scan_id = start_midi_test_scan(&mut disconnected);
+        let scan = disconnected
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![midi_test_descriptor("port-a", "Alpha")],
+            })
+            .unwrap();
+        assert!(scan.midi_device_effects().is_empty());
+
+        let (mut lost, first, second) = connected_midi_test_state();
+        let old_revision = lost.midi_input().active().unwrap().revision();
+        let scan_id = start_midi_test_scan(&mut lost);
+        let loss = lost
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![midi_test_descriptor("port-b", "Beta")],
+            })
+            .unwrap();
+        assert!(matches!(
+            loss.midi_device_effects(),
+            [
+                MidiDeviceEffect::Recover { .. },
+                MidiDeviceEffect::Retire { .. }
+            ]
+        ));
+        assert!(lost.midi_input().active().is_none());
+        assert_eq!(
+            lost.midi_input().row_state(&first).unwrap().status_text(),
+            "UNAVAILABLE"
+        );
+        assert_eq!(
+            lost.midi_input().row_state(&second).unwrap().status_text(),
+            "AVAILABLE"
+        );
+        let scan_id = start_midi_test_scan(&mut lost);
+        let returned = lost
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![
+                    midi_test_descriptor("port-a", "Alpha"),
+                    midi_test_descriptor("port-b", "Beta"),
+                ],
+            })
+            .unwrap();
+        assert!(matches!(
+            returned.midi_device_effects(),
+            [MidiDeviceEffect::Connect { .. }]
+        ));
+        assert!(lost.midi_input().requested().unwrap().revision() > old_revision);
+
+        let (mut overflow, first, _) = connected_midi_test_state();
+        let old_revision = overflow.midi_input().active().unwrap().revision();
+        let recovery = overflow
+            .apply(AppEvent::MidiInputOperationFailed {
+                identity: first.clone(),
+                request_id: None,
+                revision: Some(old_revision),
+                failure: MidiDeviceFailure::TransportCapacity {
+                    stage: crate::control::MidiTransportCapacityStage::PhysicalIngress,
+                    dropped: 1,
+                },
+            })
+            .unwrap();
+        assert!(matches!(
+            recovery.midi_device_effects(),
+            [
+                MidiDeviceEffect::Recover { .. },
+                MidiDeviceEffect::Retire { .. },
+                MidiDeviceEffect::Connect { .. }
+            ]
+        ));
+        assert!(overflow.midi_input().active().is_none());
+        assert!(overflow.midi_input().requested().unwrap().revision() > old_revision);
+
+        let shutdown = overflow
+            .apply(AppEvent::MidiInputShutdownRequested)
+            .unwrap();
+        assert!(matches!(
+            shutdown.midi_device_effects(),
+            [
+                MidiDeviceEffect::CancelCandidate { .. },
+                MidiDeviceEffect::Shutdown
+            ]
+        ));
+        assert!(overflow.midi_input().shutting_down());
+        let stopped = overflow.clone();
+        assert_eq!(
+            overflow.apply(AppEvent::MidiInputConnectRequested { identity: first }),
+            Err(EventRejection::StructuralEditBusy)
+        );
+        assert_eq!(overflow, stopped);
+    }
+
+    #[test]
+    fn midi_connection_identifier_exhaustion_rejects_without_partial_selection() {
+        let mut state = installed_state();
+        let identity = midi_test_id("port-a");
+        install_midi_test_registry(&mut state, vec![midi_test_descriptor("port-a", "Alpha")]);
+        state.midi_input.set_last_connection_correlation(
+            MidiConnectionRequestId::new(u64::MAX).unwrap(),
+            MidiConnectionRevision::new(u64::MAX).unwrap(),
+        );
+        let before = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::MidiInputConnectRequested { identity }),
+            Err(EventRejection::RequestIdOverflow)
+        );
+        assert_eq!(state, before);
+
+        state.midi_input.set_last_connection_correlation(
+            MidiConnectionRequestId::FIRST,
+            MidiConnectionRevision::new(u64::MAX).unwrap(),
+        );
+        let before = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::MidiInputConnectRequested {
+                identity: midi_test_id("port-a"),
+            }),
+            Err(EventRejection::RequestIdOverflow)
+        );
+        assert_eq!(state, before);
+    }
+
+    #[test]
+    fn midi_row_states_pair_every_status_word_with_a_marker_and_sole_action() {
+        use crate::control::{MidiInputConnectionStatus, MidiInputStatusMarker};
+
+        let mut state = installed_state();
+        let identity = midi_test_id("port-a");
+        install_midi_test_registry(&mut state, vec![midi_test_descriptor("port-a", "Alpha")]);
+        let available = state.midi_input().row_state(&identity).unwrap();
+        assert!(matches!(
+            available.connection(),
+            MidiInputConnectionStatus::Available
+        ));
+        assert_eq!(available.status_text(), "AVAILABLE");
+        assert_eq!(available.marker(), MidiInputStatusMarker::OpenCircle);
+        assert_eq!(available.action(), Some(MidiInputRowAction::Connect));
+
+        state
+            .apply(AppEvent::MidiInputConnectRequested {
+                identity: identity.clone(),
+            })
+            .unwrap();
+        let request = state.midi_input().requested().unwrap().clone();
+        let connecting = state.midi_input().row_state(&identity).unwrap();
+        assert!(matches!(
+            connecting.connection(),
+            MidiInputConnectionStatus::Connecting { .. }
+        ));
+        assert_eq!(connecting.status_text(), "CONNECTING");
+        assert_eq!(connecting.marker(), MidiInputStatusMarker::ProgressRing);
+        assert_eq!(connecting.action(), None);
+
+        state
+            .apply(AppEvent::MidiInputConnectionPrepared {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::MidiInputActivationAcknowledged {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        let connected = state.midi_input().row_state(&identity).unwrap();
+        assert!(matches!(
+            connected.connection(),
+            MidiInputConnectionStatus::Connected { .. }
+        ));
+        assert_eq!(connected.status_text(), "CONNECTED");
+        assert_eq!(connected.marker(), MidiInputStatusMarker::FilledCircle);
+        assert_eq!(connected.action(), Some(MidiInputRowAction::Disconnect));
+
+        state
+            .apply(AppEvent::MidiInputDisconnectRequested {
+                identity: identity.clone(),
+            })
+            .unwrap();
+        let disconnected = state.midi_input().row_state(&identity).unwrap();
+        assert!(matches!(
+            disconnected.connection(),
+            MidiInputConnectionStatus::Disconnected { .. }
+        ));
+        assert_eq!(disconnected.status_text(), "DISCONNECTED");
+        assert_eq!(disconnected.marker(), MidiInputStatusMarker::StopSquare);
+        assert_eq!(disconnected.action(), Some(MidiInputRowAction::Connect));
+
+        state
+            .apply(AppEvent::MidiInputConnectRequested {
+                identity: identity.clone(),
+            })
+            .unwrap();
+        let request = state.midi_input().requested().unwrap().clone();
+        state
+            .apply(AppEvent::MidiInputOperationFailed {
+                identity: identity.clone(),
+                request_id: Some(request.request_id()),
+                revision: Some(request.revision()),
+                failure: MidiDeviceFailure::ConnectionFailed {
+                    identity: identity.clone(),
+                    class: crate::control::MidiConnectionFailureClass::Rejected,
+                },
+            })
+            .unwrap();
+        let failed = state.midi_input().row_state(&identity).unwrap();
+        assert!(matches!(
+            failed.connection(),
+            MidiInputConnectionStatus::Failed { .. }
+        ));
+        assert_eq!(failed.status_text(), "FAILED");
+        assert_eq!(failed.marker(), MidiInputStatusMarker::ErrorDiamond);
+        assert_eq!(failed.action(), Some(MidiInputRowAction::Retry));
+
+        let scan_id = start_midi_test_scan(&mut state);
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: Vec::new(),
+            })
+            .unwrap();
+        let unavailable = state.midi_input().row_state(&identity).unwrap();
+        assert!(matches!(
+            unavailable.connection(),
+            MidiInputConnectionStatus::Unavailable { .. }
+        ));
+        assert_eq!(unavailable.status_text(), "UNAVAILABLE");
+        assert_eq!(unavailable.marker(), MidiInputStatusMarker::SlashedCircle);
+        assert_eq!(unavailable.action(), None);
+    }
+
+    #[test]
+    fn midi_preference_restart_matches_only_exact_identity_and_manual_disconnect_is_runtime_only() {
+        let mut state = AppState::new(
+            crate::adapter::production_instruments::production_capability_registry().unwrap(),
+            global_parameters(),
+        );
+        let preferred = MidiPreferredInput::new(midi_test_id("port-a"), "Remembered").unwrap();
+        state
+            .apply(AppEvent::MidiInputPreferenceRestored {
+                preference: Some(MidiInputPreference::new(preferred)),
+                failure: None,
+            })
+            .unwrap();
+        assert_eq!(
+            state.midi_input().connection_intent(),
+            MidiInputConnectionIntent::Enabled
+        );
+
+        let scan_id = start_midi_test_scan(&mut state);
+        let similar_only = state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![midi_test_descriptor("port-b", "Remembered")],
+            })
+            .unwrap();
+        assert!(similar_only.midi_device_effects().is_empty());
+        assert!(state.midi_input().requested().is_none());
+        assert_eq!(
+            state.midi_input().selected().unwrap().device_id(),
+            midi_test_id("port-a")
+        );
+
+        let scan_id = start_midi_test_scan(&mut state);
+        let exact_return = state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![
+                    midi_test_descriptor("port-a", "Renamed"),
+                    midi_test_descriptor("port-b", "Remembered"),
+                ],
+            })
+            .unwrap();
+        assert!(exact_return.midi_device_effects().iter().any(|effect| {
+            matches!(effect, MidiDeviceEffect::Connect { request }
+                if request.identity() == &midi_test_id("port-a"))
+        }));
+        assert!(exact_return
+            .midi_device_effects()
+            .iter()
+            .any(|effect| matches!(effect, MidiDeviceEffect::Persist { .. })));
+
+        let request = state.midi_input().requested().unwrap().clone();
+        state
+            .apply(AppEvent::MidiInputConnectionPrepared {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::MidiInputActivationAcknowledged {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        let disconnected = state
+            .apply(AppEvent::MidiInputDisconnectRequested {
+                identity: midi_test_id("port-a"),
+            })
+            .unwrap();
+        assert!(disconnected
+            .midi_device_effects()
+            .iter()
+            .all(|effect| !matches!(effect, MidiDeviceEffect::Persist { .. })));
+        assert_eq!(
+            state.midi_input().connection_intent(),
+            MidiInputConnectionIntent::ManuallyDisconnected
+        );
+
+        state
+            .apply(AppEvent::MidiInputPreferenceStoreFailed {
+                failure: MidiDeviceFailure::PreferenceWriteFailed,
+            })
+            .unwrap();
+        assert_eq!(
+            state.midi_input().preference_failure(),
+            Some(&MidiDeviceFailure::PreferenceWriteFailed)
         );
     }
 }

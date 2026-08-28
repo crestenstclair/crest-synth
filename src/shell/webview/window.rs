@@ -45,7 +45,7 @@
 
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-    ProjectionCallback, TickCallback, WindowError,
+    MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::density::RepresentativeViewport;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
@@ -137,7 +137,7 @@ pub const PAGE_CSP: &str = "default-src 'none'; script-src 'self'; style-src 'se
 /// compile time and served over the registered `crest://` protocol together
 /// with its generated token table, composition stylesheet, render script,
 /// and the vendored Azeret Mono faces. The page renders projections pushed
-/// on the WP03 transports; it registers no key handler and captures no
+/// on the projection, meter, and MIDI-activity transports; it registers no
 /// input (keys stay Rust-side).
 const PAGE_INDEX_HTML: &str = include_str!("../../../webview-page/index.html");
 const PAGE_TOKENS_CSS: &str = include_str!("../../../webview-page/tokens.css");
@@ -300,8 +300,8 @@ impl KeyPipeline {
 /// One page-reported condition carried from the Send tauri listener context
 /// onto the window's event thread, where the non-Send callbacks live.
 enum PageSignal {
-    /// Both Rust→page event listeners are registered and can receive the
-    /// first projection and meter documents without a startup race.
+    /// All Rust→page event listeners are registered and can receive the
+    /// first projection, meter, and MIDI-activity documents without a race.
     Ready,
     /// A painted-document ack payload from `crest://painted`.
     PaintedAck(String),
@@ -455,6 +455,7 @@ impl AppWindow for TauriWebviewWindow {
         on_input: AppInputCallback,
         projection: ProjectionCallback,
         audio_observation: AudioObservationCallback,
+        midi_activity: MidiActivityObservationCallback,
         mut on_tick: TickCallback,
         mut on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError> {
@@ -573,6 +574,8 @@ impl AppWindow for TauriWebviewWindow {
         let loop_runtime_error = Rc::clone(&runtime_error);
         let mut projection_channel = ProjectionChannel::new();
         let mut meter_channel = MeterChannel::new();
+        let mut midi_activity_channel =
+            crate::shell::webview::midi_activity_channel::MidiActivityChannel::new();
 
         let exit_code = app.run_return(move |handle, event| match event {
             RunEvent::WindowEvent {
@@ -674,6 +677,13 @@ impl AppWindow for TauriWebviewWindow {
                     // degradation (meter_channel module docs), never fatal.
                     meter_channel.observe(audio_observation());
                     let _ = meter_channel.emit_if_due(now, |frame| handle.emit(METER_EVENT, frame));
+                    midi_activity_channel.observe(midi_activity());
+                    let _ = midi_activity_channel.emit_if_due(now, |frame| {
+                        handle.emit(
+                            crate::shell::webview::midi_activity_channel::MIDI_ACTIVITY_EVENT,
+                            frame,
+                        )
+                    });
                 } else {
                     // Port invariant, verbatim: "a false tick result closes
                     // the disposable window only after application control
@@ -809,7 +819,10 @@ mod tests {
         }
         assert!(PAGE_JS.contains("var projectionListener = tauri.event.listen("));
         assert!(PAGE_JS.contains("var meterListener = tauri.event.listen("));
-        assert!(PAGE_JS.contains("Promise.all([projectionListener, meterListener])"));
+        assert!(PAGE_JS.contains("var midiActivityListener = tauri.event.listen("));
+        assert!(PAGE_JS.contains("MIDI_ACTIVITY_EVENT"));
+        assert!(PAGE_JS
+            .contains("Promise.all([projectionListener, meterListener, midiActivityListener])"));
         assert!(PAGE_JS.contains("tauri.event.emit(READY_EVENT"));
     }
 

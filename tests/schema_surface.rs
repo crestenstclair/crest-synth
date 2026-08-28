@@ -8,8 +8,9 @@ use crest_synth::adapter::production_instruments::production_capability_registry
 use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
     AppEvent, AppState, EngineSelectionFailure, EngineSelectionStatusKind,
-    GraphicalShellProjection, PatchControlId, PatchPageProjection, SemanticAction, StateProjector,
-    StateTree, SurfaceId, TopLevelContext,
+    GraphicalShellProjection, MidiDeviceEffect, MidiDeviceFailure, MidiInputDescriptor,
+    MidiInputDeviceId, MidiInputPortFacts, MidiInputTransport, PatchControlId, PatchPageProjection,
+    SemanticAction, StateProjector, StateTree, SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
@@ -645,6 +646,144 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             .unwrap()
             .4,
     );
+    let mut midi_state = AppState::new(
+        production_capability_registry().unwrap(),
+        support::globals(),
+    );
+    let opened = midi_state
+        .apply_semantic_action(SemanticAction::OpenMidiSettings)
+        .unwrap();
+    let scan_id = opened
+        .midi_device_effects()
+        .iter()
+        .find_map(|effect| match effect {
+            MidiDeviceEffect::Scan { scan_id } => Some(*scan_id),
+            _ => None,
+        })
+        .unwrap();
+    let midi_identity = MidiInputDeviceId::new("midir-v1", "schema-device").unwrap();
+    let midi_descriptor = MidiInputDescriptor::new(
+        midi_identity.clone(),
+        "Schema Controller",
+        Some(
+            MidiInputPortFacts::new(
+                Some(MidiInputTransport::Usb),
+                Some("Crest".to_owned()),
+                Some("Schema Keys".to_owned()),
+            )
+            .unwrap(),
+        ),
+    )
+    .unwrap();
+    midi_state
+        .apply(AppEvent::MidiInputScanSucceeded {
+            scan_id,
+            descriptors: vec![midi_descriptor],
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&midi_state)
+            .unwrap()
+            .4,
+    );
+    let connect = midi_state
+        .apply(AppEvent::MidiInputConnectRequested {
+            identity: midi_identity.clone(),
+        })
+        .unwrap();
+    let request = connect
+        .midi_device_effects()
+        .iter()
+        .find_map(|effect| match effect {
+            MidiDeviceEffect::Connect { request } => Some(request.clone()),
+            _ => None,
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&midi_state)
+            .unwrap()
+            .4,
+    );
+    midi_state
+        .apply(AppEvent::MidiInputConnectionPrepared {
+            request_id: request.request_id(),
+            revision: request.revision(),
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&midi_state)
+            .unwrap()
+            .4,
+    );
+    midi_state
+        .apply(AppEvent::MidiInputActivationAcknowledged {
+            request_id: request.request_id(),
+            revision: request.revision(),
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&midi_state)
+            .unwrap()
+            .4,
+    );
+    let lost_scan = midi_state.apply(AppEvent::MidiInputScanStarted).unwrap();
+    let lost_scan_id = lost_scan
+        .midi_device_effects()
+        .iter()
+        .find_map(|effect| match effect {
+            MidiDeviceEffect::Scan { scan_id } => Some(*scan_id),
+            _ => None,
+        })
+        .unwrap();
+    midi_state
+        .apply(AppEvent::MidiInputScanSucceeded {
+            scan_id: lost_scan_id,
+            descriptors: Vec::new(),
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&midi_state)
+            .unwrap()
+            .4,
+    );
+    let mut midi_failure_state = AppState::new(
+        production_capability_registry().unwrap(),
+        support::globals(),
+    );
+    midi_failure_state
+        .apply(AppEvent::MidiInputPreferenceRestored {
+            preference: None,
+            failure: Some(MidiDeviceFailure::PreferenceDecodeFailed),
+        })
+        .unwrap();
+    let failed_scan = midi_failure_state
+        .apply_semantic_action(SemanticAction::OpenMidiSettings)
+        .unwrap();
+    let failed_scan_id = failed_scan
+        .midi_device_effects()
+        .iter()
+        .find_map(|effect| match effect {
+            MidiDeviceEffect::Scan { scan_id } => Some(*scan_id),
+            _ => None,
+        })
+        .unwrap();
+    midi_failure_state
+        .apply(AppEvent::MidiInputScanFailed {
+            scan_id: failed_scan_id,
+            failure: MidiDeviceFailure::EnumerationFailed,
+        })
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&midi_failure_state)
+            .unwrap()
+            .4,
+    );
     let mut discovered = BTreeSet::new();
     for tree in trees {
         discover_leaves(
@@ -683,9 +822,9 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // detail surface projectable — `patchPage.detail`, plus per-control
     // `requestedValue` and `validActions` on the semantic model — and moved
     // `PatchDetailSubject`'s own fields to camelCase in the same bump. Version
-    // 18 adds registry-owned capability availability and the generic semantic
-    // control `availabilityLabel` consumed by installed option surfaces.
-    assert_eq!(StateTree::SCHEMA_VERSION, 18);
+    // 18 added registry-owned capability availability; 19 adds reducer-owned
+    // physical MIDI lifecycle facts while excluding handles and observations.
+    assert_eq!(StateTree::SCHEMA_VERSION, 19);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

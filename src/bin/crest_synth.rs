@@ -106,7 +106,7 @@ fn run(options: Options) -> Result<()> {
         // window: `run_live_demo_scene` composes its own webview shell
         // window (WP03).
         let window = TauriWebviewWindow::default();
-        StandaloneApplication::new_with_effects(
+        let application = StandaloneApplication::new_with_effects(
             boundary,
             providers,
             preparers,
@@ -119,7 +119,8 @@ fn run(options: Options) -> Result<()> {
             CpalAudioOutput::new(),
             config,
         )
-        .context("failed to validate the production composition")
+        .context("failed to validate the production composition")?;
+        Ok(application.with_system_midi_devices())
     };
 
     if options.demo_component_library {
@@ -625,7 +626,7 @@ struct DemoSceneObservation {
 impl DemoSceneObservation {
     fn from_report(report: &DemoSceneReport, two_run_trace_equal: bool) -> Self {
         let records = report.event_log().records();
-        let mut event_variants = [false; 20];
+        let mut event_variants = [false; 21];
         let mut top_level_contexts = Vec::new();
         let mut navigate_directions = Vec::new();
         let mut adjust_directions = Vec::new();
@@ -654,6 +655,7 @@ impl DemoSceneObservation {
                 }
                 EventInput::SetInteractionMode { .. } => event_variants[4] = true,
                 EventInput::OpenRelated => event_variants[16] = true,
+                EventInput::OpenMidiSettings => event_variants[20] = true,
                 EventInput::Activate => event_variants[17] = true,
                 EventInput::PreviewStart => event_variants[18] = true,
                 EventInput::PreviewStop => event_variants[19] = true,
@@ -674,6 +676,18 @@ impl DemoSceneObservation {
                 EventInput::SetReturnOccupancy { .. } => event_variants[12] = true,
                 EventInput::TopologyPrepared { .. } => event_variants[13] = true,
                 EventInput::TopologyPreparationFailed { .. } => event_variants[14] = true,
+                EventInput::MidiInputPreferenceRestored { .. }
+                | EventInput::MidiInputPreferenceStoreFailed { .. }
+                | EventInput::MidiInputScanStarted
+                | EventInput::MidiInputScanSucceeded { .. }
+                | EventInput::MidiInputScanFailed { .. }
+                | EventInput::MidiInputConnectRequested { .. }
+                | EventInput::MidiInputConnectionPrepared { .. }
+                | EventInput::MidiInputActivationAcknowledged { .. }
+                | EventInput::MidiInputDisconnectRequested { .. }
+                | EventInput::MidiInputConnectionLost { .. }
+                | EventInput::MidiInputOperationFailed { .. }
+                | EventInput::MidiInputShutdownRequested => {}
             }
         }
 

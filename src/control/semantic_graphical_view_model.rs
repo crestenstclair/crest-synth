@@ -1,9 +1,10 @@
 use crate::control::{
     AppState, EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind,
-    FocusCapabilityId, FocusPath, MixerControlId, PatchChoiceSubject, PatchControlId,
-    PatchDetailSubject, PatchSubordinateSession, ReturnPath, SampleAssetLifecycle,
-    SamplePreviewState, SemanticControlId, SemanticResolver, SurfaceId, TopLevelContext,
-    ValidAction,
+    FocusCapabilityId, FocusPath, FocusRepairStatus, MidiConnectionRevision,
+    MidiInputConnectionStatus, MidiInputDescriptor, MidiInputRowAction, MidiInputScanState,
+    MidiInputStatusMarker, MixerControlId, PatchChoiceSubject, PatchControlId, PatchDetailSubject,
+    PatchSubordinateSession, ReturnPath, SampleAssetLifecycle, SamplePreviewState,
+    SemanticControlId, SemanticResolver, SurfaceId, TopLevelContext, ValidAction,
 };
 use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -420,6 +421,69 @@ pub enum SemanticSurfaceRole {
     /// entry is open, never a context's resting place.
     Detail,
     Modal,
+    System,
+}
+
+/// One stable MIDI Settings registry row with presentation state derived by
+/// the reducer rather than reinterpreted by a renderer.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MidiInputSettingsRowViewModel {
+    descriptor: MidiInputDescriptor,
+    present: bool,
+    connection: MidiInputConnectionStatus,
+    status_text: String,
+    marker: MidiInputStatusMarker,
+    action: Option<MidiInputRowAction>,
+    focused: bool,
+}
+
+impl MidiInputSettingsRowViewModel {
+    pub const fn descriptor(&self) -> &MidiInputDescriptor {
+        &self.descriptor
+    }
+
+    pub const fn present(&self) -> bool {
+        self.present
+    }
+
+    pub const fn connection(&self) -> &MidiInputConnectionStatus {
+        &self.connection
+    }
+
+    pub fn status_text(&self) -> &str {
+        &self.status_text
+    }
+
+    pub const fn marker(&self) -> MidiInputStatusMarker {
+        self.marker
+    }
+
+    pub const fn action(&self) -> Option<MidiInputRowAction> {
+        self.action
+    }
+
+    pub const fn focused(&self) -> bool {
+        self.focused
+    }
+}
+
+/// Inspector identity pinned to the reducer-acknowledged active revision.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MidiInputInspectorViewModel {
+    descriptor: MidiInputDescriptor,
+    revision: MidiConnectionRevision,
+}
+
+impl MidiInputInspectorViewModel {
+    pub const fn descriptor(&self) -> &MidiInputDescriptor {
+        &self.descriptor
+    }
+
+    pub const fn revision(&self) -> MidiConnectionRevision {
+        self.revision
+    }
 }
 
 /// Typed, read-only canonical summary for one semantic surface.
@@ -478,6 +542,15 @@ pub enum SemanticSurfaceSummary {
         preview_request_id: Option<EngineSelectionRequestId>,
         preview: SamplePreviewState,
     },
+    MidiDeviceSettings {
+        suspended_context: TopLevelContext,
+        title: String,
+        summary: String,
+        scan_state: MidiInputScanState,
+        rows: Vec<MidiInputSettingsRowViewModel>,
+        active_inspector: Option<MidiInputInspectorViewModel>,
+        focus_repair: Box<Option<FocusRepairStatus>>,
+    },
 }
 
 impl SemanticSurfaceSummary {
@@ -489,7 +562,9 @@ impl SemanticSurfaceSummary {
             | Self::PatchDetail { patch_id, .. }
             | Self::PatchChoice { patch_id, .. }
             | Self::SampleBrowser { patch_id, .. } => Some(*patch_id),
-            Self::Mixer { .. } | Self::MixerInspector { .. } => None,
+            Self::Mixer { .. } | Self::MixerInspector { .. } | Self::MidiDeviceSettings { .. } => {
+                None
+            }
         }
     }
 }
@@ -572,9 +647,12 @@ pub struct SemanticWaveformLandmark {
 pub enum SemanticVisualizationData {
     Envelope {
         attack_milliseconds: f32,
+        attack_maximum_milliseconds: f32,
         decay_milliseconds: f32,
+        decay_maximum_milliseconds: f32,
         sustain: f32,
         release_milliseconds: f32,
+        release_maximum_milliseconds: f32,
     },
     Waveform {
         asset: Option<AssetReference>,
@@ -775,6 +853,8 @@ impl SemanticGraphicalViewModel {
         "focusPath.controlId.id",
         "focusPath.controlId.id.bus",
         "focusPath.controlId.id.id",
+        "focusPath.controlId.id.identity",
+        "focusPath.controlId.id.identitySchema",
         "focusPath.controlId.id.kind",
         "focusPath.controlId.id.parameter",
         "focusPath.controlId.id.trackId",
@@ -854,6 +934,8 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].path.controlId.id",
         "surfaces[].controls[].path.controlId.id.bus",
         "surfaces[].controls[].path.controlId.id.id",
+        "surfaces[].controls[].path.controlId.id.identity",
+        "surfaces[].controls[].path.controlId.id.identitySchema",
         "surfaces[].controls[].path.controlId.id.kind",
         "surfaces[].controls[].path.controlId.id.parameter",
         "surfaces[].controls[].path.controlId.id.trackId",
@@ -896,6 +978,8 @@ impl SemanticGraphicalViewModel {
         "surfaces[].sections[].controlPaths[].capabilityId.kind",
         "surfaces[].sections[].controlPaths[].context",
         "surfaces[].sections[].controlPaths[].controlId.id",
+        "surfaces[].sections[].controlPaths[].controlId.id.identity",
+        "surfaces[].sections[].controlPaths[].controlId.id.identitySchema",
         "surfaces[].sections[].controlPaths[].controlId.kind",
         "surfaces[].sections[].controlPaths[].modalId",
         "surfaces[].sections[].controlPaths[].patchId",
@@ -937,6 +1021,52 @@ impl SemanticGraphicalViewModel {
         "surfaces[].summary.previewRequestId",
         "surfaces[].summary.routedPatches[].patchId",
         "surfaces[].summary.routedPatches[].patchName",
+        "surfaces[].summary.activeInspector",
+        "surfaces[].summary.activeInspector.descriptor.displayName",
+        "surfaces[].summary.activeInspector.descriptor.id.identity",
+        "surfaces[].summary.activeInspector.descriptor.id.identitySchema",
+        "surfaces[].summary.activeInspector.descriptor.portFacts.manufacturer",
+        "surfaces[].summary.activeInspector.descriptor.portFacts.product",
+        "surfaces[].summary.activeInspector.descriptor.portFacts.transport",
+        "surfaces[].summary.activeInspector.revision",
+        "surfaces[].summary.focusRepair",
+        "surfaces[].summary.focusRepair.removedOrigin.capabilityId",
+        "surfaces[].summary.focusRepair.removedOrigin.context",
+        "surfaces[].summary.focusRepair.removedOrigin.controlId.kind",
+        "surfaces[].summary.focusRepair.removedOrigin.modalId",
+        "surfaces[].summary.focusRepair.removedOrigin.patchId",
+        "surfaces[].summary.focusRepair.removedOrigin.surface",
+        "surfaces[].summary.focusRepair.replacementOrigin.capabilityId",
+        "surfaces[].summary.focusRepair.replacementOrigin.context",
+        "surfaces[].summary.focusRepair.replacementOrigin.controlId.id.identity",
+        "surfaces[].summary.focusRepair.replacementOrigin.controlId.id.identitySchema",
+        "surfaces[].summary.focusRepair.replacementOrigin.controlId.kind",
+        "surfaces[].summary.focusRepair.replacementOrigin.modalId",
+        "surfaces[].summary.focusRepair.replacementOrigin.patchId",
+        "surfaces[].summary.focusRepair.replacementOrigin.surface",
+        "surfaces[].summary.rows[].action",
+        "surfaces[].summary.rows[].connection.identity.identity",
+        "surfaces[].summary.rows[].connection.identity.identitySchema",
+        "surfaces[].summary.rows[].connection.kind",
+        "surfaces[].summary.rows[].connection.requestId",
+        "surfaces[].summary.rows[].connection.revision",
+        "surfaces[].summary.rows[].descriptor.displayName",
+        "surfaces[].summary.rows[].descriptor.id.identity",
+        "surfaces[].summary.rows[].descriptor.id.identitySchema",
+        "surfaces[].summary.rows[].descriptor.portFacts.manufacturer",
+        "surfaces[].summary.rows[].descriptor.portFacts.product",
+        "surfaces[].summary.rows[].descriptor.portFacts.transport",
+        "surfaces[].summary.rows[].focused",
+        "surfaces[].summary.rows[].marker",
+        "surfaces[].summary.rows[].present",
+        "surfaces[].summary.rows[].statusText",
+        "surfaces[].summary.scanState.failure.kind",
+        "surfaces[].summary.scanState.kind",
+        "surfaces[].summary.scanState.lastSuccessfulScanId",
+        "surfaces[].summary.scanState.scanId",
+        "surfaces[].summary.summary",
+        "surfaces[].summary.suspendedContext",
+        "surfaces[].summary.title",
         // The open detail surface's subject. `capability_id` and `kind` are
         // discovered for either subject variant; `slot_id` only for `Effect`,
         // which is the variant that names an exact occupied position — so a
@@ -947,8 +1077,10 @@ impl SemanticGraphicalViewModel {
         "surfaces[].visualizations[].data.asset.kind",
         "surfaces[].visualizations[].data.asset.locator",
         "surfaces[].visualizations[].data.attackMilliseconds",
+        "surfaces[].visualizations[].data.attackMaximumMilliseconds",
         "surfaces[].visualizations[].data.channels",
         "surfaces[].visualizations[].data.decayMilliseconds",
+        "surfaces[].visualizations[].data.decayMaximumMilliseconds",
         "surfaces[].visualizations[].data.frames",
         "surfaces[].visualizations[].data.kind",
         "surfaces[].visualizations[].data.landmarks[].normalizedPosition",
@@ -958,6 +1090,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].visualizations[].data.pairs[].rightMax",
         "surfaces[].visualizations[].data.pairs[].rightMin",
         "surfaces[].visualizations[].data.releaseMilliseconds",
+        "surfaces[].visualizations[].data.releaseMaximumMilliseconds",
         "surfaces[].visualizations[].data.sampleRate",
         "surfaces[].visualizations[].data.status",
         "surfaces[].visualizations[].data.sustain",
@@ -1198,9 +1331,16 @@ impl SemanticGraphicalViewModel {
         let status = project_status(state);
         let focus_repair = project_focus_repair(state)?;
         let errors = project_errors(state, &resolver, &status)?;
-        let mut surfaces = match state.context() {
-            TopLevelContext::Patch => project_patch_surfaces(state, &resolver, &status, &errors)?,
-            TopLevelContext::Mixer => project_mixer_surfaces(state, &resolver, &status, &errors)?,
+        let mut surfaces = match state.interaction().active_surface() {
+            SurfaceId::MidiDeviceSettings => project_midi_device_settings_surface(state)?,
+            _ => match state.context() {
+                TopLevelContext::Patch => {
+                    project_patch_surfaces(state, &resolver, &status, &errors)?
+                }
+                TopLevelContext::Mixer => {
+                    project_mixer_surfaces(state, &resolver, &status, &errors)?
+                }
+            },
         };
         project_control_intent(state, &resolver, &mut surfaces)?;
         let valid_actions = resolver.valid_actions();
@@ -1569,6 +1709,9 @@ fn project_focus_repair(
     let Some(repair) = state.focus_repair_status() else {
         return Ok(None);
     };
+    if repair.removed_origin().surface() == SurfaceId::MidiDeviceSettings {
+        return Ok(None);
+    }
     let patch_id = repair
         .removed_origin()
         .patch_id()
@@ -1593,6 +1736,124 @@ fn project_focus_repair(
         removed_control_id: removed_control_id.clone(),
         replacement_control_id: replacement_control_id.clone(),
     }))
+}
+
+fn project_midi_device_settings_surface(
+    state: &AppState,
+) -> Result<Vec<SemanticSurfaceViewModel>, SemanticGraphicalViewModelError> {
+    let active_path = state.interaction().focus_path();
+    let rows = state
+        .midi_input()
+        .registry()
+        .iter()
+        .map(|entry| {
+            let row = state
+                .midi_input()
+                .row_state(entry.descriptor().id())
+                .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
+            let path =
+                FocusPath::midi_device_settings(state.context(), entry.descriptor().id().clone());
+            Ok(MidiInputSettingsRowViewModel {
+                descriptor: entry.descriptor().clone(),
+                present: entry.present(),
+                connection: row.connection().clone(),
+                status_text: row.status_text().to_owned(),
+                marker: row.marker(),
+                action: row.action(),
+                focused: &path == active_path,
+            })
+        })
+        .collect::<Result<Vec<_>, SemanticGraphicalViewModelError>>()?;
+    let controls = if rows.is_empty() {
+        vec![SemanticControlViewModel {
+            path: FocusPath::midi_device_settings_root(state.context()),
+            label: "Available Inputs".to_owned(),
+            kind: SemanticControlKind::Surface,
+            value: SemanticControlValue::Summary("NO MIDI INPUTS FOUND".to_owned()),
+            selected_label: None,
+            numeric_range: None,
+            unit: None,
+            browser_metadata: None,
+            availability_label: Some("WATCHING FOR DEVICES".to_owned()),
+            enabled: true,
+            visible: true,
+            focusable: true,
+            editable: false,
+            focused: true,
+            status: None,
+            error: None,
+            requested_value: None,
+            requested_label: None,
+            patch_interaction: None,
+            valid_actions: Vec::new(),
+        }]
+    } else {
+        rows.iter()
+            .map(|row| SemanticControlViewModel {
+                path: FocusPath::midi_device_settings(state.context(), row.descriptor.id().clone()),
+                label: row.descriptor.display_name().to_owned(),
+                kind: SemanticControlKind::Identity,
+                value: SemanticControlValue::Summary(row.status_text.clone()),
+                selected_label: None,
+                numeric_range: None,
+                unit: None,
+                browser_metadata: None,
+                availability_label: (!row.present).then(|| "NOT PRESENT".to_owned()),
+                enabled: true,
+                visible: true,
+                focusable: true,
+                editable: row.action.is_some(),
+                focused: row.focused,
+                status: None,
+                error: None,
+                requested_value: None,
+                requested_label: None,
+                patch_interaction: None,
+                valid_actions: Vec::new(),
+            })
+            .collect()
+    };
+    let active_inspector = state.midi_input().active().and_then(|active| {
+        state
+            .midi_input()
+            .entry(active.identity())
+            .map(|entry| MidiInputInspectorViewModel {
+                descriptor: entry.descriptor().clone(),
+                revision: active.revision(),
+            })
+    });
+    let scan_summary = match state.midi_input().scan() {
+        MidiInputScanState::Idle => "WATCHING · SCAN PENDING",
+        MidiInputScanState::Scanning { .. } => "WATCHING · SCANNING",
+        MidiInputScanState::Ready { .. } => "WATCHING · SCAN COMPLETE",
+        MidiInputScanState::Failed { .. } => "WATCHING · SCAN FAILED",
+    };
+    let control_paths = controls
+        .iter()
+        .map(|control| control.path.clone())
+        .collect();
+    Ok(vec![SemanticSurfaceViewModel {
+        id: SurfaceId::MidiDeviceSettings,
+        label: "MIDI DEVICES".to_owned(),
+        role: SemanticSurfaceRole::System,
+        controls,
+        sections: vec![SemanticSurfaceSectionViewModel {
+            id: "availableInputs".to_owned(),
+            label: "Available Inputs".to_owned(),
+            control_paths,
+            control_summaries: Vec::new(),
+        }],
+        visualizations: Vec::new(),
+        summary: SemanticSurfaceSummary::MidiDeviceSettings {
+            suspended_context: state.context(),
+            title: "Settings · MIDI Devices".to_owned(),
+            summary: scan_summary.to_owned(),
+            scan_state: state.midi_input().scan().clone(),
+            rows,
+            active_inspector,
+            focus_repair: Box::new(state.focus_repair_status().cloned()),
+        },
+    }])
 }
 
 fn project_errors(
@@ -1875,7 +2136,7 @@ fn project_patch_surfaces(
                             descriptor.fine_step() as f64,
                             descriptor.coarse_step() as f64,
                         )),
-                        None,
+                        Some(descriptor.unit().to_owned()),
                     )
                 }
                 PatchControlId::MidiInput => (
@@ -2512,9 +2773,21 @@ fn project_visualizations<'a>(
                 crate::synth::CapabilityVisualization::Envelope { .. } => {
                     SemanticVisualizationData::Envelope {
                         attack_milliseconds: patch.envelope().attack_milliseconds(),
+                        attack_maximum_milliseconds:
+                            crate::synth::VoiceEnvelopeParameter::AttackMilliseconds
+                                .descriptor()
+                                .maximum(),
                         decay_milliseconds: patch.envelope().decay_milliseconds(),
+                        decay_maximum_milliseconds:
+                            crate::synth::VoiceEnvelopeParameter::DecayMilliseconds
+                                .descriptor()
+                                .maximum(),
                         sustain: patch.envelope().sustain(),
                         release_milliseconds: patch.envelope().release_milliseconds(),
+                        release_maximum_milliseconds:
+                            crate::synth::VoiceEnvelopeParameter::ReleaseMilliseconds
+                                .descriptor()
+                                .maximum(),
                     }
                 }
                 crate::synth::CapabilityVisualization::Waveform {
@@ -2817,7 +3090,7 @@ fn project_mixer_surfaces(
                         descriptor.fine_step() as f64,
                         descriptor.coarse_step() as f64,
                     )),
-                    unit: None,
+                    unit: Some(descriptor.unit().to_owned()),
                     browser_metadata: None,
                     availability_label: None,
                     enabled: true,
@@ -3112,9 +3385,14 @@ fn map_resolver_error(error: crate::control::EventRejection) -> SemanticGraphica
 }
 
 fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalViewModelError> {
+    let active_surface_matches_context = if data.active_surface.is_system() {
+        data.active_surface == SurfaceId::MidiDeviceSettings
+    } else {
+        data.active_surface.context() == Some(data.context)
+    };
     if data.context != data.focus_path.context()
         || data.active_surface != data.focus_path.surface()
-        || data.active_surface.context() != data.context
+        || !active_surface_matches_context
         || !data
             .surfaces
             .iter()
@@ -3125,6 +3403,7 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
     }
     match (data.active_surface.is_main(), data.return_path.as_ref()) {
         (true, None) => {}
+        (false, None) if data.active_surface.is_system() => {}
         (false, Some(path))
             if path.entered_surface() == data.active_surface
                 && path.origin().context() == data.context
@@ -4331,6 +4610,10 @@ mod projection_enrichment_tests {
         choice
             .apply(AppEvent::Adjust(Direction::Up))
             .expect("the focused engine row opens its generic choice surface");
+        let mut midi_settings = patch_state();
+        midi_settings
+            .apply_semantic_action(SemanticAction::OpenMidiSettings)
+            .expect("the fixture opens the global MIDI device Settings surface");
 
         let sample_provider = crate::adapter::sample_capability::SampleCapability::new(
             crate::synth::SampleAssetId::new("Factory.wav").unwrap(),
@@ -4390,6 +4673,7 @@ mod projection_enrichment_tests {
             ("PATCH Utility", entered(SurfaceId::PatchUtility)),
             ("PATCH Utility master gain", utility_global),
             ("generic Patch choice", choice),
+            ("MIDI Device Settings", midi_settings),
             ("Sample Browser", browser),
             ("braids PATCH Main", braids(None)),
             (
@@ -4461,9 +4745,14 @@ mod projection_enrichment_tests {
                 .project_with_shell(&state)
                 .expect("the fixture state must project");
             let model = shell.semantic_model();
+            let root = if model.active_surface() == SurfaceId::MidiDeviceSettings {
+                "SETTINGS"
+            } else {
+                model.context().label()
+            };
             let expected = format!(
                 "{} / {}",
-                model.context().label(),
+                root,
                 model.focused_control().map_or_else(
                     || model.active_surface().label().to_owned(),
                     |control| control.label().to_owned()
@@ -4516,6 +4805,99 @@ mod projection_enrichment_tests {
         assert_eq!(range.minimum(), 1.0);
         assert_eq!(range.maximum(), 16.0);
         assert_eq!(range.fine_step(), 1.0);
+    }
+
+    #[test]
+    fn midi_settings_projects_identity_rows_unknown_facts_and_exact_active_inspector() {
+        let mut state = patch_state();
+        let opened = state
+            .apply_semantic_action(SemanticAction::OpenMidiSettings)
+            .unwrap();
+        let scan_id = opened
+            .midi_device_effects()
+            .iter()
+            .find_map(|effect| match effect {
+                crate::control::MidiDeviceEffect::Scan { scan_id } => Some(*scan_id),
+                _ => None,
+            })
+            .unwrap();
+        let first = crate::control::MidiInputDeviceId::new("midir-v1", "opaque-a").unwrap();
+        let second = crate::control::MidiInputDeviceId::new("midir-v1", "opaque-b").unwrap();
+        let long_name = "Long Controller ".repeat(12);
+        state
+            .apply(AppEvent::MidiInputScanSucceeded {
+                scan_id,
+                descriptors: vec![
+                    MidiInputDescriptor::new(first.clone(), long_name.clone(), None).unwrap(),
+                    MidiInputDescriptor::new(second, long_name, None).unwrap(),
+                ],
+            })
+            .unwrap();
+
+        let available = project(&state);
+        let surface = available.surface(SurfaceId::MidiDeviceSettings).unwrap();
+        let SemanticSurfaceSummary::MidiDeviceSettings {
+            rows,
+            active_inspector,
+            suspended_context,
+            ..
+        } = surface.summary()
+        else {
+            panic!("Settings carries the MIDI device summary")
+        };
+        assert_eq!(*suspended_context, TopLevelContext::Patch);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].status_text(), "AVAILABLE");
+        assert_eq!(rows[0].marker(), MidiInputStatusMarker::OpenCircle);
+        assert_eq!(rows[0].descriptor().port_facts(), None);
+        assert!(active_inspector.is_none());
+
+        state
+            .apply(AppEvent::MidiInputConnectRequested {
+                identity: first.clone(),
+            })
+            .unwrap();
+        let request = state.midi_input().requested().unwrap().clone();
+        let connecting = project(&state);
+        let SemanticSurfaceSummary::MidiDeviceSettings { rows, .. } = connecting
+            .surface(SurfaceId::MidiDeviceSettings)
+            .unwrap()
+            .summary()
+        else {
+            panic!("Settings remains projected while connecting")
+        };
+        assert_eq!(rows[0].status_text(), "CONNECTING");
+        assert_eq!(rows[0].marker(), MidiInputStatusMarker::ProgressRing);
+
+        state
+            .apply(AppEvent::MidiInputConnectionPrepared {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::MidiInputActivationAcknowledged {
+                request_id: request.request_id(),
+                revision: request.revision(),
+            })
+            .unwrap();
+        let connected = project(&state);
+        let SemanticSurfaceSummary::MidiDeviceSettings {
+            rows,
+            active_inspector,
+            ..
+        } = connected
+            .surface(SurfaceId::MidiDeviceSettings)
+            .unwrap()
+            .summary()
+        else {
+            panic!("Settings remains projected while connected")
+        };
+        assert_eq!(rows[0].status_text(), "CONNECTED");
+        assert_eq!(rows[0].marker(), MidiInputStatusMarker::FilledCircle);
+        let inspector = active_inspector.as_ref().unwrap();
+        assert_eq!(inspector.descriptor().id(), &first);
+        assert_eq!(inspector.revision(), request.revision());
     }
 
     // -----------------------------------------------------------------

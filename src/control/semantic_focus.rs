@@ -1,4 +1,4 @@
-use crate::control::{PatchControlId, TopLevelContext};
+use crate::control::{MidiInputDeviceId, PatchControlId, TopLevelContext};
 use crate::kernel::PatchId;
 use crate::mixer::bus_id::BusId;
 use crate::mixer::global_parameters::GlobalParameter;
@@ -10,12 +10,12 @@ use serde::{Deserialize, Serialize};
 
 /// Stable graphical surfaces independent of host layout or rectangle placement.
 ///
-/// Four are persistent — two mains and two sides — and one, [`Self::PatchDetail`],
-/// is subordinate: it is entered only from a PatchMain path whose control
-/// resolves a [`PatchDetailSubject`], it is never the resting surface of a
-/// context, and leaving it restores the exact origin. One detail surface
-/// identity serves both instrument and effect subjects, because the surface is
-/// the shell and the subject supplies the content.
+/// Four are persistent — two mains and two sides — and three PATCH surfaces
+/// are subordinate: they are never the resting surface of a context, and
+/// leaving one restores the exact origin. One detail surface identity serves
+/// both instrument and effect subjects, because the surface is the shell and
+/// the subject supplies the content. MIDI device Settings is a global system
+/// surface that suspends rather than replaces PATCH or MIXER.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SurfaceId {
@@ -26,10 +26,11 @@ pub enum SurfaceId {
     SampleBrowser,
     MixerMain,
     MixerInspector,
+    MidiDeviceSettings,
 }
 
 impl SurfaceId {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::PatchMain,
         Self::PatchUtility,
         Self::PatchDetail,
@@ -37,20 +38,24 @@ impl SurfaceId {
         Self::SampleBrowser,
         Self::MixerMain,
         Self::MixerInspector,
+        Self::MidiDeviceSettings,
     ];
 
     pub const fn surface_descriptor() -> &'static [Self] {
         &Self::ALL
     }
 
-    pub const fn context(self) -> TopLevelContext {
+    /// Returns the owning performance context, or `None` for a temporary
+    /// system surface that suspends rather than replaces PATCH/MIXER.
+    pub const fn context(self) -> Option<TopLevelContext> {
         match self {
             Self::PatchMain
             | Self::PatchUtility
             | Self::PatchDetail
             | Self::PatchChoice
-            | Self::SampleBrowser => TopLevelContext::Patch,
-            Self::MixerMain | Self::MixerInspector => TopLevelContext::Mixer,
+            | Self::SampleBrowser => Some(TopLevelContext::Patch),
+            Self::MixerMain | Self::MixerInspector => Some(TopLevelContext::Mixer),
+            Self::MidiDeviceSettings => None,
         }
     }
 
@@ -88,6 +93,10 @@ impl SurfaceId {
         )
     }
 
+    pub const fn is_system(self) -> bool {
+        matches!(self, Self::MidiDeviceSettings)
+    }
+
     /// Reports whether a [`ReturnPath`] may name this surface as the one it was
     /// entered *into*: structurally, every non-main surface.
     ///
@@ -121,7 +130,11 @@ impl SurfaceId {
     pub const fn is_enterable(self) -> bool {
         match self {
             Self::PatchUtility | Self::MixerInspector | Self::PatchDetail => true,
-            Self::PatchChoice | Self::SampleBrowser | Self::PatchMain | Self::MixerMain => false,
+            Self::PatchChoice
+            | Self::SampleBrowser
+            | Self::PatchMain
+            | Self::MixerMain
+            | Self::MidiDeviceSettings => false,
         }
     }
 
@@ -134,6 +147,7 @@ impl SurfaceId {
             Self::SampleBrowser => "SAMPLE BROWSER",
             Self::MixerMain => "MIXER",
             Self::MixerInspector => "INSPECTOR",
+            Self::MidiDeviceSettings => "MIDI DEVICES",
         }
     }
 }
@@ -353,6 +367,8 @@ pub enum SemanticControlId {
     Patch(PatchControlId),
     Mixer(MixerControlId),
     Modal(ModalControlId),
+    MidiInputDevice(MidiInputDeviceId),
+    MidiInputListRoot,
     SurfaceRoot,
 }
 
@@ -360,7 +376,12 @@ impl SemanticControlId {
     pub const fn as_mixer_track_id(&self) -> Option<MixerTrackId> {
         match self {
             Self::Mixer(MixerControlId::Track { track_id, .. }) => Some(*track_id),
-            Self::Mixer(_) | Self::Patch(_) | Self::Modal(_) | Self::SurfaceRoot => None,
+            Self::Mixer(_)
+            | Self::Patch(_)
+            | Self::Modal(_)
+            | Self::MidiInputDevice(_)
+            | Self::MidiInputListRoot
+            | Self::SurfaceRoot => None,
         }
     }
 }
@@ -547,7 +568,9 @@ impl FocusPath {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
         Ok(Self {
-            context: surface.context(),
+            context: surface
+                .context()
+                .ok_or(FocusPathError::ContextSurfaceMismatch)?,
             surface,
             patch_id: None,
             capability_id: None,
@@ -556,10 +579,39 @@ impl FocusPath {
         })
     }
 
+    /// One exact device row on the temporary MIDI Devices system surface.
+    pub const fn midi_device_settings(
+        suspended_context: TopLevelContext,
+        identity: MidiInputDeviceId,
+    ) -> Self {
+        Self {
+            context: suspended_context,
+            surface: SurfaceId::MidiDeviceSettings,
+            patch_id: None,
+            capability_id: None,
+            control_id: SemanticControlId::MidiInputDevice(identity),
+            modal_id: None,
+        }
+    }
+
+    /// Stable focus target used when discovery currently has no device rows.
+    pub const fn midi_device_settings_root(suspended_context: TopLevelContext) -> Self {
+        Self {
+            context: suspended_context,
+            surface: SurfaceId::MidiDeviceSettings,
+            patch_id: None,
+            capability_id: None,
+            control_id: SemanticControlId::MidiInputListRoot,
+            modal_id: None,
+        }
+    }
+
     /// Revalidates a deserialized or externally constructed path shape.
     pub fn validate(&self) -> Result<(), FocusPathError> {
-        if self.surface.context() != self.context {
-            return Err(FocusPathError::ContextSurfaceMismatch);
+        if let Some(surface_context) = self.surface.context() {
+            if surface_context != self.context {
+                return Err(FocusPathError::ContextSurfaceMismatch);
+            }
         }
         match (&self.surface, &self.control_id) {
             (SurfaceId::PatchMain, SemanticControlId::Patch(control)) => {
@@ -672,6 +724,17 @@ impl FocusPath {
                     return Err(FocusPathError::CapabilityIdentityMismatch);
                 }
             }
+            (
+                SurfaceId::MidiDeviceSettings,
+                SemanticControlId::MidiInputDevice(_) | SemanticControlId::MidiInputListRoot,
+            ) => {
+                if self.patch_id.is_some()
+                    || self.capability_id.is_some()
+                    || self.modal_id.is_some()
+                {
+                    return Err(FocusPathError::ControlSurfaceMismatch);
+                }
+            }
             _ => return Err(FocusPathError::ControlSurfaceMismatch),
         }
         if self.surface != SurfaceId::PatchChoice
@@ -701,6 +764,13 @@ impl FocusPath {
 
     pub const fn control_id(&self) -> &SemanticControlId {
         &self.control_id
+    }
+
+    pub const fn midi_input_device_id(&self) -> Option<&MidiInputDeviceId> {
+        match &self.control_id {
+            SemanticControlId::MidiInputDevice(identity) => Some(identity),
+            _ => None,
+        }
     }
 
     pub fn modal_id(&self) -> Option<&str> {
@@ -737,7 +807,7 @@ impl ReturnPath {
         };
         if !origin_allowed
             || !entered_surface.is_return_target()
-            || origin.context() != entered_surface.context()
+            || entered_surface.context() != Some(origin.context())
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }
@@ -767,15 +837,17 @@ mod tests {
     use crate::mixer::global_parameters::GlobalParameter;
 
     #[test]
-    fn seven_surfaces_are_context_compatible_and_layout_neutral() {
+    fn performance_and_system_surfaces_are_classified_without_a_third_context() {
         use crate::control::TopLevelContext;
 
-        assert_eq!(SurfaceId::surface_descriptor().len(), 7);
-        assert_eq!(SurfaceId::PatchMain.context(), TopLevelContext::Patch);
+        assert_eq!(SurfaceId::surface_descriptor().len(), 8);
+        assert_eq!(SurfaceId::PatchMain.context(), Some(TopLevelContext::Patch));
         assert_eq!(
             SurfaceId::MixerInspector.context(),
-            crate::control::TopLevelContext::Mixer
+            Some(crate::control::TopLevelContext::Mixer)
         );
+        assert_eq!(SurfaceId::MidiDeviceSettings.context(), None);
+        assert!(SurfaceId::MidiDeviceSettings.is_system());
         assert!(SurfaceId::PatchUtility.is_persistent_side());
         assert!(SurfaceId::MixerMain.is_main());
 
@@ -785,14 +857,24 @@ mod tests {
         for surface in SurfaceId::ALL {
             let roles = usize::from(surface.is_main())
                 + usize::from(surface.is_persistent_side())
-                + usize::from(surface.is_subordinate());
+                + usize::from(surface.is_subordinate())
+                + usize::from(surface.is_system());
             assert_eq!(roles, 1, "{surface:?} must hold exactly one surface role");
-            assert_eq!(
-                surface.is_return_target(),
-                !surface.is_main(),
-                "{surface:?}: a return path names every non-main surface and no main one"
-            );
         }
+        assert!(!SurfaceId::MidiDeviceSettings.is_return_target());
+        assert!(!SurfaceId::MidiDeviceSettings.is_enterable());
+        assert_eq!(
+            TopLevelContext::surface_descriptor(),
+            &[TopLevelContext::Patch, TopLevelContext::Mixer]
+        );
+        assert_eq!(
+            serde_json::to_string(&TopLevelContext::Patch).unwrap(),
+            "\"patch\""
+        );
+        assert_eq!(
+            serde_json::to_string(&TopLevelContext::Mixer).unwrap(),
+            "\"mixer\""
+        );
     }
 
     /// Persistent sides and Detail are direct entry targets; Choice and the
@@ -835,7 +917,10 @@ mod tests {
     fn the_detail_surface_is_subordinate_and_never_a_resting_surface() {
         use crate::control::TopLevelContext;
 
-        assert_eq!(SurfaceId::PatchDetail.context(), TopLevelContext::Patch);
+        assert_eq!(
+            SurfaceId::PatchDetail.context(),
+            Some(TopLevelContext::Patch)
+        );
         assert!(SurfaceId::PatchDetail.is_subordinate());
         assert!(!SurfaceId::PatchDetail.is_main());
         assert!(!SurfaceId::PatchDetail.is_persistent_side());
@@ -934,6 +1019,43 @@ mod tests {
         assert_eq!(
             FocusPath::side_root(SurfaceId::PatchMain),
             Err(FocusPathError::ControlSurfaceMismatch)
+        );
+    }
+
+    #[test]
+    fn midi_settings_paths_round_trip_exact_device_and_empty_root_identities() {
+        use crate::control::{MidiInputDeviceId, TopLevelContext};
+
+        let identity = MidiInputDeviceId::new("midir-v1", "coremidi:opaque-a").unwrap();
+        let device = FocusPath::midi_device_settings(TopLevelContext::Patch, identity.clone());
+        let root = FocusPath::midi_device_settings_root(TopLevelContext::Mixer);
+
+        assert!(device.validate().is_ok());
+        assert!(root.validate().is_ok());
+        assert_eq!(device.midi_input_device_id(), Some(&identity));
+        assert_eq!(root.midi_input_device_id(), None);
+        assert_eq!(device.surface(), SurfaceId::MidiDeviceSettings);
+        assert_eq!(root.surface(), SurfaceId::MidiDeviceSettings);
+        assert_eq!(device.context(), TopLevelContext::Patch);
+        assert_eq!(root.context(), TopLevelContext::Mixer);
+
+        let device_json = serde_json::to_value(&device).unwrap();
+        assert_eq!(device_json["surface"], "midiDeviceSettings");
+        assert_eq!(device_json["controlId"]["kind"], "midiInputDevice");
+        assert_eq!(
+            device_json["controlId"]["id"]["identity"],
+            "coremidi:opaque-a"
+        );
+        assert_eq!(
+            serde_json::from_value::<FocusPath>(device_json).unwrap(),
+            device
+        );
+
+        let root_json = serde_json::to_value(&root).unwrap();
+        assert_eq!(root_json["controlId"]["kind"], "midiInputListRoot");
+        assert_eq!(
+            serde_json::from_value::<FocusPath>(root_json).unwrap(),
+            root
         );
     }
 }

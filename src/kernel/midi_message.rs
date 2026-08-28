@@ -6,6 +6,7 @@ const MAX_DATA_BYTE: u8 = 0x7f;
 
 /// The normalized kind of a channel MIDI message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[repr(u8)]
 #[serde(rename_all = "camelCase")]
 pub enum MidiMessageKind {
     NoteOn,
@@ -37,7 +38,9 @@ impl MidiMessageKind {
 ///
 /// Data bytes are validated at construction so the value can cross the
 /// real-time boundary without further parsing, allocation, or error handling.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[repr(C)]
+#[serde(rename_all = "camelCase")]
 pub struct MidiMessage {
     channel: MidiChannel,
     kind: MidiMessageKind,

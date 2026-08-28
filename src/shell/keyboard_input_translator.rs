@@ -13,6 +13,7 @@ pub struct KeyboardInputTranslator {
     k_held: bool,
     shift_held: bool,
     start_held: bool,
+    start_preview_held: bool,
 }
 
 impl KeyboardInputTranslator {
@@ -22,6 +23,7 @@ impl KeyboardInputTranslator {
             k_held: false,
             shift_held: false,
             start_held: false,
+            start_preview_held: false,
         }
     }
 
@@ -31,7 +33,8 @@ impl KeyboardInputTranslator {
             WindowInputKind::FocusLost => {
                 self.k_held = false;
                 self.shift_held = false;
-                if core::mem::take(&mut self.start_held) {
+                self.start_held = false;
+                if core::mem::take(&mut self.start_preview_held) {
                     Some(SemanticAction::PreviewStop)
                 } else {
                     Some(SemanticAction::SetInteractionMode(
@@ -51,7 +54,8 @@ impl KeyboardInputTranslator {
                     None
                 }
                 WindowKey::Space if core::mem::take(&mut self.start_held) => {
-                    Some(SemanticAction::PreviewStop)
+                    core::mem::take(&mut self.start_preview_held)
+                        .then_some(SemanticAction::PreviewStop)
                 }
                 _ => None,
             },
@@ -90,6 +94,11 @@ impl KeyboardInputTranslator {
                 return None;
             }
             self.start_held = true;
+            if self.shift_held {
+                self.start_preview_held = false;
+                return Some(SemanticAction::OpenMidiSettings);
+            }
+            self.start_preview_held = true;
             return Some(SemanticAction::PreviewStart);
         }
 
@@ -451,6 +460,42 @@ mod tests {
         assert_eq!(
             translator.translate(WindowInput::key_up(WindowKey::Space)),
             None
+        );
+    }
+
+    #[test]
+    fn shift_start_opens_settings_once_without_preview_release_and_keeps_shift_down_return() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Shift)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Space)),
+            Some(SemanticAction::OpenMidiSettings)
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Space)),
+            None,
+            "repeat must not emit a second Settings action"
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Space)),
+            None,
+            "Settings entry is not a preview hold"
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::S)),
+            Some(SemanticAction::Return)
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Shift)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Space)),
+            Some(SemanticAction::PreviewStart),
+            "bare Start remains Sample Browser preview"
         );
     }
 }

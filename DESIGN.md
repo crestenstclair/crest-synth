@@ -9,7 +9,7 @@ working contract and invariant summary; it does not replace this reference.
 This file is not a roadmap, a phase plan, or a claim that the product is
 finished.
 
-Snapshot date: 2026-08-26. The implementation reviewed for this reset began at
+Snapshot date: 2026-08-27. The implementation reviewed for this reset began at
 commit `d2d257f`.
 
 ## Authority and maintenance
@@ -80,6 +80,35 @@ Detail body, and bounded persistent Utility track were compared with the live
 Instrument Detail `37:7`, FX Detail `38:60`, Responsive `98:2`, and Interaction
 Map `49:3` hierarchy. This is a structural implementation comparison, not
 visual parity.
+
+Projected action guidance now has one visual owner: the persistent shell
+footer. Per-control `validActions` remain in the immutable semantic document
+for reducer admission and falsifiable correspondence, but the renderer no
+longer repeats the same key legend in Overview rows, Detail rows, workspace
+caption/mode bands, Utility/Inspector, or option rows. The non-focusable
+Envelope visualization is a parameterized SVG whose horizontal display
+coordinate is a stable `log1p` transform of milliseconds. Attack, decay, and
+release retain their projected physical durations and canonical 10,000 ms
+maximum, but each timed phase contributes `log1p(value) / log1p(10_000)` of one
+equal graphical phase span. Sustain contributes one equal, explicitly
+non-temporal preview span because it has level but no duration parameter. This
+gives short and medium musical times readable space without normalizing against
+the current envelope: 100 ms occupies about 12.5% and 5 s about 23.1% of the
+complete four-span plot. Changing one phase therefore never rescales another,
+zero-duration stages remain vertical, and the painted readout labels A/D/R in
+`ms` and sustain as a percentage. The straight SVG segments match the
+production envelope's linear sample-domain increments. The semantic
+visualization projects each timed phase's maximum from its canonical envelope
+descriptor; the page does not duplicate those physical bounds.
+
+Numeric row presentation follows projected semantics rather than a fixed
+three-decimal template. The renderer uses each control's `numericRange`,
+`fineStep`, and authored unit to remove meaningless trailing zeroes while
+preserving meaningful precision. Unitless normalized (`0..1`) and bipolar
+(`-1..1`) controls render as percentages, millisecond controls remain in `ms`,
+and gain controls render in `dB`. The global Master Volume descriptor owns its
+`dB` unit so PATCH Utility and MIXER Inspector receive the same canonical unit.
+Active values, requested values, and range endpoints share this formatter.
 
 Deterministic evidence covers differently shaped instrument and effect
 descriptors, every occupied FX position, duplicate effect capabilities, an
@@ -233,6 +262,10 @@ The application currently provides:
 - channel-based MIDI subscriptions in which any number of installed Patches
   may share one channel and each incoming message fans out to every matching
   Patch in stable installation order;
+- physical MIDI input discovery, exact opaque-identity selection, connection
+  lifecycle, per-user selected-input preference, and a temporary Settings ·
+  MIDI Devices system surface that suspends and restores the exact PATCH or
+  MIXER focus without adding a third top-level context;
 - level, pan, mute, solo, indexed sends, return occupancy/parameters/levels,
   pre-gate meters, Patch route/trim, and master gain;
 - versioned saved state containing stable asset references and normalized
@@ -240,20 +273,23 @@ The application currently provides:
 - retained deterministic, headless, controlled-negative, and physical-demo
   commands listed later in this file.
 
-Normal `make run` opens the real application and automatically plays the fixed
-MIDI fixture. That fixture is the only MIDI source installed by the current
-production composition; a physical MIDI-device adapter is not yet installed.
-The source emits normalized channel messages, never Patch targets. Control-side
-normalization resolves the current Patch subscribers for each message before
-the existing per-Patch commands cross the real-time event transport. The
-`demo-live-*` commands are bounded autonomous witnesses, not open-ended
-performance sessions; their mapped semantic input is isolated while the
-generation-correlated scene runs.
+Normal `make run` opens the real application, automatically plays the fixed
+MIDI fixture, and composes the host's physical MIDI input capability. The two
+sources remain distinct (`automaticMidi` and `physicalMidi`) until both reach
+the shared control-side channel fan-out. Neither source emits Patch targets.
+The physical path uses `midir = 0.11.0`: CoreMIDI on Apple, ALSA on Linux, and
+WinMM on Windows through default features. JACK and WinRT remain explicit
+packaging-time opt-ins and are not enabled in the default build. Adapter
+initialization, enumeration, port information, connection, retirement,
+preference, and transport failures are typed; an unavailable backend leaves
+the app open with truthful Settings state and never selects a similar name or
+another port. The `demo-live-*` commands remain input-isolated bounded
+autonomous witnesses and do not attach host MIDI devices.
 
 ## Architecture
 
 ```text
-keyboard / controller / normalized MIDI source
+keyboard / controller / automatic or physical MIDI source
                        |
               physical input adapters
                        |
@@ -357,12 +393,32 @@ Different real-time data has different transport semantics:
 | Scalar parameters | triple-buffered fixed `ParameterSnapshot` | latest compatible complete snapshot wins |
 | Structural changes | ownership-transfer queue of prepared graphs/assets | swap at block boundary; retire off-thread |
 | Meters and RT health | atomics/latest `AudioObservationSnapshot` | decimated and polled by UI |
+| Physical MIDI activity | latest compatible control-side snapshot | exact active revision, decimated to at most 30 Hz |
 
 Each asynchronous producer owns its SPSC queue or is merged on the control
 side. A single-producer queue is never shared casually among UI, MIDI, and
 workers. Queue pressure is explicit; note-off/all-notes-off has reserved
 recovery behavior, replaceable scalars may be coalesced, and silent loss is
 forbidden.
+
+Each physical MIDI candidate owns a separate 1,024-event `rtrb` SPSC ingress,
+immutable connection revision, atomic enable gate, and fixed diagnostic
+counters. The midir callback performs bounded status-byte classification and
+normalizes only supported channel messages through `midly`; it never owns or
+reads `AppState`, allocates, locks, logs, formats, blocks, or traverses a SysEx
+payload. Control drains at most 64 events per tick and rejects every event
+whose revision is not the reducer-acknowledged active revision. Activity is a
+presentation-only latest snapshot (count, last message/timestamps, diagnostics,
+overflow epoch, revision); it never mutates or serializes into product state.
+
+Connection preparation, discovery, retirement, and preference I/O run on one
+bounded device worker. A candidate ingress stays disabled until matching
+reducer acknowledgement. Switch, disconnect, loss, ingress overflow, audio
+command saturation, and shutdown disable/discard ingress before global
+all-notes-off recovery; the audio command ring reserves one slot for that
+coalesced recovery command. Backend handles move to the device worker for
+consuming close/destruction, including shutdown-owned and stale prepared
+handles.
 
 `ParameterSnapshot` is fixed-size and destructor-free. A worker constructs and
 warms a complete graph—engines, effects, sample PCM/zones, routing, delay
@@ -450,6 +506,16 @@ cycle.
 
 ## Asset and persistence boundaries
 
+The selected physical MIDI identity is an application preference, not synth
+session content. The shell resolves `midi-input.json` beneath the per-user
+configuration directory (`~/Library/Application Support/crest-synth` on
+macOS, `$XDG_CONFIG_HOME/crest-synth` or `~/.config/crest-synth` on Linux, and
+`%APPDATA%\crest-synth` on Windows). Version 1 stores only the opaque identity
+schema/value and last-known display name, using a temporary file plus rename.
+Manual disconnect, runtime connection state, descriptors, handles, queues,
+timestamps, diagnostics, and activity are never persisted. `SavedSession`
+remains version 2 and contains none of those device fields.
+
 SoundFont and Sample file work is off callback: resolve, validate, read, parse,
 decode, resample/precompute, allocate/warm voices, then publish a complete
 prepared graph. Prepared callback ownership contains numeric PCM, zones,
@@ -496,6 +562,7 @@ Physical bindings normalize to semantic actions before product logic:
 | Shift + Up | open related Detail/Browser; MIXER → PATCH |
 | Shift + Down | return/close; PATCH → MIXER |
 | Shift + Left/Right | previous/next installed Patch |
+| Shift + Start | open temporary Settings · MIDI Devices (non-repeating) |
 | Select | multi-select only when reducer semantics exist; currently unavailable |
 | Start press/release | hold-to-preview in Sample Browser; reserved elsewhere |
 
@@ -508,6 +575,20 @@ parameters remain on descriptor-driven Detail surfaces. PATCH Utility contains
 exactly master volume, Patch volume, MIDI input, output track, and voice limit.
 Main and Utility remain mutually reachable, and subordinate return restores the
 stable semantic origin or the nearest enabled sibling after schema change.
+
+Settings · MIDI Devices is a system surface, not a top-level context. Entry
+suspends the exact performance focus, interaction mode, return path, and Patch
+subordinate session; Shift+Down restores that identity after schema repair.
+The projected list is registry-driven and carries display name, opaque identity
+facts, Available/Connecting/Connected/Unavailable/Disconnected/Failed text,
+and a structural marker in addition to color. The inspector is pinned only to
+the reducer-acknowledged active revision. Its activity card accepts only a
+matching latest snapshot and otherwise paints Waiting. The list and inspector
+start near an 80/20 fraction, clamp to content minima, and stack only under a
+container-width constraint; resize emits no semantic action and uses no
+aspect-ratio or named-viewport switch. This as-built structure has deterministic
+projection/renderer coverage; direct native comparison with Figma node `116:2`
+and the physical-device visual handoff remain incomplete evidence.
 
 On macOS, Shift arrives through AppKit's `FlagsChanged` event rather than a key
 down/up pair. The native input adapter treats modifier transitions as
@@ -525,7 +606,8 @@ an explicit zero/stale state and cannot mutate application state.
 Exactly one focused control is shown. Focus, adjust, active/current,
 disabled, loading, error, mute, solo, and selection states use text or shape in
 addition to color. The footer shows the current semantic path and only valid
-actions.
+actions. It is the only visual action-legend owner; rows and panels do not
+repeat its guidance.
 
 ## As-built visual vocabulary
 
@@ -629,6 +711,44 @@ Overview slice:
   sequence, normalized input journeys, every occupied/empty/duplicate slot,
   Detail/Mixer regressions, and clean shutdown described above; the separate
   physical option handoff is still incomplete evidence.
+- the 2026-08-27 scoped real-window Detail/Mixer witness measured zero action
+  hints outside the footer across Overview, Detail, Utility/Inspector, Choice,
+  Sample Browser, and Mixer fixtures; it also reconciled the Envelope SVG's
+  four projected ADSR values, descriptor-owned timed-phase maxima, approved
+  100 ms/5 s display proportions, and six painted curve points; retained the
+  48 px target floor and complete scroll reachability, captured readable Wide,
+  Standard, Intermediate, Compact, and scaled-text screenshots, and closed
+  cleanly.
+- the 2026-08-27 shared-channel MIDI correction passed focused production
+  reducer, AppLoop, fixture-source, projection, and functional tests: duplicate
+  subscriptions install and edit successfully, one normalized channel message
+  emits ordered commands for both matching Patches, and an unsubscribed channel
+  leaves generation and command output unchanged. The production smoke run
+  reported automatic MIDI delivery with zero callback allocations and
+  destructions;
+- the 2026-08-27 physical MIDI implementation has focused deterministic proof
+  for canonical IDs/preferences, one reducer mutation path, ordered scans and
+  exact restart matching, bounded worker ownership, callback normalization and
+  a 1 MiB SysEx negative, zero callback allocations/deallocations, 64-event
+  control draining, shared-channel fan-out, reserved recovery, overflow
+  invalidation/fresh revision, worker-side shutdown retirement, exact
+  observation revision/30 Hz coalescing, Settings projection, schema version
+  19, and committed renderer structure. The 2026-08-27 macOS CoreMIDI host
+  seam enumerated three real ports under the `midir-v1` identity schema; the
+  seam also treats zero ports as truthful success or reports one typed
+  initialization failure.
+- on 2026-08-28, the operator completed the bounded physical MIDI handoff with
+  an attached device through the production CoreMIDI adapter and audio graph:
+  Shift+Start entry, device navigation, Connect/Disconnect/Retry, correlated
+  Receiving activity and audible supported messages, switching with the old
+  input rejected and no stuck note, hot unplug/Unavailable/exact-identity
+  return, Shift+Down focus restoration, and clean exit all passed. The native
+  Settings page was also confirmed readable. Combined with the controlled
+  malformed, unsupported, overflow, fresh-revision, and retirement tests above,
+  this closes the physical-path handoff without claiming those synthetic edge
+  packets were produced by the attached controller. Cross-platform native
+  builds, the continuous native Settings width sweep, and direct screenshot
+  comparison with Figma node `116:2` remain incomplete acceptance.
 
 Instrument and FX Detail have completed their scoped native manual handoff.
 The native responsive DOM measurements and handoff do not claim full Figma
@@ -652,10 +772,17 @@ make test
 make lint
 make fmt-check
 make test-engine-post-fx-options
+make test-midi-devices
+make test-midi-host
 make test-webview-options-native
 
-# Open the production window and automatic MIDI/audio path.
+# Open the production window and automatic plus physical MIDI/audio paths.
 make run
+
+# Interactive attached-device Settings/audio handoff. The script traps
+# interruption for safe teardown and exits incomplete unless the operator
+# confirms every printed physical-path check.
+make midi-device-handoff
 
 # Run the current cumulative bounded live witness.
 make demo-live
@@ -689,9 +816,14 @@ Useful validation entry points are
 `cargo test --test webview_projection_shell -- --nocapture`, and
 `make test-webview-detail-native` for the bounded real-window Detail/Mixer
 witness. The option handoff checklist is
-`scripts/run_engine_post_fx_option_handoff.sh`. Native window, physical-input,
-and physical-audio sections may require an interactive macOS host; a typed
-environmental skip is incomplete evidence, not acceptance.
+`scripts/run_engine_post_fx_option_handoff.sh`; the physical MIDI checklist is
+`scripts/run_midi_device_handoff.sh`. `make test-midi-host` is safe with no
+attached input: zero ports is truthful success and backend initialization is a
+typed report. Linux builds require ALSA development headers for midir's default
+backend; optional JACK needs an explicit packaging feature. Windows defaults
+to WinMM; optional WinRT likewise needs an explicit packaging feature. Native
+window, physical-input, and physical-audio sections require an interactive
+host; a typed environmental skip is incomplete evidence, not acceptance.
 
 ## Change checklist
 
