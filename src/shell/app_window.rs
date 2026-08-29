@@ -1,6 +1,8 @@
 use crate::control::{GraphicalShellProjection, MidiActivityObservation, SemanticAction};
 use crate::real_time::AudioObservationSnapshot;
-use crate::shell::ShellFrameObservation;
+use crate::shell::{
+    SessionDialogPort, SessionDocumentProjection, ShellFrameObservation, UnavailableSessionDialog,
+};
 use core::fmt;
 use std::time::Duration;
 
@@ -24,6 +26,23 @@ pub type TickCallback = Box<dyn FnMut(Duration) -> bool + 'static>;
 
 /// Post-paint evidence emitted by a graphical window adapter.
 pub type FrameObservationCallback = Box<dyn FnMut(ShellFrameObservation) + 'static>;
+
+/// Host-neutral document command emitted by native application chrome.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SessionCommand {
+    New,
+    Open,
+    Save,
+    SaveAs,
+    Close,
+}
+
+/// Handles one normalized document command. `Close` returns whether the
+/// current native close request may proceed immediately.
+pub type SessionCommandCallback = Box<dyn FnMut(SessionCommand) -> bool + 'static>;
+
+/// Immutable path-free document presentation requested by the window.
+pub type SessionDocumentProjectionCallback = Box<dyn Fn() -> SessionDocumentProjection + 'static>;
 
 /// A failure while creating or running the application window.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -61,13 +80,23 @@ impl std::error::Error for WindowError {}
 /// post-paint `ShellFrameObservation` evidence. They never own synth
 /// parameters, application selection, or accepted application state.
 pub trait AppWindow {
+    /// Returns the dialog port paired with this window adapter. Harness
+    /// windows that do not implement native dialogs fail explicitly if a
+    /// lifecycle command requests one.
+    fn session_dialog_port(&self) -> Box<dyn SessionDialogPort> {
+        Box::new(UnavailableSessionDialog)
+    }
+
     /// Runs the window event loop until the player closes it.
+    #[allow(clippy::too_many_arguments)]
     fn run(
         &self,
         on_input: AppInputCallback,
         projection: ProjectionCallback,
         audio_observation: AudioObservationCallback,
         midi_activity: MidiActivityObservationCallback,
+        on_session_command: SessionCommandCallback,
+        document_projection: SessionDocumentProjectionCallback,
         on_tick: TickCallback,
         on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError>;
@@ -77,7 +106,8 @@ pub trait AppWindow {
 mod tests {
     use super::{
         AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-        MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
+        MidiActivityObservationCallback, ProjectionCallback, SessionCommandCallback,
+        SessionDocumentProjectionCallback, TickCallback, WindowError,
     };
     use crate::control::app_event::Direction;
     use crate::control::{
@@ -100,6 +130,8 @@ mod tests {
             projection: ProjectionCallback,
             audio_observation: AudioObservationCallback,
             midi_activity: MidiActivityObservationCallback,
+            _on_session_command: SessionCommandCallback,
+            _document_projection: SessionDocumentProjectionCallback,
             mut on_tick: TickCallback,
             mut on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -193,6 +225,10 @@ mod tests {
             Box::new(crate::real_time::AudioObservationSnapshot::default);
         let midi_activity: MidiActivityObservationCallback =
             Box::new(crate::control::MidiActivityObservation::default);
+        let on_session_command: SessionCommandCallback = Box::new(|_| false);
+        let document_projection: SessionDocumentProjectionCallback = Box::new(|| {
+            panic!("the basic window-port test does not request document presentation")
+        });
 
         let ticks_for_callback = Rc::clone(&ticks);
         let on_tick: TickCallback = Box::new(move |duration| {
@@ -211,6 +247,8 @@ mod tests {
                 projection,
                 audio_observation,
                 midi_activity,
+                on_session_command,
+                document_projection,
                 on_tick,
                 on_frame,
             )

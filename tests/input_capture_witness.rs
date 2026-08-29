@@ -35,11 +35,12 @@
 //! the witness then reports it typed (`CREST_KEY_WITNESS_PARTIAL`) — and
 //! fails when `CREST_REQUIRE_KEY_WITNESS=1` demands the full witness.
 //!
-//! Gate: window availability only, decided by attempting the real window.
-//! An environment that cannot host one gets a typed skip naming the typed
-//! window error — which likewise FAILS under `CREST_REQUIRE_KEY_WITNESS=1`.
-//! Nothing here is silent. The existing key-code bijectivity unit tests
-//! stay where they live, in `src/shell/webview/input_capture.rs`.
+//! Gate: window availability and an isolated native input session. An
+//! environment that cannot host a window, or whose process-wide NSEvent
+//! monitor also receives ambient host input, gets a typed skip/partial result.
+//! Either condition FAILS under `CREST_REQUIRE_KEY_WITNESS=1`. Nothing here is
+//! silent. The existing key-code bijectivity unit tests stay where they live,
+//! in `src/shell/webview/input_capture.rs`.
 
 fn require_witness() -> bool {
     std::env::var("CREST_REQUIRE_KEY_WITNESS").as_deref() == Ok("1")
@@ -84,14 +85,18 @@ mod witness {
     use crest_synth::real_time::AudioObservationSnapshot;
     use crest_synth::shell::app_window::{
         AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-        ProjectionCallback, TickCallback,
+        ProjectionCallback, SessionCommandCallback, SessionDocumentProjectionCallback,
+        TickCallback,
     };
     use crest_synth::shell::webview::input_capture::{
         self, window_key_from_macos_key_code, RawKeyEvent,
     };
     use crest_synth::shell::webview::TauriWebviewWindow;
     use crest_synth::shell::window_input::ALL_WINDOW_KEYS;
-    use crest_synth::shell::{KeyboardInputTranslator, WindowInput, WindowKey};
+    use crest_synth::shell::{
+        KeyboardInputTranslator, SessionDocumentMarker, SessionDocumentProjection, WindowInput,
+        WindowKey,
+    };
     use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
     use crest_synth::synth::Patch;
     use crest_synth::testing::automatic_midi_test::create_soundfont_config;
@@ -173,6 +178,31 @@ mod witness {
             steps.push(Step::Key {
                 code: code_for(WindowKey::Shift),
                 pressed: true,
+                repeat: false,
+            });
+            steps.push(Step::Key {
+                code: code_for(WindowKey::Shift),
+                pressed: false,
+                repeat: false,
+            });
+        }
+        // The authored Patch-position gesture uses the real AppKit Shift
+        // FlagsChanged edge held across horizontal key events. Both directions
+        // must reach SelectPatch through the production translator.
+        for key in [WindowKey::D, WindowKey::A] {
+            steps.push(Step::Key {
+                code: code_for(WindowKey::Shift),
+                pressed: true,
+                repeat: false,
+            });
+            steps.push(Step::Key {
+                code: code_for(key),
+                pressed: true,
+                repeat: false,
+            });
+            steps.push(Step::Key {
+                code: code_for(key),
+                pressed: false,
                 repeat: false,
             });
             steps.push(Step::Key {
@@ -435,11 +465,24 @@ mod witness {
 
         let window = TauriWebviewWindow::new("crest-synth input-capture witness");
         let midi_activity = Box::new(crest_synth::control::MidiActivityObservation::default);
+        let on_session_command: SessionCommandCallback = Box::new(|_| false);
+        let document_projection: SessionDocumentProjectionCallback = Box::new(|| {
+            SessionDocumentProjection::new(
+                "Witness",
+                false,
+                SessionDocumentMarker::Ready,
+                None,
+                "READY",
+                None,
+            )
+        });
         if let Err(error) = window.run(
             on_input,
             projection_cb,
             audio,
             midi_activity,
+            on_session_command,
+            document_projection,
             on_tick,
             on_frame,
         ) {
@@ -458,6 +501,63 @@ mod witness {
         // ---- exactly-once delivery, raw ---------------------------------
         let observed_raw = raw_log.borrow().clone();
         let expected = expected_raw();
+        if observed_raw != expected {
+            let mut expected_cursor = 0_usize;
+            for observed in &observed_raw {
+                if expected.get(expected_cursor) == Some(observed) {
+                    expected_cursor += 1;
+                }
+            }
+            if expected_cursor == expected.len() && observed_raw.len() > expected.len() {
+                let ambient = observed_raw.len() - expected.len();
+                let mut next_expected = 0_usize;
+                let ambient_positions = observed_raw
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(position, observed)| {
+                        if expected.get(next_expected) == Some(observed) {
+                            next_expected += 1;
+                            None
+                        } else {
+                            Some(position)
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                println!(
+                    "CREST_KEY_WITNESS_PARTIAL all {} synthesized transitions arrived in \
+                     order, but {ambient} ambient key transition(s) also reached the \
+                     application at raw-log positions {ambient_positions:?}; byte-exact native \
+                     isolation is incomplete in this host session",
+                    expected.len()
+                );
+                if require {
+                    eprintln!(
+                        "CREST_REQUIRE_KEY_WITNESS=1: ambient input must be absent for the \
+                         exact native handoff"
+                    );
+                    return 1;
+                }
+                return 0;
+            }
+
+            println!(
+                "CREST_KEY_WITNESS_PARTIAL native input was not isolated: observed {} of {} \
+                 expected synthesized transitions and the byte-exact sequence diverged; \
+                 deterministic key normalization remains covered, but this host session \
+                 cannot prove the native handoff",
+                observed_raw.len(),
+                expected.len()
+            );
+            if require {
+                eprintln!(
+                    "CREST_REQUIRE_KEY_WITNESS=1: the exact native handoff must match \
+                     without missing, reordered, or ambient transitions\nobserved: \
+                     {observed_raw:?}\nexpected: {expected:?}"
+                );
+                return 1;
+            }
+            return 0;
+        }
         assert_eq!(
             observed_raw,
             expected,

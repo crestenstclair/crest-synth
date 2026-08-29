@@ -1,5 +1,5 @@
 use crate::kernel::PatchId;
-use crate::real_time::{PreparedPostEffectRack, PreparedPostEffectSlot, MAX_PATCHES};
+use crate::real_time::{PreparedPostEffectRack, PreparedPostEffectSlot, MAX_ACTIVE_PATCHES};
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::{
     EffectCapabilityError, EffectCapabilityId, EffectCapabilityRegistry, EffectPreparationError,
@@ -23,10 +23,10 @@ impl PreparedPostEffectRackBuilder {
         if max_frames == 0 {
             return Err(EffectRackPreparationError::InvalidFrameCapacity);
         }
-        if patches.len() > MAX_PATCHES {
+        if patches.len() > MAX_ACTIVE_PATCHES {
             return Err(EffectRackPreparationError::PatchCapacityExceeded {
                 count: patches.len(),
-                capacity: MAX_PATCHES,
+                capacity: MAX_ACTIVE_PATCHES,
             });
         }
         for (index, patch) in patches.iter().enumerate() {
@@ -89,8 +89,8 @@ impl PreparedPostEffectRackBuilder {
             }
         }
 
-        let mut patch_ids = [None; MAX_PATCHES];
-        let mut slots: [[Option<PreparedPostEffectSlot>; MAX_EFFECT_SLOTS]; MAX_PATCHES] =
+        let mut patch_ids = [None; MAX_ACTIVE_PATCHES];
+        let mut slots: [[Option<PreparedPostEffectSlot>; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES] =
             std::array::from_fn(|_| std::array::from_fn(|_| None));
         let sample_capacity = max_frames
             .checked_mul(2)
@@ -219,7 +219,7 @@ mod tests {
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::patch_output::PatchOutput;
-    use crate::real_time::MAX_PATCHES;
+    use crate::real_time::MAX_ACTIVE_PATCHES;
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
     use crate::synth::patch::EffectSlotOccupancyError;
@@ -256,7 +256,7 @@ mod tests {
         let registry = production_effect_registry().unwrap();
         let preparers = production_effect_preparers().unwrap();
         let descriptor_count = registry.descriptors().len();
-        let patches: Vec<_> = (1..=MAX_PATCHES as u32)
+        let patches: Vec<_> = (1..=MAX_ACTIVE_PATCHES as u32)
             .map(|id| {
                 let mut patch = patch(id);
                 for position in 0..MAX_EFFECT_SLOTS {
@@ -280,8 +280,8 @@ mod tests {
             PreparedPostEffectRackBuilder::build(&patches, &registry, &preparers, 48_000.0, 128)
                 .unwrap();
 
-        assert_eq!(rack.patch_count(), MAX_PATCHES);
-        for patch_index in 0..MAX_PATCHES {
+        assert_eq!(rack.patch_count(), MAX_ACTIVE_PATCHES);
+        for patch_index in 0..MAX_ACTIVE_PATCHES {
             assert_eq!(rack.occupied_slot_count(patch_index), MAX_EFFECT_SLOTS);
             for position in 0..MAX_EFFECT_SLOTS {
                 assert_eq!(

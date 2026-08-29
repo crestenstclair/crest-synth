@@ -183,6 +183,12 @@ pub enum StructuralEditIntent {
         bus: BusId,
         entry: Option<EffectCapabilityId>,
     },
+    /// Appends one fully validated reducer-owned candidate after all existing
+    /// Patches. The candidate aggregate stays in transient AppState; the
+    /// intent carries only its stable identity for lifecycle correlation.
+    AppendPatch {
+        patch_id: PatchId,
+    },
 }
 
 impl StructuralEditIntent {
@@ -194,7 +200,9 @@ impl StructuralEditIntent {
             Self::ReplaceParameterChoice { capability_id, .. }
             | Self::ReplaceAsset { capability_id, .. }
             | Self::PrepareAudition { capability_id, .. } => Some(capability_id),
-            Self::SetSlotOccupancy { .. } | Self::SetReturnOccupancy { .. } => None,
+            Self::SetSlotOccupancy { .. }
+            | Self::SetReturnOccupancy { .. }
+            | Self::AppendPatch { .. } => None,
         }
     }
 
@@ -220,6 +228,14 @@ impl StructuralEditIntent {
             self,
             Self::SetSlotOccupancy { .. } | Self::SetReturnOccupancy { .. }
         )
+    }
+
+    pub const fn is_append_patch(&self) -> bool {
+        matches!(self, Self::AppendPatch { .. })
+    }
+
+    pub const fn uses_topology_events(&self) -> bool {
+        self.is_occupancy() || self.is_append_patch()
     }
 
     /// Validates one correlation's Patch and capability context against this
@@ -263,6 +279,9 @@ impl StructuralEditIntent {
             Self::SetReturnOccupancy { .. } => {
                 patch_id.is_none() && source.is_none() && target.is_none()
             }
+            Self::AppendPatch {
+                patch_id: candidate_id,
+            } => patch_id == Some(*candidate_id) && source.is_none() && target.is_none(),
         }
     }
 }
@@ -541,12 +560,30 @@ impl EngineSelectionStatus {
             | StructuralEditIntent::PrepareAudition { .. } => {
                 return Err(EngineSelectionStatusError::IntentMismatch)
             }
+            StructuralEditIntent::AppendPatch { .. } => {
+                return Err(EngineSelectionStatusError::IntentMismatch)
+            }
         };
         Self::preparing_with_context(
             active_graph_revision,
             request_id,
             patch_id,
             intent,
+            None,
+            None,
+        )
+    }
+
+    pub fn preparing_for_append(
+        active_graph_revision: GraphRevision,
+        request_id: EngineSelectionRequestId,
+        patch_id: PatchId,
+    ) -> Result<Self, EngineSelectionStatusError> {
+        Self::preparing_with_context(
+            active_graph_revision,
+            request_id,
+            Some(patch_id),
+            StructuralEditIntent::AppendPatch { patch_id },
             None,
             None,
         )

@@ -23,6 +23,11 @@ pub use deterministic_graph_preparation_worker::{
     DeterministicGraphPreparationHandle, DeterministicGraphPreparationWorker,
 };
 
+pub mod native_session_lifecycle_handoff;
+pub use native_session_lifecycle_handoff::{
+    NativeSessionLifecycleHandoffEvidence, NativeSessionLifecycleHandoffReport,
+};
+
 pub mod sample_asset_fakes;
 pub use sample_asset_fakes::{DeterministicSampleCatalog, DeterministicSampleDecoder};
 

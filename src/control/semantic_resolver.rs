@@ -1,7 +1,7 @@
 use crate::control::{
     AppState, EventRejection, FocusPath, MixerControlId, PatchChoiceSubject, PatchControlId,
-    PatchDetailSubject, PatchSubordinateSession, SemanticAction, SemanticActionAvailability,
-    SemanticControlId, SurfaceId, ValidAction,
+    PatchDetailSubject, PatchPositionId, PatchSubordinateSession, ProspectivePatch, SemanticAction,
+    SemanticActionAvailability, SemanticControlId, SurfaceId, ValidAction,
 };
 use crate::kernel::PatchId;
 use crate::mixer::bus_id::BusId;
@@ -9,7 +9,7 @@ use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
 use crate::synth::instrument_capability::{ParameterSpec, ParameterValue};
-use crate::synth::{ParameterId, ParameterKind, PatchInteraction};
+use crate::synth::{ParameterId, ParameterKind, PatchInteraction, PostEffectConfig};
 use std::collections::HashSet;
 
 /// Pure descriptor-backed authority for semantic focus order and recovery.
@@ -19,6 +19,44 @@ use std::collections::HashSet;
 /// only with stable domain identities.
 pub struct SemanticResolver<'a> {
     state: &'a AppState,
+}
+
+enum ResolverPatchSource<'a> {
+    Created(&'a crate::synth::Patch),
+    Pending(&'a crate::synth::Patch),
+    Prospective(&'a ProspectivePatch),
+}
+
+impl ResolverPatchSource<'_> {
+    fn instrument_config(&self) -> &crate::synth::InstrumentConfig {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.instrument_config(),
+            Self::Prospective(patch) => patch.instrument_config(),
+        }
+    }
+
+    fn output(&self) -> Option<crate::mixer::patch_output::PatchOutput> {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => Some(patch.output()),
+            Self::Prospective(patch) => patch.output(),
+        }
+    }
+
+    fn effect_slots(
+        &self,
+    ) -> &[Option<PostEffectConfig>; crate::synth::effect_slot_id::MAX_EFFECT_SLOTS] {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.effect_slots(),
+            Self::Prospective(patch) => patch.effect_slots(),
+        }
+    }
+
+    fn effect_slot(
+        &self,
+        index: crate::synth::effect_slot_id::EffectSlotIndex,
+    ) -> Option<&PostEffectConfig> {
+        self.effect_slots()[index.index()].as_ref()
+    }
 }
 
 /// One available value in the shared trapped option modal.
@@ -113,11 +151,11 @@ impl<'a> SemanticResolver<'a> {
         ) {
             return None;
         }
-        let patch_id = path.patch_id()?;
+        let patch_position = path.patch_position()?;
         let SemanticControlId::Patch(control) = path.control_id() else {
             return None;
         };
-        let subject = PatchChoiceSubject::new(patch_id, control.clone());
+        let subject = PatchChoiceSubject::at(patch_position, control.clone());
         self.choice_source(&subject).ok().map(|_| subject)
     }
 
@@ -127,12 +165,33 @@ impl<'a> SemanticResolver<'a> {
         &self,
         subject: &PatchChoiceSubject,
     ) -> Result<ResolvedChoiceSource, EventRejection> {
-        let patch = self
-            .state
-            .patches()
-            .iter()
-            .find(|patch| patch.id() == subject.patch_id())
-            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let prospective;
+        let patch = match subject.patch_position() {
+            PatchPositionId::Created(patch_id) => ResolverPatchSource::Created(
+                self.state
+                    .patches()
+                    .iter()
+                    .find(|patch| patch.id() == patch_id)
+                    .ok_or(EventRejection::NoPatchesInstalled)?,
+            ),
+            PatchPositionId::TrailingEmpty => {
+                if let Some(pending) = self.state.pending_patch_creation() {
+                    ResolverPatchSource::Pending(pending)
+                } else {
+                    let blueprint = self
+                        .state
+                        .patch_creation_blueprint()
+                        .ok_or(EventRejection::EngineSelectionUnavailable)?;
+                    prospective = blueprint
+                        .prospective(
+                            self.state.patches().len(),
+                            blueprint.instrument_capability_id(),
+                        )
+                        .map_err(|_| EventRejection::EngineSelectionUnavailable)?;
+                    ResolverPatchSource::Prospective(&prospective)
+                }
+            }
+        };
         let (origin_label, options) = match subject.control_id() {
             PatchControlId::Engine => {
                 let current = patch.instrument_config().capability_id();
@@ -177,14 +236,14 @@ impl<'a> SemanticResolver<'a> {
             PatchControlId::Output(
                 crate::mixer::patch_output::PatchOutputParameter::OutputTrack,
             ) => {
-                let current = patch.output().track_id();
+                let current = patch.output().map(|output| output.track_id());
                 (
                     "Output Track".to_owned(),
                     MixerTrackId::ALL
                         .into_iter()
                         .map(|track| {
                             let id = track.to_string();
-                            ResolvedChoiceOption::enabled(id.clone(), id, track == current)
+                            ResolvedChoiceOption::enabled(id.clone(), id, Some(track) == current)
                         })
                         .collect(),
                 )
@@ -277,8 +336,8 @@ impl<'a> SemanticResolver<'a> {
             .iter()
             .filter(|option| option.is_enabled())
             .map(|option| {
-                FocusPath::patch_choice(
-                    subject.patch_id(),
+                FocusPath::patch_choice_at(
+                    subject.patch_position(),
                     subject.stable_id(),
                     option.id().to_owned(),
                 )
@@ -294,10 +353,15 @@ impl<'a> SemanticResolver<'a> {
     pub fn sample_browser_paths(&self) -> Result<Vec<FocusPath>, EventRejection> {
         let (patch_id, parameter_id) = match self.state.interaction().subordinate_session() {
             Some(PatchSubordinateSession::SampleBrowser {
-                patch_id,
+                patch_position,
                 asset_parameter_id,
                 ..
-            }) => (*patch_id, asset_parameter_id),
+            }) => (
+                patch_position
+                    .patch_id()
+                    .ok_or(EventRejection::NoPatchesInstalled)?,
+                asset_parameter_id,
+            ),
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
         if self.state.sample_browser().patch_id() != Some(patch_id)
@@ -360,6 +424,40 @@ impl<'a> SemanticResolver<'a> {
         Ok(paths)
     }
 
+    /// Returns PATCH Main's semantic order for either persisted content or
+    /// the one prospective endpoint. Overview needs no placeholder Patch:
+    /// its stable order is Engine followed by three occupancy positions.
+    pub fn patch_main_paths_for_position(
+        &self,
+        position: PatchPositionId,
+    ) -> Result<Vec<FocusPath>, EventRejection> {
+        match position {
+            PatchPositionId::Created(patch_id) => self.patch_main_paths(patch_id),
+            PatchPositionId::TrailingEmpty => {
+                let mut paths =
+                    Vec::with_capacity(1 + crate::synth::effect_slot_id::MAX_EFFECT_SLOTS);
+                paths.push(FocusPath::patch_main_at(
+                    position,
+                    None,
+                    PatchControlId::Engine,
+                ));
+                paths.extend(
+                    crate::synth::effect_slot_id::EffectSlotIndex::ALL
+                        .into_iter()
+                        .map(|slot| {
+                            FocusPath::patch_main_at(
+                                position,
+                                None,
+                                PatchControlId::EffectSlot(slot),
+                            )
+                        }),
+                );
+                ensure_unique(&paths)?;
+                Ok(paths)
+            }
+        }
+    }
+
     /// Derives the detail subject one PatchMain path opens, or `None`.
     ///
     /// The engine row resolves `Instrument`; an occupied effect slot resolves
@@ -370,14 +468,29 @@ impl<'a> SemanticResolver<'a> {
         if path.surface() != SurfaceId::PatchMain {
             return None;
         }
+        let SemanticControlId::Patch(control) = path.control_id() else {
+            return None;
+        };
+        if path.patch_position() == Some(PatchPositionId::TrailingEmpty) {
+            let blueprint = self.state.patch_creation_blueprint()?;
+            return match control {
+                PatchControlId::Engine | PatchControlId::Capability(_) => Some(
+                    PatchDetailSubject::instrument(blueprint.instrument_capability_id().clone()),
+                ),
+                PatchControlId::EffectSlot(_)
+                | PatchControlId::Effect(_, _)
+                | PatchControlId::Envelope(_)
+                | PatchControlId::Output(_)
+                | PatchControlId::Global(_)
+                | PatchControlId::MidiInput
+                | PatchControlId::VoiceLimit => None,
+            };
+        }
         let patch = self
             .state
             .patches()
             .iter()
             .find(|patch| Some(patch.id()) == path.patch_id())?;
-        let SemanticControlId::Patch(control) = path.control_id() else {
-            return None;
-        };
         match control {
             PatchControlId::Engine | PatchControlId::Capability(_) => Some(
                 PatchDetailSubject::instrument(patch.instrument_config().capability_id().clone()),
@@ -454,12 +567,41 @@ impl<'a> SemanticResolver<'a> {
         patch_id: PatchId,
         subject: &PatchDetailSubject,
     ) -> Result<Vec<FocusPath>, EventRejection> {
-        let patch = self
-            .state
-            .patches()
-            .iter()
-            .find(|patch| patch.id() == patch_id)
-            .ok_or(EventRejection::NoPatchesInstalled)?;
+        self.patch_detail_paths_for_position(PatchPositionId::Created(patch_id), subject)
+    }
+
+    pub fn patch_detail_paths_for_position(
+        &self,
+        position: PatchPositionId,
+        subject: &PatchDetailSubject,
+    ) -> Result<Vec<FocusPath>, EventRejection> {
+        let prospective;
+        let patch = match position {
+            PatchPositionId::Created(patch_id) => ResolverPatchSource::Created(
+                self.state
+                    .patches()
+                    .iter()
+                    .find(|patch| patch.id() == patch_id)
+                    .ok_or(EventRejection::NoPatchesInstalled)?,
+            ),
+            PatchPositionId::TrailingEmpty => {
+                if let Some(pending) = self.state.pending_patch_creation() {
+                    ResolverPatchSource::Pending(pending)
+                } else {
+                    let blueprint = self
+                        .state
+                        .patch_creation_blueprint()
+                        .ok_or(EventRejection::EngineSelectionUnavailable)?;
+                    prospective = blueprint
+                        .prospective(
+                            self.state.patches().len(),
+                            blueprint.instrument_capability_id(),
+                        )
+                        .map_err(|_| EventRejection::EngineSelectionUnavailable)?;
+                    ResolverPatchSource::Prospective(&prospective)
+                }
+            }
+        };
         let capability_id = subject.focus_capability_id();
         let paths = match subject {
             PatchDetailSubject::Instrument { capability_id: id } => {
@@ -473,8 +615,8 @@ impl<'a> SemanticResolver<'a> {
                     .parameters()
                     .filter(|spec| row_is_visible_and_enabled(spec, |id| config.value(id)))
                     .map(|spec| {
-                        FocusPath::patch_detail(
-                            patch_id,
+                        FocusPath::patch_detail_at(
+                            position,
                             capability_id.clone(),
                             PatchControlId::Capability(spec.id().clone()),
                         )
@@ -484,8 +626,8 @@ impl<'a> SemanticResolver<'a> {
                     crate::synth::VoiceEnvelope::surface_descriptor()
                         .iter()
                         .map(|parameter| {
-                            FocusPath::patch_detail(
-                                patch_id,
+                            FocusPath::patch_detail_at(
+                                position,
                                 capability_id.clone(),
                                 PatchControlId::Envelope(parameter.parameter()),
                             )
@@ -512,8 +654,8 @@ impl<'a> SemanticResolver<'a> {
                     .parameters()
                     .filter(|spec| row_is_visible_and_enabled(spec, |id| occupant.value(id)))
                     .map(|spec| {
-                        FocusPath::patch_detail(
-                            patch_id,
+                        FocusPath::patch_detail_at(
+                            position,
                             capability_id.clone(),
                             PatchControlId::Effect(*slot_id, spec.id().clone()),
                         )
@@ -560,6 +702,21 @@ impl<'a> SemanticResolver<'a> {
         let paths = PatchControlId::utility_surface_descriptor()
             .iter()
             .map(|control| FocusPath::patch_utility(patch_id, control.clone()))
+            .collect::<Vec<_>>();
+        ensure_unique(&paths)?;
+        Ok(paths)
+    }
+
+    pub fn patch_utility_paths_for_position(
+        &self,
+        position: PatchPositionId,
+    ) -> Result<Vec<FocusPath>, EventRejection> {
+        if let PatchPositionId::Created(patch_id) = position {
+            return self.patch_utility_paths(patch_id);
+        }
+        let paths = PatchControlId::utility_surface_descriptor()
+            .iter()
+            .map(|control| FocusPath::patch_utility_at(position, control.clone()))
             .collect::<Vec<_>>();
         ensure_unique(&paths)?;
         Ok(paths)
@@ -643,23 +800,28 @@ impl<'a> SemanticResolver<'a> {
     pub fn ordered_paths(&self, surface: SurfaceId) -> Result<Vec<FocusPath>, EventRejection> {
         match surface {
             SurfaceId::PatchMain => {
-                let patch_id = self
+                let position = self
                     .state
                     .interaction()
                     .remembered_patch_main()
-                    .and_then(FocusPath::patch_id)
-                    .or_else(|| self.state.patches().first().map(|patch| patch.id()))
+                    .and_then(FocusPath::patch_position)
+                    .or_else(|| {
+                        self.state
+                            .patches()
+                            .first()
+                            .map(|patch| PatchPositionId::Created(patch.id()))
+                    })
                     .ok_or(EventRejection::NoPatchesInstalled)?;
-                self.patch_main_paths(patch_id)
+                self.patch_main_paths_for_position(position)
             }
             SurfaceId::MixerMain => self.mixer_main_paths(),
             SurfaceId::PatchUtility => {
-                let patch_id = self
+                let position = self
                     .state
                     .interaction()
-                    .patch_focus()
+                    .patch_position_focus()
                     .ok_or(EventRejection::NoPatchesInstalled)?;
-                self.patch_utility_paths(patch_id)
+                self.patch_utility_paths_for_position(position)
             }
             // The detail surface's order belongs to the open subject alone.
             // With no entry open there is no order to resolve — which is
@@ -669,10 +831,10 @@ impl<'a> SemanticResolver<'a> {
                 let subject = interaction
                     .detail_subject()
                     .ok_or(EventRejection::ActionUnavailableInContext)?;
-                let patch_id = interaction
-                    .patch_focus()
+                let position = interaction
+                    .patch_position_focus()
                     .ok_or(EventRejection::NoPatchesInstalled)?;
-                self.patch_detail_paths(patch_id, subject)
+                self.patch_detail_paths_for_position(position, subject)
             }
             SurfaceId::PatchChoice => match self.state.interaction().subordinate_session() {
                 Some(PatchSubordinateSession::Choice { subject, .. }) => {

@@ -22,9 +22,10 @@ pub use graph_preparation_worker::{
 pub mod graph_handoff_status;
 pub use graph_handoff_status::GraphHandoffStatus;
 pub mod parameter_snapshot;
+pub use crate::kernel::MAX_ACTIVE_PATCHES;
 pub use parameter_snapshot::{
     ParameterSnapshot, ParameterSnapshotError, RtBusReturnParameters, RtInstrumentParameters,
-    RtPatchParameters, RtPostEffectParameters, MAX_PATCHES,
+    RtPatchParameters, RtPostEffectParameters,
 };
 pub mod patch_audio_block;
 pub use patch_audio_block::{PatchAudioBlock, PatchAudioBlockError, PatchStereoStem};

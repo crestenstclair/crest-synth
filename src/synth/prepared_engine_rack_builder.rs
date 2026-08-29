@@ -1,5 +1,5 @@
 use crate::kernel::patch_id::PatchId;
-use crate::real_time::parameter_snapshot::MAX_PATCHES;
+use crate::real_time::parameter_snapshot::MAX_ACTIVE_PATCHES;
 use crate::real_time::prepared_engine_rack::{PreparedEngineRack, PreparedEngineSlot};
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
@@ -30,10 +30,10 @@ impl PreparedEngineRackBuilder {
         if max_frames == 0 {
             return Err(RackPreparationError::InvalidFrameCapacity);
         }
-        if patches.len() > MAX_PATCHES {
+        if patches.len() > MAX_ACTIVE_PATCHES {
             return Err(RackPreparationError::PatchCapacityExceeded {
                 count: patches.len(),
-                capacity: MAX_PATCHES,
+                capacity: MAX_ACTIVE_PATCHES,
             });
         }
 
@@ -231,7 +231,9 @@ mod tests {
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::patch_output::PatchOutput;
-    use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
+    use crate::real_time::parameter_snapshot::{
+        ParameterSnapshot, RtPatchParameters, MAX_ACTIVE_PATCHES,
+    };
     use crate::real_time::patch_audio_block::PatchAudioBlock;
     use crate::real_time::prepared_engine_rack::{RackDispatchError, RackRenderError};
     use crate::synth::capability_id::CapabilityId;
@@ -557,7 +559,9 @@ mod tests {
             Err(RackPreparationError::ExtraPreparer { .. })
         ));
 
-        let too_many: Vec<_> = (1..=(MAX_PATCHES + 1)).map(|id| patch(id as u32)).collect();
+        let too_many: Vec<_> = (1..=(MAX_ACTIVE_PATCHES + 1))
+            .map(|id| patch(id as u32))
+            .collect();
         assert!(matches!(
             PreparedEngineRackBuilder::build(
                 &too_many,

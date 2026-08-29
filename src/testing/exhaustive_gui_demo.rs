@@ -720,7 +720,7 @@ where
             .app_loop
             .patches()
             .iter()
-            .position(|patch| patch.id() == page.patch().id())
+            .position(|patch| Some(patch.id()) == page.patch().id())
             .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
                 step: step.to_owned(),
                 reason: "focused Patch identity is absent from canonical state".to_owned(),
@@ -728,7 +728,12 @@ where
         let target_peak = self
             .renderer
             .active_patch_audio()
-            .stem(target_index, page.patch().id())
+            .stem(
+                target_index,
+                page.patch()
+                    .id()
+                    .ok_or(ExhaustiveGuiDemoError::ProjectionStateMismatch)?,
+            )
             .map(|stem| {
                 stem.samples()
                     .iter()
@@ -992,7 +997,7 @@ where
             .lines()
             .nth(text.selected_line())
             .unwrap_or_default();
-        let focus_projection_exact = page.patch().id() == expected.patch_id()
+        let focus_projection_exact = page.patch().id() == Some(expected.patch_id())
             && page.focused_control_id() == control
             && row.control_id() == Some(control.clone())
             && text.context() == TopLevelContext::Patch
@@ -1091,7 +1096,7 @@ where
             .unwrap_or_default();
         let control_id = control.as_str();
         let focus_projection_exact = self.app_loop.state().context() == TopLevelContext::Patch
-            && page.patch().id() == expected.patch_id()
+            && page.patch().id() == Some(expected.patch_id())
             && page.focused_control_id() == control
             && text.context() == TopLevelContext::Patch
             && text.state_hash() == tree.state_hash()
@@ -1680,7 +1685,8 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             | EventInput::MidiInputDisconnectRequested { .. }
             | EventInput::MidiInputConnectionLost { .. }
             | EventInput::MidiInputOperationFailed { .. }
-            | EventInput::MidiInputShutdownRequested => {}
+            | EventInput::MidiInputShutdownRequested
+            | EventInput::ReplacePersistedSession { .. } => {}
         }
 
         if let Some(rejection) = record.rejection() {

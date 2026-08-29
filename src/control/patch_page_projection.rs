@@ -2,9 +2,9 @@ use crate::control::app_state::AppState;
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, PatchControlId,
-    PatchDetailSubject, StructuralEditIntent, SurfaceId,
+    PatchDetailSubject, PatchPositionId, ProspectivePatch, StructuralEditIntent, SurfaceId,
 };
-use crate::kernel::{MidiChannel, PatchId};
+use crate::kernel::{MidiChannel, PatchId, MAX_ACTIVE_PATCHES};
 use crate::mixer::patch_output::{PatchOutputParameter, PatchOutputParameterKind};
 use crate::real_time::GraphRevision;
 use crate::synth::instrument_capability::{
@@ -20,26 +20,75 @@ use core::fmt;
 use serde::{Serialize, Serializer};
 use std::sync::Arc;
 
-/// One stable focused Patch identity copied into the host-neutral PATCH view.
+/// The focused PATCH position, explicitly distinguishing acknowledged content
+/// from the interaction-only trailing empty endpoint.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PatchPageIdentity {
-    id: PatchId,
-    name: String,
-    midi_channel: MidiChannel,
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PatchPageIdentity {
+    Created {
+        id: PatchId,
+        name: String,
+        midi_channel: MidiChannel,
+        active_count: usize,
+        capacity: usize,
+    },
+    Empty {
+        label: String,
+        active_count: usize,
+        capacity: usize,
+        creation_available: bool,
+    },
 }
 
 impl PatchPageIdentity {
-    pub const fn id(&self) -> PatchId {
-        self.id
+    pub const fn id(&self) -> Option<PatchId> {
+        match self {
+            Self::Created { id, .. } => Some(*id),
+            Self::Empty { .. } => None,
+        }
     }
 
     pub fn name(&self) -> &str {
-        &self.name
+        match self {
+            Self::Created { name, .. } => name,
+            Self::Empty { label, .. } => label,
+        }
     }
 
-    pub const fn midi_channel(&self) -> MidiChannel {
-        self.midi_channel
+    pub const fn midi_channel(&self) -> Option<MidiChannel> {
+        match self {
+            Self::Created { midi_channel, .. } => Some(*midi_channel),
+            Self::Empty { .. } => None,
+        }
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        matches!(self, Self::Empty { .. })
+    }
+
+    pub const fn active_count(&self) -> usize {
+        match self {
+            Self::Created { active_count, .. } | Self::Empty { active_count, .. } => *active_count,
+        }
+    }
+
+    pub const fn capacity(&self) -> usize {
+        match self {
+            Self::Created { capacity, .. } | Self::Empty { capacity, .. } => *capacity,
+        }
+    }
+
+    pub const fn creation_available(&self) -> bool {
+        match self {
+            Self::Created { .. } => false,
+            Self::Empty {
+                creation_available, ..
+            } => *creation_available,
+        }
     }
 }
 
@@ -161,7 +210,8 @@ pub struct PatchPageOutputRow {
 impl PatchPageOutputRow {
     fn for_parameter(
         parameter: PatchOutputParameter,
-        output: crate::mixer::patch_output::PatchOutput,
+        output: Option<crate::mixer::patch_output::PatchOutput>,
+        editable: bool,
     ) -> Self {
         let descriptor = parameter.descriptor();
         Self {
@@ -174,15 +224,17 @@ impl PatchPageOutputRow {
             }
             .to_owned(),
             scalar_value: (parameter == PatchOutputParameter::TrimGain)
-                .then_some(output.trim_gain_db()),
+                .then(|| output.map(|output| output.trim_gain_db()))
+                .flatten(),
             choice_value: (parameter == PatchOutputParameter::OutputTrack)
-                .then(|| output.track_id().to_string()),
+                .then(|| output.map(|output| output.track_id().to_string()))
+                .flatten(),
             minimum: descriptor.minimum(),
             maximum: descriptor.maximum(),
             fine_step: descriptor.fine_step(),
             coarse_step: descriptor.coarse_step(),
             unit: descriptor.unit().map(str::to_owned),
-            editable: true,
+            editable: editable && output.is_some(),
         }
     }
 
@@ -194,12 +246,19 @@ impl PatchPageOutputRow {
     /// same descriptor the reducer edits through.
     fn for_utility_control(
         control: &PatchControlId,
-        patch: &crate::synth::patch::Patch,
+        output: Option<crate::mixer::patch_output::PatchOutput>,
+        channel: Option<MidiChannel>,
+        voice_limit: VoiceLimit,
+        patch_owned_editable: bool,
         global: &crate::mixer::global_parameters::GlobalParameters,
     ) -> Option<Self> {
         let row = match control {
             PatchControlId::Output(parameter) => {
-                return Some(Self::for_parameter(*parameter, patch.output()))
+                return Some(Self::for_parameter(
+                    *parameter,
+                    output,
+                    patch_owned_editable,
+                ))
             }
             PatchControlId::Global(parameter) => {
                 let descriptor = parameter.descriptor();
@@ -227,13 +286,13 @@ impl PatchPageOutputRow {
                 label: "MIDI Input".to_owned(),
                 kind: "choice".to_owned(),
                 scalar_value: None,
-                choice_value: Some((u16::from(patch.channel().value()) + 1).to_string()),
+                choice_value: channel.map(|channel| (u16::from(channel.value()) + 1).to_string()),
                 minimum: Some(f32::from(MidiChannel::MIN) + 1.0),
                 maximum: Some(f32::from(MidiChannel::MAX) + 1.0),
                 fine_step: Some(1.0),
                 coarse_step: Some(1.0),
                 unit: None,
-                editable: true,
+                editable: patch_owned_editable && channel.is_some(),
             },
             PatchControlId::VoiceLimit => {
                 let descriptor = VoiceLimit::descriptor();
@@ -242,14 +301,14 @@ impl PatchPageOutputRow {
                     id: descriptor.name().to_owned(),
                     label: descriptor.label().to_owned(),
                     kind: "stepped".to_owned(),
-                    scalar_value: Some(f32::from(patch.voice_limit().value())),
+                    scalar_value: Some(f32::from(voice_limit.value())),
                     choice_value: None,
                     minimum: Some(f32::from(descriptor.minimum())),
                     maximum: Some(f32::from(descriptor.maximum())),
                     fine_step: Some(f32::from(descriptor.fine_step())),
                     coarse_step: Some(f32::from(descriptor.coarse_step())),
                     unit: descriptor.unit().map(str::to_owned),
-                    editable: true,
+                    editable: patch_owned_editable,
                 }
             }
             PatchControlId::Engine
@@ -265,7 +324,7 @@ impl PatchPageOutputRow {
         parameter: PatchOutputParameter,
         output: crate::mixer::patch_output::PatchOutput,
     ) -> Result<String, serde_json::Error> {
-        serde_json::to_string(&Self::for_parameter(parameter, output))
+        serde_json::to_string(&Self::for_parameter(parameter, Some(output), true))
             .map(|row| format!("> OUTPUT {row}"))
     }
 
@@ -902,10 +961,84 @@ impl PatchPageSection {
     }
 }
 
+enum PatchProjectionSource<'a> {
+    Created(&'a crate::synth::Patch),
+    Pending(&'a crate::synth::Patch),
+    Prospective(&'a ProspectivePatch),
+}
+
+impl PatchProjectionSource<'_> {
+    fn instrument_config(&self) -> &crate::synth::InstrumentConfig {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.instrument_config(),
+            Self::Prospective(patch) => patch.instrument_config(),
+        }
+    }
+
+    fn envelope(&self) -> &crate::synth::VoiceEnvelope {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.envelope(),
+            Self::Prospective(patch) => patch.envelope(),
+        }
+    }
+
+    fn output(&self) -> Option<crate::mixer::patch_output::PatchOutput> {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => Some(patch.output()),
+            Self::Prospective(patch) => patch.output(),
+        }
+    }
+
+    fn channel(&self) -> Option<MidiChannel> {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => Some(patch.channel()),
+            Self::Prospective(patch) => patch.channel(),
+        }
+    }
+
+    fn effect_slots(
+        &self,
+    ) -> &[Option<PostEffectConfig>; crate::synth::effect_slot_id::MAX_EFFECT_SLOTS] {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.effect_slots(),
+            Self::Prospective(patch) => patch.effect_slots(),
+        }
+    }
+
+    fn effect_slot(
+        &self,
+        index: crate::synth::effect_slot_id::EffectSlotIndex,
+    ) -> Option<&PostEffectConfig> {
+        self.effect_slots()[index.index()].as_ref()
+    }
+
+    fn voice_limit(&self) -> VoiceLimit {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.voice_limit(),
+            Self::Prospective(patch) => patch.voice_limit(),
+        }
+    }
+
+    fn correlation_patch_id(&self) -> Option<PatchId> {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => Some(patch.id()),
+            Self::Prospective(_) => None,
+        }
+    }
+
+    fn created_patch(&self) -> Option<&crate::synth::Patch> {
+        match self {
+            Self::Created(patch) => Some(patch),
+            Self::Pending(_) | Self::Prospective(_) => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PatchPageContent {
     context: TopLevelContext,
+    prospective: bool,
     focused_control_id: PatchControlId,
     patch: PatchPageIdentity,
     output: Vec<PatchPageOutputRow>,
@@ -1032,9 +1165,15 @@ impl PatchPageProjection {
         "effects[].sections[].parameters[].value.value.kind",
         "effects[].sections[].parameters[].value.value.value",
         "effects[].sections[].parameters[].visible",
+        "patch.activeCount",
+        "patch.capacity",
+        "patch.creationAvailable",
         "patch.id",
+        "patch.kind",
+        "patch.label",
         "patch.midiChannel",
         "patch.name",
+        "prospective",
         "output[].coarseStep",
         "output[].controlId",
         "output[].editable",
@@ -1092,6 +1231,10 @@ impl PatchPageProjection {
         self.content.context
     }
 
+    pub fn is_prospective(&self) -> bool {
+        self.content.prospective
+    }
+
     pub fn focused_control_id(&self) -> PatchControlId {
         self.content.focused_control_id.clone()
     }
@@ -1146,35 +1289,54 @@ impl PatchPageProjection {
         state: &AppState,
         state_hash: &str,
     ) -> Result<Self, PatchPageProjectionError> {
-        let focus = state
+        let position = state
             .interaction()
-            .patch_focus()
+            .patch_position_focus()
             .ok_or(PatchPageProjectionError::MissingPatchFocus)?;
         let focused_control_id = state
             .interaction()
             .patch_control_focus()
             .ok_or(PatchPageProjectionError::MissingPatchControlFocus)?;
-        let patch = state
-            .patches()
-            .iter()
-            .find(|patch| patch.id() == focus)
-            .ok_or(PatchPageProjectionError::UnknownPatchFocus)?;
+        let prospective_defaults;
+        let prospective = position == PatchPositionId::TrailingEmpty;
+        let source = match position {
+            PatchPositionId::Created(focus) => PatchProjectionSource::Created(
+                state
+                    .patches()
+                    .iter()
+                    .find(|patch| patch.id() == focus)
+                    .ok_or(PatchPageProjectionError::UnknownPatchFocus)?,
+            ),
+            PatchPositionId::TrailingEmpty => {
+                if let Some(pending) = state.pending_patch_creation() {
+                    PatchProjectionSource::Pending(pending)
+                } else {
+                    let blueprint = state
+                        .patch_creation_blueprint()
+                        .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
+                    prospective_defaults = blueprint
+                        .prospective(state.patches().len(), blueprint.instrument_capability_id())
+                        .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
+                    PatchProjectionSource::Prospective(&prospective_defaults)
+                }
+            }
+        };
         let descriptor = state
             .capabilities()
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor(source.instrument_config().capability_id())
             .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
         state
             .capabilities()
-            .validate_config(patch.instrument_config())
+            .validate_config(source.instrument_config())
             .map_err(|_| PatchPageProjectionError::InvalidInstrumentConfig)?;
-        crate::control::app_state::validate_effect_slots(state.effects(), patch.effect_slots())
+        crate::control::app_state::validate_effect_slots(state.effects(), source.effect_slots())
             .map_err(|_| PatchPageProjectionError::InvalidEffectConfig)?;
         // The detail entry, resolved before the containment check because it is
         // one of the three orders a focused row may belong to.
         let detail = state
             .interaction()
             .detail_subject()
-            .map(|subject| project_detail(state, patch, subject))
+            .map(|subject| project_detail(state, &source, subject))
             .transpose()?;
 
         // Which order the focused row belongs to is decided by the one
@@ -1251,18 +1413,32 @@ impl PatchPageProjection {
         let output = PatchControlId::utility_surface_descriptor()
             .iter()
             .filter_map(|control| {
-                PatchPageOutputRow::for_utility_control(control, patch, state.global())
+                PatchPageOutputRow::for_utility_control(
+                    control,
+                    source.output(),
+                    source.channel(),
+                    source.voice_limit(),
+                    !prospective || state.patches().len() < MAX_ACTIVE_PATCHES,
+                    state.global(),
+                )
             })
             .collect();
         let engine_selection = state.engine_selection();
         let correlation = engine_selection.correlation();
         let engine_targeted = correlation.is_some_and(|correlation| {
-            matches!(
+            (matches!(
                 correlation.intent(),
                 StructuralEditIntent::ReplaceCapability { .. }
-            ) && correlation.patch_id() == Some(patch.id())
+            ) || (prospective && correlation.intent().is_append_patch()))
+                && correlation.patch_id() == source.correlation_patch_id()
         });
-        let editable = state.capabilities().descriptors().len() >= 2
+        let creation_available = !prospective || state.patches().len() < MAX_ACTIVE_PATCHES;
+        let editable = creation_available
+            && if prospective {
+                !state.capabilities().descriptors().is_empty()
+            } else {
+                state.capabilities().descriptors().len() >= 2
+            }
             && matches!(
                 engine_selection.kind(),
                 EngineSelectionStatusKind::Ready
@@ -1272,10 +1448,12 @@ impl PatchPageProjection {
         let envelope = crate::synth::VoiceEnvelope::surface_descriptor()
             .iter()
             .map(|spec| {
-                PatchPageEnvelopeRow::for_parameter(
+                let mut row = PatchPageEnvelopeRow::for_parameter(
                     spec.parameter(),
-                    patch.envelope().value(spec.parameter()),
-                )
+                    source.envelope().value(spec.parameter()),
+                );
+                row.editable = creation_available;
+                row
             })
             .collect();
         let sections = descriptor
@@ -1287,7 +1465,7 @@ impl PatchPageProjection {
                     .iter()
                     .map(|spec| {
                         let value = if spec.kind() == ParameterKind::Asset {
-                            let reference = patch
+                            let reference = source
                                 .instrument_config()
                                 .asset_reference(spec.id())
                                 .or_else(|| match spec.default_value() {
@@ -1299,7 +1477,7 @@ impl PatchPageProjection {
                                 reference: reference.clone(),
                             }
                         } else {
-                            let value = patch
+                            let value = source
                                 .instrument_config()
                                 .value(spec.id())
                                 .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
@@ -1310,7 +1488,7 @@ impl PatchPageProjection {
                         let predicate_satisfied =
                             |predicate: Option<&crate::synth::ParameterPredicate>| {
                                 predicate.is_none_or(|predicate| {
-                                    patch.instrument_config().value(predicate.parameter_id())
+                                    source.instrument_config().value(predicate.parameter_id())
                                         == Some(predicate.equals())
                                 })
                             };
@@ -1334,7 +1512,7 @@ impl PatchPageProjection {
                                 .map(|choice| choice.label().to_owned())
                         });
                         let row_correlation = correlation.filter(|correlation| {
-                            correlation.patch_id() == Some(patch.id())
+                            correlation.patch_id() == source.correlation_patch_id()
                                 && matches!(
                                     correlation.intent(),
                                     StructuralEditIntent::ReplaceParameterChoice {
@@ -1383,7 +1561,9 @@ impl PatchPageProjection {
                             failure: row_correlation.and_then(|_| engine_selection.failure()),
                             enabled,
                             visible,
-                            editable: control_id.is_some() && !engine_selection.is_in_flight(),
+                            editable: control_id.is_some()
+                                && creation_available
+                                && !engine_selection.is_in_flight(),
                         })
                     })
                     .collect::<Result<Vec<_>, PatchPageProjectionError>>()?;
@@ -1406,7 +1586,8 @@ impl PatchPageProjection {
                 }
             }))
             .collect::<Vec<_>>();
-        let occupancy_editable = !state.effects().descriptors().is_empty()
+        let occupancy_editable = creation_available
+            && !state.effects().descriptors().is_empty()
             && matches!(
                 engine_selection.kind(),
                 EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed
@@ -1414,7 +1595,7 @@ impl PatchPageProjection {
         let effects = crate::synth::effect_slot_id::EffectSlotIndex::ALL
             .into_iter()
             .map(|slot_index| {
-                let (occupancy, sections) = match patch.effect_slot(slot_index) {
+                let (occupancy, sections) = match source.effect_slot(slot_index) {
                     None => (PatchPageSlotOccupancy::Empty, Vec::new()),
                     Some(config) => {
                         let effect_descriptor = state
@@ -1461,7 +1642,7 @@ impl PatchPageProjection {
                             patch_id: target_patch,
                             slot,
                             ..
-                        } if *target_patch == patch.id() && *slot == slot_index
+                        } if Some(*target_patch) == source.correlation_patch_id() && *slot == slot_index
                     )
                 });
                 let requested_choice_id =
@@ -1494,11 +1675,33 @@ impl PatchPageProjection {
         Ok(Self {
             content: Arc::new(PatchPageContent {
                 context: TopLevelContext::Patch,
+                prospective,
                 focused_control_id,
-                patch: PatchPageIdentity {
-                    id: patch.id(),
-                    name: patch.name().to_owned(),
-                    midi_channel: patch.channel(),
+                patch: if prospective {
+                    PatchPageIdentity::Empty {
+                        label: "NEW PATCH".to_owned(),
+                        active_count: state.patches().len(),
+                        capacity: MAX_ACTIVE_PATCHES,
+                        creation_available: state.patches().len() < MAX_ACTIVE_PATCHES,
+                    }
+                } else {
+                    PatchPageIdentity::Created {
+                        id: source
+                            .created_patch()
+                            .ok_or(PatchPageProjectionError::UnknownPatchFocus)?
+                            .id(),
+                        name: source
+                            .created_patch()
+                            .ok_or(PatchPageProjectionError::UnknownPatchFocus)?
+                            .name()
+                            .to_owned(),
+                        midi_channel: source
+                            .created_patch()
+                            .ok_or(PatchPageProjectionError::UnknownPatchFocus)?
+                            .channel(),
+                        active_count: state.patches().len(),
+                        capacity: MAX_ACTIVE_PATCHES,
+                    }
                 },
                 output,
                 engine: PatchPageEngine {
@@ -1546,7 +1749,7 @@ impl PatchPageProjection {
 /// change nothing downstream.
 fn project_detail(
     state: &AppState,
-    patch: &crate::synth::patch::Patch,
+    patch: &PatchProjectionSource<'_>,
     subject: &PatchDetailSubject,
 ) -> Result<PatchPageDetail, PatchPageProjectionError> {
     // A row's identity on the detail surface follows the subject's shape: an
@@ -1627,6 +1830,7 @@ impl Serialize for PatchPageProjection {
         #[serde(rename_all = "camelCase")]
         struct SerializablePatchPage<'a> {
             context: TopLevelContext,
+            prospective: bool,
             focused_control_id: PatchControlId,
             patch: &'a PatchPageIdentity,
             output: &'a [PatchPageOutputRow],
@@ -1640,6 +1844,7 @@ impl Serialize for PatchPageProjection {
 
         SerializablePatchPage {
             context: self.context(),
+            prospective: self.is_prospective(),
             focused_control_id: self.focused_control_id(),
             patch: self.patch(),
             output: self.output(),
@@ -1689,14 +1894,16 @@ mod tests {
     use crate::adapter::production_effects::{
         production_chorus_config, production_effect_registry,
     };
-    use crate::adapter::production_instruments::production_capability_registry;
+    use crate::adapter::production_instruments::{
+        production_capability_registry, production_instrument_providers,
+    };
     use crate::control::{AppEvent, AppState, StateProjector, SurfaceId, TopLevelContext};
     use crate::kernel::{MidiChannel, PatchId};
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::patch_output::PatchOutput;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
-    use crate::synth::Patch;
+    use crate::synth::{DescriptorDefaultConfigFactory, Patch};
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use serde_json::Value;
     use std::collections::BTreeSet;
@@ -1717,6 +1924,28 @@ mod tests {
         state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+    }
+
+    fn empty_state() -> AppState {
+        let registry = production_capability_registry().unwrap();
+        let blueprint = crate::control::PatchCreationBlueprint::resolve(
+            &crate::synth::CapabilityId::new(
+                crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+            )
+            .unwrap(),
+            &DescriptorDefaultConfigFactory::new(
+                registry,
+                production_instrument_providers().unwrap(),
+            ),
+        )
+        .unwrap();
+        let mut state =
+            state_with_config(BraidsCapability::new().unwrap().default_config().unwrap())
+                .with_patch_creation_blueprint(blueprint);
+        state
+            .apply(AppEvent::SelectPatch(crate::control::Direction::Right))
             .unwrap();
         state
     }
@@ -1904,9 +2133,9 @@ mod tests {
             .capabilities()
             .descriptor(patch.instrument_config().capability_id())
             .unwrap();
-        assert_eq!(page.patch().id(), patch.id());
+        assert_eq!(page.patch().id(), Some(patch.id()));
         assert_eq!(page.patch().name(), patch.name());
-        assert_eq!(page.patch().midi_channel(), patch.channel());
+        assert_eq!(page.patch().midi_channel(), Some(patch.channel()));
         assert_eq!(
             page.focused_control_id(),
             state.interaction().patch_control_focus().unwrap()
@@ -2194,6 +2423,7 @@ mod tests {
                 BraidsCapability::new().unwrap().default_config().unwrap(),
                 DetailSubjectFixture::Effect,
             )),
+            project(&empty_state()),
         ] {
             leaves(&serde_json::to_value(page).unwrap(), "", &mut discovered);
         }

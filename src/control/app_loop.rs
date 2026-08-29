@@ -16,7 +16,8 @@ use crate::control::{
     ActiveMidiInput, ConnectMidiInput, GraphicalShellProjection, MidiActivitySnapshot,
     MidiDeviceEffect, MidiDeviceFailure, MidiDeviceWorker, MidiDeviceWorkerCommand,
     MidiDeviceWorkerResult, MidiScanScheduler, PhysicalMidiIngress, PhysicalMidiIngressControl,
-    SampleAssetLifecycle, SemanticAction, SurfaceId, PHYSICAL_MIDI_DRAIN_BUDGET,
+    SampleAssetLifecycle, SemanticAction, SessionReplacementPayload, SurfaceId,
+    PHYSICAL_MIDI_DRAIN_BUDGET,
 };
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::PatchId;
@@ -76,6 +77,7 @@ pub struct StructuralProgress {
     graph_stage: Option<GraphStageOutcome>,
     graph_published: Option<GraphRevision>,
     activation_acknowledged: Option<GraphRevision>,
+    session_replacement_committed: bool,
     collected_count: u64,
     rejected_worker_event: Option<EventRejection>,
 }
@@ -155,6 +157,10 @@ impl StructuralProgress {
         self.activation_acknowledged
     }
 
+    pub const fn session_replacement_committed(self) -> bool {
+        self.session_replacement_committed
+    }
+
     pub const fn collected_count(self) -> u64 {
         self.collected_count
     }
@@ -165,7 +171,7 @@ impl StructuralProgress {
 }
 
 /// A control-side ownership or invariant failure while advancing structure.
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StructuralAdvanceError {
     AlreadyConfigured,
     RegistryMismatch,
@@ -176,6 +182,15 @@ pub enum StructuralAdvanceError {
     EventLog(crate::control::EventLogError),
     Status(EngineSelectionStatusError),
     WorkerShutdown(WorkerShutdownError),
+    SessionUnavailable,
+    SessionBusy,
+    SessionRevisionMismatch,
+    SessionParameterMismatch,
+    SessionPreflight(EventRejection),
+    SessionCommit(EventRejection),
+    CandidatePreflight(EventRejection),
+    CandidateParameterMismatch,
+    Recovery(BoundaryFull),
 }
 
 /// Configuration or teardown failure at the physical MIDI orchestration seam.
@@ -221,6 +236,39 @@ impl fmt::Display for StructuralAdvanceError {
             Self::EventLog(error) => error.fmt(formatter),
             Self::Status(error) => error.fmt(formatter),
             Self::WorkerShutdown(error) => error.fmt(formatter),
+            Self::SessionUnavailable => {
+                formatter.write_str("structural session replacement is not configured")
+            }
+            Self::SessionBusy => {
+                formatter.write_str("another structural replacement is already in flight")
+            }
+            Self::SessionRevisionMismatch => {
+                formatter.write_str("session payload and prepared graph revisions do not match")
+            }
+            Self::SessionParameterMismatch => formatter
+                .write_str("session payload projection does not match the prepared graph snapshot"),
+            Self::SessionPreflight(error) => {
+                write!(
+                    formatter,
+                    "session replacement preflight was rejected: {error}"
+                )
+            }
+            Self::SessionCommit(error) => {
+                write!(
+                    formatter,
+                    "activated session replacement was rejected: {error}"
+                )
+            }
+            Self::CandidatePreflight(error) => {
+                write!(
+                    formatter,
+                    "structural candidate preflight was rejected: {error}"
+                )
+            }
+            Self::CandidateParameterMismatch => formatter.write_str(
+                "future reducer commit does not match the prepared structural candidate",
+            ),
+            Self::Recovery(error) => error.fmt(formatter),
         }
     }
 }
@@ -233,6 +281,7 @@ struct EngineSelectionRuntime {
     coordinator: StructuralGraphCoordinator<Box<dyn ControlStructuralGraphBoundary>>,
     audio_config: AudioDeviceConfig,
     activation_record_sequence: Option<(EngineSelectionRequestId, u64)>,
+    pending_session_replacement: Option<SessionReplacementPayload>,
 }
 
 struct OwnedMidiConnection {
@@ -907,8 +956,104 @@ where
             coordinator: StructuralGraphCoordinator::new(structural, initial_graph),
             audio_config,
             activation_record_sequence: None,
+            pending_session_replacement: None,
         });
         Ok(())
+    }
+
+    /// Allocates the next graph revision from the shared structural owner.
+    /// Engine/effect edits and session preparation both use this method, so
+    /// two producers cannot independently choose the same target revision.
+    pub fn next_structural_graph_revision(&self) -> Result<GraphRevision, StructuralAdvanceError> {
+        let runtime = self
+            .engine_selection_runtime
+            .as_ref()
+            .ok_or(StructuralAdvanceError::SessionUnavailable)?;
+        if runtime.coordinator.has_pending_graph()
+            || runtime.pending_session_replacement.is_some()
+            || self.state.engine_selection().kind() != EngineSelectionStatusKind::Ready
+        {
+            return Err(StructuralAdvanceError::SessionBusy);
+        }
+        runtime
+            .coordinator
+            .status()
+            .active_revision()
+            .ok_or(StructuralAdvanceError::Publication(
+                crate::real_time::GraphPublicationFailure::NoActiveGraph,
+            ))?
+            .checked_next()
+            .map_err(StructuralAdvanceError::Revision)
+    }
+
+    /// Preflights and stages one complete prepared session through the same
+    /// one-in-flight coordinator used by engine and effect topology changes.
+    pub fn stage_session_replacement(
+        &mut self,
+        replacement: SessionReplacementPayload,
+        mut graph: PreparedGraph,
+    ) -> Result<GraphStageOutcome, StructuralAdvanceError> {
+        let target_graph_revision = replacement.target_graph_revision();
+        if graph.revision() != target_graph_revision {
+            return Err(StructuralAdvanceError::SessionRevisionMismatch);
+        }
+        {
+            let runtime = self
+                .engine_selection_runtime
+                .as_ref()
+                .ok_or(StructuralAdvanceError::SessionUnavailable)?;
+            if runtime.coordinator.has_pending_graph()
+                || runtime.pending_session_replacement.is_some()
+                || self.state.engine_selection().kind() != EngineSelectionStatusKind::Ready
+            {
+                return Err(StructuralAdvanceError::SessionBusy);
+            }
+        }
+
+        let mut candidate = self.state.clone();
+        candidate
+            .apply(AppEvent::ReplacePersistedSession(Box::new(
+                replacement.clone(),
+            )))
+            .map_err(StructuralAdvanceError::SessionPreflight)?;
+        let projected = StateProjector::for_graph(target_graph_revision)
+            .project(&candidate)
+            .map_err(|error| match error {
+                StateProjectionError::ParameterSnapshot(error) => {
+                    StructuralAdvanceError::CandidateParameters(error)
+                }
+                _ => StructuralAdvanceError::SessionParameterMismatch,
+            })?
+            .2;
+        let prepared_at_candidate_generation =
+            (*graph.initial_parameters()).with_generation(projected.generation());
+        if prepared_at_candidate_generation != projected {
+            return Err(StructuralAdvanceError::SessionParameterMismatch);
+        }
+        graph
+            .refresh_initial_parameters(projected)
+            .map_err(StructuralAdvanceError::Refresh)?;
+        graph.set_carry_over_scope(crate::real_time::GraphReplacementScope::WholeSession);
+
+        self.boundary
+            .push_recovery_command()
+            .map_err(StructuralAdvanceError::Recovery)?;
+        let outcome = self
+            .engine_selection_runtime
+            .as_mut()
+            .expect("the shared structural runtime was checked above")
+            .coordinator
+            .stage_replacement(graph, crate::real_time::GraphReplacementScope::WholeSession)
+            .map_err(|error| {
+                let reason = error.reason();
+                drop(error.into_graph());
+                StructuralAdvanceError::Publication(reason)
+            })?;
+        self.engine_selection_runtime
+            .as_mut()
+            .expect("the shared structural runtime was checked above")
+            .pending_session_replacement = Some(replacement);
+        Ok(outcome)
     }
 
     /// Applies one event using the stable source for legacy callers.
@@ -956,7 +1101,10 @@ where
         message: MidiMessage,
         source: EventSource,
     ) -> Result<MidiFanOutResult, EventRejection> {
-        let mut patch_ids = [None::<PatchId>; crate::real_time::MAX_PATCHES];
+        if self.session_replacement_pending() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        let mut patch_ids = [None::<PatchId>; crate::real_time::MAX_ACTIVE_PATCHES];
         let mut subscriber_count = 0;
         for patch in self
             .state
@@ -993,6 +1141,23 @@ where
         source: EventSource,
         semantic_action: Option<SemanticAction>,
     ) -> Result<DispatchResult, EventRejection> {
+        if self.session_replacement_pending()
+            && matches!(
+                event,
+                AppEvent::Midi { .. }
+                    | AppEvent::Adjust(_)
+                    | AppEvent::Activate
+                    | AppEvent::SetSlotOccupancy { .. }
+                    | AppEvent::SetReturnOccupancy { .. }
+                    | AppEvent::EngineSelectionLifecycleAdvanced { .. }
+                    | AppEvent::EnginePrepared { .. }
+                    | AppEvent::EnginePreparationFailed { .. }
+                    | AppEvent::TopologyPrepared { .. }
+                    | AppEvent::TopologyPreparationFailed { .. }
+            )
+        {
+            return Err(EventRejection::StructuralEditBusy);
+        }
         let generation_before = self.state.generation();
         let state_hash_before = self.current_state_tree.state_hash().to_owned();
         let midi_generation_only = matches!(event, AppEvent::Midi { .. });
@@ -1117,6 +1282,52 @@ where
             return;
         };
 
+        if let StructuralEditIntent::AppendPatch { patch_id } = effect.intent() {
+            let candidate = match self.state.pending_patch_creation() {
+                Some(candidate) if candidate.id() == *patch_id => candidate.clone(),
+                _ => {
+                    self.deferred_engine_failure =
+                        Some(failure_event(EngineSelectionFailure::GraphIncompatible));
+                    return;
+                }
+            };
+            let correlation = match GraphPreparationCorrelation::for_append(
+                effect.request_id(),
+                *patch_id,
+                effect.source_graph_revision(),
+                target_graph_revision,
+            ) {
+                Ok(correlation) => correlation,
+                Err(error) => {
+                    self.deferred_engine_failure = Some(failure_event(map_request_failure(error)));
+                    return;
+                }
+            };
+            let request = match GraphPreparationRequest::append_patch(
+                correlation,
+                self.state.patches(),
+                candidate,
+                self.state.bus_returns(),
+                self.state.generation(),
+                *self.state.global(),
+                *self.state.mixer(),
+                runtime.audio_config,
+                runtime.factory.registry(),
+                self.state.effects(),
+            ) {
+                Ok(request) => request,
+                Err(error) => {
+                    self.deferred_engine_failure = Some(failure_event(map_request_failure(error)));
+                    return;
+                }
+            };
+            if runtime.worker.try_submit(request).is_err() {
+                self.deferred_engine_failure =
+                    Some(failure_event(EngineSelectionFailure::WorkerUnavailable));
+            }
+            return;
+        }
+
         // Occupancy intents carry the complete topology delta themselves;
         // the request applies it to the active Patch set and return bank.
         if effect.intent().is_occupancy() {
@@ -1203,7 +1414,8 @@ where
                         .replace_asset(source, parameter_id, reference.clone())
                 }),
             StructuralEditIntent::SetSlotOccupancy { .. }
-            | StructuralEditIntent::SetReturnOccupancy { .. } => {
+            | StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::AppendPatch { .. } => {
                 unreachable!("occupancy intents were submitted above")
             }
         };
@@ -1350,24 +1562,67 @@ where
         };
         progress.collected_count = coordinator_progress.collected_count();
 
+        if let Some(failure) = coordinator_progress.publication_failure() {
+            if let Some(runtime) = self.engine_selection_runtime.as_mut() {
+                runtime.pending_session_replacement = None;
+                runtime.activation_record_sequence = None;
+            }
+            return Err(StructuralAdvanceError::Publication(failure));
+        }
+
+        let session_replacement_pending = self.session_replacement_pending();
         if let Some(revision) = coordinator_progress.published_revision() {
-            let effect = self.structural_effect(EngineSelectionEffectKind::GraphPublished)?;
-            let sequence = self
-                .engine_selection_runtime
-                .as_ref()
-                .and_then(|runtime| runtime.activation_record_sequence)
-                .filter(|(request_id, _)| *request_id == effect.request_id())
-                .map(|(_, sequence)| sequence)
-                .ok_or(StructuralAdvanceError::Status(
-                    EngineSelectionStatusError::MissingCorrelation,
-                ))?;
-            self.event_log
-                .append_engine_selection_effect(sequence, effect)
-                .map_err(StructuralAdvanceError::EventLog)?;
-            progress.graph_published = Some(revision);
+            if session_replacement_pending {
+                progress.graph_published = Some(revision);
+            } else {
+                let effect = self.structural_effect(EngineSelectionEffectKind::GraphPublished)?;
+                let sequence = self
+                    .engine_selection_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.activation_record_sequence)
+                    .filter(|(request_id, _)| *request_id == effect.request_id())
+                    .map(|(_, sequence)| sequence)
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?;
+                self.event_log
+                    .append_engine_selection_effect(sequence, effect)
+                    .map_err(StructuralAdvanceError::EventLog)?;
+                progress.graph_published = Some(revision);
+            }
         }
 
         if let Some(target_graph_revision) = coordinator_progress.completed_revision() {
+            let session_replacement = self
+                .engine_selection_runtime
+                .as_ref()
+                .and_then(|runtime| runtime.pending_session_replacement.as_ref())
+                .cloned();
+            if let Some(replacement) = session_replacement {
+                if replacement.target_graph_revision() != target_graph_revision {
+                    return Err(StructuralAdvanceError::SessionRevisionMismatch);
+                }
+                let prior_projector = self.projector;
+                self.projector = StateProjector::for_graph(target_graph_revision);
+                match self.dispatch_from(
+                    AppEvent::ReplacePersistedSession(Box::new(replacement)),
+                    EventSource::Worker,
+                ) {
+                    Ok(_) => {
+                        self.engine_selection_runtime
+                            .as_mut()
+                            .expect("a pending session retains its structural runtime")
+                            .pending_session_replacement = None;
+                        progress.activation_acknowledged = Some(target_graph_revision);
+                        progress.session_replacement_committed = true;
+                    }
+                    Err(rejection) => {
+                        self.projector = prior_projector;
+                        return Err(StructuralAdvanceError::SessionCommit(rejection));
+                    }
+                }
+                return Ok(progress);
+            }
             let correlation = self.state.engine_selection().correlation().cloned().ok_or(
                 StructuralAdvanceError::Status(EngineSelectionStatusError::MissingCorrelation),
             )?;
@@ -1407,7 +1662,7 @@ where
                 correlation,
                 failure,
             } => {
-                let event = if correlation.intent().is_occupancy() {
+                let event = if correlation.intent().uses_topology_events() {
                     AppEvent::TopologyPreparationFailed {
                         request_id: correlation.request_id(),
                         intent: correlation.intent().clone(),
@@ -1453,7 +1708,7 @@ where
                 mut prepared_graph,
             } => {
                 let pending_candidate_config = candidate_config.clone();
-                let event = if correlation.intent().is_occupancy() {
+                let event = if correlation.intent().uses_topology_events() {
                     AppEvent::TopologyPrepared {
                         request_id: correlation.request_id(),
                         intent: correlation.intent().clone(),
@@ -1491,6 +1746,14 @@ where
                         prepared_visualization,
                     }
                 };
+                let preflight_parameters = if matches!(
+                    correlation.intent(),
+                    StructuralEditIntent::AppendPatch { .. }
+                ) {
+                    Some(self.preflight_append_commit(&correlation, &mut prepared_graph)?)
+                } else {
+                    None
+                };
                 let record_sequence = self.event_log.next_sequence();
                 if let Err(rejection) = self.dispatch_from(event, EventSource::Worker) {
                     progress.rejected_worker_event = Some(rejection);
@@ -1500,8 +1763,13 @@ where
                 let scope = replacement_scope(&correlation).ok_or(
                     StructuralAdvanceError::Status(EngineSelectionStatusError::MissingCorrelation),
                 )?;
-                let candidate_parameters = self
-                    .latest_candidate_parameters(&correlation, pending_candidate_config.as_ref())?;
+                let candidate_parameters = match preflight_parameters {
+                    Some(parameters) => parameters,
+                    None => self.latest_candidate_parameters(
+                        &correlation,
+                        pending_candidate_config.as_ref(),
+                    )?,
+                };
                 prepared_graph
                     .refresh_initial_parameters(candidate_parameters)
                     .map_err(StructuralAdvanceError::Refresh)?;
@@ -1537,6 +1805,60 @@ where
             }
         }
         Ok(())
+    }
+
+    /// Proves the exact append commit before the candidate graph can cross the
+    /// structural boundary. The clone runs the same prepared and activation
+    /// events as production, then the future projection is checked against
+    /// both the worker snapshot and the graph-owned fixed layout.
+    fn preflight_append_commit(
+        &self,
+        correlation: &GraphPreparationCorrelation,
+        prepared_graph: &mut PreparedGraph,
+    ) -> Result<ParameterSnapshot, StructuralAdvanceError> {
+        let StructuralEditIntent::AppendPatch { patch_id } = correlation.intent() else {
+            return Err(StructuralAdvanceError::Status(
+                EngineSelectionStatusError::IntentMismatch,
+            ));
+        };
+        let mut future = self.state.clone();
+        future
+            .apply(AppEvent::TopologyPrepared {
+                request_id: correlation.request_id(),
+                intent: correlation.intent().clone(),
+                source_graph_revision: correlation.source_graph_revision(),
+                target_graph_revision: correlation.target_graph_revision(),
+            })
+            .map_err(StructuralAdvanceError::CandidatePreflight)?;
+        future
+            .apply(AppEvent::EngineActivationAcknowledged {
+                request_id: correlation.request_id(),
+                intent: correlation.intent().clone(),
+                target_graph_revision: correlation.target_graph_revision(),
+                retired_graph_revision: correlation.source_graph_revision(),
+                collected: true,
+            })
+            .map_err(StructuralAdvanceError::CandidatePreflight)?;
+        let projected = StateProjector::for_graph(correlation.target_graph_revision())
+            .project(&future)
+            .map_err(|error| match error {
+                StateProjectionError::ParameterSnapshot(error) => {
+                    StructuralAdvanceError::CandidateParameters(error)
+                }
+                _ => StructuralAdvanceError::CandidateParameterMismatch,
+            })?
+            .2;
+        if !prepared_append_snapshot_matches(
+            prepared_graph.initial_parameters(),
+            &projected,
+            *patch_id,
+        ) {
+            return Err(StructuralAdvanceError::CandidateParameterMismatch);
+        }
+        prepared_graph
+            .refresh_initial_parameters(projected)
+            .map_err(StructuralAdvanceError::Refresh)?;
+        Ok(projected)
     }
 
     fn latest_candidate_parameters(
@@ -1606,6 +1928,22 @@ where
                         )
                     })?;
             }
+            StructuralEditIntent::AppendPatch { patch_id } => {
+                let candidate =
+                    self.state
+                        .pending_patch_creation()
+                        .ok_or(StructuralAdvanceError::Status(
+                            EngineSelectionStatusError::MissingCorrelation,
+                        ))?;
+                if candidate.id() != *patch_id
+                    || patches.iter().any(|patch| patch.id() == *patch_id)
+                {
+                    return Err(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::IntentMismatch,
+                    ));
+                }
+                patches.push(candidate.clone());
+            }
         }
         ParameterSnapshot::project_patches_with_effects_and_returns(
             self.state.generation(),
@@ -1640,6 +1978,13 @@ where
             GraphPreparationCorrelation::for_occupancy(
                 correlation.request_id(),
                 correlation.intent().clone(),
+                correlation.source_graph_revision(),
+                target_graph_revision,
+            )
+        } else if let StructuralEditIntent::AppendPatch { patch_id } = correlation.intent() {
+            GraphPreparationCorrelation::for_append(
+                correlation.request_id(),
+                *patch_id,
                 correlation.source_graph_revision(),
                 target_graph_revision,
             )
@@ -1710,6 +2055,7 @@ where
         self.engine_selection_runtime.as_ref().map_or(0, |runtime| {
             usize::from(runtime.coordinator.staged_revision().is_some())
                 + usize::from(runtime.coordinator.in_flight_revision().is_some())
+                + usize::from(runtime.pending_session_replacement.is_some())
         })
     }
 
@@ -1762,6 +2108,12 @@ where
         self.state.patches()
     }
 
+    /// Captures only canonical persisted content for shell-owned document and
+    /// save workflows.
+    pub fn capture_saved_session(&self) -> crate::control::SavedSession {
+        crate::control::SavedSession::capture(&self.state)
+    }
+
     /// Returns the latest complete scalar projection published to audio.
     pub const fn current_parameters(
         &self,
@@ -1798,6 +2150,13 @@ where
         self.engine_selection_runtime
             .as_ref()
             .and_then(|runtime| runtime.coordinator.in_flight_revision())
+    }
+
+    /// Whether a prepared whole-session replacement owns the MIDI/edit gate.
+    pub fn session_replacement_pending(&self) -> bool {
+        self.engine_selection_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.pending_session_replacement.is_some())
     }
 
     pub(crate) const fn state(&self) -> &AppState {
@@ -1933,6 +2292,58 @@ fn publish_midi_activity(runtime: &mut MidiDeviceRuntime, now_micros: u64) {
     runtime.last_activity_publish_micros = Some(now_micros);
 }
 
+/// Compares the worker's immutable append snapshot with the future reducer
+/// commit. Existing scalar values may legitimately have advanced while the
+/// worker prepared, but their identities and fixed scalar shapes may not; the
+/// appended candidate itself is immutable and therefore must match exactly.
+fn prepared_append_snapshot_matches(
+    prepared: &ParameterSnapshot,
+    future: &ParameterSnapshot,
+    candidate_id: PatchId,
+) -> bool {
+    if prepared.graph_revision() != future.graph_revision()
+        || prepared.patch_count() != future.patch_count()
+        || prepared.patch_count() == 0
+    {
+        return false;
+    }
+    for (prepared_patch, future_patch) in prepared.patches().iter().zip(future.patches()) {
+        if prepared_patch.patch_id() != future_patch.patch_id()
+            || prepared_patch.instrument().count() != future_patch.instrument().count()
+            || prepared_patch
+                .effects()
+                .iter()
+                .zip(future_patch.effects())
+                .any(|(prepared_effect, future_effect)| {
+                    prepared_effect.slot_id() != future_effect.slot_id()
+                        || prepared_effect.scalar_count() != future_effect.scalar_count()
+                })
+        {
+            return false;
+        }
+    }
+    let Some(prepared_candidate) = prepared.patches().last() else {
+        return false;
+    };
+    let Some(future_candidate) = future.patches().last() else {
+        return false;
+    };
+    if prepared_candidate.patch_id() != Some(candidate_id)
+        || future_candidate.patch_id() != Some(candidate_id)
+        || prepared_candidate != future_candidate
+    {
+        return false;
+    }
+    prepared
+        .returns()
+        .iter()
+        .zip(future.returns())
+        .all(|(prepared_return, future_return)| {
+            prepared_return.slot_id() == future_return.slot_id()
+                && prepared_return.scalar_count() == future_return.scalar_count()
+        })
+}
+
 /// Derives the layout-admission scope for one correlated replacement.
 ///
 /// Delegated to the correlation's canonical derivation so publication
@@ -1948,7 +2359,7 @@ fn structural_preparation_failed_event(
     target_graph_revision: GraphRevision,
     failure: EngineSelectionFailure,
 ) -> AppEvent {
-    if effect.intent().is_occupancy() {
+    if effect.intent().uses_topology_events() {
         return AppEvent::TopologyPreparationFailed {
             request_id: effect.request_id(),
             intent: effect.intent().clone(),
@@ -2038,8 +2449,8 @@ fn map_request_failure(error: GraphPreparationRequestError) -> EngineSelectionFa
 
 #[cfg(test)]
 mod tests {
-    use super::{AppLoop, DispatchResult};
-    use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
+    use super::{prepared_append_snapshot_matches, AppLoop, DispatchResult};
+    use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
     use crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
     use crate::adapter::lock_free_structural_graph_boundary::{
@@ -2059,8 +2470,8 @@ mod tests {
     use crate::control::{
         ActiveMidiInput, MidiDeviceWorker, MidiDeviceWorkerBusy, MidiDeviceWorkerBusyReason,
         MidiDeviceWorkerCommand, MidiDeviceWorkerResult, MidiInputDescriptor, MidiInputDeviceId,
-        PatchControlId, PhysicalMidiIngress, PhysicalMidiIngressOutcome, SemanticAction,
-        SemanticSurfaceSummary, SurfaceId, TopLevelContext,
+        PatchControlId, PhysicalMidiIngress, PhysicalMidiIngressOutcome, SavedSession,
+        SemanticAction, SemanticSurfaceSummary, SurfaceId, TopLevelContext,
     };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -2073,23 +2484,96 @@ mod tests {
     use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
     use crate::real_time::audio_command::AudioCommand;
     use crate::real_time::audio_renderer::AudioRenderer;
-    use crate::real_time::parameter_snapshot::ParameterSnapshot;
+    use crate::real_time::parameter_snapshot::{
+        ParameterSnapshot, RtInstrumentParameters, RtPatchParameters,
+    };
     use crate::real_time::{
-        AudioBoundary, ControlStructuralGraphBoundary, GraphHandoffStatus, GraphRevision,
-        GraphStageOutcome, NoStructuralGraphChanges, PreparedGraph, PreparedGraphBuilder,
-        StructuralBoundaryFull, StructuralGraphBoundary,
+        AudioBoundary, ControlStructuralGraphBoundary, GraphHandoffStatus, GraphPublicationFailure,
+        GraphRevision, GraphStageOutcome, NoStructuralGraphChanges, PreparedGraph,
+        PreparedGraphBuilder, StructuralBoundaryFull, StructuralGraphBoundary,
     };
     use crate::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{
-        CapabilityId, DescriptorDefaultConfigFactory, VoiceEnvelope, VoiceEnvelopeParameter,
+        CapabilityId, CapabilityRegistry, DescriptorDefaultConfigFactory,
+        InstrumentCapabilityProvider, InstrumentPreparationError, InstrumentPreparer,
+        PreparedInstrument, PreparedInstrumentError, VoiceEnvelope, VoiceEnvelopeParameter,
     };
     use crate::testing::automatic_midi_test::create_soundfont_config;
     use crate::testing::DeterministicGraphPreparationWorker;
     use std::collections::VecDeque;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{Arc, Mutex};
+    use std::thread::ThreadId;
+
+    #[test]
+    fn append_preflight_snapshot_requires_exact_identity_shape_revision_and_candidate_values() {
+        let revision = GraphRevision::new(2).unwrap();
+        let source_id = PatchId::new(1).unwrap();
+        let candidate_id = PatchId::new(2).unwrap();
+        let source = RtPatchParameters::new(source_id, PatchOutput::default());
+        let candidate = RtPatchParameters::new(candidate_id, PatchOutput::default());
+        let snapshot = |revision, patches: &[RtPatchParameters]| {
+            ParameterSnapshot::for_graph(
+                1,
+                revision,
+                GlobalParameters::new(0.0).unwrap(),
+                MixerState::default(),
+                patches,
+            )
+            .unwrap()
+        };
+        let prepared = snapshot(revision, &[source, candidate]);
+        let source_latest = RtPatchParameters::new(
+            source_id,
+            PatchOutput::new(MixerTrackId::default(), -1.0).unwrap(),
+        );
+        let future = snapshot(revision, &[source_latest, candidate]);
+        assert!(prepared_append_snapshot_matches(
+            &prepared,
+            &future,
+            candidate_id
+        ));
+
+        let wrong_revision = snapshot(GraphRevision::new(3).unwrap(), &[source_latest, candidate]);
+        assert!(!prepared_append_snapshot_matches(
+            &prepared,
+            &wrong_revision,
+            candidate_id
+        ));
+        let wrong_order = snapshot(revision, &[candidate, source_latest]);
+        assert!(!prepared_append_snapshot_matches(
+            &prepared,
+            &wrong_order,
+            candidate_id
+        ));
+        let wrong_shape = RtPatchParameters::projected(
+            source_id,
+            source_latest.output(),
+            VoiceEnvelope::DEFAULT,
+            RtInstrumentParameters::new(&[0.0]).unwrap(),
+        );
+        assert!(!prepared_append_snapshot_matches(
+            &prepared,
+            &snapshot(revision, &[wrong_shape, candidate]),
+            candidate_id
+        ));
+        let wrong_candidate_value = RtPatchParameters::new(
+            candidate_id,
+            PatchOutput::new(MixerTrackId::default(), -1.0).unwrap(),
+        );
+        assert!(!prepared_append_snapshot_matches(
+            &prepared,
+            &snapshot(revision, &[source_latest, wrong_candidate_value]),
+            candidate_id
+        ));
+        assert!(!prepared_append_snapshot_matches(
+            &prepared,
+            &future,
+            PatchId::new(3).unwrap()
+        ));
+    }
 
     fn enter_detail_at<Boundary>(app_loop: &mut AppLoop<Boundary>, target: &PatchControlId)
     where
@@ -2314,6 +2798,7 @@ mod tests {
         inner: LockFreeStructuralControlHandle,
         blocked: Arc<AtomicBool>,
         attempted_parameters: Arc<Mutex<Vec<ParameterSnapshot>>>,
+        status_override: Arc<Mutex<Option<GraphHandoffStatus>>>,
     }
 
     impl ControlStructuralGraphBoundary for ObservedStructuralControl {
@@ -2337,7 +2822,79 @@ mod tests {
         }
 
         fn read_status_on_control(&self) -> GraphHandoffStatus {
-            self.inner.read_status_on_control()
+            self.status_override
+                .lock()
+                .unwrap()
+                .unwrap_or_else(|| self.inner.read_status_on_control())
+        }
+    }
+
+    struct DropRecordingPreparer {
+        capability_id: CapabilityId,
+        drop_threads: Arc<Mutex<Vec<ThreadId>>>,
+    }
+
+    impl InstrumentPreparer for DropRecordingPreparer {
+        fn capability_id(&self) -> &CapabilityId {
+            &self.capability_id
+        }
+
+        fn prepare(
+            &self,
+            patch: &Patch,
+            _sample_rate: f32,
+            _max_frames: usize,
+        ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
+            Ok(Box::new(DropRecordingInstrument {
+                patch_id: patch.id(),
+                sounding: false,
+                drop_threads: Arc::clone(&self.drop_threads),
+            }))
+        }
+    }
+
+    struct DropRecordingInstrument {
+        patch_id: PatchId,
+        sounding: bool,
+        drop_threads: Arc<Mutex<Vec<ThreadId>>>,
+    }
+
+    impl PreparedInstrument for DropRecordingInstrument {
+        fn patch_id(&self) -> PatchId {
+            self.patch_id
+        }
+
+        fn dispatch(
+            &mut self,
+            message: MidiMessage,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
+            self.sounding = message.kind() == MidiMessageKind::NoteOn;
+            Ok(())
+        }
+
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _frame_count: usize,
+            _parameters: &crate::real_time::RtPatchParameters,
+        ) {
+            if self.sounding {
+                output.fill(0.125);
+            }
+        }
+
+        fn all_notes_off(&mut self) {
+            self.sounding = false;
+        }
+    }
+
+    impl Drop for DropRecordingInstrument {
+        fn drop(&mut self) {
+            self.drop_threads
+                .lock()
+                .unwrap()
+                .push(std::thread::current().id());
         }
     }
 
@@ -2462,7 +3019,7 @@ mod tests {
             serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
         let after_parameters = *app_loop.current_parameters();
 
-        assert_eq!(page.patch().id(), PatchId::new(1).unwrap());
+        assert_eq!(page.patch().id(), Some(PatchId::new(1).unwrap()));
         assert_eq!(page.state_hash(), result.snapshot().hash());
         assert_eq!(text.context(), crate::control::TopLevelContext::Patch);
         assert_eq!(text.state_hash(), result.snapshot().hash());
@@ -2979,6 +3536,7 @@ mod tests {
                     inner: structural_control,
                     blocked: Arc::clone(&blocked),
                     attempted_parameters: Arc::clone(&attempted_parameters),
+                    status_override: Arc::new(Mutex::new(None)),
                 },
                 &initial_graph,
                 audio_config,
@@ -3468,6 +4026,233 @@ mod tests {
     }
 
     #[test]
+    fn implicit_creation_prepares_and_activates_one_complete_appended_graph_before_commit() {
+        crate::real_time::callback_safety::reset_callback_safety_counts();
+        let registry = production_capability_registry().unwrap();
+        let blueprint_factory = DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            production_instrument_providers().unwrap(),
+        );
+        let default_id = CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap();
+        let blueprint =
+            crate::control::PatchCreationBlueprint::resolve(&default_id, &blueprint_factory)
+                .unwrap();
+        let first = blueprint.candidate(&[]).unwrap();
+        let first_id = first.id();
+        let mut state = AppState::for_graph(
+            registry.clone(),
+            global_parameters(),
+            GraphRevision::INITIAL,
+        )
+        .with_patch_creation_blueprint(blueprint);
+        state.apply(AppEvent::InstallPatches(vec![first])).unwrap();
+
+        let initial_transport =
+            ParameterSnapshot::new(0, global_parameters(), MixerState::default(), &[]).unwrap();
+        let audio_boundary = LockFreeAudioBoundary::new(64, initial_transport);
+        let (audio_control, audio_handle) = audio_boundary.into_handles();
+        let mut app_loop = AppLoop::new(
+            state,
+            StateProjector::for_graph(GraphRevision::INITIAL),
+            audio_control,
+        )
+        .unwrap();
+        let audio_config =
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 512).unwrap();
+        let initial_graph =
+            PreparedGraphBuilder::new(&registry, &production_instrument_preparers().unwrap())
+                .build(
+                    GraphRevision::INITIAL,
+                    app_loop.patches(),
+                    *app_loop.current_parameters(),
+                    audio_config.sample_rate(),
+                    audio_config.render_capacity_frames(),
+                )
+                .unwrap();
+        let structural = LockFreeStructuralGraphBoundary::new(
+            1,
+            1,
+            GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+        )
+        .unwrap();
+        let (structural_control, structural_audio) = structural.into_handles();
+        let worker = DeterministicGraphPreparationWorker::new(
+            registry.clone(),
+            production_instrument_preparers().unwrap(),
+            audio_config,
+        );
+        let worker_handle = worker.advance_handle();
+        app_loop
+            .configure_engine_selection(
+                DescriptorDefaultConfigFactory::new(
+                    registry,
+                    production_instrument_providers().unwrap(),
+                ),
+                worker,
+                structural_control,
+                &initial_graph,
+                audio_config,
+            )
+            .unwrap();
+        let mut renderer = AudioRenderer::new(audio_handle, structural_audio, initial_graph);
+        let mut output = [0.0; 1_024];
+
+        app_loop
+            .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        app_loop
+            .dispatch(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        assert!(app_loop.current_patch_page().unwrap().patch().is_empty());
+        let saved_before = app_loop.capture_saved_session();
+        let document = crate::shell::SessionDocument::new_untitled(saved_before.clone());
+        assert!(!document.is_dirty(&app_loop.capture_saved_session()));
+        let source_parameters = *app_loop.current_parameters();
+
+        let note = MidiMessage::try_new(
+            MidiChannel::new(0).unwrap(),
+            MidiMessageKind::NoteOn,
+            60,
+            100,
+        )
+        .unwrap();
+        app_loop
+            .dispatch(AppEvent::Midi {
+                patch_id: first_id,
+                message: note,
+            })
+            .unwrap();
+        renderer.render(&mut output);
+        assert!(renderer
+            .active_patch_audio()
+            .stems()
+            .first()
+            .unwrap()
+            .samples()
+            .iter()
+            .any(|sample| sample.abs() > f32::EPSILON));
+
+        app_loop
+            .dispatch(AppEvent::SetInteractionMode(
+                crate::control::InteractionMode::Adjust,
+            ))
+            .unwrap();
+        app_loop.dispatch(AppEvent::Adjust(Direction::Up)).unwrap();
+        app_loop.dispatch(AppEvent::Activate).unwrap();
+        assert_eq!(app_loop.patches().len(), 1);
+        assert_eq!(app_loop.capture_saved_session(), saved_before);
+        assert!(!document.is_dirty(&app_loop.capture_saved_session()));
+        assert_eq!(app_loop.current_parameters().patch_count(), 1);
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Loading
+        );
+        let candidate_channel_note = MidiMessage::try_new(
+            MidiChannel::new(1).unwrap(),
+            MidiMessageKind::NoteOn,
+            64,
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            app_loop
+                .dispatch_midi_from(candidate_channel_note, EventSource::PhysicalMidi)
+                .unwrap()
+                .subscriber_count(),
+            0,
+            "the pending candidate is not a MIDI subscriber before commit"
+        );
+
+        advance_engine_admission(&mut app_loop);
+        worker_handle.fail_next(EngineSelectionFailure::AllocationFailed);
+        assert!(worker_handle.advance());
+        let failed = app_loop.advance_structural().unwrap();
+        assert!(failed.failure_dispatched());
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Failed
+        );
+        assert_eq!(
+            app_loop.state().engine_selection().failure(),
+            Some(EngineSelectionFailure::AllocationFailed)
+        );
+        assert_eq!(app_loop.patches().len(), 1);
+        assert_eq!(app_loop.capture_saved_session(), saved_before);
+        assert!(!document.is_dirty(&app_loop.capture_saved_session()));
+        assert_eq!(app_loop.graph_revision(), GraphRevision::INITIAL);
+        assert!(app_loop.current_patch_page().unwrap().patch().is_empty());
+
+        app_loop.dispatch(AppEvent::Activate).unwrap();
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Loading
+        );
+        advance_engine_admission(&mut app_loop);
+        assert!(worker_handle.advance());
+        let prepared = app_loop.advance_structural().unwrap();
+        assert!(prepared.worker_result_polled());
+        assert_eq!(prepared.graph_stage(), Some(GraphStageOutcome::Staged));
+        assert_eq!(app_loop.patches().len(), 1);
+        assert_eq!(app_loop.capture_saved_session(), saved_before);
+        assert!(!document.is_dirty(&app_loop.capture_saved_session()));
+        assert_eq!(app_loop.current_parameters().patch_count(), 1);
+        assert_eq!(
+            app_loop.state().engine_selection().kind(),
+            EngineSelectionStatusKind::Activating
+        );
+
+        output.fill(0.0);
+        renderer.render(&mut output);
+        let target = GraphRevision::new(2).unwrap();
+        assert_eq!(renderer.active_revision(), target);
+        assert_eq!(renderer.parameters().patch_count(), 2);
+        let stems = renderer.active_patch_audio().stems();
+        assert!(stems[0]
+            .samples()
+            .iter()
+            .any(|sample| sample.abs() > f32::EPSILON));
+        assert!(stems[1]
+            .samples()
+            .iter()
+            .all(|sample| sample.abs() <= f32::EPSILON));
+
+        let acknowledged = app_loop.advance_structural().unwrap();
+        assert_eq!(acknowledged.activation_acknowledged(), Some(target));
+        assert_eq!(app_loop.patches().len(), 2);
+        assert_eq!(app_loop.patches()[1].id(), PatchId::new(2).unwrap());
+        assert_ne!(app_loop.capture_saved_session(), saved_before);
+        assert!(document.is_dirty(&app_loop.capture_saved_session()));
+        let committed_json = app_loop.capture_saved_session().to_json().unwrap();
+        assert_eq!(
+            crate::control::SavedSession::from_json(&committed_json, app_loop.capabilities(),)
+                .unwrap(),
+            app_loop.capture_saved_session()
+        );
+        assert!(!committed_json.contains("trailingEmpty"));
+        assert_eq!(app_loop.current_parameters().patch_count(), 2);
+        assert_eq!(app_loop.current_parameters().graph_revision(), target);
+        assert_ne!(app_loop.current_parameters(), &source_parameters);
+        assert_eq!(
+            app_loop.current_patch_page().unwrap().patch().id(),
+            Some(PatchId::new(2).unwrap())
+        );
+        assert_eq!(
+            app_loop
+                .dispatch_midi_from(candidate_channel_note, EventSource::PhysicalMidi)
+                .unwrap()
+                .subscriber_count(),
+            1,
+            "the created Patch joins MIDI fan-out only after acknowledgement"
+        );
+        let callback_safety = crate::real_time::callback_safety::callback_safety_snapshot();
+        assert_eq!(callback_safety.allocations(), 0);
+        assert_eq!(callback_safety.destructions(), 0);
+
+        drop(renderer);
+        app_loop.shutdown_engine_selection_on_control().unwrap();
+    }
+
+    #[test]
     fn physical_worker_activation_and_bounded_drain_use_the_production_fan_out() {
         let (mut app_loop, observations) = loop_with_observations();
         let identity = MidiInputDeviceId::new("midir-v1", "physical-a").unwrap();
@@ -3592,6 +4377,376 @@ mod tests {
         assert!(!app_loop.midi_devices_configured());
         assert_eq!(app_loop.owned_midi_connections_on_control(), 0);
         assert_eq!(handle.0.lock().unwrap().retired, 2);
+    }
+
+    #[test]
+    fn whole_session_preflight_gate_and_activation_share_the_structural_owner() {
+        let registry = production_capability_registry().unwrap();
+        let audio_config =
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 512).unwrap();
+        let mut initial_state = AppState::for_graph(
+            registry.clone(),
+            global_parameters(),
+            GraphRevision::INITIAL,
+        );
+        initial_state
+            .apply(AppEvent::InstallPatches(vec![patch(1, 0.0)]))
+            .unwrap();
+        let initial_parameters = StateProjector::for_graph(GraphRevision::INITIAL)
+            .project(&initial_state)
+            .unwrap()
+            .2;
+        let initial_graph =
+            PreparedGraphBuilder::new(&registry, &production_instrument_preparers().unwrap())
+                .build(
+                    GraphRevision::INITIAL,
+                    initial_state.patches(),
+                    initial_parameters,
+                    audio_config.sample_rate(),
+                    audio_config.render_capacity_frames(),
+                )
+                .unwrap();
+        let audio_boundary = LockFreeAudioBoundary::new(64, initial_parameters);
+        let (audio_control, audio_handle) = audio_boundary.into_handles();
+        let structural = LockFreeStructuralGraphBoundary::new(
+            1,
+            1,
+            GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+        )
+        .unwrap();
+        let (structural_control, structural_audio) = structural.into_handles();
+        let worker = DeterministicGraphPreparationWorker::new(
+            registry.clone(),
+            production_instrument_preparers().unwrap(),
+            audio_config,
+        );
+        let mut app_loop = AppLoop::new(
+            initial_state,
+            StateProjector::for_graph(GraphRevision::INITIAL),
+            audio_control,
+        )
+        .unwrap();
+        app_loop
+            .configure_engine_selection(
+                DescriptorDefaultConfigFactory::new(
+                    registry.clone(),
+                    production_instrument_providers().unwrap(),
+                ),
+                worker,
+                structural_control,
+                &initial_graph,
+                audio_config,
+            )
+            .unwrap();
+        let mut renderer = AudioRenderer::new(audio_handle, structural_audio, initial_graph);
+
+        let target_revision = app_loop.next_structural_graph_revision().unwrap();
+        assert_eq!(target_revision, GraphRevision::new(2).unwrap());
+        let mut target_mixer = MixerState::default();
+        target_mixer.set_track(
+            MixerTrackId::default(),
+            MixerTrackParameters::default()
+                .with_scalar_value(MixerTrackParameter::Level, -6.0)
+                .unwrap(),
+        );
+        let mut target_state =
+            AppState::for_graph(registry.clone(), global_parameters(), target_revision)
+                .with_initial_mixer(target_mixer);
+        target_state
+            .apply(AppEvent::InstallPatches(vec![patch(1, 0.0), patch(2, 0.0)]))
+            .unwrap();
+        let target_saved = SavedSession::capture(&target_state);
+        let (replacement, graph) = target_saved
+            .prepare_restore(
+                registry.clone(),
+                crate::synth::EffectCapabilityRegistry::default(),
+                &production_instrument_preparers().unwrap(),
+                &[],
+                target_revision,
+                audio_config.sample_rate(),
+                audio_config.render_capacity_frames(),
+            )
+            .unwrap()
+            .into_replacement();
+
+        let wrong_revision_graph = target_saved
+            .prepare_restore(
+                registry.clone(),
+                crate::synth::EffectCapabilityRegistry::default(),
+                &production_instrument_preparers().unwrap(),
+                &[],
+                GraphRevision::new(3).unwrap(),
+                audio_config.sample_rate(),
+                audio_config.render_capacity_frames(),
+            )
+            .unwrap()
+            .into_replacement()
+            .1;
+        assert!(matches!(
+            app_loop.stage_session_replacement(replacement.clone(), wrong_revision_graph),
+            Err(super::StructuralAdvanceError::SessionRevisionMismatch)
+        ));
+
+        let mut mismatched_mixer = target_mixer;
+        mismatched_mixer.set_track(
+            MixerTrackId::default(),
+            MixerTrackParameters::default()
+                .with_scalar_value(MixerTrackParameter::Level, -12.0)
+                .unwrap(),
+        );
+        let mut mismatched_state =
+            AppState::for_graph(registry.clone(), global_parameters(), target_revision)
+                .with_initial_mixer(mismatched_mixer);
+        mismatched_state
+            .apply(AppEvent::InstallPatches(vec![patch(1, 0.0), patch(2, 0.0)]))
+            .unwrap();
+        let mismatched_graph = SavedSession::capture(&mismatched_state)
+            .prepare_restore(
+                registry.clone(),
+                crate::synth::EffectCapabilityRegistry::default(),
+                &production_instrument_preparers().unwrap(),
+                &[],
+                target_revision,
+                audio_config.sample_rate(),
+                audio_config.render_capacity_frames(),
+            )
+            .unwrap()
+            .into_replacement()
+            .1;
+        let prior_saved = SavedSession::capture(app_loop.state());
+        assert!(matches!(
+            app_loop.stage_session_replacement(replacement.clone(), mismatched_graph),
+            Err(super::StructuralAdvanceError::SessionParameterMismatch)
+        ));
+        assert_eq!(SavedSession::capture(app_loop.state()), prior_saved);
+        assert!(!app_loop.session_replacement_pending());
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+
+        assert_eq!(
+            app_loop
+                .stage_session_replacement(replacement, graph)
+                .unwrap(),
+            GraphStageOutcome::Staged
+        );
+        assert!(app_loop.session_replacement_pending());
+        assert!(matches!(
+            app_loop.next_structural_graph_revision(),
+            Err(super::StructuralAdvanceError::SessionBusy)
+        ));
+        let note = MidiMessage::try_new(
+            MidiChannel::new(0).unwrap(),
+            MidiMessageKind::NoteOn,
+            60,
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            app_loop.dispatch(AppEvent::Midi {
+                patch_id: PatchId::new(1).unwrap(),
+                message: note,
+            }),
+            Err(EventRejection::StructuralEditBusy)
+        );
+        assert_eq!(
+            app_loop.dispatch(AppEvent::Adjust(Direction::Down)),
+            Err(EventRejection::StructuralEditBusy)
+        );
+        app_loop
+            .dispatch(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+
+        let published = app_loop.advance_structural().unwrap();
+        assert_eq!(published.graph_published(), Some(target_revision));
+        assert!(!published.session_replacement_committed());
+        let mut output = [0.0; 1_024];
+        renderer.render(&mut output);
+        assert_eq!(renderer.active_revision(), target_revision);
+        let committed = app_loop.advance_structural().unwrap();
+        assert_eq!(committed.activation_acknowledged(), Some(target_revision));
+        assert!(committed.session_replacement_committed());
+        assert_eq!(SavedSession::capture(app_loop.state()), target_saved);
+        assert_eq!(app_loop.patches().len(), 2);
+        assert_eq!(app_loop.graph_revision(), target_revision);
+        assert_eq!(
+            app_loop.state().interaction().patch_control_focus(),
+            Some(PatchControlId::Engine)
+        );
+        assert!(!app_loop.session_replacement_pending());
+        assert_eq!(app_loop.owned_structural_graphs_on_control(), 0);
+        assert!(output.iter().all(|sample| sample.is_finite()));
+    }
+
+    #[test]
+    fn busy_and_stale_session_handoffs_retire_candidates_on_control_and_preserve_audio() {
+        crate::real_time::callback_safety::reset_callback_safety_counts();
+        let provider = BraidsCapability::new().unwrap();
+        let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+        let audio_config = AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 64).unwrap();
+        let drop_threads = Arc::new(Mutex::new(Vec::<ThreadId>::new()));
+        let control_thread = std::thread::current().id();
+        let patch = Patch::new(
+            PatchId::new(1).unwrap(),
+            "Prior".to_owned(),
+            provider.default_config().unwrap(),
+            MidiChannel::new(0).unwrap(),
+            PatchOutput::default(),
+        );
+        let mut initial_state = AppState::for_graph(
+            registry.clone(),
+            global_parameters(),
+            GraphRevision::INITIAL,
+        );
+        initial_state
+            .apply(AppEvent::InstallPatches(vec![patch]))
+            .unwrap();
+        let initial_parameters = StateProjector::for_graph(GraphRevision::INITIAL)
+            .project(&initial_state)
+            .unwrap()
+            .2;
+        let initial_preparers: Vec<Box<dyn InstrumentPreparer>> =
+            vec![Box::new(DropRecordingPreparer {
+                capability_id: CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap(),
+                drop_threads: Arc::clone(&drop_threads),
+            })];
+        let initial_graph = PreparedGraphBuilder::new(&registry, &initial_preparers)
+            .build(
+                GraphRevision::INITIAL,
+                initial_state.patches(),
+                initial_parameters,
+                audio_config.sample_rate(),
+                audio_config.render_capacity_frames(),
+            )
+            .unwrap();
+        let audio_boundary = LockFreeAudioBoundary::new(64, initial_parameters);
+        let (audio_control, audio_handle) = audio_boundary.into_handles();
+        let structural = LockFreeStructuralGraphBoundary::new(
+            1,
+            1,
+            GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+        )
+        .unwrap();
+        let (structural_control, structural_audio) = structural.into_handles();
+        let status_override = Arc::new(Mutex::new(None));
+        let worker = DeterministicGraphPreparationWorker::new(
+            registry.clone(),
+            vec![Box::new(DropRecordingPreparer {
+                capability_id: CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap(),
+                drop_threads: Arc::clone(&drop_threads),
+            })],
+            audio_config,
+        );
+        let mut app_loop = AppLoop::new(
+            initial_state,
+            StateProjector::for_graph(GraphRevision::INITIAL),
+            audio_control,
+        )
+        .unwrap();
+        app_loop
+            .configure_engine_selection(
+                DescriptorDefaultConfigFactory::new(
+                    registry.clone(),
+                    vec![Box::new(BraidsCapability::new().unwrap())],
+                ),
+                worker,
+                ObservedStructuralControl {
+                    inner: structural_control,
+                    blocked: Arc::new(AtomicBool::new(false)),
+                    attempted_parameters: Arc::new(Mutex::new(Vec::new())),
+                    status_override: Arc::clone(&status_override),
+                },
+                &initial_graph,
+                audio_config,
+            )
+            .unwrap();
+        let mut renderer = AudioRenderer::new(audio_handle, structural_audio, initial_graph);
+        let note = MidiMessage::try_new(
+            MidiChannel::new(0).unwrap(),
+            MidiMessageKind::NoteOn,
+            60,
+            100,
+        )
+        .unwrap();
+        assert_eq!(
+            app_loop
+                .dispatch_midi_from(note, EventSource::PhysicalMidi)
+                .unwrap()
+                .subscriber_count(),
+            1
+        );
+        let mut before_audio = [0.0_f32; 128];
+        renderer.render(&mut before_audio);
+        assert!(before_audio.iter().any(|sample| sample.abs() > 0.01));
+
+        let prior_capture = app_loop.capture_saved_session();
+        let prior_tree = app_loop.current_state_tree();
+        let prior_revision = app_loop.graph_revision();
+        let target = prior_capture.clone();
+        let target_revision = app_loop.next_structural_graph_revision().unwrap();
+        let prepare_target = || {
+            target
+                .prepare_restore(
+                    registry.clone(),
+                    crate::synth::EffectCapabilityRegistry::default(),
+                    &[Box::new(DropRecordingPreparer {
+                        capability_id: CapabilityId::new(BRAIDS_CAPABILITY_ID).unwrap(),
+                        drop_threads: Arc::clone(&drop_threads),
+                    })],
+                    &[],
+                    target_revision,
+                    audio_config.sample_rate(),
+                    audio_config.render_capacity_frames(),
+                )
+                .unwrap()
+                .into_replacement()
+        };
+        let (replacement, graph) = prepare_target();
+        assert_eq!(
+            app_loop
+                .stage_session_replacement(replacement.clone(), graph)
+                .unwrap(),
+            GraphStageOutcome::Staged
+        );
+        let (_busy_replacement, busy_graph) = prepare_target();
+        assert_eq!(
+            app_loop.stage_session_replacement(replacement, busy_graph),
+            Err(super::StructuralAdvanceError::SessionBusy)
+        );
+        assert_eq!(drop_threads.lock().unwrap().as_slice(), &[control_thread]);
+
+        *status_override.lock().unwrap() = Some(GraphHandoffStatus::with_active(
+            GraphRevision::new(9).unwrap(),
+        ));
+        assert_eq!(
+            app_loop.advance_structural(),
+            Err(super::StructuralAdvanceError::Publication(
+                GraphPublicationFailure::StaleActiveRevision
+            ))
+        );
+        assert!(!app_loop.session_replacement_pending());
+        assert_eq!(app_loop.capture_saved_session(), prior_capture);
+        assert_eq!(app_loop.current_state_tree(), prior_tree);
+        assert_eq!(app_loop.graph_revision(), prior_revision);
+        assert_eq!(renderer.active_revision(), prior_revision);
+        assert_eq!(app_loop.owned_structural_graphs_on_control(), 0);
+        assert_eq!(
+            drop_threads.lock().unwrap().as_slice(),
+            &[control_thread, control_thread]
+        );
+
+        *status_override.lock().unwrap() = None;
+        assert_eq!(
+            app_loop
+                .dispatch_midi_from(note, EventSource::PhysicalMidi)
+                .unwrap()
+                .subscriber_count(),
+            1
+        );
+        let mut after_audio = [0.0_f32; 128];
+        renderer.render(&mut after_audio);
+        assert_eq!(after_audio, before_audio);
+        let callback_safety = crate::real_time::callback_safety::callback_safety_snapshot();
+        assert_eq!(callback_safety.allocations(), 0);
+        assert_eq!(callback_safety.destructions(), 0);
     }
 
     #[test]

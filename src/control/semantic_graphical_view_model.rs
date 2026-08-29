@@ -3,8 +3,9 @@ use crate::control::{
     FocusCapabilityId, FocusPath, FocusRepairStatus, MidiConnectionRevision,
     MidiInputConnectionStatus, MidiInputDescriptor, MidiInputRowAction, MidiInputScanState,
     MidiInputStatusMarker, MixerControlId, PatchChoiceSubject, PatchControlId, PatchDetailSubject,
-    PatchSubordinateSession, ReturnPath, SampleAssetLifecycle, SamplePreviewState,
-    SemanticControlId, SemanticResolver, SurfaceId, TopLevelContext, ValidAction,
+    PatchSubordinateSession, ProspectivePatch, ReturnPath, SampleAssetLifecycle,
+    SamplePreviewState, SemanticControlId, SemanticResolver, SurfaceId, TopLevelContext,
+    ValidAction,
 };
 use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -14,7 +15,7 @@ use crate::real_time::GraphRevision;
 use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
     AssetKind, AssetReference, CapabilityId, ParameterId, ParameterKind, ParameterSpec,
-    ParameterValue, Patch, PatchInteraction,
+    ParameterValue, Patch, PatchInteraction, PostEffectConfig, VoiceEnvelope,
 };
 use core::fmt;
 use serde::{Serialize, Serializer};
@@ -506,6 +507,13 @@ pub enum SemanticSurfaceSummary {
         capability_id: CapabilityId,
         effect_count: usize,
     },
+    EmptyPatch {
+        capability_id: CapabilityId,
+        effect_count: usize,
+        active_count: usize,
+        capacity: usize,
+        creation_available: bool,
+    },
     Mixer {
         patch_count: usize,
         global_parameter_count: usize,
@@ -514,6 +522,13 @@ pub enum SemanticSurfaceSummary {
         patch_id: PatchId,
         capability_id: CapabilityId,
         effect_count: usize,
+    },
+    EmptyPatchUtility {
+        capability_id: CapabilityId,
+        effect_count: usize,
+        active_count: usize,
+        capacity: usize,
+        creation_available: bool,
     },
     MixerInspector {
         focused_control: MixerControlId,
@@ -525,11 +540,11 @@ pub enum SemanticSurfaceSummary {
     /// content resolves from the installed descriptor the subject names, so
     /// the summary is not a second copy of the schema.
     PatchDetail {
-        patch_id: PatchId,
+        patch_position: crate::control::PatchPositionId,
         subject: PatchDetailSubject,
     },
     PatchChoice {
-        patch_id: PatchId,
+        patch_position: crate::control::PatchPositionId,
         subject: PatchChoiceSubject,
     },
     SampleBrowser {
@@ -559,9 +574,31 @@ impl SemanticSurfaceSummary {
         match self {
             Self::Patch { patch_id, .. }
             | Self::PatchUtility { patch_id, .. }
-            | Self::PatchDetail { patch_id, .. }
-            | Self::PatchChoice { patch_id, .. }
             | Self::SampleBrowser { patch_id, .. } => Some(*patch_id),
+            Self::PatchDetail { patch_position, .. } | Self::PatchChoice { patch_position, .. } => {
+                patch_position.patch_id()
+            }
+            Self::EmptyPatch { .. }
+            | Self::EmptyPatchUtility { .. }
+            | Self::Mixer { .. }
+            | Self::MixerInspector { .. }
+            | Self::MidiDeviceSettings { .. } => None,
+        }
+    }
+
+    pub const fn patch_position(&self) -> Option<crate::control::PatchPositionId> {
+        match self {
+            Self::Patch { patch_id, .. }
+            | Self::PatchUtility { patch_id, .. }
+            | Self::SampleBrowser { patch_id, .. } => {
+                Some(crate::control::PatchPositionId::Created(*patch_id))
+            }
+            Self::EmptyPatch { .. } | Self::EmptyPatchUtility { .. } => {
+                Some(crate::control::PatchPositionId::TrailingEmpty)
+            }
+            Self::PatchDetail { patch_position, .. } | Self::PatchChoice { patch_position, .. } => {
+                Some(*patch_position)
+            }
             Self::Mixer { .. } | Self::MixerInspector { .. } | Self::MidiDeviceSettings { .. } => {
                 None
             }
@@ -995,6 +1032,9 @@ impl SemanticGraphicalViewModel {
         "surfaces[].sections[].id",
         "surfaces[].sections[].label",
         "surfaces[].summary.capabilityId",
+        "surfaces[].summary.activeCount",
+        "surfaces[].summary.capacity",
+        "surfaces[].summary.creationAvailable",
         "surfaces[].summary.effectCount",
         // `MixerInspector.focusedControl` is the remembered MixerMain origin,
         // so its identity is always the Track variant (never a send/return
@@ -1008,6 +1048,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].summary.patchCount",
         "surfaces[].summary.patchId",
         "surfaces[].summary.patchName",
+        "surfaces[].summary.patchPosition",
         "surfaces[].summary.activeAsset.kind",
         "surfaces[].summary.activeAsset.locator",
         "surfaces[].summary.assetParameterId",
@@ -1878,6 +1919,11 @@ fn project_errors(
         crate::control::StructuralEditIntent::SetReturnOccupancy { bus, .. } => {
             Some(FocusPath::mixer_return_occupancy(*bus))
         }
+        crate::control::StructuralEditIntent::AppendPatch { .. } => Some(FocusPath::patch_main_at(
+            crate::control::PatchPositionId::TrailingEmpty,
+            None,
+            PatchControlId::Engine,
+        )),
         crate::control::StructuralEditIntent::ReplaceCapability { .. } => {
             let source_paths = match correlation.patch_id() {
                 Some(patch_id) => resolver
@@ -1921,36 +1967,130 @@ fn project_errors(
     }])
 }
 
+enum SemanticPatchSource<'a> {
+    Created(&'a Patch),
+    Pending(&'a Patch),
+    Prospective(&'a ProspectivePatch),
+}
+
+impl SemanticPatchSource<'_> {
+    fn instrument_config(&self) -> &crate::synth::InstrumentConfig {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.instrument_config(),
+            Self::Prospective(patch) => patch.instrument_config(),
+        }
+    }
+
+    fn envelope(&self) -> &VoiceEnvelope {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.envelope(),
+            Self::Prospective(patch) => patch.envelope(),
+        }
+    }
+
+    fn output(&self) -> Option<crate::mixer::patch_output::PatchOutput> {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => Some(patch.output()),
+            Self::Prospective(patch) => patch.output(),
+        }
+    }
+
+    fn channel(&self) -> Option<MidiChannel> {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => Some(patch.channel()),
+            Self::Prospective(patch) => patch.channel(),
+        }
+    }
+
+    fn effect_slots(
+        &self,
+    ) -> &[Option<PostEffectConfig>; crate::synth::effect_slot_id::MAX_EFFECT_SLOTS] {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.effect_slots(),
+            Self::Prospective(patch) => patch.effect_slots(),
+        }
+    }
+
+    fn effect_slot(
+        &self,
+        index: crate::synth::effect_slot_id::EffectSlotIndex,
+    ) -> Option<&PostEffectConfig> {
+        self.effect_slots()[index.index()].as_ref()
+    }
+
+    fn voice_limit(&self) -> VoiceLimit {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.voice_limit(),
+            Self::Prospective(patch) => patch.voice_limit(),
+        }
+    }
+
+    fn correlation_patch_id(&self) -> Option<PatchId> {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => Some(patch.id()),
+            Self::Prospective(_) => None,
+        }
+    }
+
+    fn created_patch(&self) -> Option<&Patch> {
+        match self {
+            Self::Created(patch) => Some(patch),
+            Self::Pending(_) | Self::Prospective(_) => None,
+        }
+    }
+}
+
 fn project_patch_surfaces(
     state: &AppState,
     resolver: &SemanticResolver<'_>,
     status: &SemanticLifecycleStatus,
     errors: &[SemanticError],
 ) -> Result<Vec<SemanticSurfaceViewModel>, SemanticGraphicalViewModelError> {
-    let patch_id = state
+    let patch_position = state
         .interaction()
-        .patch_focus()
+        .patch_position_focus()
         .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
-    let patch = state
-        .patches()
-        .iter()
-        .find(|patch| patch.id() == patch_id)
-        .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
+    let prospective_defaults;
+    let prospective = patch_position == crate::control::PatchPositionId::TrailingEmpty;
+    let patch = match patch_position {
+        crate::control::PatchPositionId::Created(patch_id) => SemanticPatchSource::Created(
+            state
+                .patches()
+                .iter()
+                .find(|patch| patch.id() == patch_id)
+                .ok_or(SemanticGraphicalViewModelError::MissingPatch)?,
+        ),
+        crate::control::PatchPositionId::TrailingEmpty => {
+            if let Some(pending) = state.pending_patch_creation() {
+                SemanticPatchSource::Pending(pending)
+            } else {
+                let blueprint = state
+                    .patch_creation_blueprint()
+                    .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+                prospective_defaults = blueprint
+                    .prospective(state.patches().len(), blueprint.instrument_capability_id())
+                    .map_err(|_| SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+                SemanticPatchSource::Prospective(&prospective_defaults)
+            }
+        }
+    };
     let descriptor = state
         .capabilities()
         .descriptor(patch.instrument_config().capability_id())
         .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
     let focusable_paths = resolver
-        .patch_main_paths(patch_id)
+        .patch_main_paths_for_position(patch_position)
         .map_err(map_resolver_error)?;
     let active = state.interaction().focus_path();
     let lifecycle_editable = matches!(
         status.kind(),
         EngineSelectionStatusKind::Ready | EngineSelectionStatusKind::Failed
     );
+    let creation_available =
+        !prospective || state.patches().len() < crate::kernel::MAX_ACTIVE_PATCHES;
     let mut controls = Vec::new();
 
-    let engine_path = FocusPath::patch_main(patch_id, None, PatchControlId::Engine);
+    let engine_path = FocusPath::patch_main_at(patch_position, None, PatchControlId::Engine);
     controls.push(SemanticControlViewModel {
         path: engine_path.clone(),
         label: "Engine".to_owned(),
@@ -1963,7 +2103,13 @@ fn project_patch_surfaces(
         enabled: true,
         visible: true,
         focusable: true,
-        editable: lifecycle_editable && state.capabilities().descriptors().len() > 1,
+        editable: lifecycle_editable
+            && creation_available
+            && if prospective {
+                !state.capabilities().descriptors().is_empty()
+            } else {
+                state.capabilities().descriptors().len() > 1
+            },
         focused: active == &engine_path,
         status: Some(status.clone()),
         error: error_for_path(errors, &engine_path),
@@ -1979,7 +2125,7 @@ fn project_patch_surfaces(
     for slot_index in crate::synth::effect_slot_id::EffectSlotIndex::ALL {
         let occupant = patch.effect_slot(slot_index);
         let occupancy_path =
-            FocusPath::patch_main(patch_id, None, PatchControlId::EffectSlot(slot_index));
+            FocusPath::patch_main_at(patch_position, None, PatchControlId::EffectSlot(slot_index));
         let occupancy_label = format!("Slot {}", slot_index.index() + 1);
         let occupancy_value = match occupant {
             None => "Empty".to_owned(),
@@ -2000,7 +2146,7 @@ fn project_patch_surfaces(
                         patch_id: target_patch,
                         slot,
                         ..
-                    } if *target_patch == patch_id && *slot == slot_index
+                    } if Some(*target_patch) == patch.correlation_patch_id() && *slot == slot_index
                 )
             });
         controls.push(SemanticControlViewModel {
@@ -2015,7 +2161,9 @@ fn project_patch_surfaces(
             enabled: true,
             visible: true,
             focusable: true,
-            editable: lifecycle_editable && !state.effects().descriptors().is_empty(),
+            editable: lifecycle_editable
+                && creation_available
+                && !state.effects().descriptors().is_empty(),
             focused: active == &occupancy_path,
             status: targeted.then(|| status.clone()),
             error: error_for_path(errors, &occupancy_path),
@@ -2065,19 +2213,49 @@ fn project_patch_surfaces(
     // The summary counts configured effects: occupied positions of the
     // per-position chain, wherever they sit. Empty positions never count.
     let configured_effect_count = patch.effect_slots().iter().flatten().count();
-    let summary = SemanticSurfaceSummary::Patch {
-        patch_id,
-        patch_name: patch.name().to_owned(),
-        capability_id: descriptor.id().clone(),
-        effect_count: configured_effect_count,
+    let summary = if prospective {
+        SemanticSurfaceSummary::EmptyPatch {
+            capability_id: descriptor.id().clone(),
+            effect_count: configured_effect_count,
+            active_count: state.patches().len(),
+            capacity: crate::kernel::MAX_ACTIVE_PATCHES,
+            creation_available: state.patches().len() < crate::kernel::MAX_ACTIVE_PATCHES,
+        }
+    } else {
+        SemanticSurfaceSummary::Patch {
+            patch_id: patch
+                .created_patch()
+                .ok_or(SemanticGraphicalViewModelError::MissingPatch)?
+                .id(),
+            patch_name: patch
+                .created_patch()
+                .ok_or(SemanticGraphicalViewModelError::MissingPatch)?
+                .name()
+                .to_owned(),
+            capability_id: descriptor.id().clone(),
+            effect_count: configured_effect_count,
+        }
     };
-    let side_summary = SemanticSurfaceSummary::PatchUtility {
-        patch_id,
-        capability_id: descriptor.id().clone(),
-        effect_count: configured_effect_count,
+    let side_summary = if prospective {
+        SemanticSurfaceSummary::EmptyPatchUtility {
+            capability_id: descriptor.id().clone(),
+            effect_count: configured_effect_count,
+            active_count: state.patches().len(),
+            capacity: crate::kernel::MAX_ACTIVE_PATCHES,
+            creation_available: state.patches().len() < crate::kernel::MAX_ACTIVE_PATCHES,
+        }
+    } else {
+        SemanticSurfaceSummary::PatchUtility {
+            patch_id: patch
+                .created_patch()
+                .ok_or(SemanticGraphicalViewModelError::MissingPatch)?
+                .id(),
+            capability_id: descriptor.id().clone(),
+            effect_count: configured_effect_count,
+        }
     };
     let utility_paths = resolver
-        .patch_utility_paths(patch_id)
+        .patch_utility_paths_for_position(patch_position)
         .map_err(map_resolver_error)?;
     let utility_controls = utility_paths
         .into_iter()
@@ -2094,7 +2272,10 @@ fn project_patch_surfaces(
                     let (kind, value, numeric_range, unit) = match parameter {
                         PatchOutputParameter::TrimGain => (
                             SemanticControlKind::Continuous,
-                            SemanticControlValue::Scalar(patch.output().trim_gain_db() as f64),
+                            patch.output().map_or_else(
+                                || SemanticControlValue::Summary("CAPACITY 16/16".to_owned()),
+                                |output| SemanticControlValue::Scalar(output.trim_gain_db() as f64),
+                            ),
                             Some(SemanticNumericRange::new(
                                 descriptor.minimum().unwrap_or(0.0) as f64,
                                 descriptor.maximum().unwrap_or(0.0) as f64,
@@ -2105,7 +2286,12 @@ fn project_patch_surfaces(
                         ),
                         PatchOutputParameter::OutputTrack => (
                             SemanticControlKind::Choice,
-                            SemanticControlValue::Identity(patch.output().track_id().to_string()),
+                            patch.output().map_or_else(
+                                || SemanticControlValue::Summary("CAPACITY 16/16".to_owned()),
+                                |output| {
+                                    SemanticControlValue::Identity(output.track_id().to_string())
+                                },
+                            ),
                             None,
                             None,
                         ),
@@ -2144,7 +2330,10 @@ fn project_patch_surfaces(
                     SemanticControlKind::Stepped,
                     // MIDI's serialized wire value is zero-based, while the
                     // user-facing channel vocabulary is 1..=16.
-                    SemanticControlValue::Scalar(f64::from(patch.channel().value()) + 1.0),
+                    patch.channel().map_or_else(
+                        || SemanticControlValue::Summary("CAPACITY 16/16".to_owned()),
+                        |channel| SemanticControlValue::Scalar(f64::from(channel.value()) + 1.0),
+                    ),
                     Some(SemanticNumericRange::new(
                         f64::from(MidiChannel::MIN) + 1.0,
                         f64::from(MidiChannel::MAX) + 1.0,
@@ -2176,6 +2365,7 @@ fn project_patch_surfaces(
                     return Err(SemanticGraphicalViewModelError::InvalidFocusPath);
                 }
             };
+            let patch_owned = !matches!(control, PatchControlId::Global(_));
             Ok(SemanticControlViewModel {
                 focused: active == &path,
                 path,
@@ -2189,7 +2379,7 @@ fn project_patch_surfaces(
                 enabled: true,
                 visible: true,
                 focusable: true,
-                editable: true,
+                editable: !patch_owned || creation_available,
                 status: None,
                 error: None,
                 requested_value: None,
@@ -2240,8 +2430,8 @@ fn project_patch_surfaces(
                     .parameters()
                     .filter(|spec| parameter_availability(spec, patch.instrument_config()).1)
                     .map(|spec| {
-                        FocusPath::patch_detail(
-                            patch_id,
+                        FocusPath::patch_detail_at(
+                            patch_position,
                             capability_id.clone(),
                             PatchControlId::Capability(spec.id().clone()),
                         )
@@ -2251,8 +2441,8 @@ fn project_patch_surfaces(
                     crate::synth::VoiceEnvelope::surface_descriptor()
                         .iter()
                         .map(|parameter| {
-                            FocusPath::patch_detail(
-                                patch_id,
+                            FocusPath::patch_detail_at(
+                                patch_position,
                                 capability_id.clone(),
                                 PatchControlId::Envelope(parameter.parameter()),
                             )
@@ -2278,8 +2468,8 @@ fn project_patch_surfaces(
                     .parameters()
                     .filter(|spec| effect_parameter_availability(spec, occupant).1)
                     .map(|spec| {
-                        FocusPath::patch_detail(
-                            patch_id,
+                        FocusPath::patch_detail_at(
+                            patch_position,
                             capability_id.clone(),
                             PatchControlId::Effect(*slot_id, spec.id().clone()),
                         )
@@ -2296,7 +2486,7 @@ fn project_patch_surfaces(
             && state
                 .engine_selection()
                 .correlation()
-                .is_some_and(|correlation| correlation.patch_id() == Some(patch_id)))
+                .is_some_and(|correlation| correlation.patch_id() == patch.correlation_patch_id()))
         .then(|| status.clone());
         let mut detail_controls = Vec::with_capacity(detail_paths.len());
         for path in detail_paths {
@@ -2322,7 +2512,8 @@ fn project_patch_surfaces(
                             enabled,
                             visible,
                             focusable: enabled,
-                            editable: enabled
+                            editable: creation_available
+                                && enabled
                                 && spec.patch_interaction() != PatchInteraction::ReadOnly,
                             active,
                             status: subject_status.clone(),
@@ -2355,7 +2546,7 @@ fn project_patch_surfaces(
                         enabled: true,
                         visible: true,
                         focusable: true,
-                        editable: true,
+                        editable: creation_available,
                         focused: active == &path,
                         status: subject_status.clone(),
                         error: error_for_path(errors, &path),
@@ -2394,7 +2585,8 @@ fn project_patch_surfaces(
                             enabled,
                             visible,
                             focusable: enabled,
-                            editable: enabled
+                            editable: creation_available
+                                && enabled
                                 && spec.patch_interaction() != PatchInteraction::ReadOnly,
                             active,
                             status: subject_status.clone(),
@@ -2407,7 +2599,7 @@ fn project_patch_surfaces(
             detail_controls.push(control);
         }
         let (sections, visualizations) =
-            project_detail_structure(state, patch, subject, &detail_controls)?;
+            project_detail_structure(state, &patch, subject, &detail_controls)?;
         surfaces.push(SemanticSurfaceViewModel {
             id: SurfaceId::PatchDetail,
             label: SurfaceId::PatchDetail.label().to_owned(),
@@ -2416,7 +2608,7 @@ fn project_patch_surfaces(
             sections,
             visualizations,
             summary: SemanticSurfaceSummary::PatchDetail {
-                patch_id,
+                patch_position,
                 subject: subject.clone(),
             },
         });
@@ -2432,8 +2624,8 @@ fn project_patch_surfaces(
             .options()
             .iter()
             .map(|option| {
-                let path = FocusPath::patch_choice(
-                    subject.patch_id(),
+                let path = FocusPath::patch_choice_at(
+                    subject.patch_position(),
                     subject.stable_id(),
                     option.id().to_owned(),
                 );
@@ -2450,13 +2642,19 @@ fn project_patch_surfaces(
                     enabled: option.is_enabled(),
                     visible: true,
                     focusable: option.is_enabled(),
-                    editable: option.is_enabled(),
+                    editable: option.is_enabled() && creation_available,
                     status: None,
                     error: None,
                     requested_value: None,
                     requested_label: None,
                     patch_interaction: None,
-                    selected_label: option.is_current().then(|| "CURRENT".to_owned()),
+                    selected_label: option.is_current().then(|| {
+                        if prospective {
+                            "DEFAULT".to_owned()
+                        } else {
+                            "CURRENT".to_owned()
+                        }
+                    }),
                     valid_actions: Vec::new(),
                 }
             })
@@ -2469,18 +2667,21 @@ fn project_patch_surfaces(
             sections: Vec::new(),
             visualizations: Vec::new(),
             summary: SemanticSurfaceSummary::PatchChoice {
-                patch_id,
+                patch_position,
                 subject: subject.clone(),
             },
         });
     }
 
     if let Some(PatchSubordinateSession::SampleBrowser {
-        patch_id,
+        patch_position,
         asset_parameter_id,
         ..
     }) = state.interaction().subordinate_session()
     {
+        let patch_id = patch_position
+            .patch_id()
+            .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
         let paths = resolver
             .sample_browser_paths()
             .map_err(map_resolver_error)?;
@@ -2548,7 +2749,7 @@ fn project_patch_surfaces(
             });
         let mut visualizations = project_visualizations(
             state,
-            patch,
+            &patch,
             descriptor.visualizations(),
             &|id| patch.instrument_config().value(id),
             &|id| {
@@ -2573,7 +2774,7 @@ fn project_patch_surfaces(
             sections: Vec::new(),
             visualizations,
             summary: SemanticSurfaceSummary::SampleBrowser {
-                patch_id: *patch_id,
+                patch_id,
                 asset_parameter_id: asset_parameter_id.clone(),
                 folder: state.sample_browser().folder().clone(),
                 active_asset: patch
@@ -2659,7 +2860,7 @@ fn project_browser_metadata(
 
 fn project_detail_structure(
     state: &AppState,
-    patch: &Patch,
+    patch: &SemanticPatchSource<'_>,
     subject: &PatchDetailSubject,
     controls: &[SemanticControlViewModel],
 ) -> Result<
@@ -2761,7 +2962,7 @@ fn project_detail_structure(
 
 fn project_visualizations<'a>(
     state: &AppState,
-    patch: &Patch,
+    patch: &SemanticPatchSource<'_>,
     declarations: &[crate::synth::CapabilityVisualization],
     value: &dyn Fn(&ParameterId) -> Option<&'a ParameterValue>,
     asset: &dyn Fn(&ParameterId) -> Option<AssetReference>,
@@ -2796,11 +2997,14 @@ fn project_visualizations<'a>(
                     ..
                 } => {
                     let active_asset = asset(asset_parameter_id);
-                    let prepared = state.sample_visualization(patch.id()).filter(|prepared| {
-                        active_asset.as_ref().is_some_and(|reference| {
-                            reference.locator() == prepared.asset_id().as_str()
-                        })
-                    });
+                    let created_patch_id = patch.created_patch().map(Patch::id);
+                    let prepared = created_patch_id
+                        .and_then(|patch_id| state.sample_visualization(patch_id))
+                        .filter(|prepared| {
+                            active_asset.as_ref().is_some_and(|reference| {
+                                reference.locator() == prepared.asset_id().as_str()
+                            })
+                        });
                     let frames = prepared.map(|prepared| prepared.frames());
                     let prepared_landmarks = prepared.map(|prepared| prepared.landmarks());
                     let normalized =
@@ -2829,7 +3033,7 @@ fn project_visualizations<'a>(
                             })
                         };
                     let correlated_asset_lifecycle = (state.sample_browser().patch_id()
-                        == Some(patch.id())
+                        == created_patch_id
                         && state.sample_browser().asset_parameter_id() == Some(asset_parameter_id))
                     .then(|| state.sample_browser().lifecycle());
                     SemanticVisualizationData::Waveform {
@@ -3491,16 +3695,16 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
     // Checking the set size rather than comparing against the focus makes the
     // claim symmetric: no field is privileged, and a disagreement anywhere is
     // the same defect.
-    let identities = core::iter::once(data.focus_path.patch_id())
+    let positions = core::iter::once(data.focus_path.patch_position())
         .chain(
             data.surfaces
                 .iter()
-                .map(|surface| surface.summary.patch_id()),
+                .map(|surface| surface.summary.patch_position()),
         )
-        .chain(controls.iter().map(|control| control.path.patch_id()))
+        .chain(controls.iter().map(|control| control.path.patch_position()))
         .flatten()
         .collect::<HashSet<_>>();
-    if identities.len() > 1 {
+    if positions.len() > 1 {
         return Err(SemanticGraphicalViewModelError::PatchIdentityDisagreement);
     }
     Ok(())
@@ -4984,7 +5188,7 @@ mod projection_enrichment_tests {
         assert_eq!(shell.semantic_model().state_hash(), snapshot.hash());
         assert_eq!(
             shell.patch_identity(),
-            page.map(|page| page.patch().id()),
+            page.and_then(|page| page.patch().id()),
             "the page and the semantic model name one Patch"
         );
     }

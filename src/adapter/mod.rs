@@ -26,4 +26,5 @@ pub mod sample_preparer;
 pub mod soundfont_voice_engine;
 pub mod threaded_graph_preparation_worker;
 pub mod threaded_midi_device_worker;
+pub mod threaded_session_candidate_worker;
 pub mod wav_sample_decoder;

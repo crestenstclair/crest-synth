@@ -209,6 +209,7 @@ const PAINTED_ACK_IDENTITY_FIELDS: [&str; 6] = [
 /// complete suite.
 const DETAIL_WITNESS_ENV: &str = "CREST_WEBVIEW_DETAIL_WITNESS";
 const OPTION_WITNESS_ENV: &str = "CREST_WEBVIEW_OPTION_WITNESS";
+const EMPTY_PATCH_WITNESS_ENV: &str = "CREST_WEBVIEW_EMPTY_PATCH_WITNESS";
 
 fn main() {
     // libtest-style arguments (`--nocapture`, filters) are accepted and
@@ -221,6 +222,7 @@ fn main() {
     let live = std::env::var("CREST_WEBVIEW_TESTS").as_deref() == Ok("1");
     let detail_witness = live && std::env::var(DETAIL_WITNESS_ENV).as_deref() == Ok("1");
     let option_witness = live && std::env::var(OPTION_WITNESS_ENV).as_deref() == Ok("1");
+    let empty_patch_witness = live && std::env::var(EMPTY_PATCH_WITNESS_ENV).as_deref() == Ok("1");
     println!(
         "webview_projection_shell acceptance: {} run",
         if live {
@@ -245,19 +247,24 @@ fn main() {
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
             "T013 forced double-close failure (a shipped-binary subprocess with every close forced to fail: with no prior error recorded the typed WindowClose itself surfaces carrying the forced cause verbatim, ending the process nonzero rather than hanging)",
         ]
-    } else if detail_witness || option_witness {
+    } else if detail_witness || option_witness || empty_patch_witness {
         vec![
-            "T011 painted fader/position geometry (outside the Detail slice)",
-            "T012 forced render failures (outside the Detail slice)",
-            "T026 NFR latency/meter soak and shipped-binary shutdown parity (outside the Detail slice)",
-            "T013 forced double-close failure (outside the Detail slice; deliberately presents an uncloseable window for roughly 65 seconds)",
+            "T011 painted fader/position geometry (outside the scoped native witness)",
+            "T012 forced render failures (outside the scoped native witness)",
+            "T026 NFR latency/meter soak and shipped-binary shutdown parity (outside the scoped native witness)",
+            "T013 forced double-close failure (outside the scoped native witness; deliberately presents an uncloseable window for roughly 65 seconds)",
         ]
     } else {
         Vec::new()
     };
 
     if live {
-        run_live_sections(&fidelity, detail_witness, option_witness);
+        run_live_sections(
+            &fidelity,
+            detail_witness,
+            option_witness,
+            empty_patch_witness,
+        );
     } else {
         for skip in &skips {
             println!(
@@ -398,6 +405,175 @@ fn production_patch_braids_detail_state() -> AppState {
     state
         .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
         .expect("Braids Instrument Detail opens from its canonical Engine origin");
+    state
+}
+
+fn with_creation_blueprint(state: AppState) -> AppState {
+    let registry = state.capabilities().clone();
+    let blueprint = crest_synth::control::PatchCreationBlueprint::resolve(
+        &CapabilityId::new(crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID)
+            .unwrap(),
+        &DescriptorDefaultConfigFactory::new(registry, production_instrument_providers().unwrap()),
+    )
+    .unwrap();
+    state.with_patch_creation_blueprint(blueprint)
+}
+
+fn production_empty_patch_state() -> AppState {
+    let mut state = with_creation_blueprint(production_fixture_state());
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .unwrap();
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .unwrap();
+    state
+}
+
+fn production_empty_patch_detail_state() -> AppState {
+    let mut state = production_empty_patch_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+        .unwrap();
+    state
+}
+
+fn production_empty_patch_choice_state() -> AppState {
+    let mut state = production_empty_patch_state();
+    state
+        .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+        .unwrap();
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    state
+}
+
+fn production_empty_patch_utility_state() -> AppState {
+    let mut state = production_empty_patch_state();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+        .unwrap();
+    state
+}
+
+fn production_empty_patch_loading_state() -> AppState {
+    let mut state = production_empty_patch_choice_state();
+    state.apply(AppEvent::Activate).unwrap();
+    state
+}
+
+fn advance_empty_patch_creation(
+    mut state: AppState,
+    target: EngineSelectionStatusKind,
+) -> AppState {
+    let request_id = state.engine_selection().correlation().unwrap().request_id();
+    let phases: &[EngineSelectionStatusKind] = match target {
+        EngineSelectionStatusKind::Validating => &[EngineSelectionStatusKind::Validating],
+        EngineSelectionStatusKind::Preparing => &[
+            EngineSelectionStatusKind::Validating,
+            EngineSelectionStatusKind::Preparing,
+        ],
+        _ => panic!("only pre-worker creation phases are advanced here"),
+    };
+    for lifecycle in phases {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id,
+                lifecycle: *lifecycle,
+            })
+            .unwrap();
+    }
+    state
+}
+
+fn production_empty_patch_validating_state() -> AppState {
+    advance_empty_patch_creation(
+        production_empty_patch_loading_state(),
+        EngineSelectionStatusKind::Validating,
+    )
+}
+
+fn production_empty_patch_preparing_state() -> AppState {
+    advance_empty_patch_creation(
+        production_empty_patch_loading_state(),
+        EngineSelectionStatusKind::Preparing,
+    )
+}
+
+fn production_empty_patch_activating_state() -> AppState {
+    let mut state = production_empty_patch_preparing_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::TopologyPrepared {
+            request_id: correlation.request_id(),
+            intent: correlation.intent().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+        })
+        .unwrap();
+    state
+}
+
+fn production_empty_patch_failure_state() -> AppState {
+    let mut state = production_empty_patch_preparing_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::TopologyPreparationFailed {
+            request_id: correlation.request_id(),
+            intent: correlation.intent().clone(),
+            source_graph_revision: correlation.source_graph_revision(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            failure: EngineSelectionFailure::PreparationFailed,
+        })
+        .unwrap();
+    state
+}
+
+fn production_newly_created_patch_state() -> AppState {
+    let mut state = production_empty_patch_activating_state();
+    let correlation = state.engine_selection().correlation().unwrap().clone();
+    state
+        .apply(AppEvent::EngineActivationAcknowledged {
+            request_id: correlation.request_id(),
+            intent: correlation.intent().clone(),
+            target_graph_revision: GraphRevision::new(2).unwrap(),
+            retired_graph_revision: correlation.source_graph_revision(),
+            collected: true,
+        })
+        .unwrap();
+    state.apply(AppEvent::Return).unwrap();
+    state
+}
+
+fn production_empty_patch_capacity_state() -> AppState {
+    let config = soundfont_config();
+    let patches = (0..crest_synth::kernel::MAX_ACTIVE_PATCHES)
+        .map(|index| {
+            Patch::new(
+                PatchId::new(index as u32 + 1).unwrap(),
+                format!("Capacity Patch {}", index + 1),
+                config.clone(),
+                MidiChannel::new(index as u8).unwrap(),
+                PatchOutput::to_track(MixerTrackId::new(index as u8).unwrap()),
+            )
+        })
+        .collect();
+    let mut state = with_creation_blueprint(AppState::new_with_effects(
+        production_capability_registry().unwrap(),
+        production_effect_registry().unwrap(),
+        GlobalParameters::new(-3.0).unwrap(),
+    ));
+    state.apply(AppEvent::InstallPatches(patches)).unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    for _ in 0..crest_synth::kernel::MAX_ACTIVE_PATCHES {
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+    }
     state
 }
 
@@ -1526,6 +1702,81 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &production_patch_failure_state(),
         "PATCH state I (typed engine failure)",
     );
+    let mut empty_patch_channel = ProjectionChannel::new();
+    let (_, empty_patch) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_state(),
+        "PATCH trailing empty Overview",
+    );
+    let (_, empty_patch_detail) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_detail_state(),
+        "PATCH trailing empty default-Engine Detail",
+    );
+    let (_, empty_patch_choice) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_choice_state(),
+        "PATCH trailing empty Engine Choice",
+    );
+    let (_, empty_patch_utility) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_utility_state(),
+        "PATCH trailing empty Utility",
+    );
+    let (_, empty_patch_loading) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_loading_state(),
+        "PATCH implicit creation Loading",
+    );
+    let (_, empty_patch_validating) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_validating_state(),
+        "PATCH implicit creation Validating",
+    );
+    let (_, empty_patch_preparing) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_preparing_state(),
+        "PATCH implicit creation Preparing",
+    );
+    let (_, empty_patch_activating) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_channel,
+        &production_empty_patch_activating_state(),
+        "PATCH implicit creation Activating",
+    );
+    // Failed and acknowledged are alternative branches from Preparing /
+    // Activating, and capacity is an independent 16-Patch document. Each
+    // branch owns a fresh production channel so equal reducer generations
+    // across mutually exclusive histories cannot be mistaken for one
+    // channel's duplicate document.
+    let mut empty_patch_failure_channel = ProjectionChannel::new();
+    let (_, empty_patch_failed) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_failure_channel,
+        &production_empty_patch_failure_state(),
+        "PATCH implicit creation Failed",
+    );
+    let mut empty_patch_capacity_channel = ProjectionChannel::new();
+    let (_, empty_patch_capacity) = check_state_fidelity(
+        &projector,
+        &mut empty_patch_capacity_channel,
+        &production_empty_patch_capacity_state(),
+        "PATCH trailing empty at active-audio capacity",
+    );
+    let mut newly_created_patch_channel = ProjectionChannel::new();
+    let (_, newly_created_patch) = check_state_fidelity(
+        &projector,
+        &mut newly_created_patch_channel,
+        &production_newly_created_patch_state(),
+        "PATCH acknowledged implicit creation",
+    );
     let option_document = |state: AppState, label: &str| {
         let mut channel = ProjectionChannel::new();
         check_state_fidelity(&projector, &mut channel, &state, label).1
@@ -1652,6 +1903,19 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         &patch_loading,
         &patch_failure,
     );
+    assert_empty_patch_fixture_documents(&[
+        ("empty", &empty_patch),
+        ("empty-detail", &empty_patch_detail),
+        ("empty-choice", &empty_patch_choice),
+        ("empty-utility", &empty_patch_utility),
+        ("empty-loading", &empty_patch_loading),
+        ("empty-validating", &empty_patch_validating),
+        ("empty-preparing", &empty_patch_preparing),
+        ("empty-activating", &empty_patch_activating),
+        ("empty-failed", &empty_patch_failed),
+        ("empty-capacity", &empty_patch_capacity),
+        ("created", &newly_created_patch),
+    ]);
     assert_option_fixture_documents([
         &patch_engine_options,
         &patch_engine_options_maximum,
@@ -1707,7 +1971,7 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
 
     println!(
         "T022 serialized-schema fidelity: PASS \
-         (29 distinct states across both contexts, MIXER generations \
+         (40 distinct states across both contexts, MIXER generations \
          {generation_a}/{generation_b}/{generation_c}, PATCH generations \
          {patch_generation_a}/{patch_generation_b}/{patch_generation_c}/\
          {patch_generation_d}/{patch_generation_e}/{patch_generation_f}/\
@@ -1745,6 +2009,17 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-maximum-content", patch_maximum_content),
             ("patch-loading", patch_loading),
             ("patch-failure", patch_failure),
+            ("patch-empty", empty_patch),
+            ("patch-empty-detail", empty_patch_detail),
+            ("patch-empty-choice", empty_patch_choice),
+            ("patch-empty-utility", empty_patch_utility),
+            ("patch-empty-loading", empty_patch_loading),
+            ("patch-empty-validating", empty_patch_validating),
+            ("patch-empty-preparing", empty_patch_preparing),
+            ("patch-empty-activating", empty_patch_activating),
+            ("patch-empty-failed", empty_patch_failed),
+            ("patch-empty-capacity", empty_patch_capacity),
+            ("patch-newly-created", newly_created_patch),
             ("patch-engine-options", patch_engine_options),
             ("patch-engine-options-maximum", patch_engine_options_maximum),
             ("patch-engine-options-noop", patch_engine_options_noop),
@@ -2197,9 +2472,9 @@ fn assert_detail_fixture_documents(instrument: &str, effect: &str, lifecycle: [&
             Some(expected_kind)
         );
         assert_eq!(
-            summary.get("patchId"),
+            summary.get("patchPosition"),
             main.pointer("/summary/patchId"),
-            "{label}: Detail and Patch Main name the same exact Patch"
+            "{label}: Detail and Patch Main name the same exact Patch position"
         );
         assert!(
             main.pointer("/summary/patchName")
@@ -2686,6 +2961,165 @@ fn assert_patch_resilience_fixture_documents(maximum_content: &str, loading: &st
         loading_engine.get("value"),
         "the failed request keeps the active Engine instead of substituting"
     );
+}
+
+fn assert_empty_patch_fixture_documents(fixtures: &[(&str, &str)]) {
+    fn surface<'a>(document: &'a Value, id: &str) -> &'a Value {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some(id))
+            .unwrap_or_else(|| panic!("{id} is projected"))
+    }
+
+    fn engine(document: &Value) -> &Value {
+        surface(document, "patchMain")
+            .get("controls")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|control| {
+                control
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    == Some("patch.engine")
+            })
+            .expect("empty Patch Overview carries Engine")
+    }
+
+    let parse = |label: &str| {
+        let bytes = fixtures
+            .iter()
+            .find_map(|(fixture, bytes)| (*fixture == label).then_some(*bytes))
+            .unwrap_or_else(|| panic!("missing empty-Patch fixture {label}"));
+        serde_json::from_str::<Value>(bytes)
+            .unwrap_or_else(|error| panic!("{label} document parses: {error}"))
+    };
+    let focused_count = |document: &Value| {
+        document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .flat_map(|surface| {
+                surface
+                    .get("controls")
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+            })
+            .filter(|control| control.get("focused").and_then(Value::as_bool) == Some(true))
+            .count()
+    };
+
+    for label in [
+        "empty",
+        "empty-detail",
+        "empty-choice",
+        "empty-utility",
+        "empty-loading",
+        "empty-validating",
+        "empty-preparing",
+        "empty-activating",
+        "empty-failed",
+        "empty-capacity",
+    ] {
+        let document = parse(label);
+        let summary = surface(&document, "patchMain")
+            .get("summary")
+            .expect("Patch Main summary exists");
+        assert_eq!(
+            summary.get("kind").and_then(Value::as_str),
+            Some("emptyPatch")
+        );
+        assert!(summary.get("patchId").is_none());
+        assert_eq!(
+            document
+                .pointer("/focusPath/patchId")
+                .and_then(Value::as_str),
+            Some("trailingEmpty"),
+            "{label} carries the explicit empty position in its stable focus identity"
+        );
+        assert_eq!(
+            focused_count(&document),
+            1,
+            "{label} has one semantic focus"
+        );
+    }
+
+    for (label, expected) in [
+        ("empty-loading", "loading"),
+        ("empty-validating", "validating"),
+        ("empty-preparing", "preparing"),
+        ("empty-activating", "activating"),
+        ("empty-failed", "failed"),
+    ] {
+        let document = parse(label);
+        assert_eq!(
+            engine(&document)
+                .pointer("/status/kind")
+                .and_then(Value::as_str),
+            Some(expected),
+            "{label} exposes its reducer lifecycle"
+        );
+    }
+
+    assert_eq!(
+        parse("empty-detail")
+            .get("activeSurface")
+            .and_then(Value::as_str),
+        Some("patchDetail")
+    );
+    assert_eq!(
+        parse("empty-choice")
+            .get("activeSurface")
+            .and_then(Value::as_str),
+        Some("patchChoice")
+    );
+    assert_eq!(
+        parse("empty-utility")
+            .get("activeSurface")
+            .and_then(Value::as_str),
+        Some("patchUtility")
+    );
+
+    let capacity = parse("empty-capacity");
+    let capacity_summary = surface(&capacity, "patchMain").get("summary").unwrap();
+    assert_eq!(
+        capacity_summary
+            .get("creationAvailable")
+            .and_then(Value::as_bool),
+        Some(false)
+    );
+    assert_eq!(
+        capacity_summary.get("activeCount").and_then(Value::as_u64),
+        Some(crest_synth::kernel::MAX_ACTIVE_PATCHES as u64)
+    );
+    for control in surface(&capacity, "patchMain")
+        .get("controls")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        assert_eq!(
+            control.get("editable").and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    let created = parse("created");
+    let created_summary = surface(&created, "patchMain").get("summary").unwrap();
+    assert_eq!(
+        created_summary.get("kind").and_then(Value::as_str),
+        Some("patch")
+    );
+    assert_eq!(
+        created_summary.get("patchId").and_then(Value::as_u64),
+        Some(3)
+    );
+    assert_eq!(focused_count(&created), 1);
 }
 
 fn assert_option_fixture_documents<const N: usize>(documents: [&str; N]) {
@@ -3618,9 +4052,15 @@ fn screenshot(name: &str) -> PathBuf {
 struct ScopedWitness {
     detail: bool,
     option: bool,
+    empty_patch: bool,
 }
 
-fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool, option_witness: bool) {
+fn run_live_sections(
+    fidelity: &FidelityEvidence,
+    detail_witness: bool,
+    option_witness: bool,
+    empty_patch_witness: bool,
+) {
     use tauri::{Listener, Manager};
 
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -3717,6 +4157,7 @@ fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool, option_w
     let scoped_witness = ScopedWitness {
         detail: detail_witness,
         option: option_witness,
+        empty_patch: empty_patch_witness,
     };
     let outcome: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
     let driver_outcome = Arc::clone(&outcome);
@@ -3777,6 +4218,12 @@ fn run_live_sections(fidelity: &FidelityEvidence, detail_witness: bool, option_w
             "CREST_WEBVIEW_OPTION_WITNESS complete: real Engine/Post FX options plus \
              Detail/Mixer non-regression scenes closed cleanly; unrelated soak and \
              forced-failure subprocesses skipped"
+        );
+    } else if empty_patch_witness {
+        println!(
+            "CREST_WEBVIEW_EMPTY_PATCH_WITNESS complete: real empty, pending, capacity, and \
+             newly-created PATCH scenes closed cleanly across every representative viewport; \
+             unrelated soak and forced-failure subprocesses skipped"
         );
     } else {
         prove_forced_render_throw_on_the_shipped_binary();
@@ -3972,7 +4419,7 @@ fn keyboard_close_options(
     );
 }
 
-fn observe_native_option_state(
+fn observe_native_patch_state(
     window: &tauri::WebviewWindow,
     receiver: &mpsc::Receiver<Value>,
     state: &AppState,
@@ -3998,6 +4445,324 @@ fn observe_native_option_state(
     );
     assert_patch_observation_structure(&observation, &document, inspector_floor, tag);
     Ok(observation)
+}
+
+fn observe_native_option_state(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    state: &AppState,
+    tag: &str,
+    inspector_floor: f32,
+) -> Result<Value, String> {
+    observe_native_patch_state(window, receiver, state, tag, inspector_floor)
+}
+
+fn apply_shift_keyboard_gesture(
+    state: &mut AppState,
+    translator: &mut KeyboardInputTranslator,
+    key: WindowKey,
+    expected: crest_synth::control::SemanticAction,
+    label: &str,
+) {
+    assert_eq!(
+        translator.translate(WindowInput::key_down(WindowKey::Shift)),
+        None,
+        "{label}: physical Shift press only establishes modifier state"
+    );
+    apply_keyboard_gesture(
+        state,
+        translator,
+        WindowInput::key_down(key),
+        expected,
+        true,
+        label,
+    );
+    assert_eq!(
+        translator.translate(WindowInput::key_up(WindowKey::Shift)),
+        None,
+        "{label}: physical Shift release only clears modifier state"
+    );
+}
+
+fn prove_native_empty_patch_input_journey(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    inspector_floor: f32,
+) -> Result<(), String> {
+    use crest_synth::control::{PatchPositionId, SavedSession, SemanticAction};
+
+    let mut state = with_creation_blueprint(production_patch_braids_state());
+    let final_created_id = state
+        .interaction()
+        .patch_focus()
+        .expect("the journey starts on the final created Patch");
+    assert_eq!(final_created_id, PatchId::new(2).unwrap());
+    let saved_before = SavedSession::capture(&state);
+    let patches_before = state.patches().to_vec();
+    let source_revision = state.engine_selection().active_graph_revision();
+    let mut keyboard = KeyboardInputTranslator::new();
+
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-final-created",
+        inspector_floor,
+    )?;
+    apply_shift_keyboard_gesture(
+        &mut state,
+        &mut keyboard,
+        WindowKey::D,
+        SemanticAction::SelectPatch(Direction::Right),
+        "native empty journey Shift+Right",
+    );
+    assert_eq!(
+        state.interaction().patch_position_focus(),
+        Some(PatchPositionId::TrailingEmpty)
+    );
+    assert_eq!(state.patches(), patches_before);
+    assert_eq!(SavedSession::capture(&state), saved_before);
+    assert_eq!(
+        state.engine_selection().active_graph_revision(),
+        source_revision
+    );
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-empty",
+        inspector_floor,
+    )?;
+
+    let empty_origin = state.interaction().focus_path().clone();
+    apply_shift_keyboard_gesture(
+        &mut state,
+        &mut keyboard,
+        WindowKey::W,
+        SemanticAction::OpenRelated,
+        "native empty journey non-creating Shift+Up inspection",
+    );
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+    assert_eq!(state.patches(), patches_before);
+    assert_eq!(SavedSession::capture(&state), saved_before);
+    assert!(state.engine_selection().correlation().is_none());
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-inspection",
+        inspector_floor,
+    )?;
+    apply_shift_keyboard_gesture(
+        &mut state,
+        &mut keyboard,
+        WindowKey::S,
+        SemanticAction::Return,
+        "native empty journey inspection Shift+Down return",
+    );
+    assert_eq!(state.interaction().focus_path(), &empty_origin);
+
+    keyboard_open_options(&mut state, &mut keyboard, "native empty first edit");
+    assert!(matches!(
+        state.interaction().subordinate_session(),
+        Some(crest_synth::control::PatchSubordinateSession::Choice { .. })
+    ));
+    assert_eq!(
+        state
+            .interaction()
+            .return_path()
+            .expect("the Choice owns an exact return path")
+            .origin(),
+        &empty_origin
+    );
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-first-edit-choice",
+        inspector_floor,
+    )?;
+    apply_keyboard_gesture(
+        &mut state,
+        &mut keyboard,
+        WindowInput::key_down(WindowKey::Return),
+        SemanticAction::Activate,
+        true,
+        "native empty first edit confirm",
+    );
+    let first_effect = state
+        .engine_selection()
+        .correlation()
+        .expect("the first creation request owns correlation")
+        .clone();
+    assert_eq!(state.patches(), patches_before);
+    assert_eq!(SavedSession::capture(&state), saved_before);
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-loading",
+        inspector_floor,
+    )?;
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: first_effect.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
+    let target_revision = source_revision.checked_next().unwrap();
+    state
+        .apply(AppEvent::TopologyPreparationFailed {
+            request_id: first_effect.request_id(),
+            intent: first_effect.intent().clone(),
+            source_graph_revision: source_revision,
+            target_graph_revision: target_revision,
+            failure: EngineSelectionFailure::PreparationFailed,
+        })
+        .unwrap();
+    assert_eq!(state.patches(), patches_before);
+    assert_eq!(SavedSession::capture(&state), saved_before);
+    assert_eq!(
+        state.engine_selection().active_graph_revision(),
+        source_revision
+    );
+    assert_eq!(
+        state.interaction().patch_position_focus(),
+        Some(PatchPositionId::TrailingEmpty)
+    );
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-failed",
+        inspector_floor,
+    )?;
+
+    apply_keyboard_gesture(
+        &mut state,
+        &mut keyboard,
+        WindowInput::key_down(WindowKey::Return),
+        SemanticAction::Activate,
+        true,
+        "native empty retry confirm",
+    );
+    let retry = state
+        .engine_selection()
+        .correlation()
+        .expect("the retry owns fresh correlation")
+        .clone();
+    assert!(retry.request_id() > first_effect.request_id());
+    assert_eq!(retry.intent(), first_effect.intent());
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-retry-loading",
+        inspector_floor,
+    )?;
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        state
+            .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                request_id: retry.request_id(),
+                lifecycle,
+            })
+            .unwrap();
+    }
+    state
+        .apply(AppEvent::TopologyPrepared {
+            request_id: retry.request_id(),
+            intent: retry.intent().clone(),
+            source_graph_revision: source_revision,
+            target_graph_revision: target_revision,
+        })
+        .unwrap();
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-activating",
+        inspector_floor,
+    )?;
+    state
+        .apply(AppEvent::EngineActivationAcknowledged {
+            request_id: retry.request_id(),
+            intent: retry.intent().clone(),
+            target_graph_revision: target_revision,
+            retired_graph_revision: source_revision,
+            collected: true,
+        })
+        .unwrap();
+    let created_id = state
+        .patches()
+        .last()
+        .expect("successful activation appends one Patch")
+        .id();
+    assert_eq!(state.patches().len(), patches_before.len() + 1);
+    assert_eq!(state.interaction().patch_focus(), Some(created_id));
+    assert_eq!(
+        state.engine_selection().active_graph_revision(),
+        target_revision
+    );
+    assert_ne!(SavedSession::capture(&state), saved_before);
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-created-choice",
+        inspector_floor,
+    )?;
+
+    apply_shift_keyboard_gesture(
+        &mut state,
+        &mut keyboard,
+        WindowKey::S,
+        SemanticAction::Return,
+        "native created journey exact Shift+Down return",
+    );
+    assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+    assert_eq!(state.interaction().patch_focus(), Some(created_id));
+    assert_eq!(
+        state.interaction().patch_control_focus(),
+        Some(PatchControlId::Engine)
+    );
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-created",
+        inspector_floor,
+    )?;
+    apply_shift_keyboard_gesture(
+        &mut state,
+        &mut keyboard,
+        WindowKey::A,
+        SemanticAction::SelectPatch(Direction::Left),
+        "native created journey Shift+Left",
+    );
+    assert_eq!(state.interaction().patch_focus(), Some(final_created_id));
+    observe_native_patch_state(
+        window,
+        receiver,
+        &state,
+        "native-empty-input-returned-left",
+        inspector_floor,
+    )?;
+
+    println!(
+        "T024 native empty Patch input journey: PASS (production keyboard normalization → \
+         AppState::apply → projection/native paint covered Shift+Right, non-creating Detail \
+         inspection, first edit, visible preparation failure, fresh retry, acknowledged stable \
+         identity, exact return, and Shift+Left)"
+    );
+    Ok(())
 }
 
 fn prove_native_option_input_journeys(
@@ -4903,6 +5668,21 @@ fn assert_patch_observation_structure(
         Some(true),
         "{label}: focus reveal keeps the singular semantic target visible"
     );
+    for endpoint in [
+        "startReachable",
+        "endReachable",
+        "firstTargetReachable",
+        "lastTargetReachable",
+    ] {
+        assert_eq!(
+            observation
+                .pointer(&format!("/reachability/workspace/{endpoint}"))
+                .and_then(Value::as_bool),
+            Some(true),
+            "{label}: the workspace reaches {endpoint} when its real scroll container is \
+             driven to both endpoints"
+        );
+    }
     for target in observation
         .get("targetSizes")
         .and_then(Value::as_array)
@@ -4972,12 +5752,27 @@ fn assert_patch_observation_structure(
         .get("overview")
         .filter(|value| !value.is_null())
         .unwrap_or_else(|| panic!("{label}: Patch Main paints the Overview"));
+    let main_summary = main_surface
+        .get("summary")
+        .unwrap_or_else(|| panic!("{label}: Patch Main carries its summary"));
+    let expected_patch_name =
+        if main_summary.get("kind").and_then(Value::as_str) == Some("emptyPatch") {
+            assert!(
+                main_summary.get("patchId").is_none(),
+                "{label}: empty Patch Main must not manufacture a Patch identity"
+            );
+            "NEW PATCH / DEFAULT"
+        } else {
+            main_summary
+                .get("patchName")
+                .and_then(Value::as_str)
+                .unwrap_or_else(|| panic!("{label}: created Patch Main names its Patch"))
+        };
     assert_eq!(
         overview.get("patchName").and_then(Value::as_str),
-        main_surface
-            .pointer("/summary/patchName")
-            .and_then(Value::as_str),
-        "{label}: the Overview heading carries the projected Patch name"
+        Some(expected_patch_name),
+        "{label}: the Overview heading carries the projected created name or explicit \
+         identity-free empty treatment"
     );
     let painted_sections = overview
         .get("sections")
@@ -5116,20 +5911,27 @@ fn assert_patch_observation_structure(
             )
         })
         .collect();
+    let expected_overview_focus_count = expected_controls
+        .iter()
+        .filter(|control| control.get("focused").and_then(Value::as_bool) == Some(true))
+        .count();
     assert_eq!(
         emphasized.len(),
-        1,
-        "{label}: exactly one Overview control carries the focus treatment"
+        expected_overview_focus_count,
+        "{label}: Overview focus treatment corresponds exactly; Utility focus leaves no \
+         Overview row emphasized"
     );
-    let document_focus = document
-        .pointer("/focusPath/controlId/id")
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("{label}: the document focus path names a PATCH control"));
-    assert_eq!(
-        emphasized[0].get("control").and_then(Value::as_str),
-        Some(document_focus),
-        "{label}: the Overview focus treatment matches the document focus"
-    );
+    if let Some(emphasized) = emphasized.first() {
+        let document_focus = document
+            .pointer("/focusPath/controlId/id")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: the document focus path names a PATCH control"));
+        assert_eq!(
+            emphasized.get("control").and_then(Value::as_str),
+            Some(document_focus),
+            "{label}: the Overview focus treatment matches the document focus"
+        );
+    }
 
     for (projected, painted) in expected_sections.iter().zip(painted_sections) {
         assert_eq!(painted.get("id"), projected.get("id"));
@@ -5409,12 +6211,18 @@ fn assert_patch_modal_composition(
             .flatten()
             .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
             .collect::<Vec<_>>();
+        let expected_current_count = expected_rows
+            .iter()
+            .filter(|control| {
+                control.get("selectedLabel").and_then(Value::as_str) == Some("CURRENT")
+            })
+            .count();
         let painted_rows = modal
             .get("options")
             .and_then(Value::as_array)
             .unwrap_or_else(|| panic!("{label}: option observation reports its rows"));
         assert_eq!(painted_rows.len(), expected_rows.len());
-        for (painted, projected) in painted_rows.iter().zip(expected_rows) {
+        for (painted, projected) in painted_rows.iter().zip(expected_rows.iter().copied()) {
             assert_eq!(painted.get("identity"), projected.pointer("/value/value"));
             assert_eq!(painted.get("label"), projected.get("label"));
             let painted_focus: Value = serde_json::from_str(
@@ -5468,8 +6276,9 @@ fn assert_patch_modal_composition(
                 .iter()
                 .filter(|row| row.get("current").and_then(Value::as_bool) == Some(true))
                 .count(),
-            1,
-            "{label}: acknowledged CURRENT is singular and independent"
+            expected_current_count,
+            "{label}: acknowledged CURRENT markers correspond exactly; a prospective \
+             empty Choice has none"
         );
         assert_eq!(
             modal
@@ -5883,24 +6692,45 @@ fn assert_patch_utility_panel(
 
     // The authored identity caption remains, while action guidance stays in
     // the persistent footer rather than repeating in the panel.
-    let patch_id = utility_surface
-        .pointer("/summary/patchId")
-        .and_then(Value::as_u64)
-        .unwrap_or_else(|| panic!("{label}: the Utility summary names its Patch"));
-    let patch_name = document
-        .get("surfaces")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
-        .and_then(|surface| surface.pointer("/summary/patchName"))
-        .and_then(Value::as_str)
-        .unwrap_or_else(|| panic!("{label}: the document projects the Patch name"));
+    let utility_summary = utility_surface
+        .get("summary")
+        .unwrap_or_else(|| panic!("{label}: the Utility surface carries its summary"));
+    let empty = utility_summary.get("kind").and_then(Value::as_str) == Some("emptyPatchUtility");
+    let expected_identity = if empty {
+        let active = utility_summary
+            .get("activeCount")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| panic!("{label}: empty Utility names the active Patch count"));
+        let capacity = utility_summary
+            .get("capacity")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| panic!("{label}: empty Utility names Patch capacity"));
+        assert!(
+            utility_summary.get("patchId").is_none(),
+            "{label}: empty Utility must not manufacture a Patch identity"
+        );
+        format!("NEW · DEFAULT · CAPACITY {active}/{capacity}")
+    } else {
+        let patch_id = utility_summary
+            .get("patchId")
+            .and_then(Value::as_u64)
+            .unwrap_or_else(|| panic!("{label}: the Utility summary names its Patch"));
+        let patch_name = document
+            .get("surfaces")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+            .and_then(|surface| surface.pointer("/summary/patchName"))
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("{label}: the document projects the Patch name"));
+        format!("{patch_id} · {patch_name}")
+    };
     assert_eq!(
         observation.get("patchIdentity").and_then(Value::as_str),
-        Some(format!("{patch_id} · {patch_name}").as_str()),
-        "{label}: the Utility caption paints the projected identity and the \
-         projected name — never a capability identity"
+        Some(expected_identity.as_str()),
+        "{label}: the Utility caption paints the projected created identity or \
+         explicit identity-free empty state — never a capability identity"
     );
     assert_eq!(
         observation.pointer("/inspector/hintLine"),
@@ -5924,6 +6754,21 @@ fn assert_patch_utility_panel(
         Some(""),
         "{label}: the meter paints nothing when no mixer track is focused"
     );
+    for endpoint in [
+        "startReachable",
+        "endReachable",
+        "firstTargetReachable",
+        "lastTargetReachable",
+    ] {
+        assert_eq!(
+            observation
+                .pointer(&format!("/inspector/scrollReachability/{endpoint}"))
+                .and_then(Value::as_bool),
+            Some(true),
+            "{label}: the persistent Utility region reaches {endpoint} when driven to both \
+             scroll endpoints"
+        );
+    }
 }
 
 /// WP04 T028: the painted `CapabilityDetailShell` against the detail surface
@@ -5971,10 +6816,20 @@ fn assert_patch_detail_composition(
         Some(subject_kind),
         "{label}: the painted header reports the projected subject variant"
     );
+    let expected_patch_id = document
+        .get("surfaces")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
+        .and_then(|surface| surface.pointer("/summary/patchId"))
+        .cloned()
+        .unwrap_or(Value::Null);
     assert_eq!(
         detail.get("patchId"),
-        summary.get("patchId"),
-        "{label}: the painted header reports the exact projected Patch identity"
+        Some(&expected_patch_id),
+        "{label}: the painted header reports the exact created Patch identity or null for \
+         the identity-free empty position"
     );
     let origin_id = document
         .pointer("/returnPath/origin/controlId/id")
@@ -6467,8 +7322,16 @@ fn drive_live_window(
         })
         .cloned()
         .collect::<Vec<_>>();
+    let empty_patch_documents = fidelity
+        .patch_documents
+        .iter()
+        .filter(|(label, _)| label.starts_with("patch-empty") || *label == "patch-newly-created")
+        .cloned()
+        .collect::<Vec<_>>();
     let patch_documents: &[(&'static str, String)] = if scoped_witness.option {
         &option_patch_documents
+    } else if scoped_witness.empty_patch {
+        &empty_patch_documents
     } else {
         &fidelity.patch_documents
     };
@@ -6589,47 +7452,49 @@ fn drive_live_window(
     // ---- T024: double-render determinism across representative widths ----
     let document: Value = serde_json::from_str(document_a)
         .map_err(|error| format!("the fidelity document parses: {error}"))?;
-
-    assert_page_viewport_width(&window, receiver, desktop.width_px, "viewport-desktop")?;
-    let desktop_first = observe_render(&window, receiver, document_a, "desktop-1")?;
-    let desktop_second = observe_render(&window, receiver, document_a, "desktop-2")?;
-    assert_eq!(
-        desktop_first, desktop_second,
-        "T024: two renders of one document at {}x{} must observe identically",
-        desktop.width_px, desktop.height_px
-    );
-    assert_observation_structure(
-        &desktop_first,
-        &document,
-        desktop_side,
-        "T024 desktop 1920x1080",
-    );
-    screenshot("t024-desktop-1920x1080.png");
-
     let inspector_document: Value = serde_json::from_str(mixer_inspector_document)
         .map_err(|error| format!("the MIXER Inspector fidelity document parses: {error}"))?;
-    let inspector_desktop_first = observe_render(
-        &window,
-        receiver,
-        mixer_inspector_document,
-        "desktop-mixer-inspector-1",
-    )?;
-    let inspector_desktop_second = observe_render(
-        &window,
-        receiver,
-        mixer_inspector_document,
-        "desktop-mixer-inspector-2",
-    )?;
-    assert_eq!(
-        inspector_desktop_first, inspector_desktop_second,
-        "T024: MIXER Inspector focus renders deterministically at 1920x1080"
-    );
-    assert_observation_structure(
-        &inspector_desktop_first,
-        &inspector_document,
-        desktop_side,
-        "T024 desktop 1920x1080 MIXER Inspector",
-    );
+
+    assert_page_viewport_width(&window, receiver, desktop.width_px, "viewport-desktop")?;
+    if !scoped_witness.empty_patch {
+        let desktop_first = observe_render(&window, receiver, document_a, "desktop-1")?;
+        let desktop_second = observe_render(&window, receiver, document_a, "desktop-2")?;
+        assert_eq!(
+            desktop_first, desktop_second,
+            "T024: two renders of one document at {}x{} must observe identically",
+            desktop.width_px, desktop.height_px
+        );
+        assert_observation_structure(
+            &desktop_first,
+            &document,
+            desktop_side,
+            "T024 desktop 1920x1080",
+        );
+        screenshot("t024-desktop-1920x1080.png");
+
+        let inspector_desktop_first = observe_render(
+            &window,
+            receiver,
+            mixer_inspector_document,
+            "desktop-mixer-inspector-1",
+        )?;
+        let inspector_desktop_second = observe_render(
+            &window,
+            receiver,
+            mixer_inspector_document,
+            "desktop-mixer-inspector-2",
+        )?;
+        assert_eq!(
+            inspector_desktop_first, inspector_desktop_second,
+            "T024: MIXER Inspector focus renders deterministically at 1920x1080"
+        );
+        assert_observation_structure(
+            &inspector_desktop_first,
+            &inspector_document,
+            desktop_side,
+            "T024 desktop 1920x1080 MIXER Inspector",
+        );
+    }
 
     // The PATCH fixture documents at the desktop viewport: the same
     // double-render determinism, against the exact bytes the fidelity
@@ -6664,166 +7529,169 @@ fn drive_live_window(
     std::thread::sleep(Duration::from_millis(500));
 
     assert_page_viewport_width(&window, receiver, standard.width_px, "viewport-standard")?;
-    let compact_first = observe_render(&window, receiver, document_a, "standard-1")?;
-    let compact_second = observe_render(&window, receiver, document_a, "standard-2")?;
-    assert_eq!(
-        compact_first, compact_second,
-        "T024: two renders of one document at {}x{} must observe identically",
-        standard.width_px, standard.height_px
-    );
-    assert_observation_structure(
-        &compact_first,
-        &document,
-        standard_side,
-        "T024 standard 1280x800",
-    );
-    screenshot("t024-compact-1280x800.png");
-
-    let inspector_compact_first = observe_render(
-        &window,
-        receiver,
-        mixer_inspector_document,
-        "compact-mixer-inspector-1",
-    )?;
-    let inspector_compact_second = observe_render(
-        &window,
-        receiver,
-        mixer_inspector_document,
-        "compact-mixer-inspector-2",
-    )?;
-    assert_eq!(
-        inspector_compact_first, inspector_compact_second,
-        "T024: MIXER Inspector focus renders deterministically at 1280x800"
-    );
-    assert_observation_structure(
-        &inspector_compact_first,
-        &inspector_document,
-        standard_side,
-        "T024 standard 1280x800 MIXER Inspector",
-    );
-
-    // One deterministic all-track meter correlation probe. Rendering sets
-    // the page's current document; only the meter transport then repaints
-    // these passive nodes. A stale generation and a stale graph revision are
-    // both refused before the compatible frame is accepted.
-    window
-        .eval(format!("window.crest.render({document_a});"))
-        .map_err(|error| format!("rendering the meter correlation document failed: {error}"))?;
-    let document_generation = document
-        .get("generation")
-        .and_then(Value::as_u64)
-        .ok_or_else(|| "the meter document carries its generation".to_owned())?;
-    let document_revision = document
-        .pointer("/status/graphRevision")
-        .cloned()
-        .ok_or_else(|| "the meter document carries its graph revision".to_owned())?;
-    let mut stale_generation = serde_json::to_value(AudioObservationSnapshot::from_mix(
-        1,
-        1,
-        512,
-        document_generation + 1,
-        0,
-        0,
-        MixObservation::default(),
-    ))
-    .map_err(|error| format!("the stale meter frame serializes: {error}"))?;
-    stale_generation["activeGraphRevision"] = document_revision.clone();
-    tauri::Emitter::emit(handle, METER_EVENT, stale_generation)
-        .map_err(|error| format!("emitting the stale-generation frame failed: {error}"))?;
-    let stale_generation_paint = observe_meter_paint(&window, receiver, "meter-stale-generation")?;
-    assert!(
-        stale_generation_paint
-            .get("meters")
-            .and_then(Value::as_array)
-            .is_some_and(|meters| {
-                meters.len() == MixerTrackId::COUNT
-                    && meters
-                        .iter()
-                        .all(|meter| meter.get("state").and_then(Value::as_str) == Some("stale"))
-            }),
-        "all sixteen meter shapes refuse a stale parameter generation"
-    );
-
-    let mut stale_revision = serde_json::to_value(AudioObservationSnapshot::from_mix(
-        2,
-        2,
-        1_024,
-        document_generation,
-        0,
-        0,
-        MixObservation::default(),
-    ))
-    .map_err(|error| format!("the stale-revision meter frame serializes: {error}"))?;
-    stale_revision["activeGraphRevision"] = Value::from(u64::MAX);
-    tauri::Emitter::emit(handle, METER_EVENT, stale_revision)
-        .map_err(|error| format!("emitting the stale-revision frame failed: {error}"))?;
-    let stale_revision_paint = observe_meter_paint(&window, receiver, "meter-stale-revision")?;
-    assert!(
-        stale_revision_paint
-            .get("meters")
-            .and_then(Value::as_array)
-            .is_some_and(|meters| {
-                meters.len() == MixerTrackId::COUNT
-                    && meters
-                        .iter()
-                        .all(|meter| meter.get("state").and_then(Value::as_str) == Some("stale"))
-            }),
-        "all sixteen meter shapes refuse a stale graph revision"
-    );
-
-    let mut compatible = serde_json::to_value(AudioObservationSnapshot::from_mix(
-        3,
-        3,
-        1_536,
-        document_generation,
-        0,
-        0,
-        MixObservation::default(),
-    ))
-    .map_err(|error| format!("the compatible meter frame serializes: {error}"))?;
-    compatible["activeGraphRevision"] = document_revision;
-    for track in 0..MixerTrackId::COUNT {
-        let rms = (track + 1) as f64 / 32.0;
-        compatible["tracks"][track]["leftPeak"] = Value::from(rms);
-        compatible["tracks"][track]["rightPeak"] = Value::from(rms);
-        compatible["tracks"][track]["rms"] = Value::from(rms);
-    }
-    tauri::Emitter::emit(handle, METER_EVENT, compatible)
-        .map_err(|error| format!("emitting the compatible meter frame failed: {error}"))?;
-    let compatible_paint = observe_meter_paint(&window, receiver, "meter-compatible")?;
-    let painted_meters = compatible_paint
-        .get("meters")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "the compatible paint reports all meters".to_owned())?;
-    assert_eq!(painted_meters.len(), MixerTrackId::COUNT);
-    for (track, meter) in painted_meters.iter().enumerate() {
-        let expected_rms = (track + 1) as f64 / 32.0;
+    if !scoped_witness.empty_patch {
+        let compact_first = observe_render(&window, receiver, document_a, "standard-1")?;
+        let compact_second = observe_render(&window, receiver, document_a, "standard-2")?;
         assert_eq!(
-            meter.get("trackId").and_then(Value::as_u64),
-            Some(track as u64)
+            compact_first, compact_second,
+            "T024: two renders of one document at {}x{} must observe identically",
+            standard.width_px, standard.height_px
         );
-        assert_eq!(meter.get("state").and_then(Value::as_str), Some("active"));
+        assert_observation_structure(
+            &compact_first,
+            &document,
+            standard_side,
+            "T024 standard 1280x800",
+        );
+        screenshot("t024-compact-1280x800.png");
+
+        let inspector_compact_first = observe_render(
+            &window,
+            receiver,
+            mixer_inspector_document,
+            "compact-mixer-inspector-1",
+        )?;
+        let inspector_compact_second = observe_render(
+            &window,
+            receiver,
+            mixer_inspector_document,
+            "compact-mixer-inspector-2",
+        )?;
         assert_eq!(
-            meter
-                .get("rms")
-                .and_then(Value::as_str)
-                .and_then(|value| value.parse::<f64>().ok()),
-            Some(expected_rms),
-            "T{track:02X} meter geometry must use its own canonical array index"
+            inspector_compact_first, inspector_compact_second,
+            "T024: MIXER Inspector focus renders deterministically at 1280x800"
         );
+        assert_observation_structure(
+            &inspector_compact_first,
+            &inspector_document,
+            standard_side,
+            "T024 standard 1280x800 MIXER Inspector",
+        );
+
+        // One deterministic all-track meter correlation probe. Rendering sets
+        // the page's current document; only the meter transport then repaints
+        // these passive nodes. A stale generation and a stale graph revision are
+        // both refused before the compatible frame is accepted.
+        window
+            .eval(format!("window.crest.render({document_a});"))
+            .map_err(|error| format!("rendering the meter correlation document failed: {error}"))?;
+        let document_generation = document
+            .get("generation")
+            .and_then(Value::as_u64)
+            .ok_or_else(|| "the meter document carries its generation".to_owned())?;
+        let document_revision = document
+            .pointer("/status/graphRevision")
+            .cloned()
+            .ok_or_else(|| "the meter document carries its graph revision".to_owned())?;
+        let mut stale_generation = serde_json::to_value(AudioObservationSnapshot::from_mix(
+            1,
+            1,
+            512,
+            document_generation + 1,
+            0,
+            0,
+            MixObservation::default(),
+        ))
+        .map_err(|error| format!("the stale meter frame serializes: {error}"))?;
+        stale_generation["activeGraphRevision"] = document_revision.clone();
+        tauri::Emitter::emit(handle, METER_EVENT, stale_generation)
+            .map_err(|error| format!("emitting the stale-generation frame failed: {error}"))?;
+        let stale_generation_paint =
+            observe_meter_paint(&window, receiver, "meter-stale-generation")?;
         assert!(
-            meter
-                .get("label")
-                .and_then(Value::as_str)
-                .is_some_and(|text| text.starts_with(&format!("T{track:02X} meter"))),
-            "T{track:02X} meter exposes its identity and numeric state without color"
+            stale_generation_paint
+                .get("meters")
+                .and_then(Value::as_array)
+                .is_some_and(|meters| {
+                    meters.len() == MixerTrackId::COUNT
+                        && meters.iter().all(|meter| {
+                            meter.get("state").and_then(Value::as_str) == Some("stale")
+                        })
+                }),
+            "all sixteen meter shapes refuse a stale parameter generation"
+        );
+
+        let mut stale_revision = serde_json::to_value(AudioObservationSnapshot::from_mix(
+            2,
+            2,
+            1_024,
+            document_generation,
+            0,
+            0,
+            MixObservation::default(),
+        ))
+        .map_err(|error| format!("the stale-revision meter frame serializes: {error}"))?;
+        stale_revision["activeGraphRevision"] = Value::from(u64::MAX);
+        tauri::Emitter::emit(handle, METER_EVENT, stale_revision)
+            .map_err(|error| format!("emitting the stale-revision frame failed: {error}"))?;
+        let stale_revision_paint = observe_meter_paint(&window, receiver, "meter-stale-revision")?;
+        assert!(
+            stale_revision_paint
+                .get("meters")
+                .and_then(Value::as_array)
+                .is_some_and(|meters| {
+                    meters.len() == MixerTrackId::COUNT
+                        && meters.iter().all(|meter| {
+                            meter.get("state").and_then(Value::as_str) == Some("stale")
+                        })
+                }),
+            "all sixteen meter shapes refuse a stale graph revision"
+        );
+
+        let mut compatible = serde_json::to_value(AudioObservationSnapshot::from_mix(
+            3,
+            3,
+            1_536,
+            document_generation,
+            0,
+            0,
+            MixObservation::default(),
+        ))
+        .map_err(|error| format!("the compatible meter frame serializes: {error}"))?;
+        compatible["activeGraphRevision"] = document_revision;
+        for track in 0..MixerTrackId::COUNT {
+            let rms = (track + 1) as f64 / 32.0;
+            compatible["tracks"][track]["leftPeak"] = Value::from(rms);
+            compatible["tracks"][track]["rightPeak"] = Value::from(rms);
+            compatible["tracks"][track]["rms"] = Value::from(rms);
+        }
+        tauri::Emitter::emit(handle, METER_EVENT, compatible)
+            .map_err(|error| format!("emitting the compatible meter frame failed: {error}"))?;
+        let compatible_paint = observe_meter_paint(&window, receiver, "meter-compatible")?;
+        let painted_meters = compatible_paint
+            .get("meters")
+            .and_then(Value::as_array)
+            .ok_or_else(|| "the compatible paint reports all meters".to_owned())?;
+        assert_eq!(painted_meters.len(), MixerTrackId::COUNT);
+        for (track, meter) in painted_meters.iter().enumerate() {
+            let expected_rms = (track + 1) as f64 / 32.0;
+            assert_eq!(
+                meter.get("trackId").and_then(Value::as_u64),
+                Some(track as u64)
+            );
+            assert_eq!(meter.get("state").and_then(Value::as_str), Some("active"));
+            assert_eq!(
+                meter
+                    .get("rms")
+                    .and_then(Value::as_str)
+                    .and_then(|value| value.parse::<f64>().ok()),
+                Some(expected_rms),
+                "T{track:02X} meter geometry must use its own canonical array index"
+            );
+            assert!(
+                meter
+                    .get("label")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| text.starts_with(&format!("T{track:02X} meter"))),
+                "T{track:02X} meter exposes its identity and numeric state without color"
+            );
+        }
+        assert_eq!(
+            compatible_paint.get("selectedText").and_then(Value::as_str),
+            Some("METER 0.031 / ACTIVE"),
+            "the Inspector numeric meter is correlated to selected T00"
         );
     }
-    assert_eq!(
-        compatible_paint.get("selectedText").and_then(Value::as_str),
-        Some("METER 0.031 / ACTIVE"),
-        "the Inspector numeric meter is correlated to selected T00"
-    );
 
     // The PATCH fixture documents at the standard reference width.
     for (patch_label, patch_bytes) in patch_documents {
@@ -6853,6 +7721,8 @@ fn drive_live_window(
     // the serialized document's, while painted geometry and mode may change.
     let responsive_root = if scoped_witness.option {
         "patch-engine-options-maximum"
+    } else if scoped_witness.empty_patch {
+        "patch-empty"
     } else {
         "patch-long-instrument-detail"
     };
@@ -6943,8 +7813,11 @@ fn drive_live_window(
     if scoped_witness.option {
         prove_native_option_input_journeys(&window, receiver, desktop_side)?;
     }
+    if scoped_witness.empty_patch {
+        prove_native_empty_patch_input_journey(&window, receiver, desktop_side)?;
+    }
 
-    if scoped_witness.detail || scoped_witness.option {
+    if scoped_witness.detail || scoped_witness.option || scoped_witness.empty_patch {
         return Ok(());
     }
 

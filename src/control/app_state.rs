@@ -11,12 +11,13 @@ use crate::control::{
     MidiConnectionRevision, MidiDeviceContractError, MidiDeviceEffect, MidiDeviceFailure,
     MidiInputConnectionIntent, MidiInputDescriptor, MidiInputDeviceId, MidiInputPreference,
     MidiInputRegistryEntry, MidiInputRowAction, MidiInputScanState, MidiInputState,
-    MidiPreferredInput, MixerControlId, ModalControlId, PatchControlId, PatchSubordinateSession,
-    SampleBrowserState, SamplePreviewState, SemanticAction, SemanticControlId, SemanticResolver,
-    SurfaceId,
+    MidiPreferredInput, MixerControlId, ModalControlId, PatchControlId, PatchPositionId,
+    PatchSubordinateSession, SampleBrowserState, SamplePreviewState, SemanticAction,
+    SemanticControlId, SemanticResolver, SurfaceId,
 };
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::patch_id::PatchId;
+use crate::kernel::MAX_ACTIVE_PATCHES;
 use crate::mixer::bus_id::BusId;
 use crate::mixer::bus_return::{BusReturnBank, RETURN_LEVEL_DESCRIPTOR};
 use crate::mixer::global_parameters::{GlobalParameter, GlobalParameters};
@@ -42,8 +43,6 @@ use crate::synth::{
     VoiceEnvelopeParameter,
 };
 use core::fmt;
-
-const MAX_PATCH_COUNT: usize = 16;
 
 /// Validates one Patch's per-position effect chain against the registry.
 ///
@@ -75,11 +74,19 @@ pub(crate) fn validate_effect_slots(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StateAccepted {
     generation: u64,
+    saved_session_changed: bool,
 }
 
 impl StateAccepted {
     pub const fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// Reports whether this accepted transition changed any field represented
+    /// by `SavedSession::capture`. It is deliberately independent of the
+    /// control generation, which also advances for focus and runtime events.
+    pub const fn saved_session_changed(&self) -> bool {
+        self.saved_session_changed
     }
 }
 
@@ -433,6 +440,7 @@ pub(crate) fn exercise_reducer_table_rejections(
     let mut invalid_selection = AppState {
         capabilities: std::sync::Arc::new(capabilities.clone()),
         effects: std::sync::Arc::new(EffectCapabilityRegistry::default()),
+        patch_creation_blueprint: None,
         patches: vec![probe_patch(1, 0, instrument_config)],
         mixer: MixerState::default(),
         global,
@@ -455,6 +463,7 @@ pub(crate) fn exercise_reducer_table_rejections(
         sample_browser: SampleBrowserState::default(),
         midi_input: MidiInputState::default(),
         pending_instrument_config: None,
+        pending_patch_creation: None,
         sample_visualizations: std::collections::BTreeMap::new(),
         pending_sample_visualization: None,
         engine_selection: EngineSelectionStatus::ready(GraphRevision::INITIAL),
@@ -532,6 +541,7 @@ pub struct AppState {
     /// list at all.
     capabilities: std::sync::Arc<CapabilityRegistry>,
     effects: std::sync::Arc<EffectCapabilityRegistry>,
+    patch_creation_blueprint: Option<crate::control::PatchCreationBlueprint>,
     patches: Vec<Patch>,
     mixer: MixerState,
     global: GlobalParameters,
@@ -546,6 +556,9 @@ pub struct AppState {
     /// corresponding graph activation is acknowledged. This is transient
     /// control-thread state and is never serialized as acknowledged product state.
     pending_instrument_config: Option<crate::synth::InstrumentConfig>,
+    /// Canonical aggregate reserved for one implicit append. It remains
+    /// transient until matching graph activation acknowledgement.
+    pending_patch_creation: Option<Patch>,
     sample_visualizations:
         std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
     pending_sample_visualization: Option<(
@@ -671,6 +684,7 @@ impl AppState {
         Self {
             capabilities: std::sync::Arc::new(capabilities),
             effects: std::sync::Arc::new(effects),
+            patch_creation_blueprint: None,
             patches: Vec::new(),
             mixer: MixerState::default(),
             global,
@@ -682,6 +696,7 @@ impl AppState {
             sample_browser: SampleBrowserState::default(),
             midi_input: MidiInputState::default(),
             pending_instrument_config: None,
+            pending_patch_creation: None,
             sample_visualizations: std::collections::BTreeMap::new(),
             pending_sample_visualization: None,
             last_engine_selection_request_id: EngineSelectionRequestId::NONE,
@@ -714,6 +729,22 @@ impl AppState {
 
     pub fn effects(&self) -> &EffectCapabilityRegistry {
         &self.effects
+    }
+
+    pub const fn patch_creation_blueprint(
+        &self,
+    ) -> Option<&crate::control::PatchCreationBlueprint> {
+        self.patch_creation_blueprint.as_ref()
+    }
+
+    /// Injects immutable product composition used only for prospective Patch
+    /// projection and creation. It is not saved session content.
+    pub fn with_patch_creation_blueprint(
+        mut self,
+        blueprint: crate::control::PatchCreationBlueprint,
+    ) -> Self {
+        self.patch_creation_blueprint = Some(blueprint);
+        self
     }
 
     pub const fn global(&self) -> &GlobalParameters {
@@ -832,6 +863,10 @@ impl AppState {
         &self,
     ) -> Option<&crate::synth::InstrumentConfig> {
         self.pending_instrument_config.as_ref()
+    }
+
+    pub(crate) const fn pending_patch_creation(&self) -> Option<&Patch> {
+        self.pending_patch_creation.as_ref()
     }
 
     /// Tests one normalized user action against a clone of the exact accepted
@@ -965,12 +1000,12 @@ impl AppState {
     pub fn focused_patch_controls(
         &self,
     ) -> Result<Vec<crate::control::PatchControlId>, EventRejection> {
-        let patch_id = self
+        let position = self
             .interaction
-            .patch_focus()
+            .patch_position_focus()
             .ok_or(EventRejection::NoPatchesInstalled)?;
         SemanticResolver::new(self)
-            .patch_main_paths(patch_id)
+            .patch_main_paths_for_position(position)
             .map(|paths| {
                 paths
                     .into_iter()
@@ -998,7 +1033,10 @@ impl AppState {
             }
             self.generation = generation;
             return Ok(ApplyOutcome {
-                accepted: StateAccepted { generation },
+                accepted: StateAccepted {
+                    generation,
+                    saved_session_changed: false,
+                },
                 audio_command: Some(AudioCommand::PatchMidi { patch_id, message }),
                 engine_selection_effect: None,
                 midi_device_effects: Vec::new(),
@@ -1007,11 +1045,18 @@ impl AppState {
 
         let mut next = self.clone();
         let effects = next.reduce(event)?;
+        let saved_session_changed = self.patches != next.patches
+            || self.mixer != next.mixer
+            || self.global != next.global
+            || self.returns != next.returns;
         next.generation = generation;
 
         *self = next;
         Ok(ApplyOutcome {
-            accepted: StateAccepted { generation },
+            accepted: StateAccepted {
+                generation,
+                saved_session_changed,
+            },
             audio_command: effects.audio_command,
             engine_selection_effect: effects.engine_selection_effect,
             midi_device_effects: effects.midi_device_effects,
@@ -1143,6 +1188,10 @@ impl AppState {
             }
             AppEvent::InstallPatches(patches) => {
                 self.install_patches(patches)?;
+                Ok(ReducerEffects::default())
+            }
+            AppEvent::ReplacePersistedSession(replacement) => {
+                self.replace_persisted_session(*replacement)?;
                 Ok(ReducerEffects::default())
             }
             AppEvent::Midi { .. } => unreachable!("MIDI is reduced by apply's read-only fast path"),
@@ -1950,7 +1999,7 @@ impl AppState {
         if self.generation != 0 || !self.patches.is_empty() {
             return Err(EventRejection::InstallationClosed);
         }
-        if patches.len() > MAX_PATCH_COUNT {
+        if patches.len() > MAX_ACTIVE_PATCHES {
             return Err(EventRejection::TooManyPatches);
         }
         if patches.iter().any(|patch| {
@@ -1998,6 +2047,83 @@ impl AppState {
         Ok(())
     }
 
+    /// Replaces every persisted field in one reducer transition after its
+    /// exact graph is already active. Device state and application-owned
+    /// capability/catalog/runtime facts remain in place; interaction and
+    /// document-specific structural transients restart at PATCH/Engine.
+    fn replace_persisted_session(
+        &mut self,
+        replacement: crate::control::SessionReplacementPayload,
+    ) -> Result<(), EventRejection> {
+        let (patches, mixer, global, returns, target_graph_revision) = replacement.into_parts();
+        if patches.is_empty() {
+            return Err(EventRejection::NoPatchesInstalled);
+        }
+        if patches.len() > MAX_ACTIVE_PATCHES {
+            return Err(EventRejection::TooManyPatches);
+        }
+        for (index, patch) in patches.iter().enumerate() {
+            if patches[..index]
+                .iter()
+                .any(|prior| prior.id() == patch.id())
+            {
+                return Err(EventRejection::InvalidSelection);
+            }
+            let descriptor = self
+                .capabilities
+                .descriptor(patch.instrument_config().capability_id())
+                .ok_or(EventRejection::InvalidInstrumentConfig)?;
+            self.capabilities
+                .validate_config(patch.instrument_config())
+                .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+            if patch.voice_limit().value()
+                > VoiceLimit::seeded_from(descriptor.voice_policy()).value()
+            {
+                return Err(EventRejection::InvalidInstrumentConfig);
+            }
+            validate_effect_slots(&self.effects, patch.effect_slots())
+                .map_err(|_| EventRejection::InvalidEffectConfig)?;
+        }
+        for bus_return in returns.returns() {
+            if let Some(effect) = bus_return.effect() {
+                self.effects
+                    .validate_config(effect)
+                    .map_err(|_| EventRejection::InvalidEffectConfig)?;
+            }
+        }
+
+        self.patches = patches;
+        self.mixer = mixer;
+        self.global = global;
+        self.returns = returns;
+        self.interaction = InteractionState::new();
+        self.disabled_patch_overview_origins.clear();
+        self.focus_repair_status = None;
+        self.engine_selection = EngineSelectionStatus::ready(target_graph_revision);
+        self.sample_browser.reset_for_session();
+        self.pending_instrument_config = None;
+        self.pending_patch_creation = None;
+        self.sample_visualizations.clear();
+        self.pending_sample_visualization = None;
+
+        let first_patch = self
+            .patches
+            .first()
+            .expect("non-empty replacement was validated")
+            .id();
+        let engine_focus = SemanticResolver::new(self)
+            .patch_main_paths(first_patch)?
+            .into_iter()
+            .next()
+            .ok_or(EventRejection::InvalidSelection)?;
+        self.interaction
+            .initialize_patch_focus(Some(engine_focus.clone()));
+        self.interaction
+            .set_active_main(engine_focus)
+            .map_err(|_| EventRejection::InvalidSelection)?;
+        Ok(())
+    }
+
     /// Opens the subordinate PATCH detail surface on the focused row's subject.
     ///
     /// Entry is accepted only from a PatchMain path whose control resolves a
@@ -2015,13 +2141,13 @@ impl AppState {
         let subject = resolver
             .detail_subject(&origin)
             .ok_or(EventRejection::ActionUnavailableInContext)?;
-        let patch_id = origin
-            .patch_id()
+        let position = origin
+            .patch_position()
             .ok_or(EventRejection::NoPatchesInstalled)?;
         // The subject's first visible enabled control, resolved from the
         // installed descriptor rather than assumed.
         let focus = resolver
-            .patch_detail_paths(patch_id, &subject)?
+            .patch_detail_paths_for_position(position, &subject)?
             .into_iter()
             .next()
             .ok_or(EventRejection::InvalidSelection)?;
@@ -2101,8 +2227,8 @@ impl AppState {
             .iter()
             .find(|option| option.is_current() && option.is_enabled())
             .map(|option| {
-                FocusPath::patch_choice(
-                    subject.patch_id(),
+                FocusPath::patch_choice_at(
+                    subject.patch_position(),
                     subject.stable_id(),
                     option.id().to_owned(),
                 )
@@ -2163,11 +2289,156 @@ impl AppState {
             .find(|option| option.id() == option_id && option.is_enabled())
             .ok_or(EventRejection::InvalidSelection)?;
         if option.is_current() {
+            if subject.patch_position() == PatchPositionId::TrailingEmpty
+                && subject.control_id() == &PatchControlId::Engine
+            {
+                let candidate = self
+                    .patch_creation_blueprint
+                    .as_ref()
+                    .ok_or(EventRejection::EngineSelectionUnavailable)?
+                    .candidate(&self.patches)
+                    .map_err(|error| match error {
+                        crate::control::PatchCreationError::CapacityReached => {
+                            EventRejection::TooManyPatches
+                        }
+                        crate::control::PatchCreationError::IdentityExhausted => {
+                            EventRejection::InvalidSelection
+                        }
+                        crate::control::PatchCreationError::DefaultUnavailable => {
+                            EventRejection::EngineSelectionUnavailable
+                        }
+                    })?;
+                let effect = self.begin_patch_creation(candidate)?;
+                return Ok(ReducerEffects {
+                    audio_command: None,
+                    engine_selection_effect: Some(effect),
+                    midi_device_effects: Vec::new(),
+                });
+            }
             self.interaction
                 .return_to_origin()
                 .map_err(|_| EventRejection::ActionUnavailableInContext)?;
             return Ok(ReducerEffects::default());
         }
+        if subject.patch_position() == PatchPositionId::TrailingEmpty {
+            let blueprint = self
+                .patch_creation_blueprint
+                .as_ref()
+                .ok_or(EventRejection::EngineSelectionUnavailable)?;
+            let mut candidate = match subject.control_id() {
+                PatchControlId::Engine => {
+                    let target = self
+                        .capabilities
+                        .descriptors()
+                        .iter()
+                        .find(|descriptor| descriptor.id().as_str() == option_id)
+                        .ok_or(EventRejection::EngineSelectionUnavailable)?;
+                    blueprint
+                        .candidate_with_capability(&self.patches, target.id())
+                        .map_err(|error| match error {
+                            crate::control::PatchCreationError::CapacityReached => {
+                                EventRejection::TooManyPatches
+                            }
+                            crate::control::PatchCreationError::IdentityExhausted => {
+                                EventRejection::InvalidSelection
+                            }
+                            crate::control::PatchCreationError::DefaultUnavailable => {
+                                EventRejection::EngineSelectionUnavailable
+                            }
+                        })?
+                }
+                _ => blueprint
+                    .candidate(&self.patches)
+                    .map_err(|error| match error {
+                        crate::control::PatchCreationError::CapacityReached => {
+                            EventRejection::TooManyPatches
+                        }
+                        crate::control::PatchCreationError::IdentityExhausted => {
+                            EventRejection::InvalidSelection
+                        }
+                        crate::control::PatchCreationError::DefaultUnavailable => {
+                            EventRejection::EngineSelectionUnavailable
+                        }
+                    })?,
+            };
+            match subject.control_id().clone() {
+                PatchControlId::Engine => {}
+                PatchControlId::EffectSlot(slot) => {
+                    if option_id == crate::control::EMPTY_OCCUPANCY_CHOICE_ID {
+                        self.interaction
+                            .return_to_origin()
+                            .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                        return Ok(ReducerEffects::default());
+                    }
+                    let descriptor = self
+                        .effects
+                        .descriptors()
+                        .iter()
+                        .find(|descriptor| descriptor.id().as_str() == option_id)
+                        .ok_or(EventRejection::InvalidEffectConfig)?;
+                    let occupant = descriptor
+                        .default_config(slot.instance_identity())
+                        .map_err(|_| EventRejection::InvalidEffectConfig)?;
+                    candidate
+                        .set_slot_occupancy(slot, Some(occupant))
+                        .map_err(|_| EventRejection::InvalidEffectConfig)?;
+                }
+                PatchControlId::Output(PatchOutputParameter::OutputTrack) => {
+                    let track = MixerTrackId::ALL
+                        .into_iter()
+                        .find(|track| track.to_string() == option_id)
+                        .ok_or(EventRejection::InvalidParameterValue)?;
+                    candidate.set_output(candidate.output().with_track_id(track));
+                }
+                PatchControlId::Capability(parameter_id) => {
+                    let descriptor = self
+                        .capabilities
+                        .descriptor(candidate.instrument_config().capability_id())
+                        .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                    let spec = descriptor
+                        .parameter(&parameter_id)
+                        .filter(|spec| spec.kind() == ParameterKind::Choice)
+                        .ok_or(EventRejection::InvalidSelection)?;
+                    if !spec.choices().iter().any(|choice| choice.id() == option_id) {
+                        return Err(EventRejection::InvalidParameterValue);
+                    }
+                    if spec.update() == crate::synth::ParameterUpdate::Structural {
+                        candidate = blueprint
+                            .candidate_with_structural_choice(
+                                &self.patches,
+                                &parameter_id,
+                                &option_id,
+                            )
+                            .map_err(map_patch_creation_error)?;
+                    } else {
+                        let config = candidate
+                            .instrument_config()
+                            .with_scalar_value(
+                                descriptor,
+                                &parameter_id,
+                                ParameterValue::Choice(option_id),
+                            )
+                            .map_err(map_scalar_adjustment_error)?;
+                        candidate.set_instrument_config(config);
+                    }
+                }
+                PatchControlId::Output(_)
+                | PatchControlId::Effect(_, _)
+                | PatchControlId::Envelope(_)
+                | PatchControlId::Global(_)
+                | PatchControlId::MidiInput
+                | PatchControlId::VoiceLimit => return Err(EventRejection::InvalidSelection),
+            }
+            let effect = self.begin_patch_creation(candidate)?;
+            return Ok(ReducerEffects {
+                audio_command: None,
+                engine_selection_effect: Some(effect),
+                midi_device_effects: Vec::new(),
+            });
+        }
+        let patch_id = subject
+            .patch_id()
+            .ok_or(EventRejection::ActionUnavailableInContext)?;
 
         let effect = match subject.control_id().clone() {
             crate::control::PatchControlId::Engine => {
@@ -2195,7 +2466,7 @@ impl AppState {
                 };
                 Some(
                     self.request_topology_change(StructuralEditIntent::SetSlotOccupancy {
-                        patch_id: subject.patch_id(),
+                        patch_id,
                         slot,
                         entry,
                     })?,
@@ -2209,7 +2480,7 @@ impl AppState {
                 let patch = self
                     .patches
                     .iter_mut()
-                    .find(|patch| patch.id() == subject.patch_id())
+                    .find(|patch| patch.id() == patch_id)
                     .ok_or(EventRejection::NoPatchesInstalled)?;
                 patch.set_output(patch.output().with_track_id(track));
                 None
@@ -2218,7 +2489,7 @@ impl AppState {
                 let patch = self
                     .patches
                     .iter()
-                    .find(|patch| patch.id() == subject.patch_id())
+                    .find(|patch| patch.id() == patch_id)
                     .ok_or(EventRejection::NoPatchesInstalled)?;
                 let descriptor = self
                     .capabilities
@@ -2230,11 +2501,7 @@ impl AppState {
                     .map(crate::synth::ParameterSpec::update)
                     .ok_or(EventRejection::InvalidSelection)?;
                 if update == crate::synth::ParameterUpdate::Scalar {
-                    self.set_instrument_scalar_choice(
-                        subject.patch_id(),
-                        &parameter_id,
-                        option_id,
-                    )?;
+                    self.set_instrument_scalar_choice(patch_id, &parameter_id, option_id)?;
                     None
                 } else {
                     Some(self.request_parameter_choice_to(parameter_id, option_id)?)
@@ -2324,10 +2591,15 @@ impl AppState {
         }
         let (patch_id, parameter_id) = match self.interaction.subordinate_session() {
             Some(PatchSubordinateSession::SampleBrowser {
-                patch_id,
+                patch_position,
                 asset_parameter_id,
                 ..
-            }) => (*patch_id, asset_parameter_id.clone()),
+            }) => (
+                patch_position
+                    .patch_id()
+                    .ok_or(EventRejection::ActionUnavailableInContext)?,
+                asset_parameter_id.clone(),
+            ),
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
         let patch = self
@@ -2386,9 +2658,13 @@ impl AppState {
         if context == TopLevelContext::Patch {
             let focus = self
                 .interaction
-                .patch_focus()
+                .patch_position_focus()
                 .ok_or(EventRejection::NoPatchesInstalled)?;
-            if !self.patches.iter().any(|patch| patch.id() == focus) {
+            if matches!(
+                focus,
+                PatchPositionId::Created(patch_id)
+                    if !self.patches.iter().any(|patch| patch.id() == patch_id)
+            ) {
                 return Err(EventRejection::NoPatchesInstalled);
             }
         }
@@ -2429,8 +2705,9 @@ impl AppState {
         if self.interaction.mode() != crate::control::InteractionMode::Navigate {
             return Err(EventRejection::ActionUnavailableInContext);
         }
-        // Stepping through the installed order is a horizontal adjacent
-        // choice; vertical directions belong to control navigation.
+        // Stepping through the created order plus its trailing empty endpoint
+        // is a horizontal adjacent choice; vertical directions belong to
+        // control navigation.
         let step: isize = match direction {
             Direction::Left => -1,
             Direction::Right => 1,
@@ -2441,13 +2718,16 @@ impl AppState {
 
         let focused = self
             .interaction
-            .patch_focus()
+            .patch_position_focus()
             .ok_or(EventRejection::NoPatchesInstalled)?;
-        let current = self
-            .patches
-            .iter()
-            .position(|patch| patch.id() == focused)
-            .ok_or(EventRejection::UnknownPatch)?;
+        let current = match focused {
+            PatchPositionId::Created(patch_id) => self
+                .patches
+                .iter()
+                .position(|patch| patch.id() == patch_id)
+                .ok_or(EventRejection::UnknownPatch)?,
+            PatchPositionId::TrailingEmpty => self.patches.len(),
+        };
 
         // No wrapping: at either end this is an unchanged rejection, exactly
         // as an adjacent-choice parameter behaves at its boundary.
@@ -2456,11 +2736,15 @@ impl AppState {
             .checked_add(step)
             .ok_or(EventRejection::ParameterAtBoundary)?;
         let target = usize::try_from(target).map_err(|_| EventRejection::ParameterAtBoundary)?;
-        let target_id = self
+        if target > self.patches.len() {
+            return Err(EventRejection::ParameterAtBoundary);
+        }
+        let target_position = self
             .patches
             .get(target)
-            .ok_or(EventRejection::ParameterAtBoundary)?
-            .id();
+            .map_or(PatchPositionId::TrailingEmpty, |patch| {
+                PatchPositionId::Created(patch.id())
+            });
 
         // Any open subordinate surface is left as part of landing on the
         // destination: `set_active_main` below clears the return path and the
@@ -2469,8 +2753,8 @@ impl AppState {
         // same fact, and the invariant assertion could not tell them apart.
         let held = self.interaction.patch_control_focus();
         let resolver = SemanticResolver::new(self);
-        let source_order = resolver.patch_main_paths(focused)?;
-        let candidates = resolver.patch_main_paths(target_id)?;
+        let source_order = resolver.patch_main_paths_for_position(focused)?;
+        let candidates = resolver.patch_main_paths_for_position(target_position)?;
 
         // Recovery runs over *control* identities, because the two orders
         // carry different PatchIds and so can never compare equal as whole
@@ -2795,7 +3079,7 @@ impl AppState {
             &correlation,
         )
         .expect("Activating correlation owns a target revision");
-        if !audition && !intent.is_occupancy() {
+        if !audition && !intent.uses_topology_events() {
             let candidate = self
                 .pending_instrument_config
                 .clone()
@@ -2858,6 +3142,24 @@ impl AppState {
                 .set_return_occupancy(&self.effects, *bus, entry.as_ref())
                 .map_err(|_| EventRejection::MismatchedEngineSelection)?;
             self.repair_inspector_focus(old_inspector_order.as_deref())?;
+        } else if let StructuralEditIntent::AppendPatch { patch_id } = intent {
+            let candidate = self
+                .pending_patch_creation
+                .take()
+                .ok_or(EventRejection::MismatchedEngineSelection)?;
+            if candidate.id() != *patch_id
+                || self.patches.len() >= MAX_ACTIVE_PATCHES
+                || self.patches.iter().any(|patch| patch.id() == *patch_id)
+            {
+                return Err(EventRejection::MismatchedEngineSelection);
+            }
+            self.capabilities
+                .validate_config(candidate.instrument_config())
+                .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+            validate_effect_slots(&self.effects, candidate.effect_slots())
+                .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+            self.patches.push(candidate);
+            self.interaction.rekey_trailing_empty(*patch_id);
         }
         self.engine_selection = self
             .engine_selection
@@ -2936,7 +3238,8 @@ impl AppState {
             StructuralEditIntent::ReplaceCapability { .. }
             | StructuralEditIntent::ReplaceParameterChoice { .. }
             | StructuralEditIntent::ReplaceAsset { .. }
-            | StructuralEditIntent::PrepareAudition { .. } => {
+            | StructuralEditIntent::PrepareAudition { .. }
+            | StructuralEditIntent::AppendPatch { .. } => {
                 return Err(EventRejection::InvalidSelection)
             }
         }
@@ -2962,6 +3265,55 @@ impl AppState {
         Ok(effect)
     }
 
+    fn begin_patch_creation(
+        &mut self,
+        candidate: Patch,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
+        if self.interaction.patch_position_focus() != Some(PatchPositionId::TrailingEmpty) {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        if self.patches.len() >= MAX_ACTIVE_PATCHES {
+            return Err(EventRejection::TooManyPatches);
+        }
+        if self
+            .patches
+            .iter()
+            .any(|patch| patch.id() == candidate.id())
+        {
+            return Err(EventRejection::InvalidSelection);
+        }
+        self.capabilities
+            .validate_config(candidate.instrument_config())
+            .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        validate_effect_slots(&self.effects, candidate.effect_slots())
+            .map_err(|_| EventRejection::InvalidEffectConfig)?;
+
+        let request_id = self
+            .last_engine_selection_request_id
+            .checked_next()
+            .map_err(|_| EventRejection::RequestIdOverflow)?;
+        let status = EngineSelectionStatus::preparing_for_append(
+            self.engine_selection.active_graph_revision(),
+            request_id,
+            candidate.id(),
+        )
+        .map_err(|_| EventRejection::InvalidSelection)?;
+        let effect = EngineSelectionEffect::from_correlation(
+            EngineSelectionEffectKind::PrepareRequested,
+            status
+                .correlation()
+                .expect("Loading append status owns correlation"),
+        )
+        .expect("Loading append correlation has no target revision");
+        self.pending_patch_creation = Some(candidate);
+        self.engine_selection = status;
+        self.last_engine_selection_request_id = request_id;
+        Ok(effect)
+    }
+
     /// Records one prepared occupancy candidate and enters Activating.
     /// Canonical occupancy remains on the acknowledged graph until activation.
     fn topology_prepared(
@@ -2980,7 +3332,8 @@ impl AppState {
         }
         match &intent {
             StructuralEditIntent::SetSlotOccupancy { .. }
-            | StructuralEditIntent::SetReturnOccupancy { .. } => {
+            | StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::AppendPatch { .. } => {
                 let status = self
                     .engine_selection
                     .activating(target_graph_revision)
@@ -3018,7 +3371,7 @@ impl AppState {
         if correlation.intent() != intent
             || correlation.source_graph_revision() != source_graph_revision
             || target_graph_revision <= source_graph_revision
-            || !intent.is_occupancy()
+            || !intent.uses_topology_events()
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
@@ -3072,6 +3425,14 @@ impl AppState {
             }
             StructuralEditIntent::SetReturnOccupancy { .. } => {
                 correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
+            }
+            StructuralEditIntent::AppendPatch { patch_id } => {
+                correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
+                    && !self.patches.iter().any(|patch| patch.id() == *patch_id)
+                    && self
+                        .pending_patch_creation
+                        .as_ref()
+                        .is_some_and(|patch| patch.id() == *patch_id)
             }
         }
     }
@@ -3165,12 +3526,12 @@ impl AppState {
                         .return_to_origin()
                         .map_err(|_| EventRejection::ActionUnavailableInContext)
                 } else if direction == Direction::Right {
-                    let patch_id = self
+                    let position = self
                         .interaction
-                        .patch_focus()
+                        .patch_position_focus()
                         .ok_or(EventRejection::NoPatchesInstalled)?;
                     let utility_focus = SemanticResolver::new(self)
-                        .patch_utility_paths(patch_id)?
+                        .patch_utility_paths_for_position(position)?
                         .into_iter()
                         .next()
                         .ok_or(EventRejection::ActionUnavailableInContext)?;
@@ -3197,12 +3558,12 @@ impl AppState {
                             .map_err(|_| EventRejection::ActionUnavailableInContext)
                     }
                 } else if matches!(direction, Direction::Up | Direction::Down) {
-                    let patch_id = self
+                    let position = self
                         .interaction
-                        .patch_focus()
+                        .patch_position_focus()
                         .ok_or(EventRejection::NoPatchesInstalled)?;
                     self.navigate_side_nonwrapping(
-                        &SemanticResolver::new(self).patch_utility_paths(patch_id)?,
+                        &SemanticResolver::new(self).patch_utility_paths_for_position(position)?,
                         direction == Direction::Down,
                     )
                 } else {
@@ -3235,11 +3596,12 @@ impl AppState {
                     .map_err(|_| EventRejection::ActionUnavailableInContext),
                 Direction::Left => Err(EventRejection::ActionUnavailableInContext),
                 Direction::Up | Direction::Down => {
-                    let patch_id = self
+                    let position = self
                         .interaction
-                        .patch_focus()
+                        .patch_position_focus()
                         .ok_or(EventRejection::NoPatchesInstalled)?;
-                    let paths = SemanticResolver::new(self).patch_main_paths(patch_id)?;
+                    let paths =
+                        SemanticResolver::new(self).patch_main_paths_for_position(position)?;
                     let current = paths
                         .iter()
                         .position(|path| path == self.interaction.focus_path())
@@ -3274,6 +3636,24 @@ impl AppState {
         {
             self.open_patch_choice()?;
             return Ok(ReducerEffects::default());
+        }
+        if self.interaction.patch_position_focus() == Some(PatchPositionId::TrailingEmpty) {
+            let control = self
+                .interaction
+                .patch_control_focus()
+                .ok_or(EventRejection::InvalidSelection)?;
+            if matches!(control, PatchControlId::Global(_)) {
+                if let PatchControlId::Global(parameter) = control {
+                    self.adjust_global(parameter, direction)?;
+                    return Ok(ReducerEffects::default());
+                }
+            }
+            let effect = self.adjust_prospective_patch(control, direction)?;
+            return Ok(ReducerEffects {
+                audio_command: None,
+                engine_selection_effect: Some(effect),
+                midi_device_effects: Vec::new(),
+            });
         }
         if self.interaction.active_surface() == SurfaceId::PatchDetail {
             return self.adjust_patch_detail(direction);
@@ -3367,6 +3747,167 @@ impl AppState {
         }
     }
 
+    fn adjust_prospective_patch(
+        &mut self,
+        control: PatchControlId,
+        direction: Direction,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        let blueprint = self
+            .patch_creation_blueprint
+            .as_ref()
+            .ok_or(EventRejection::EngineSelectionUnavailable)?;
+        let mut candidate = if control == PatchControlId::Engine {
+            if matches!(direction, Direction::Up | Direction::Down) {
+                return Err(EventRejection::ActionUnavailableInContext);
+            }
+            let descriptors = self.capabilities.descriptors();
+            let source = descriptors
+                .iter()
+                .position(|descriptor| descriptor.id() == blueprint.instrument_capability_id())
+                .ok_or(EventRejection::EngineSelectionUnavailable)?;
+            let target = if direction == Direction::Right {
+                source
+                    .checked_add(1)
+                    .filter(|index| *index < descriptors.len())
+            } else {
+                source.checked_sub(1)
+            }
+            .ok_or(EventRejection::ParameterAtBoundary)?;
+            blueprint
+                .candidate_with_capability(&self.patches, descriptors[target].id())
+                .map_err(map_patch_creation_error)?
+        } else {
+            blueprint
+                .candidate(&self.patches)
+                .map_err(map_patch_creation_error)?
+        };
+
+        match control {
+            PatchControlId::Engine => {}
+            PatchControlId::Output(parameter) => {
+                let output = candidate.output();
+                let updated = match parameter {
+                    PatchOutputParameter::TrimGain => {
+                        let descriptor = parameter.descriptor();
+                        let value = adjusted_value(
+                            output.trim_gain_db(),
+                            descriptor
+                                .minimum()
+                                .ok_or(EventRejection::InvalidSelection)?,
+                            descriptor
+                                .maximum()
+                                .ok_or(EventRejection::InvalidSelection)?,
+                            direction,
+                            descriptor
+                                .fine_step()
+                                .ok_or(EventRejection::InvalidSelection)?,
+                            descriptor
+                                .coarse_step()
+                                .ok_or(EventRejection::InvalidSelection)?,
+                        )?;
+                        output
+                            .with_trim_gain_db(value)
+                            .map_err(|_| EventRejection::InvalidParameterValue)?
+                    }
+                    PatchOutputParameter::OutputTrack => {
+                        if matches!(direction, Direction::Up | Direction::Down) {
+                            return Err(EventRejection::ActionUnavailableInContext);
+                        }
+                        output
+                            .with_adjacent_track(direction == Direction::Right)
+                            .map_err(|_| EventRejection::ParameterAtBoundary)?
+                    }
+                };
+                candidate.set_output(updated);
+            }
+            PatchControlId::MidiInput => {
+                if matches!(direction, Direction::Up | Direction::Down) {
+                    return Err(EventRejection::ActionUnavailableInContext);
+                }
+                let current = candidate.channel().value();
+                let value = if direction == Direction::Right {
+                    current
+                        .checked_add(1)
+                        .filter(|value| *value <= MidiChannel::MAX)
+                } else {
+                    current.checked_sub(1)
+                }
+                .ok_or(EventRejection::ParameterAtBoundary)?;
+                candidate.set_channel(
+                    MidiChannel::new(value).map_err(|_| EventRejection::ParameterAtBoundary)?,
+                );
+            }
+            PatchControlId::VoiceLimit => {
+                let descriptor = VoiceLimit::descriptor();
+                let current = candidate.voice_limit().value();
+                let (step, increasing) = match direction {
+                    Direction::Right => (descriptor.fine_step(), true),
+                    Direction::Left => (descriptor.fine_step(), false),
+                    Direction::Up => (descriptor.coarse_step(), true),
+                    Direction::Down => (descriptor.coarse_step(), false),
+                };
+                let value = if increasing {
+                    current.saturating_add(step).min(descriptor.maximum())
+                } else {
+                    current.saturating_sub(step).max(descriptor.minimum())
+                };
+                if value == current {
+                    return Err(EventRejection::ParameterAtBoundary);
+                }
+                candidate
+                    .set_voice_limit(value)
+                    .map_err(|_| EventRejection::InvalidParameterValue)?;
+            }
+            PatchControlId::Envelope(parameter) => {
+                let descriptor = parameter.descriptor();
+                let envelope = *candidate.envelope();
+                let value = adjusted_value(
+                    envelope.value(parameter),
+                    descriptor.minimum(),
+                    descriptor.maximum(),
+                    direction,
+                    descriptor.fine_step(),
+                    descriptor.coarse_step(),
+                )?;
+                candidate.set_envelope(
+                    envelope
+                        .with_value(parameter, value)
+                        .map_err(|_| EventRejection::InvalidParameterValue)?,
+                );
+            }
+            PatchControlId::Capability(parameter_id) => {
+                let config = candidate.instrument_config();
+                let descriptor = self
+                    .capabilities
+                    .descriptor(config.capability_id())
+                    .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                let spec = descriptor
+                    .parameter(&parameter_id)
+                    .filter(|spec| {
+                        spec.patch_interaction() == PatchInteraction::ScalarEdit
+                            && spec.update() == crate::synth::ParameterUpdate::Scalar
+                            && spec.kind() != ParameterKind::Choice
+                    })
+                    .ok_or(EventRejection::InvalidSelection)?;
+                let current = config
+                    .value(&parameter_id)
+                    .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                let value = spec
+                    .adjusted_scalar_value(current, parameter_adjustment(direction))
+                    .map_err(map_scalar_adjustment_error)?;
+                candidate.set_instrument_config(
+                    config
+                        .with_scalar_value(descriptor, &parameter_id, value)
+                        .map_err(map_scalar_adjustment_error)?,
+                );
+            }
+            PatchControlId::EffectSlot(_)
+            | PatchControlId::Effect(_, _)
+            | PatchControlId::Global(_) => return Err(EventRejection::ActionUnavailableInContext),
+        }
+        self.begin_patch_creation(candidate)
+    }
+
     fn preview_start(&mut self) -> Result<EngineSelectionEffect, EventRejection> {
         if self.interaction.active_surface() != SurfaceId::SampleBrowser
             || !matches!(self.sample_browser.preview(), SamplePreviewState::Idle)
@@ -3384,10 +3925,15 @@ impl AppState {
         };
         let (patch_id, parameter_id) = match self.interaction.subordinate_session() {
             Some(PatchSubordinateSession::SampleBrowser {
-                patch_id,
+                patch_position,
                 asset_parameter_id,
                 ..
-            }) => (*patch_id, asset_parameter_id.clone()),
+            }) => (
+                patch_position
+                    .patch_id()
+                    .ok_or(EventRejection::ActionUnavailableInContext)?,
+                asset_parameter_id.clone(),
+            ),
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
         let patch = self
@@ -4567,6 +5113,16 @@ fn map_scalar_adjustment_error(error: CapabilityError) -> EventRejection {
     }
 }
 
+fn map_patch_creation_error(error: crate::control::PatchCreationError) -> EventRejection {
+    match error {
+        crate::control::PatchCreationError::CapacityReached => EventRejection::TooManyPatches,
+        crate::control::PatchCreationError::IdentityExhausted => EventRejection::InvalidSelection,
+        crate::control::PatchCreationError::DefaultUnavailable => {
+            EventRejection::EngineSelectionUnavailable
+        }
+    }
+}
+
 fn unavailable_failure(failure: EngineSelectionFailure) -> bool {
     matches!(
         failure,
@@ -4610,7 +5166,8 @@ fn candidate_matches_intent(
 ) -> bool {
     match intent {
         StructuralEditIntent::SetSlotOccupancy { .. }
-        | StructuralEditIntent::SetReturnOccupancy { .. } => false,
+        | StructuralEditIntent::SetReturnOccupancy { .. }
+        | StructuralEditIntent::AppendPatch { .. } => false,
         StructuralEditIntent::ReplaceCapability {
             target_capability_id,
         } => {
@@ -4748,6 +5305,74 @@ mod tests {
             ]))
             .unwrap();
         state
+    }
+
+    fn creation_blueprint() -> crate::control::PatchCreationBlueprint {
+        let provider = provider();
+        let capability_id = provider.descriptor().id().clone();
+        let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+        let factory = DescriptorDefaultConfigFactory::new(registry, vec![Box::new(provider)]);
+        crate::control::PatchCreationBlueprint::resolve(&capability_id, &factory).unwrap()
+    }
+
+    fn production_empty_state() -> AppState {
+        let registry =
+            crate::adapter::production_instruments::production_capability_registry().unwrap();
+        let factory = DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            crate::adapter::production_instruments::production_instrument_providers().unwrap(),
+        );
+        let blueprint = crate::control::PatchCreationBlueprint::resolve(
+            &crate::synth::CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+            &factory,
+        )
+        .unwrap();
+        let first = blueprint.candidate(&[]).unwrap();
+        let mut state = AppState::new_with_effects(
+            registry,
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            global_parameters(),
+        )
+        .with_patch_creation_blueprint(blueprint);
+        state.apply(AppEvent::InstallPatches(vec![first])).unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        state
+    }
+
+    fn navigate_to_patch_control(
+        state: &mut AppState,
+        predicate: impl Fn(&PatchControlId) -> bool,
+    ) {
+        for _ in 0..64 {
+            if matches!(
+                state.interaction().focus_path().control_id(),
+                SemanticControlId::Patch(control) if predicate(control)
+            ) {
+                return;
+            }
+            state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        }
+        panic!("the descriptor-backed surface did not reach the requested control");
+    }
+
+    fn assert_append_requested(state: &AppState, outcome: &ApplyOutcome) {
+        assert_eq!(state.patches().len(), 1);
+        let candidate = state
+            .pending_patch_creation()
+            .expect("an accepted first edit owns one pending candidate");
+        assert!(matches!(
+            outcome.engine_selection_effect().map(|effect| effect.intent()),
+            Some(StructuralEditIntent::AppendPatch { patch_id }) if *patch_id == candidate.id()
+        ));
+        assert_eq!(
+            state.engine_selection().kind(),
+            EngineSelectionStatusKind::Loading
+        );
     }
 
     /// One installed patch whose chain occupies only slot 1: slot 0 is empty
@@ -5080,6 +5705,78 @@ mod tests {
     }
 
     #[test]
+    fn accepted_outcome_reports_exact_saved_session_content_changes_only() {
+        fn apply_and_compare(state: &mut AppState, event: AppEvent) -> bool {
+            let before = crate::control::SavedSession::capture(state);
+            let entry = event.surface_entry();
+            let outcome = state.apply(event).unwrap_or_else(|error| {
+                panic!(
+                    "{entry:?} was rejected: {error}; focus={:?}; mode={:?}",
+                    state.interaction().focus_path(),
+                    state.interaction().mode()
+                )
+            });
+            let after = crate::control::SavedSession::capture(state);
+            assert_eq!(
+                outcome.accepted().saved_session_changed(),
+                before != after,
+                "the reducer indication must equal typed SavedSession comparison"
+            );
+            outcome.accepted().saved_session_changed()
+        }
+
+        let mut state = AppState::new(registry(), global_parameters());
+        assert!(apply_and_compare(
+            &mut state,
+            AppEvent::InstallPatches(vec![patch(1, 0.0), patch(2, -3.0)])
+        ));
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::SelectContext(TopLevelContext::Mixer)
+        ));
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::Midi {
+                patch_id: PatchId::new(1).unwrap(),
+                message: MidiMessage::all_notes_off(MidiChannel::new(0).unwrap()),
+            }
+        ));
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::MidiInputScanStarted
+        ));
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::SetInteractionMode(InteractionMode::Adjust)
+        ));
+        assert!(apply_and_compare(
+            &mut state,
+            AppEvent::Adjust(Direction::Down)
+        ));
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::SetInteractionMode(InteractionMode::Navigate)
+        ));
+
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::SelectContext(TopLevelContext::Patch)
+        ));
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::EnterSurface(SurfaceId::PatchUtility)
+        ));
+        assert!(!apply_and_compare(
+            &mut state,
+            AppEvent::SetInteractionMode(InteractionMode::Adjust)
+        ));
+        assert!(apply_and_compare(
+            &mut state,
+            AppEvent::Adjust(Direction::Down)
+        ));
+    }
+
+    #[test]
     fn direct_and_repeated_context_selection_preserves_independent_focus() {
         let mut state = installed_state();
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
@@ -5229,15 +5926,468 @@ mod tests {
             Some(PatchId::new(2).unwrap())
         );
 
-        // Right at the last position is likewise unchanged.
+        // Right at the last created position reaches the one interaction-only
+        // trailing empty endpoint.
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            state.interaction.patch_position_focus(),
+            Some(PatchPositionId::TrailingEmpty)
+        );
+        assert_eq!(state.interaction.patch_focus(), None);
         assert_eq!(
             state.apply(AppEvent::SelectPatch(Direction::Right)),
             Err(EventRejection::ParameterAtBoundary)
         );
-        assert_eq!(state.interaction.patch_focus().unwrap(), second);
 
         state.apply(AppEvent::SelectPatch(Direction::Left)).unwrap();
+        assert_eq!(state.interaction.patch_focus().unwrap(), second);
+        state.apply(AppEvent::SelectPatch(Direction::Left)).unwrap();
         assert_eq!(state.interaction.patch_focus().unwrap(), first);
+    }
+
+    #[test]
+    fn default_engine_confirmation_appends_only_on_matching_activation_acknowledgement() {
+        let mut state = installed_state().with_patch_creation_blueprint(creation_blueprint());
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            state.interaction().patch_position_focus(),
+            Some(PatchPositionId::TrailingEmpty)
+        );
+        let saved_before = crate::control::SavedSession::capture(&state);
+        let empty_json = saved_before.to_json().unwrap();
+        for runtime_only in [
+            "trailingEmpty",
+            "patchPosition",
+            "focus",
+            "prospective",
+            "pendingPatch",
+            "creationAvailable",
+            "capacity",
+            "graphRevision",
+            "engineSelection",
+        ] {
+            assert!(
+                !empty_json.contains(runtime_only),
+                "saved-session JSON must exclude runtime-only `{runtime_only}`"
+            );
+        }
+        let graph_before = state.engine_selection().active_graph_revision();
+        let (_, empty_page, _, empty_shell, empty_parameters, empty_tree) = StateProjector::new()
+            .project_with_shell_tree(&state)
+            .unwrap();
+        let empty_page = empty_page.expect("the empty Patch position is projectable");
+        assert!(empty_page.is_prospective());
+        assert!(empty_page.patch().is_empty());
+        assert_eq!(empty_page.patch().id(), None);
+        assert_eq!(empty_page.patch().midi_channel(), None);
+        assert_eq!(empty_page.patch().active_count(), 2);
+        assert_eq!(empty_parameters.patch_count(), 2);
+        assert_eq!(empty_parameters.graph_revision(), graph_before);
+        assert_eq!(empty_shell.patch_identity(), None);
+        assert!(!empty_tree.json().contains("Patch 3"));
+        assert_eq!(crate::control::SavedSession::capture(&state), saved_before);
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+
+        let request = state.apply(AppEvent::Activate).unwrap();
+        assert!(!request.accepted().saved_session_changed());
+        assert_eq!(state.patches().len(), 2);
+        let effect = request.engine_selection_effect().unwrap();
+        assert!(matches!(
+            effect.intent(),
+            StructuralEditIntent::AppendPatch { patch_id }
+                if *patch_id == PatchId::new(3).unwrap()
+        ));
+        let request_id = effect.request_id();
+        for lifecycle in [
+            EngineSelectionStatusKind::Validating,
+            EngineSelectionStatusKind::Preparing,
+        ] {
+            let outcome = state
+                .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                    request_id,
+                    lifecycle,
+                })
+                .unwrap();
+            assert!(!outcome.accepted().saved_session_changed());
+            assert_eq!(state.patches().len(), 2);
+        }
+        let target = GraphRevision::INITIAL.checked_next().unwrap();
+        let prepared = state
+            .apply(AppEvent::TopologyPrepared {
+                request_id,
+                intent: effect.intent().clone(),
+                source_graph_revision: GraphRevision::INITIAL,
+                target_graph_revision: target,
+            })
+            .unwrap();
+        assert!(!prepared.accepted().saved_session_changed());
+        assert_eq!(state.patches().len(), 2);
+
+        let committed = state
+            .apply(AppEvent::EngineActivationAcknowledged {
+                request_id,
+                intent: effect.intent().clone(),
+                target_graph_revision: target,
+                retired_graph_revision: GraphRevision::INITIAL,
+                collected: true,
+            })
+            .unwrap();
+        assert!(committed.accepted().saved_session_changed());
+        assert_eq!(state.patches().len(), 3);
+        assert_eq!(state.patches()[2].id(), PatchId::new(3).unwrap());
+        assert_eq!(state.patches()[2].name(), "Patch 3");
+        assert_eq!(state.patches()[2].channel(), MidiChannel::new(2).unwrap());
+        assert_eq!(
+            state.patches()[2].output().track_id(),
+            MixerTrackId::new(2).unwrap()
+        );
+        assert!(state.patches()[2]
+            .effect_slots()
+            .iter()
+            .all(Option::is_none));
+        assert_eq!(
+            state.interaction().focus_path().patch_id(),
+            Some(PatchId::new(3).unwrap())
+        );
+        assert_ne!(crate::control::SavedSession::capture(&state), saved_before);
+        let committed = crate::control::SavedSession::capture(&state);
+        let committed_json = committed.to_json().unwrap();
+        assert_eq!(
+            crate::control::SavedSession::from_json(&committed_json, state.capabilities()).unwrap(),
+            committed
+        );
+        assert!(!committed_json.contains("trailingEmpty"));
+    }
+
+    #[test]
+    fn keyboard_shift_horizontal_reaches_empty_creates_and_returns_by_stable_identity() {
+        let mut state = production_empty_state();
+        state.apply(AppEvent::SelectPatch(Direction::Left)).unwrap();
+        let prior_id = state.interaction().patch_focus().unwrap();
+        let mut keyboard = crate::shell::KeyboardInputTranslator::new();
+        assert_eq!(
+            keyboard.translate(crate::shell::WindowInput::key_down(
+                crate::shell::WindowKey::Shift,
+            )),
+            None
+        );
+        let right = keyboard
+            .translate(crate::shell::WindowInput::key_down(
+                crate::shell::WindowKey::D,
+            ))
+            .unwrap();
+        state.apply_semantic_action(right).unwrap();
+        assert_eq!(
+            state.interaction().patch_position_focus(),
+            Some(PatchPositionId::TrailingEmpty)
+        );
+
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        let request = state.apply(AppEvent::Activate).unwrap();
+        let effect = request.engine_selection_effect().unwrap().clone();
+        for lifecycle in [
+            EngineSelectionStatusKind::Validating,
+            EngineSelectionStatusKind::Preparing,
+        ] {
+            state
+                .apply(AppEvent::EngineSelectionLifecycleAdvanced {
+                    request_id: effect.request_id(),
+                    lifecycle,
+                })
+                .unwrap();
+        }
+        let target = GraphRevision::INITIAL.checked_next().unwrap();
+        state
+            .apply(AppEvent::TopologyPrepared {
+                request_id: effect.request_id(),
+                intent: effect.intent().clone(),
+                source_graph_revision: GraphRevision::INITIAL,
+                target_graph_revision: target,
+            })
+            .unwrap();
+        state
+            .apply(AppEvent::EngineActivationAcknowledged {
+                request_id: effect.request_id(),
+                intent: effect.intent().clone(),
+                target_graph_revision: target,
+                retired_graph_revision: GraphRevision::INITIAL,
+                collected: true,
+            })
+            .unwrap();
+        let created_id = state.patches().last().unwrap().id();
+        assert_eq!(state.interaction().patch_focus(), Some(created_id));
+
+        state.apply(AppEvent::Return).unwrap();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Navigate))
+            .unwrap();
+        let left = keyboard
+            .translate(crate::shell::WindowInput::key_down(
+                crate::shell::WindowKey::A,
+            ))
+            .unwrap();
+        state.apply_semantic_action(left).unwrap();
+        assert_eq!(state.interaction().patch_focus(), Some(prior_id));
+    }
+
+    #[test]
+    fn trailing_empty_remains_projectable_at_capacity_and_refuses_creation_before_submission() {
+        let mut state = AppState::new(registry(), global_parameters())
+            .with_patch_creation_blueprint(creation_blueprint());
+        state
+            .apply(AppEvent::InstallPatches(
+                (1..=crate::kernel::MAX_ACTIVE_PATCHES as u32)
+                    .map(|id| patch_on_channel(id, 0.0, (id - 1) as u8))
+                    .collect(),
+            ))
+            .unwrap();
+        state
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        for _ in 0..crate::kernel::MAX_ACTIVE_PATCHES {
+            state
+                .apply(AppEvent::SelectPatch(Direction::Right))
+                .unwrap();
+        }
+        assert_eq!(
+            state.interaction().patch_position_focus(),
+            Some(PatchPositionId::TrailingEmpty)
+        );
+
+        let (_, page, _, shell, parameters, tree) = StateProjector::new()
+            .project_with_shell_tree(&state)
+            .unwrap();
+        let page = page.unwrap();
+        assert!(page.patch().is_empty());
+        assert!(!page.patch().creation_available());
+        assert_eq!(
+            page.patch().active_count(),
+            crate::kernel::MAX_ACTIVE_PATCHES
+        );
+        assert_eq!(parameters.patch_count(), crate::kernel::MAX_ACTIVE_PATCHES);
+        assert!(tree.json().contains("\"creationAvailable\":false"));
+        let overview = shell
+            .semantic_model()
+            .surface(SurfaceId::PatchMain)
+            .unwrap();
+        assert!(matches!(
+            overview.summary(),
+            crate::control::SemanticSurfaceSummary::EmptyPatch {
+                creation_available: false,
+                active_count,
+                capacity,
+                ..
+            } if *active_count == crate::kernel::MAX_ACTIVE_PATCHES
+                && *capacity == crate::kernel::MAX_ACTIVE_PATCHES
+        ));
+
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        let before = state.clone();
+        assert_eq!(
+            state.apply(AppEvent::Activate),
+            Err(EventRejection::TooManyPatches)
+        );
+        assert_eq!(state, before);
+        assert!(state.pending_patch_creation().is_none());
+    }
+
+    #[test]
+    fn empty_position_noncreating_action_matrix_never_reserves_a_patch() {
+        let mut state = production_empty_state();
+        let saved = crate::control::SavedSession::capture(&state);
+        let revision = state.engine_selection().active_graph_revision();
+
+        state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        state.apply(AppEvent::Navigate(Direction::Up)).unwrap();
+        state
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        state.apply(AppEvent::Return).unwrap();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Navigate))
+            .unwrap();
+        let note = MidiMessage::try_new(
+            MidiChannel::new(0).unwrap(),
+            MidiMessageKind::NoteOn,
+            60,
+            100,
+        )
+        .unwrap();
+        state
+            .apply(AppEvent::Midi {
+                patch_id: state.patches()[0].id(),
+                message: note,
+            })
+            .unwrap();
+        assert!(state.pending_patch_creation().is_none());
+        assert_eq!(state.patches().len(), 1);
+        assert_eq!(crate::control::SavedSession::capture(&state), saved);
+        assert_eq!(state.engine_selection().active_graph_revision(), revision);
+
+        navigate_to_patch_control(
+            &mut state,
+            |control| matches!(control, PatchControlId::EffectSlot(slot) if slot.index() == 0),
+        );
+        state
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        state.apply(AppEvent::Activate).unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
+        assert!(state.pending_patch_creation().is_none());
+        assert_eq!(crate::control::SavedSession::capture(&state), saved);
+
+        let mut global = production_empty_state();
+        global
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+            .unwrap();
+        global.apply(AppEvent::Navigate(Direction::Up)).unwrap();
+        assert!(matches!(
+            global.interaction().focus_path().control_id(),
+            SemanticControlId::Patch(PatchControlId::Global(_))
+        ));
+        global
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        global.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_eq!(global.patches().len(), 1);
+        assert!(global.pending_patch_creation().is_none());
+        assert_ne!(crate::control::SavedSession::capture(&global), saved);
+    }
+
+    #[test]
+    fn every_declared_first_edit_family_requests_exactly_one_append_candidate() {
+        let mut explicit_default = production_empty_state();
+        explicit_default
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        explicit_default
+            .apply(AppEvent::Adjust(Direction::Up))
+            .unwrap();
+        let outcome = explicit_default.apply(AppEvent::Activate).unwrap();
+        assert_append_requested(&explicit_default, &outcome);
+
+        let mut alternate_engine = production_empty_state();
+        alternate_engine
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        let outcome = alternate_engine
+            .apply(AppEvent::Adjust(Direction::Right))
+            .unwrap();
+        assert_append_requested(&alternate_engine, &outcome);
+        assert_ne!(
+            alternate_engine
+                .pending_patch_creation()
+                .unwrap()
+                .instrument_config()
+                .capability_id()
+                .as_str(),
+            HIDEF_CAPABILITY_ID
+        );
+
+        let mut effect = production_empty_state();
+        navigate_to_patch_control(
+            &mut effect,
+            |control| matches!(control, PatchControlId::EffectSlot(slot) if slot.index() == 0),
+        );
+        effect
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        effect.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        effect.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+        let outcome = effect.apply(AppEvent::Activate).unwrap();
+        assert_append_requested(&effect, &outcome);
+        assert!(effect.pending_patch_creation().unwrap().effect_slots()[0].is_some());
+
+        let mut envelope = production_empty_state();
+        envelope
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        navigate_to_patch_control(&mut envelope, |control| {
+            matches!(
+                control,
+                PatchControlId::Envelope(crate::synth::VoiceEnvelopeParameter::AttackMilliseconds)
+            )
+        });
+        envelope
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        let outcome = envelope.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        assert_append_requested(&envelope, &outcome);
+        assert_eq!(
+            envelope
+                .pending_patch_creation()
+                .unwrap()
+                .envelope()
+                .attack_milliseconds(),
+            1.0
+        );
+
+        let mut descriptor = production_empty_state();
+        descriptor
+            .apply(AppEvent::EnterSurface(SurfaceId::PatchDetail))
+            .unwrap();
+        navigate_to_patch_control(&mut descriptor, |control| {
+            matches!(
+                control,
+                PatchControlId::Capability(id) if id.as_str() == SOUNDFONT_PRESET_PARAMETER_ID
+            )
+        });
+        descriptor
+            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        descriptor.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+        descriptor
+            .apply(AppEvent::Navigate(Direction::Down))
+            .unwrap();
+        let outcome = descriptor.apply(AppEvent::Activate).unwrap();
+        assert_append_requested(&descriptor, &outcome);
+
+        for (target, direction) in [
+            (
+                PatchControlId::Output(PatchOutputParameter::TrimGain),
+                Direction::Left,
+            ),
+            (PatchControlId::MidiInput, Direction::Right),
+            (
+                PatchControlId::Output(PatchOutputParameter::OutputTrack),
+                Direction::Right,
+            ),
+            (PatchControlId::VoiceLimit, Direction::Left),
+        ] {
+            let mut utility = production_empty_state();
+            utility
+                .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+                .unwrap();
+            navigate_to_patch_control(&mut utility, |control| control == &target);
+            utility
+                .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+                .unwrap();
+            let outcome = utility.apply(AppEvent::Adjust(direction)).unwrap();
+            assert_append_requested(&utility, &outcome);
+        }
     }
 
     /// Stepping between Patches is a horizontal adjacent choice and belongs to
@@ -7215,10 +8365,11 @@ mod tests {
         assert_eq!(state.global().master_gain_db(), master_before);
     }
 
-    /// T012: a switch at either end of the installed order is a typed
-    /// unchanged rejection.
+    /// A switch beyond either outer endpoint is a typed unchanged rejection;
+    /// the trailing empty position is the authored endpoint after the final
+    /// created Patch.
     #[test]
-    fn a_patch_switch_at_either_end_is_a_typed_unchanged_rejection() {
+    fn a_patch_switch_beyond_either_endpoint_is_a_typed_unchanged_rejection() {
         let mut state = installed_state();
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
@@ -7234,12 +8385,19 @@ mod tests {
         state
             .apply(AppEvent::SelectPatch(Direction::Right))
             .unwrap();
-        let at_last = state.clone();
+        state
+            .apply(AppEvent::SelectPatch(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            state.interaction().patch_position_focus(),
+            Some(PatchPositionId::TrailingEmpty)
+        );
+        let at_empty = state.clone();
         assert_eq!(
             state.apply(AppEvent::SelectPatch(Direction::Right)),
             Err(EventRejection::ParameterAtBoundary)
         );
-        assert_eq!(state, at_last);
+        assert_eq!(state, at_empty);
     }
 
     /// The shared Overview identities survive a switch between heterogeneous

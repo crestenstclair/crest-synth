@@ -189,7 +189,7 @@ fn engine_and_every_post_fx_origin_open_with_exact_slot_identity() {
         let origin = state.interaction().focus_path().clone();
         open_choice(&mut state);
         let subject = choice_subject(&state);
-        assert_eq!(subject.patch_id(), PATCH_ID);
+        assert_eq!(subject.patch_id(), Some(PATCH_ID));
         assert_eq!(subject.control_id(), &control);
         assert_eq!(state.interaction().return_path().unwrap().origin(), &origin);
         subjects.push(subject.stable_id());
@@ -366,7 +366,7 @@ fn engine_options_serialization_is_exact_stable_and_origin_anchored() {
     );
     let options = surface(&document, "patchChoice");
     assert_eq!(options["summary"]["kind"], "patchChoice");
-    assert_eq!(options["summary"]["patchId"], PATCH_ID.value());
+    assert_eq!(options["summary"]["patchPosition"], PATCH_ID.value());
     assert_eq!(options["summary"]["subject"]["patchId"], PATCH_ID.value());
     assert_eq!(options["summary"]["subject"]["controlId"], "patch.engine");
     let rows = options["controls"].as_array().unwrap();

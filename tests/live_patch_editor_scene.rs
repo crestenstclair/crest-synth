@@ -27,7 +27,7 @@ use crest_synth::control::app_state::{AppState, EventRejection};
 use crest_synth::control::event_log::EventLog;
 use crest_synth::control::event_record::EventSource;
 use crest_synth::control::state_projector::StateProjector;
-use crest_synth::control::{SemanticAction, SemanticControlId};
+use crest_synth::control::{PatchPositionId, SemanticAction, SemanticControlId};
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
 use crest_synth::mixer::mixer_state::MixerState;
@@ -48,6 +48,22 @@ use crest_synth::testing::live_patch_editor_scene::{
 use crest_synth::testing::{LiveTopologySupport, LiveTopologyTransition};
 use support::{globals, FixtureMidiSource};
 
+fn production_creation_blueprint(
+    registry: &crest_synth::synth::CapabilityRegistry,
+) -> crest_synth::control::PatchCreationBlueprint {
+    crest_synth::control::PatchCreationBlueprint::resolve(
+        &crest_synth::synth::CapabilityId::new(
+            crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
+        )
+        .expect("the production default capability identity is valid"),
+        &crest_synth::synth::DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            production_instrument_providers().expect("production providers are valid"),
+        ),
+    )
+    .expect("the production default Patch blueprint resolves")
+}
+
 /// The production fixture, installed through the production composition.
 fn installed_fixture(
 ) -> AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle> {
@@ -63,9 +79,11 @@ fn installed_fixture(
         production_effect_providers().expect("production effect providers are valid");
     let effects = production_effect_registry().expect("production effect registry is valid");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new_with_effects(registry, effects.clone(), global).with_initial_returns(
-            crest_synth::adapter::production_effects::startup_bus_returns(&effects),
-        ),
+        AppState::new_with_effects(registry.clone(), effects.clone(), global)
+            .with_initial_returns(
+                crest_synth::adapter::production_effects::startup_bus_returns(&effects),
+            )
+            .with_patch_creation_blueprint(production_creation_blueprint(&registry)),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,
@@ -123,10 +141,11 @@ fn installed_fixture_with_patch_count(
             patch
         })
         .collect();
-    let mut state = AppState::new_with_effects(registry, effects.clone(), global)
+    let mut state = AppState::new_with_effects(registry.clone(), effects.clone(), global)
         .with_initial_returns(
             crest_synth::adapter::production_effects::startup_bus_returns(&effects),
-        );
+        )
+        .with_patch_creation_blueprint(production_creation_blueprint(&registry));
     state
         .apply(AppEvent::InstallPatches(patches))
         .expect("installing the explicit roster is accepted");
@@ -178,6 +197,15 @@ fn focused_patch(
     app_loop: &AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle>,
 ) -> Option<PatchId> {
     app_loop.current_semantic_model().focus_path().patch_id()
+}
+
+fn focused_patch_position(
+    app_loop: &AppLoop<crest_synth::adapter::lock_free_audio_boundary::LockFreeControlHandle>,
+) -> Option<PatchPositionId> {
+    app_loop
+        .current_semantic_model()
+        .focus_path()
+        .patch_position()
 }
 
 /// The scene's subject after the switch is the **second** installed Patch, and
@@ -356,8 +384,9 @@ fn the_defeated_scene_removes_the_gesture_and_stays_on_the_first_patch() {
 }
 
 /// The end-of-order refusal must be a genuine boundary in whichever scene
-/// declares it. A negative that met an *accepted* step here would error out on
-/// its own scaffold instead of failing on reach — the defect T039 names.
+/// declares it. The gesture scene reaches the trailing empty position before
+/// probing right; the controlled negative still probes left of the first
+/// created Patch.
 #[test]
 fn the_end_of_order_refusal_is_a_real_boundary_in_both_modes() {
     for mode in [PatchSelectionMode::Gesture, PatchSelectionMode::Defeated] {
@@ -374,7 +403,8 @@ fn the_end_of_order_refusal_is_a_real_boundary_in_both_modes() {
         // Walk to this mode's subject, then run the boundary transition's own
         // roster-derived support. The gesture scene reaches the actual last
         // Patch even when the roster has more than two entries; the defeated
-        // scene remains on the first Patch and probes left.
+        // scene remains on the first Patch and probes left. The right-hand
+        // walk must include the interaction-only empty position.
         let switch = transition(&scene, "PatchEditor.switchToSubject");
         for event in support_events(switch.support_before()) {
             app_loop
@@ -392,17 +422,17 @@ fn the_end_of_order_refusal_is_a_real_boundary_in_both_modes() {
                 .expect("the boundary walk is accepted");
         }
         let expected_boundary = match mode {
-            PatchSelectionMode::Gesture => *installed.last().expect("the roster is non-empty"),
-            PatchSelectionMode::Defeated => installed[0],
+            PatchSelectionMode::Gesture => PatchPositionId::TrailingEmpty,
+            PatchSelectionMode::Defeated => PatchPositionId::Created(installed[0]),
         };
-        assert_eq!(focused_patch(&app_loop), Some(expected_boundary));
-        let focus_before = focused_patch(&app_loop);
+        assert_eq!(focused_patch_position(&app_loop), Some(expected_boundary));
+        let focus_before = focused_patch_position(&app_loop);
         assert_eq!(
             app_loop.dispatch_from(AppEvent::SelectPatch(*direction), EventSource::DemoScene),
             Err(EventRejection::ParameterAtBoundary),
             "{mode:?}: the declared boundary direction must actually be a boundary",
         );
-        assert_eq!(focused_patch(&app_loop), focus_before);
+        assert_eq!(focused_patch_position(&app_loop), focus_before);
         for event in support_events(refusal.support_after()) {
             app_loop
                 .dispatch_from(event, EventSource::DemoScene)

@@ -1,4 +1,6 @@
-use crate::control::{AppEvent, AppState, StateProjectionError, StateProjector};
+use crate::control::{
+    AppEvent, AppState, SessionReplacementPayload, StateProjectionError, StateProjector,
+};
 use crate::kernel::{MidiChannel, PatchId};
 use crate::mixer::bus_id::BusId;
 use crate::mixer::bus_return::BusReturnBank;
@@ -189,9 +191,9 @@ impl SavedSession {
 
     /// Validates and prepares a complete replacement session without exposing
     /// the candidate canonical state separately from its callback-ready graph.
-    /// Callers may atomically install [`PreparedSavedSession::into_parts`] only
-    /// after this returns `Ok`; every failure leaves their active session and
-    /// graph untouched.
+    /// Callers may stage [`PreparedSavedSession::into_replacement`] only after
+    /// this returns `Ok`; every failure leaves their active session and graph
+    /// untouched.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_restore(
         &self,
@@ -332,8 +334,13 @@ impl PreparedSavedSession {
         &self.graph
     }
 
-    pub fn into_parts(self) -> (AppState, PreparedGraph) {
-        (self.state, self.graph)
+    /// Consumes the private candidate into the only reducer payload allowed to
+    /// accompany its exact prepared graph. No mutable candidate `AppState`
+    /// escapes the saved-session boundary.
+    pub fn into_replacement(self) -> (SessionReplacementPayload, PreparedGraph) {
+        let payload =
+            SessionReplacementPayload::from_prepared_state(&self.state, self.graph.revision());
+        (payload, self.graph)
     }
 }
 
@@ -458,8 +465,8 @@ mod tests {
                 64,
             )
             .unwrap();
-        let (restored, graph) = prepared.into_parts();
-        assert_eq!(graph.revision(), GraphRevision::INITIAL);
+        let restored = prepared.state();
+        assert_eq!(prepared.graph().revision(), GraphRevision::INITIAL);
         assert_eq!(
             restored.patches()[0]
                 .instrument_config()
@@ -478,6 +485,85 @@ mod tests {
             restored.sample_browser().lifecycle(),
             crate::control::SampleAssetLifecycle::Unavailable,
             "restore makes unresolved asset availability explicit and never substitutes"
+        );
+        let (replacement, graph) = prepared.into_replacement();
+        assert_eq!(
+            replacement.patch_ids().collect::<Vec<_>>(),
+            [PatchId::new(1).unwrap()]
+        );
+        assert_eq!(replacement.target_graph_revision(), graph.revision());
+    }
+
+    #[test]
+    fn exact_capacity_session_round_trips_and_prepares_sixteen_created_patches_only() {
+        let seed = state();
+        let config = seed.patches()[0].instrument_config().clone();
+        let mut full = AppState::new(
+            seed.capabilities().clone(),
+            GlobalParameters::new(-3.0).unwrap(),
+        );
+        full.apply(AppEvent::InstallPatches(
+            (1..=crate::kernel::MAX_ACTIVE_PATCHES as u32)
+                .map(|id| {
+                    Patch::new(
+                        PatchId::new(id).unwrap(),
+                        format!("Patch {id}"),
+                        config.clone(),
+                        MidiChannel::new((id - 1) as u8).unwrap(),
+                        PatchOutput::new(
+                            crate::mixer::mixer_track_id::MixerTrackId::new((id - 1) as u8)
+                                .unwrap(),
+                            0.0,
+                        )
+                        .unwrap(),
+                    )
+                })
+                .collect(),
+        ))
+        .unwrap();
+
+        let saved = SavedSession::capture(&full);
+        let json = saved.to_json().unwrap();
+        assert!(!json.contains("trailingEmpty"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()["patches"]
+                .as_array()
+                .unwrap()
+                .len(),
+            crate::kernel::MAX_ACTIVE_PATCHES
+        );
+        let restored_saved = SavedSession::from_json(&json, full.capabilities()).unwrap();
+        assert_eq!(restored_saved, saved);
+
+        let prepared = restored_saved
+            .prepare_restore(
+                full.capabilities().clone(),
+                EffectCapabilityRegistry::default(),
+                &sample_preparers(Ok(vec![1]), Ok(decoded("folder/kick.wav"))),
+                &[],
+                GraphRevision::INITIAL.checked_next().unwrap(),
+                48_000.0,
+                64,
+            )
+            .unwrap();
+        assert_eq!(
+            prepared.state().patches().len(),
+            crate::kernel::MAX_ACTIVE_PATCHES
+        );
+        assert_eq!(
+            prepared.graph().initial_parameters().patch_count(),
+            crate::kernel::MAX_ACTIVE_PATCHES
+        );
+        assert_eq!(
+            prepared
+                .state()
+                .patches()
+                .iter()
+                .map(Patch::id)
+                .collect::<Vec<_>>(),
+            (1..=crate::kernel::MAX_ACTIVE_PATCHES as u32)
+                .map(|id| PatchId::new(id).unwrap())
+                .collect::<Vec<_>>()
         );
     }
 

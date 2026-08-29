@@ -725,7 +725,7 @@ where
                 let page = app_loop
                     .current_patch_page()
                     .ok_or(LiveDemoError::MissingPatchProjection)?;
-                if page.patch().id() != transition.patch_id()
+                if page.patch().id() != Some(transition.patch_id())
                     || page.engine().active_capability_id() != transition.source_capability_id()
                     || app_loop.engine_selection_status().kind() != EngineSelectionStatusKind::Ready
                     || app_loop.graph_revision() != self.last_ready_graph_revision
@@ -1608,7 +1608,7 @@ where
         let handoff = app_loop
             .engine_graph_handoff_status()
             .ok_or(LiveDemoError::EngineRuntimeUnavailable)?;
-        if page.patch().id() != transition.patch_id()
+        if page.patch().id() != Some(transition.patch_id())
             || page.focused_control_id() != transition.focused_control_id()
             || page.state_hash() != tree.state_hash()
             || text.state_hash() != tree.state_hash()
@@ -1649,7 +1649,8 @@ where
         let pending = status != EngineSelectionStatusKind::Ready;
         let preset = match transition.intent() {
             StructuralEditIntent::SetSlotOccupancy { .. }
-            | StructuralEditIntent::SetReturnOccupancy { .. } => {
+            | StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::AppendPatch { .. } => {
                 return Err(LiveDemoError::EngineProjectionMismatch)
             }
             StructuralEditIntent::ReplaceCapability { .. } => {
@@ -2128,7 +2129,7 @@ where
                 PatchControlId::Effect(slot_id, _) => app_loop
                     .patches()
                     .iter()
-                    .find(|patch| patch.id() == page.patch().id())
+                    .find(|patch| Some(patch.id()) == page.patch().id())
                     .and_then(|patch| {
                         patch
                             .effect_slots()
@@ -2229,6 +2230,17 @@ where
             // defect this assertion exists for.
             let projected = app_loop.current_semantic_model().focus_path().patch_id();
             if projected == Some(*patch_id) {
+                Ok(true)
+            } else {
+                Err(LiveDemoError::TopologySupportMismatch)
+            }
+        }
+        LiveTopologySupport::VerifyEmptyPatchPosition => {
+            let projected = app_loop
+                .current_semantic_model()
+                .focus_path()
+                .patch_position();
+            if projected == Some(crate::control::PatchPositionId::TrailingEmpty) {
                 Ok(true)
             } else {
                 Err(LiveDemoError::TopologySupportMismatch)
@@ -2584,7 +2596,8 @@ where
         StructuralEditIntent::ReplaceAsset { .. }
         | StructuralEditIntent::PrepareAudition { .. } => Ok(false),
         StructuralEditIntent::SetSlotOccupancy { .. }
-        | StructuralEditIntent::SetReturnOccupancy { .. } => Ok(false),
+        | StructuralEditIntent::SetReturnOccupancy { .. }
+        | StructuralEditIntent::AppendPatch { .. } => Ok(false),
     }
 }
 

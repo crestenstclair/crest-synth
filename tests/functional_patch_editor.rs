@@ -53,7 +53,7 @@ use crest_synth::adapter::production_effects::{
 };
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_instrument_preparers,
-    production_soundfont_capability,
+    production_instrument_providers, production_soundfont_capability,
 };
 use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
@@ -214,11 +214,21 @@ fn soundfont_config(bank: u16, program: u8) -> InstrumentConfig {
 ///
 /// A two-Patch same-capability fixture would agree with itself by accident.
 fn fixture_state() -> AppState {
+    let registry = production_capability_registry().expect("the production instrument registry");
+    let creation_blueprint = crest_synth::control::PatchCreationBlueprint::resolve(
+        &crest_synth::synth::CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+        &crest_synth::synth::DescriptorDefaultConfigFactory::new(
+            registry.clone(),
+            production_instrument_providers().unwrap(),
+        ),
+    )
+    .unwrap();
     let mut state = AppState::new_with_effects(
-        production_capability_registry().expect("the production instrument registry"),
+        registry,
         production_effect_registry().expect("the production effect registry"),
         GlobalParameters::new(-3.0).expect("a valid master gain"),
-    );
+    )
+    .with_patch_creation_blueprint(creation_blueprint);
     let braids = || {
         BraidsCapability::new()
             .expect("the production Braids capability")
@@ -2171,9 +2181,10 @@ fn check_focus_recovers_against_the_destination_schema() {
     );
 }
 
-/// A request at either end of the installed order is a typed unchanged
-/// rejection, asserted by comparing whole states rather than by the absence of
-/// an error.
+/// A request beyond either outer endpoint is a typed unchanged rejection. The
+/// trailing empty position is the authored endpoint after the installed order.
+/// Whole-state comparison proves a refusal rather than merely observing an
+/// error.
 fn check_the_ends_of_the_installed_order_refuse() {
     let mut state = fixture_state();
     let before = state.clone();
@@ -2194,11 +2205,18 @@ fn check_the_ends_of_the_installed_order_refuse() {
             .apply(AppEvent::SelectPatch(Direction::Right))
             .unwrap();
     }
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .expect("the final created Patch advances to the trailing empty endpoint");
+    assert_eq!(
+        state.interaction().patch_position_focus(),
+        Some(crest_synth::control::PatchPositionId::TrailingEmpty)
+    );
     let at_end = state.clone();
     assert_eq!(
         state.apply(AppEvent::SelectPatch(Direction::Right)),
         Err(EventRejection::ParameterAtBoundary),
-        "the last position must refuse rather than wrap"
+        "the trailing empty endpoint must refuse rather than wrap"
     );
     assert_eq!(state, at_end, "a refused switch leaves the state identical");
     assert_eq!(document(&state), document(&at_end));

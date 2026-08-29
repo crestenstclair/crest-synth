@@ -37,7 +37,8 @@ use crest_synth::real_time::structural_graph_boundary::{
 use crest_synth::real_time::structural_graph_coordinator::StructuralGraphCoordinator;
 use crest_synth::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-    MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
+    MidiActivityObservationCallback, ProjectionCallback, SessionCommandCallback,
+    SessionDocumentProjectionCallback, TickCallback, WindowError,
 };
 use crest_synth::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
@@ -368,6 +369,8 @@ impl AppWindow for OneTickWindow {
         projection: ProjectionCallback,
         _audio_observation: AudioObservationCallback,
         _midi_activity: MidiActivityObservationCallback,
+        _on_session_command: SessionCommandCallback,
+        _document_projection: SessionDocumentProjectionCallback,
         mut on_tick: TickCallback,
         _on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError> {
@@ -436,6 +439,13 @@ fn runtime_application(
         },
         ApplicationConfig::default(),
     )
+    .map(|application| {
+        application.with_default_session_blueprint(
+            crest_synth::control::DefaultSessionBlueprint::new(
+                CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+            ),
+        )
+    })
 }
 
 fn supported_config() -> AudioDeviceConfig {
@@ -793,6 +803,13 @@ fn runtime_application_with_effects(
         },
         ApplicationConfig::default(),
     )
+    .map(|application| {
+        application.with_default_session_blueprint(
+            crest_synth::control::DefaultSessionBlueprint::new(
+                CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
+            ),
+        )
+    })
 }
 
 /// An effect registry that installs entries but cannot compose the declared

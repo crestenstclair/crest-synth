@@ -3,7 +3,7 @@ use crate::control::{
     EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind, InteractionMode,
     MidiConnectionRequestId, MidiConnectionRevision, MidiDeviceFailure, MidiInputDescriptor,
     MidiInputDeviceId, MidiInputPreference, MidiInputScanId, PatchControlId, SampleAssetLifecycle,
-    SemanticAction, StructuralEditIntent, SurfaceId,
+    SemanticAction, SessionReplacementPayload, StructuralEditIntent, SurfaceId,
 };
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
@@ -40,6 +40,7 @@ impl Direction {
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppEventPayloadShape {
     PatchList,
+    SessionReplacement,
     PatchId,
     MidiMessage,
     EngineSelectionRequestId,
@@ -105,6 +106,9 @@ pub enum AppEventSurfaceDescriptor {
     Return,
     InstallPatches {
         patches: AppEventPayloadShape,
+    },
+    ReplacePersistedSession {
+        replacement: AppEventPayloadShape,
     },
     Midi {
         patch_id: AppEventPayloadShape,
@@ -221,7 +225,7 @@ pub enum AppEventSurfaceDescriptor {
     MidiInputShutdownRequested,
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 48] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 49] = [
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -281,6 +285,9 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 48] = [
     AppEventSurfaceDescriptor::Return,
     AppEventSurfaceDescriptor::InstallPatches {
         patches: AppEventPayloadShape::PatchList,
+    },
+    AppEventSurfaceDescriptor::ReplacePersistedSession {
+        replacement: AppEventPayloadShape::SessionReplacement,
     },
     AppEventSurfaceDescriptor::Midi {
         patch_id: AppEventPayloadShape::PatchId,
@@ -431,6 +438,10 @@ pub enum AppEvent {
     /// Whether installation is still permitted is enforced by AppState::apply
     /// on the control thread.
     InstallPatches(Vec<Patch>),
+    /// Commits all persisted content only after the payload's correlated
+    /// complete graph has activated. The payload can be produced only by the
+    /// saved-session preparation boundary.
+    ReplacePersistedSession(Box<SessionReplacementPayload>),
     /// Route one normalized MIDI message to its target patch.
     Midi {
         patch_id: PatchId,
@@ -690,6 +701,11 @@ impl AppEvent {
             Self::InstallPatches(_) => AppEventSurfaceDescriptor::InstallPatches {
                 patches: AppEventPayloadShape::PatchList,
             },
+            Self::ReplacePersistedSession(_) => {
+                AppEventSurfaceDescriptor::ReplacePersistedSession {
+                    replacement: AppEventPayloadShape::SessionReplacement,
+                }
+            }
             Self::Midi { .. } => AppEventSurfaceDescriptor::Midi {
                 patch_id: AppEventPayloadShape::PatchId,
                 message: AppEventPayloadShape::MidiMessage,
@@ -886,7 +902,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 48);
+        assert_eq!(descriptor.len(), 49);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -922,6 +938,11 @@ mod tests {
         assert!(
             descriptor.contains(&AppEventSurfaceDescriptor::InstallPatches {
                 patches: AppEventPayloadShape::PatchList,
+            })
+        );
+        assert!(
+            descriptor.contains(&AppEventSurfaceDescriptor::ReplacePersistedSession {
+                replacement: AppEventPayloadShape::SessionReplacement,
             })
         );
         assert!(descriptor.contains(&AppEventSurfaceDescriptor::Midi {

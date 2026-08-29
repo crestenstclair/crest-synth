@@ -125,6 +125,9 @@ pub enum LiveTopologySupport {
     VerifyPatchSubject {
         patch_id: PatchId,
     },
+    /// Asserts that PATCH speaks for the interaction-only trailing empty
+    /// position rather than a persisted Patch identity.
+    VerifyEmptyPatchPosition,
     /// Dispatches one event that must be refused by the named typed
     /// rejection, leaving state unchanged. The falsifying half of a journey:
     /// an entry the surface does not offer, or a step past the end of an

@@ -556,7 +556,7 @@ impl StateProjector {
         // path (it derives from `patch_focus()`), so it is the one that needs a
         // cross-check.
         let snapshot_patch = state.interaction.active_focus.patch_id();
-        if page.is_some_and(|page| Some(page.patch().id()) != snapshot_patch) {
+        if page.is_some_and(|page| page.patch().id() != snapshot_patch) {
             return Err(StateProjectionError::InvalidSelection);
         }
         let settings_active =
@@ -596,12 +596,26 @@ impl StateProjector {
                         return Err(StateProjectionError::InvalidSelection);
                     }
                     let patch = page.patch();
-                    let primary = format!("PATCH {:02} · {}", patch.id().value(), patch.name());
-                    let secondary = format!(
-                        "MIDI CH {:02} · {}",
-                        u16::from(patch.midi_channel().value()) + 1,
-                        page.engine().active_label()
-                    );
+                    let (primary, secondary) = match (patch.id(), patch.midi_channel()) {
+                        (Some(patch_id), Some(channel)) => (
+                            format!("PATCH {:02} · {}", patch_id.value(), patch.name()),
+                            format!(
+                                "MIDI CH {:02} · {}",
+                                u16::from(channel.value()) + 1,
+                                page.engine().active_label()
+                            ),
+                        ),
+                        (None, None) if patch.is_empty() => (
+                            "NEW PATCH · EMPTY".to_owned(),
+                            format!(
+                                "{} · CAPACITY {}/{}",
+                                page.engine().active_label(),
+                                patch.active_count(),
+                                patch.capacity()
+                            ),
+                        ),
+                        _ => return Err(StateProjectionError::InvalidSelection),
+                    };
                     match semantic.focus_path().control_id() {
                         SemanticControlId::Patch(_) | SemanticControlId::Modal(_) => {}
                         SemanticControlId::SurfaceRoot
@@ -1109,7 +1123,7 @@ mod tests {
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::mixer_track_parameters::MixerTrackParameter;
     use crate::mixer::patch_output::PatchOutput;
-    use crate::real_time::MAX_PATCHES;
+    use crate::real_time::MAX_ACTIVE_PATCHES;
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{InstrumentConfig, ParameterValue, PatchInteraction};
@@ -1282,7 +1296,7 @@ mod tests {
         let provider =
             crate::adapter::production_instruments::production_soundfont_capability().unwrap();
         let mut state = AppState::new(provider.registry().unwrap(), global_parameters());
-        let patches = (1..=(MAX_PATCHES as u32 + 1))
+        let patches = (1..=(MAX_ACTIVE_PATCHES as u32 + 1))
             .map(|id| patch(id, -6.0))
             .collect();
 
@@ -1380,7 +1394,7 @@ mod tests {
             projector.project_with_shell_tree(&state).unwrap();
         let page = page.expect("PATCH context projects one focused page");
 
-        assert_eq!(page.patch().id(), state.patches()[0].id());
+        assert_eq!(page.patch().id(), Some(state.patches()[0].id()));
         assert_eq!(page.state_hash(), snapshot.hash());
         assert_eq!(text.context(), crate::control::TopLevelContext::Patch);
         assert!(text.body().starts_with(PATCH_HEADER));
@@ -1390,7 +1404,7 @@ mod tests {
         assert_eq!(tree_value["projection"]["context"], "patch");
         assert_eq!(
             tree_value["patchPage"]["patch"]["id"],
-            page.patch().id().value()
+            page.patch().id().unwrap().value()
         );
 
         let body_address = text.body().as_ptr();

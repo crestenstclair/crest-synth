@@ -2,7 +2,8 @@ use crate::kernel::PatchId;
 use crate::real_time::patch_effect_observation::PatchEffectSlotObservations;
 use crate::real_time::prepared_graph::PositionCapabilityIdentity;
 use crate::real_time::{
-    ParameterSnapshot, PatchAudioBlock, PatchEffectObservation, RtPostEffectParameters, MAX_PATCHES,
+    ParameterSnapshot, PatchAudioBlock, PatchEffectObservation, RtPostEffectParameters,
+    MAX_ACTIVE_PATCHES,
 };
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::{EffectSlotId, PreparedEffectError, PreparedPostEffect};
@@ -43,7 +44,7 @@ impl PreparedPostEffectSlot {
 pub(crate) type PreparedPatchEffectSlots = [Option<PreparedPostEffectSlot>; MAX_EFFECT_SLOTS];
 
 /// Fixed-capacity Patch-aligned ownership of the prepared effect grid:
-/// `MAX_EFFECT_SLOTS` ordered positions for each of `MAX_PATCHES` Patches.
+/// `MAX_EFFECT_SLOTS` ordered positions for each of `MAX_ACTIVE_PATCHES` Patches.
 ///
 /// Each position is independently empty or occupied. Occupied positions
 /// process their Patch's stem in place in ascending index order, an empty
@@ -51,15 +52,15 @@ pub(crate) type PreparedPatchEffectSlots = [Option<PreparedPostEffectSlot>; MAX_
 /// is unrepresentable.
 pub struct PreparedPostEffectRack {
     patch_count: usize,
-    patch_ids: [Option<PatchId>; MAX_PATCHES],
-    slots: [PreparedPatchEffectSlots; MAX_PATCHES],
+    patch_ids: [Option<PatchId>; MAX_ACTIVE_PATCHES],
+    slots: [PreparedPatchEffectSlots; MAX_ACTIVE_PATCHES],
 }
 
 impl PreparedPostEffectRack {
     pub(crate) fn from_slots(
         patch_count: usize,
-        patch_ids: [Option<PatchId>; MAX_PATCHES],
-        slots: [PreparedPatchEffectSlots; MAX_PATCHES],
+        patch_ids: [Option<PatchId>; MAX_ACTIVE_PATCHES],
+        slots: [PreparedPatchEffectSlots; MAX_ACTIVE_PATCHES],
     ) -> Self {
         Self {
             patch_count,
@@ -189,10 +190,10 @@ impl PreparedPostEffectRack {
         &mut self,
         block: &mut PatchAudioBlock,
         parameters: &ParameterSnapshot,
-        observations: &mut [PatchEffectObservation; MAX_PATCHES],
+        observations: &mut [PatchEffectObservation; MAX_ACTIVE_PATCHES],
     ) -> Result<(), EffectRackProcessError> {
         let mut slot_observations =
-            [[PatchEffectObservation::EMPTY; MAX_EFFECT_SLOTS]; MAX_PATCHES];
+            [[PatchEffectObservation::EMPTY; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES];
         self.process_with_slot_observations(block, parameters, observations, &mut slot_observations)
     }
 
@@ -202,7 +203,7 @@ impl PreparedPostEffectRack {
         &mut self,
         block: &mut PatchAudioBlock,
         parameters: &ParameterSnapshot,
-        observations: &mut [PatchEffectObservation; MAX_PATCHES],
+        observations: &mut [PatchEffectObservation; MAX_ACTIVE_PATCHES],
         slot_observations: &mut PatchEffectSlotObservations,
     ) -> Result<(), EffectRackProcessError> {
         observations.fill(PatchEffectObservation::EMPTY);
@@ -261,7 +262,7 @@ impl PreparedPostEffectRack {
     /// leaves unchanged, so unchanged instances keep their delay/LFO/tail
     /// state across block-boundary activation.
     ///
-    /// Callback-safe: bounded by `MAX_PATCHES * MAX_EFFECT_SLOTS`
+    /// Callback-safe: bounded by `MAX_ACTIVE_PATCHES * MAX_EFFECT_SLOTS`
     /// pointer-sized `mem::swap`s with no allocation, deallocation, locking,
     /// blocking, or destruction. Only the effect box is exchanged; each
     /// position keeps its own preallocated scratch, which is overwritten
@@ -280,10 +281,12 @@ impl PreparedPostEffectRack {
         superseded: &mut Self,
         exclude: Option<(PatchId, usize)>,
     ) {
-        if self.patch_count != superseded.patch_count {
+        if self.patch_count < superseded.patch_count
+            || self.patch_count > superseded.patch_count.saturating_add(1)
+        {
             return;
         }
-        for index in 0..self.patch_count {
+        for index in 0..superseded.patch_count {
             let Some(patch_id) = self.patch_ids[index] else {
                 continue;
             };
@@ -423,7 +426,7 @@ mod tests {
     use crate::real_time::prepared_graph::PositionCapabilityIdentity;
     use crate::real_time::{
         ParameterSnapshot, PatchAudioBlock, PatchEffectObservation, RtInstrumentParameters,
-        RtPatchParameters, RtPostEffectParameters, MAX_PATCHES,
+        RtPatchParameters, RtPostEffectParameters, MAX_ACTIVE_PATCHES,
     };
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
@@ -749,9 +752,9 @@ mod tests {
             fill_signal(stem, position);
             let input: Vec<f32> = stem.to_vec();
 
-            let mut observations = [PatchEffectObservation::EMPTY; MAX_PATCHES];
+            let mut observations = [PatchEffectObservation::EMPTY; MAX_ACTIVE_PATCHES];
             let mut slot_observations =
-                [[PatchEffectObservation::EMPTY; MAX_EFFECT_SLOTS]; MAX_PATCHES];
+                [[PatchEffectObservation::EMPTY; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES];
             rack.process_with_slot_observations(
                 &mut block,
                 &parameters,
@@ -1007,7 +1010,7 @@ mod tests {
                 block.begin_render(parameters, MAX_FRAMES).unwrap();
                 let stem = block.stem_mut(0, PatchId::new(1).unwrap()).unwrap();
                 fill_signal(stem, block_index);
-                let mut observations = [PatchEffectObservation::EMPTY; MAX_PATCHES];
+                let mut observations = [PatchEffectObservation::EMPTY; MAX_ACTIVE_PATCHES];
                 rack.process(&mut block, parameters, &mut observations)
                     .unwrap();
                 outputs.push(
@@ -1058,9 +1061,9 @@ mod tests {
     fn marker_rack(add: f32, capability: &str) -> PreparedPostEffectRack {
         let patch_id = PatchId::new(1).unwrap();
         let slot_id = EffectSlotId::new(7).unwrap();
-        let mut patch_ids = [None; MAX_PATCHES];
+        let mut patch_ids = [None; MAX_ACTIVE_PATCHES];
         patch_ids[0] = Some(patch_id);
-        let mut slots: [PreparedPatchEffectSlots; MAX_PATCHES] =
+        let mut slots: [PreparedPatchEffectSlots; MAX_ACTIVE_PATCHES] =
             std::array::from_fn(|_| std::array::from_fn(|_| None));
         slots[0][1] = Some(PreparedPostEffectSlot::new(
             patch_id,
@@ -1132,6 +1135,19 @@ mod tests {
         assert_eq!(processed_marker(&mut superseded), 0.25);
     }
 
+    #[test]
+    fn append_carries_existing_effects_even_though_the_candidate_has_one_more_patch() {
+        let mut fresh = marker_rack(0.25, "effect.alpha");
+        let mut superseded = marker_rack(0.75, "effect.alpha");
+        fresh.patch_count = 2;
+        fresh.patch_ids[1] = Some(PatchId::new(2).unwrap());
+
+        fresh.carry_live_effects_from(&mut superseded, None);
+
+        assert_eq!(processed_marker(&mut fresh), 0.75);
+        assert_eq!(processed_marker(&mut superseded), 0.25);
+    }
+
     /// Every occupied position enforces its own frame capacity.
     #[test]
     fn each_slot_enforces_its_own_frame_capacity() {
@@ -1156,7 +1172,7 @@ mod tests {
         );
         let mut block = PatchAudioBlock::prepare(256).unwrap();
         block.begin_render(&parameters, 256).unwrap();
-        let mut observations = [PatchEffectObservation::EMPTY; MAX_PATCHES];
+        let mut observations = [PatchEffectObservation::EMPTY; MAX_ACTIVE_PATCHES];
 
         assert_eq!(
             rack.process(&mut block, &parameters, &mut observations),

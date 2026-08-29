@@ -24,7 +24,7 @@ use crest_synth::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary
 use crest_synth::real_time::audio_command::AudioCommand;
 use crest_synth::real_time::audio_renderer::AudioRenderer;
 use crest_synth::real_time::parameter_snapshot::{
-    ParameterSnapshot, RtInstrumentParameters, RtPatchParameters, MAX_PATCHES,
+    ParameterSnapshot, RtInstrumentParameters, RtPatchParameters, MAX_ACTIVE_PATCHES,
 };
 use crest_synth::real_time::prepared_graph_builder::PreparedGraphBuilder;
 use crest_synth::real_time::structural_graph_boundary::NoStructuralGraphChanges;
@@ -248,7 +248,7 @@ fn pinned_braids_engine_satisfies_the_mixed_production_contract() {
     drop(rack);
     assert_eq!(braids_lifecycle_counts().active, lifecycle_before.active);
 
-    let maximum_braids_patches = braids_patches(MAX_PATCHES, 1);
+    let maximum_braids_patches = braids_patches(MAX_ACTIVE_PATCHES, 1);
     let maximum_rack = PreparedEngineRackBuilder::build(
         &maximum_braids_patches,
         &braids_registry,
@@ -257,7 +257,7 @@ fn pinned_braids_engine_satisfies_the_mixed_production_contract() {
         BLOCK_FRAMES,
     )
     .expect("Braids uses the engine-agnostic rack Patch capacity");
-    let no_braids_specific_patch_limit = maximum_rack.patch_count() == MAX_PATCHES;
+    let no_braids_specific_patch_limit = maximum_rack.patch_count() == MAX_ACTIVE_PATCHES;
     assert!(no_braids_specific_patch_limit);
     drop(maximum_rack);
 
@@ -608,7 +608,7 @@ fn prove_mixed_routing_and_isolation() -> (bool, bool) {
 fn measure_worst_case_mixed_callback() -> (u64, usize, usize, u64, bool) {
     const MEASURED_BLOCKS: usize = 256;
     let registry = production_capability_registry().unwrap();
-    let state = installed_state(registry.clone(), mixed_patches(MAX_PATCHES));
+    let state = installed_state(registry.clone(), mixed_patches(MAX_ACTIVE_PATCHES));
     let parameters = projected_parameters(&state);
     let preparers = production_instrument_preparers().unwrap();
     let graph = PreparedGraphBuilder::new(&registry, &preparers)

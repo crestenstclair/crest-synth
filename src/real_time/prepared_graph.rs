@@ -4,7 +4,7 @@ use crate::mixer::mix_engine::MixEngine;
 use crate::real_time::callback_safety::record_callback_owned_destruction;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
-use crate::real_time::parameter_snapshot::MAX_PATCHES;
+use crate::real_time::parameter_snapshot::MAX_ACTIVE_PATCHES;
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 use crate::real_time::prepared_bus_return_rack::PreparedBusReturnRack;
 use crate::real_time::prepared_engine_rack::PreparedEngineRack;
@@ -213,13 +213,13 @@ pub struct PreparedGraphLayout {
     sample_rate_bits: u32,
     max_frames: usize,
     patch_count: usize,
-    patch_ids: [Option<PatchId>; MAX_PATCHES],
-    scalar_counts: [u8; MAX_PATCHES],
-    engine_capability_identities: [Option<PositionCapabilityIdentity>; MAX_PATCHES],
-    effect_slot_ids: [[Option<EffectSlotId>; MAX_EFFECT_SLOTS]; MAX_PATCHES],
-    effect_scalar_counts: [[u8; MAX_EFFECT_SLOTS]; MAX_PATCHES],
+    patch_ids: [Option<PatchId>; MAX_ACTIVE_PATCHES],
+    scalar_counts: [u8; MAX_ACTIVE_PATCHES],
+    engine_capability_identities: [Option<PositionCapabilityIdentity>; MAX_ACTIVE_PATCHES],
+    effect_slot_ids: [[Option<EffectSlotId>; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
+    effect_scalar_counts: [[u8; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
     effect_capability_identities:
-        [[Option<PositionCapabilityIdentity>; MAX_EFFECT_SLOTS]; MAX_PATCHES],
+        [[Option<PositionCapabilityIdentity>; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
     return_slot_ids: [Option<EffectSlotId>; MAX_BUS_RETURNS],
     return_scalar_counts: [u8; MAX_BUS_RETURNS],
     return_capability_identities: [Option<PositionCapabilityIdentity>; MAX_BUS_RETURNS],
@@ -299,12 +299,12 @@ impl PreparedGraph {
     /// Returns the fixed replacement contract without borrowing graph-owned
     /// engine, effect, or scratch state.
     pub fn layout(&self) -> PreparedGraphLayout {
-        let mut patch_ids = [None; MAX_PATCHES];
-        let mut scalar_counts = [0; MAX_PATCHES];
-        let mut engine_capability_identities = [None; MAX_PATCHES];
-        let mut effect_slot_ids = [[None; MAX_EFFECT_SLOTS]; MAX_PATCHES];
-        let mut effect_scalar_counts = [[0; MAX_EFFECT_SLOTS]; MAX_PATCHES];
-        let mut effect_capability_identities = [[None; MAX_EFFECT_SLOTS]; MAX_PATCHES];
+        let mut patch_ids = [None; MAX_ACTIVE_PATCHES];
+        let mut scalar_counts = [0; MAX_ACTIVE_PATCHES];
+        let mut engine_capability_identities = [None; MAX_ACTIVE_PATCHES];
+        let mut effect_slot_ids = [[None; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES];
+        let mut effect_scalar_counts = [[0; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES];
+        let mut effect_capability_identities = [[None; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES];
         let mut index = 0;
         while index < self.inner.engine_rack.patch_count() {
             patch_ids[index] = self.inner.engine_rack.patch_id(index);
@@ -527,7 +527,11 @@ impl PreparedGraph {
                 (None, Some((patch_id, slot.index())), None)
             }
             GraphReplacementScope::BusReturn(bus) => (None, None, Some(bus)),
+            GraphReplacementScope::AppendPatch(_) => (None, None, None),
             GraphReplacementScope::Audition => (None, None, None),
+            // A document replacement deliberately carries no live graph-owned
+            // state across. The renderer clears notes on activation.
+            GraphReplacementScope::WholeSession => return,
         };
         self.inner
             .engine_rack
@@ -553,6 +557,9 @@ impl Drop for PreparedGraph {
 /// replacement can never smuggle in an unrelated topology change.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum GraphReplacementScope {
+    /// A complete prepared document may replace every bounded layout entry.
+    /// Unlike the scoped edit variants, this is always a full-reset swap.
+    WholeSession,
     /// The selected Patch's engine capability and scalar shape may change.
     SelectedEngine(PatchId),
     /// Exactly one Patch effect-slot position may change occupancy.
@@ -562,6 +569,9 @@ pub enum GraphReplacementScope {
     },
     /// Exactly one bus return may change occupancy.
     BusReturn(crate::mixer::bus_id::BusId),
+    /// One new Patch may appear at the exact final position; every prior
+    /// engine/effect/return/device layout entry remains identical.
+    AppendPatch(PatchId),
     /// The engine/effect/routing layout is unchanged; only the graph-owned
     /// preview slot may differ.
     Audition,
@@ -610,12 +620,19 @@ impl PreparedGraphLayout {
     pub fn permits_replacement(self, candidate: Self, scope: GraphReplacementScope) -> bool {
         if self.sample_rate_bits != candidate.sample_rate_bits
             || self.max_frames != candidate.max_frames
-            || self.patch_count != candidate.patch_count
-            || self.patch_ids != candidate.patch_ids
+        {
+            return false;
+        }
+        if scope == GraphReplacementScope::WholeSession {
+            return true;
+        }
+        if !matches!(scope, GraphReplacementScope::AppendPatch(_))
+            && (self.patch_count != candidate.patch_count || self.patch_ids != candidate.patch_ids)
         {
             return false;
         }
         match scope {
+            GraphReplacementScope::WholeSession => true,
             GraphReplacementScope::SelectedEngine(selected_patch_id) => {
                 if self.effect_slot_ids != candidate.effect_slot_ids
                     || self.effect_scalar_counts != candidate.effect_scalar_counts
@@ -658,7 +675,7 @@ impl PreparedGraphLayout {
                     return false;
                 };
                 let mut index = 0;
-                while index < MAX_PATCHES {
+                while index < MAX_ACTIVE_PATCHES {
                     let mut position = 0;
                     while position < MAX_EFFECT_SLOTS {
                         let selected_position = index == selected_index && position == slot.index();
@@ -701,6 +718,29 @@ impl PreparedGraphLayout {
                     index += 1;
                 }
                 true
+            }
+            GraphReplacementScope::AppendPatch(patch_id) => {
+                if self.patch_count >= MAX_ACTIVE_PATCHES
+                    || candidate.patch_count != self.patch_count + 1
+                    || candidate.patch_ids[candidate.patch_count - 1] != Some(patch_id)
+                    || self.patch_ids[..self.patch_count] != candidate.patch_ids[..self.patch_count]
+                    || self.scalar_counts[..self.patch_count]
+                        != candidate.scalar_counts[..self.patch_count]
+                    || self.engine_capability_identities[..self.patch_count]
+                        != candidate.engine_capability_identities[..self.patch_count]
+                    || self.effect_slot_ids[..self.patch_count]
+                        != candidate.effect_slot_ids[..self.patch_count]
+                    || self.effect_scalar_counts[..self.patch_count]
+                        != candidate.effect_scalar_counts[..self.patch_count]
+                    || self.effect_capability_identities[..self.patch_count]
+                        != candidate.effect_capability_identities[..self.patch_count]
+                    || self.return_slot_ids != candidate.return_slot_ids
+                    || self.return_scalar_counts != candidate.return_scalar_counts
+                    || self.return_capability_identities != candidate.return_capability_identities
+                {
+                    return false;
+                }
+                !self.patch_ids[..self.patch_count].contains(&Some(patch_id))
             }
             GraphReplacementScope::Audition => {
                 self.scalar_counts == candidate.scalar_counts
@@ -760,7 +800,7 @@ mod tests {
     };
     use crate::kernel::PatchId;
     use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
-    use crate::real_time::MAX_PATCHES;
+    use crate::real_time::MAX_ACTIVE_PATCHES;
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
     use crate::synth::EffectCapabilityId;
@@ -779,12 +819,12 @@ mod tests {
     }
 
     fn layout(scalar_counts: [u8; 2]) -> PreparedGraphLayout {
-        let mut patch_ids = [None; MAX_PATCHES];
+        let mut patch_ids = [None; MAX_ACTIVE_PATCHES];
         patch_ids[0] = PatchId::new(1).ok();
         patch_ids[1] = PatchId::new(2).ok();
-        let mut counts = [0; MAX_PATCHES];
+        let mut counts = [0; MAX_ACTIVE_PATCHES];
         counts[..2].copy_from_slice(&scalar_counts);
-        let mut engine_capability_identities = [None; MAX_PATCHES];
+        let mut engine_capability_identities = [None; MAX_ACTIVE_PATCHES];
         engine_capability_identities[0] = identity("instrument.alpha");
         engine_capability_identities[1] = identity("instrument.beta");
         PreparedGraphLayout {
@@ -794,9 +834,9 @@ mod tests {
             patch_ids,
             scalar_counts: counts,
             engine_capability_identities,
-            effect_slot_ids: [[None; MAX_EFFECT_SLOTS]; MAX_PATCHES],
-            effect_scalar_counts: [[0; MAX_EFFECT_SLOTS]; MAX_PATCHES],
-            effect_capability_identities: [[None; MAX_EFFECT_SLOTS]; MAX_PATCHES],
+            effect_slot_ids: [[None; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
+            effect_scalar_counts: [[0; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
+            effect_capability_identities: [[None; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
             return_slot_ids: [None; MAX_BUS_RETURNS],
             return_scalar_counts: [0; MAX_BUS_RETURNS],
             return_capability_identities: [None; MAX_BUS_RETURNS],
@@ -839,6 +879,40 @@ mod tests {
         assert!(
             !active.permits_selected_replacement(wrong_return_scalars, PatchId::new(1).unwrap())
         );
+    }
+
+    #[test]
+    fn append_scope_admits_one_exact_final_patch_and_no_other_layout_delta() {
+        let active = layout([2, 3]);
+        let appended_id = PatchId::new(9).unwrap();
+        let mut candidate = active;
+        candidate.patch_count = 3;
+        candidate.patch_ids[2] = Some(appended_id);
+        candidate.scalar_counts[2] = 4;
+        candidate.engine_capability_identities[2] = identity("instrument.new");
+        let scope = GraphReplacementScope::AppendPatch(appended_id);
+        assert!(active.permits_replacement(candidate, scope));
+
+        let mut inserted = candidate;
+        inserted.patch_ids.swap(1, 2);
+        assert!(!active.permits_replacement(inserted, scope));
+        let mut changed_prior = candidate;
+        changed_prior.scalar_counts[0] += 1;
+        assert!(!active.permits_replacement(changed_prior, scope));
+        let mut changed_return = candidate;
+        changed_return.return_slot_ids[0] = EffectSlotId::new(1).ok();
+        assert!(!active.permits_replacement(changed_return, scope));
+        assert!(!active.permits_replacement(
+            candidate,
+            GraphReplacementScope::AppendPatch(PatchId::new(10).unwrap())
+        ));
+
+        let mut full = active;
+        full.patch_count = MAX_ACTIVE_PATCHES;
+        for index in 0..MAX_ACTIVE_PATCHES {
+            full.patch_ids[index] = PatchId::new((index + 1) as u32).ok();
+        }
+        assert!(!full.permits_replacement(candidate, scope));
     }
 
     /// The layout records per-position capability identity, and admission is

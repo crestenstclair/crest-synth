@@ -1,4 +1,5 @@
 use crate::kernel::patch_id::PatchId;
+pub use crate::kernel::MAX_ACTIVE_PATCHES;
 use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_state::MixerState;
@@ -14,14 +15,6 @@ use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{EffectCapabilityRegistry, EffectSlotId, MAX_EFFECT_SCALAR_PARAMETERS};
 use core::fmt;
 use serde::{Serialize, Serializer};
-
-/// The maximum number of Patch parameter values carried across the real-time
-/// boundary.
-///
-/// The active structural graph currently supports sixteen Patch slots, so the
-/// callback never needs dynamically sized Patch storage. MIDI channels are
-/// shared subscriptions and do not determine this capacity.
-pub const MAX_PATCHES: usize = 16;
 
 /// Fixed descriptor-ordered live instrument values for one Patch.
 ///
@@ -534,7 +527,7 @@ pub struct ParameterSnapshot {
     mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
     returns: [RtBusReturnParameters; MAX_BUS_RETURNS],
     patch_count: usize,
-    patches: [RtPatchParameters; MAX_PATCHES],
+    patches: [RtPatchParameters; MAX_ACTIVE_PATCHES],
 }
 
 impl ParameterSnapshot {
@@ -619,17 +612,17 @@ impl ParameterSnapshot {
         patches: &[RtPatchParameters],
         returns: [RtBusReturnParameters; MAX_BUS_RETURNS],
     ) -> Result<Self, ParameterSnapshotError> {
-        if patches.len() > MAX_PATCHES {
+        if patches.len() > MAX_ACTIVE_PATCHES {
             return Err(ParameterSnapshotError::TooManyPatches {
                 count: patches.len(),
-                capacity: MAX_PATCHES,
+                capacity: MAX_ACTIVE_PATCHES,
             });
         }
         if let Some(index) = patches.iter().position(|patch| !patch.is_active()) {
             return Err(ParameterSnapshotError::InactivePatch { index });
         }
 
-        let mut storage = [RtPatchParameters::inactive(); MAX_PATCHES];
+        let mut storage = [RtPatchParameters::inactive(); MAX_ACTIVE_PATCHES];
         storage[..patches.len()].copy_from_slice(patches);
 
         Ok(Self {
@@ -700,10 +693,10 @@ impl ParameterSnapshot {
         patches: &[Patch],
         registry: &CapabilityRegistry,
     ) -> Result<Self, ParameterSnapshotError> {
-        if patches.len() > MAX_PATCHES {
+        if patches.len() > MAX_ACTIVE_PATCHES {
             return Err(ParameterSnapshotError::TooManyPatches {
                 count: patches.len(),
-                capacity: MAX_PATCHES,
+                capacity: MAX_ACTIVE_PATCHES,
             });
         }
 
@@ -752,10 +745,10 @@ impl ParameterSnapshot {
         registry: &CapabilityRegistry,
         effect_registry: &EffectCapabilityRegistry,
     ) -> Result<Self, ParameterSnapshotError> {
-        if patches.len() > MAX_PATCHES {
+        if patches.len() > MAX_ACTIVE_PATCHES {
             return Err(ParameterSnapshotError::TooManyPatches {
                 count: patches.len(),
-                capacity: MAX_PATCHES,
+                capacity: MAX_ACTIVE_PATCHES,
             });
         }
         let projected = patches
@@ -903,7 +896,7 @@ impl ParameterSnapshot {
     }
 
     /// Returns the complete fixed storage, including inactive entries.
-    pub const fn storage(&self) -> &[RtPatchParameters; MAX_PATCHES] {
+    pub const fn storage(&self) -> &[RtPatchParameters; MAX_ACTIVE_PATCHES] {
         &self.patches
     }
 
@@ -999,7 +992,7 @@ impl Serialize for ParameterSnapshot {
 mod tests {
     use super::{
         ParameterSnapshot, ParameterSnapshotError, RtBusReturnParameters, RtInstrumentParameters,
-        RtPatchParameters, RtPostEffectParameters, MAX_PATCHES,
+        RtPatchParameters, RtPostEffectParameters, MAX_ACTIVE_PATCHES,
     };
     use crate::kernel::patch_id::PatchId;
     use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
@@ -1176,15 +1169,15 @@ mod tests {
 
     #[test]
     fn rejects_state_larger_than_the_compile_time_bound() {
-        let patches = [patch(1, 0.0); MAX_PATCHES + 1];
+        let patches = [patch(1, 0.0); MAX_ACTIVE_PATCHES + 1];
         let error =
             ParameterSnapshot::new(1, global(), MixerState::default(), &patches).unwrap_err();
 
         assert_eq!(
             error,
             ParameterSnapshotError::TooManyPatches {
-                count: MAX_PATCHES + 1,
-                capacity: MAX_PATCHES
+                count: MAX_ACTIVE_PATCHES + 1,
+                capacity: MAX_ACTIVE_PATCHES
             }
         );
     }
@@ -1212,7 +1205,7 @@ mod tests {
     // `the_voice_limit_widens_the_entry_by_one_bounded_integer` was deleted
     // here. Its docstring claimed an exact assertion, but both of its checks
     // were tautologies: `size_of::<T>() % align_of::<T>() == 0` holds for
-    // every Rust type, and `size_of::<RtPatchParameters>() * MAX_PATCHES <=
+    // every Rust type, and `size_of::<RtPatchParameters>() * MAX_ACTIVE_PATCHES <=
     // size_of::<ParameterSnapshot>()` is trivially true because the snapshot
     // embeds that array plus six further fields. Nothing is left uncovered:
     // `snapshot_and_patch_values_need_no_drop_or_dynamic_storage` above is
@@ -1303,7 +1296,7 @@ mod tests {
     /// leaves a position at `EMPTY` by accident.
     #[test]
     fn fully_occupied_snapshot_initializes_every_slot_at_its_exact_position() {
-        let patches: Vec<RtPatchParameters> = (1..=MAX_PATCHES as u32)
+        let patches: Vec<RtPatchParameters> = (1..=MAX_ACTIVE_PATCHES as u32)
             .map(|id| {
                 RtPatchParameters::projected_with_effects(
                     PatchId::new(id).unwrap(),
@@ -1317,7 +1310,7 @@ mod tests {
         let snapshot =
             ParameterSnapshot::new(3, global(), MixerState::default(), &patches).unwrap();
 
-        assert_eq!(snapshot.patch_count(), MAX_PATCHES);
+        assert_eq!(snapshot.patch_count(), MAX_ACTIVE_PATCHES);
         for (index, patch) in snapshot.patches().iter().enumerate() {
             let expected = occupied_effects(index as u32 + 1);
             assert_eq!(patch.effects(), &expected);

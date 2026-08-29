@@ -4,12 +4,16 @@ use crate::adapter::threaded_graph_preparation_worker::{
 use crate::adapter::threaded_midi_device_worker::{
     ThreadedMidiDeviceWorker, ThreadedMidiDeviceWorkerError,
 };
+use crate::adapter::threaded_session_candidate_worker::{
+    ThreadedSessionCandidateWorker, ThreadedSessionCandidateWorkerError,
+};
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_loop::{AppLoop, MidiDeviceAdvanceError, StructuralAdvanceError};
 use crate::control::app_state::{AppState, EventRejection};
 use crate::control::event_log::EventLog;
 use crate::control::event_record::{EventInput, EventSource, PatchInput};
 use crate::control::state_projector::{StateProjectionError, StateProjector};
+use crate::control::{capture_default_session, DefaultSessionBlueprint, DefaultSessionError};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
@@ -34,7 +38,8 @@ use crate::real_time::structural_graph_boundary::{
 };
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-    MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
+    MidiActivityObservationCallback, ProjectionCallback, SessionCommand, SessionCommandCallback,
+    SessionDocumentProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::audio_device_status::{AudioDeviceStatusBoundary, AudioDeviceStatusReader};
 use crate::shell::audio_output::{
@@ -42,6 +47,10 @@ use crate::shell::audio_output::{
     AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
 use crate::shell::webview::TauriWebviewWindow;
+use crate::shell::{
+    SessionFilePort, SessionLifecycleCoordinator, SessionLifecycleError, StandardSessionFileSystem,
+    ThreadedSessionSaveWorker, ThreadedSessionSaveWorkerError,
+};
 use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
@@ -69,6 +78,7 @@ use core::fmt;
 use serde::Serialize;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 
 /// The one SoundFont loaded by the standalone application.
@@ -145,12 +155,18 @@ impl Default for ApplicationConfig {
 /// composition root constructs the one shell (`TauriWebviewWindow`)
 /// directly and no code path substitutes another window for it.
 impl<Window: AppWindow + ?Sized> AppWindow for Box<Window> {
+    fn session_dialog_port(&self) -> Box<dyn crate::shell::SessionDialogPort> {
+        self.as_ref().session_dialog_port()
+    }
+
     fn run(
         &self,
         on_input: AppInputCallback,
         projection: ProjectionCallback,
         audio_observation: AudioObservationCallback,
         midi_activity: MidiActivityObservationCallback,
+        on_session_command: SessionCommandCallback,
+        document_projection: SessionDocumentProjectionCallback,
         on_tick: TickCallback,
         on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError> {
@@ -159,6 +175,8 @@ impl<Window: AppWindow + ?Sized> AppWindow for Box<Window> {
             projection,
             audio_observation,
             midi_activity,
+            on_session_command,
+            document_projection,
             on_tick,
             on_frame,
         )
@@ -452,6 +470,13 @@ pub enum ApplicationError {
     Instrument(InstrumentPreparationError),
     Graph(GraphPreparationError),
     GraphWorker(ThreadedGraphPreparationWorkerError),
+    SessionCandidateWorker(ThreadedSessionCandidateWorkerError),
+    SessionSaveWorker(ThreadedSessionSaveWorkerError),
+    DefaultSession(DefaultSessionError),
+    DefaultSessionBlueprintMissing,
+    DefaultSessionPreparation(crate::control::SavedSessionRestoreError),
+    SessionLifecycle(SessionLifecycleError),
+    StartupSessionCorrelation,
     MidiDeviceWorker(ThreadedMidiDeviceWorkerError),
     MidiDevice(MidiDeviceAdvanceError),
     Structural(StructuralAdvanceError),
@@ -504,6 +529,25 @@ impl fmt::Display for ApplicationError {
             Self::Instrument(error) => write!(formatter, "instrument preparation failed: {error}"),
             Self::Graph(error) => write!(formatter, "prepared graph setup failed: {error}"),
             Self::GraphWorker(error) => write!(formatter, "graph worker setup failed: {error}"),
+            Self::SessionCandidateWorker(error) => {
+                write!(formatter, "session candidate worker setup failed: {error}")
+            }
+            Self::SessionSaveWorker(error) => {
+                write!(formatter, "session save worker setup failed: {error}")
+            }
+            Self::DefaultSession(error) => {
+                write!(formatter, "default session setup failed: {error}")
+            }
+            Self::DefaultSessionBlueprintMissing => formatter.write_str(
+                "the composition root did not designate a canonical default session blueprint",
+            ),
+            Self::DefaultSessionPreparation(error) => {
+                write!(formatter, "default session preparation failed: {error}")
+            }
+            Self::SessionLifecycle(error) => write!(formatter, "session lifecycle failed: {error}"),
+            Self::StartupSessionCorrelation => formatter.write_str(
+                "prepared default graph does not match the first canonical session projection",
+            ),
             Self::MidiDeviceWorker(error) => {
                 write!(formatter, "MIDI device worker setup failed: {error}")
             }
@@ -567,6 +611,11 @@ impl std::error::Error for ApplicationError {
             Self::Instrument(error) => Some(error),
             Self::Graph(error) => Some(error),
             Self::GraphWorker(error) => Some(error),
+            Self::SessionCandidateWorker(error) => Some(error),
+            Self::SessionSaveWorker(error) => Some(error),
+            Self::DefaultSession(error) => Some(error),
+            Self::DefaultSessionPreparation(error) => Some(error),
+            Self::SessionLifecycle(error) => Some(error),
             Self::MidiDeviceWorker(error) => Some(error),
             Self::MidiDevice(error) => Some(error),
             Self::Structural(error) => Some(error),
@@ -588,6 +637,8 @@ impl std::error::Error for ApplicationError {
             | Self::ObservationOverflow
             | Self::ObservationUnavailable
             | Self::FixtureUnavailable
+            | Self::DefaultSessionBlueprintMissing
+            | Self::StartupSessionCorrelation
             | Self::RecordedEffectPosition { .. } => None,
         }
     }
@@ -608,6 +659,30 @@ impl From<GraphPreparationError> for ApplicationError {
 impl From<ThreadedGraphPreparationWorkerError> for ApplicationError {
     fn from(error: ThreadedGraphPreparationWorkerError) -> Self {
         Self::GraphWorker(error)
+    }
+}
+
+impl From<ThreadedSessionCandidateWorkerError> for ApplicationError {
+    fn from(error: ThreadedSessionCandidateWorkerError) -> Self {
+        Self::SessionCandidateWorker(error)
+    }
+}
+
+impl From<ThreadedSessionSaveWorkerError> for ApplicationError {
+    fn from(error: ThreadedSessionSaveWorkerError) -> Self {
+        Self::SessionSaveWorker(error)
+    }
+}
+
+impl From<DefaultSessionError> for ApplicationError {
+    fn from(error: DefaultSessionError) -> Self {
+        Self::DefaultSession(error)
+    }
+}
+
+impl From<SessionLifecycleError> for ApplicationError {
+    fn from(error: SessionLifecycleError) -> Self {
+        Self::SessionLifecycle(error)
     }
 }
 
@@ -735,6 +810,7 @@ pub struct StandaloneApplication<Boundary, Structural, Observation, Source, Wind
     audio_output: Output,
     config: ApplicationConfig,
     system_midi_devices: bool,
+    default_session_blueprint: Option<DefaultSessionBlueprint>,
 }
 
 impl<Boundary, Structural, Observation, Source, Window, Output>
@@ -802,6 +878,7 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
             audio_output,
             config,
             system_midi_devices: false,
+            default_session_blueprint: None,
         })
     }
 
@@ -811,6 +888,14 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
     /// host devices unless the production composition root opts in.
     pub fn with_system_midi_devices(mut self) -> Self {
         self.system_midi_devices = true;
+        self
+    }
+
+    /// Designates the one exact default at the outer composition root. The
+    /// generic shell never derives a capability from registry order or names
+    /// a concrete adapter capability.
+    pub fn with_default_session_blueprint(mut self, blueprint: DefaultSessionBlueprint) -> Self {
+        self.default_session_blueprint = Some(blueprint);
         self
     }
 }
@@ -903,7 +988,220 @@ fn observe_capability_composition(
     }
 }
 
-fn prepare_startup<Boundary, Structural, Source>(
+struct SharedInstrumentPreparer(Arc<dyn InstrumentPreparer>);
+
+impl InstrumentPreparer for SharedInstrumentPreparer {
+    fn capability_id(&self) -> &crate::synth::CapabilityId {
+        self.0.capability_id()
+    }
+
+    fn prepared_shared_asset_count(&self) -> usize {
+        self.0.prepared_shared_asset_count()
+    }
+
+    fn prepare(
+        &self,
+        patch: &Patch,
+        sample_rate: f32,
+        max_frames: usize,
+    ) -> Result<Box<dyn crate::synth::PreparedInstrument>, InstrumentPreparationError> {
+        self.0.prepare(patch, sample_rate, max_frames)
+    }
+
+    fn prepare_audition(
+        &self,
+        patch_id: PatchId,
+        candidate: &crate::synth::InstrumentConfig,
+        sample_rate: f32,
+        max_frames: usize,
+    ) -> Result<Box<dyn crate::synth::PreparedAudition>, InstrumentPreparationError> {
+        self.0
+            .prepare_audition(patch_id, candidate, sample_rate, max_frames)
+    }
+}
+
+struct SharedEffectPreparer(Arc<dyn EffectPreparer>);
+
+impl EffectPreparer for SharedEffectPreparer {
+    fn capability_id(&self) -> &crate::synth::EffectCapabilityId {
+        self.0.capability_id()
+    }
+
+    fn prepare(
+        &self,
+        patch_id: PatchId,
+        config: &crate::synth::PostEffectConfig,
+        sample_rate: f32,
+        max_frames: usize,
+    ) -> Result<Box<dyn crate::synth::PreparedPostEffect>, crate::synth::EffectPreparationError>
+    {
+        self.0.prepare(patch_id, config, sample_rate, max_frames)
+    }
+}
+
+fn boxed_instrument_preparers(
+    shared: &[Arc<dyn InstrumentPreparer>],
+) -> Vec<Box<dyn InstrumentPreparer>> {
+    shared
+        .iter()
+        .cloned()
+        .map(|preparer| Box::new(SharedInstrumentPreparer(preparer)) as Box<dyn InstrumentPreparer>)
+        .collect()
+}
+
+fn boxed_effect_preparers(shared: &[Arc<dyn EffectPreparer>]) -> Vec<Box<dyn EffectPreparer>> {
+    shared
+        .iter()
+        .cloned()
+        .map(|preparer| Box::new(SharedEffectPreparer(preparer)) as Box<dyn EffectPreparer>)
+        .collect()
+}
+
+struct PreparedProductionStartup<Control, Audio, StructuralAudio>
+where
+    Control: ControlAudioBoundary,
+    Audio: AudioThreadBoundary,
+    StructuralAudio: AudioStructuralGraphBoundary,
+{
+    app_loop: AppLoop<Control>,
+    lifecycle: SessionLifecycleCoordinator,
+    audio_boundary: Audio,
+    structural_audio: StructuralAudio,
+    initial_graph: PreparedGraph,
+}
+
+type PreparedProductionStartupFor<Boundary, Structural> = PreparedProductionStartup<
+    <Boundary as AudioBoundary>::ControlHandle,
+    <Boundary as AudioBoundary>::AudioHandle,
+    <Structural as StructuralGraphBoundary>::AudioHandle,
+>;
+
+fn prepare_production_startup<Boundary, Structural>(
+    boundary: Boundary,
+    instruments: InstrumentRuntimeComposition,
+    structural: Structural,
+    config: ApplicationConfig,
+    audio_config: AudioDeviceConfig,
+    dialogs: Box<dyn crate::shell::SessionDialogPort>,
+    default_session_blueprint: DefaultSessionBlueprint,
+) -> Result<PreparedProductionStartupFor<Boundary, Structural>, ApplicationError>
+where
+    Boundary: AudioBoundary,
+    Structural: StructuralGraphBoundary,
+    Structural::ControlHandle: 'static,
+{
+    let InstrumentRuntimeComposition {
+        providers,
+        capabilities,
+        preparers,
+        effect_providers,
+        effects,
+        effect_preparers,
+    } = instruments;
+    drop(effect_providers);
+
+    let startup_returns =
+        crate::adapter::production_effects::production_startup_bus_returns(&effects)
+            .map_err(ApplicationError::DefaultBusReturns)?;
+    let factory = DescriptorDefaultConfigFactory::new(capabilities.clone(), providers);
+    let patch_creation_blueprint = crate::control::PatchCreationBlueprint::resolve(
+        default_session_blueprint.instrument_capability_id(),
+        &factory,
+    )
+    .map_err(DefaultSessionError::Capability)?;
+    let default_session = capture_default_session(
+        &default_session_blueprint,
+        &factory,
+        effects.clone(),
+        startup_returns.clone(),
+    )?;
+
+    let shared_instruments: Vec<Arc<dyn InstrumentPreparer>> =
+        preparers.into_iter().map(Arc::from).collect();
+    let shared_effects: Vec<Arc<dyn EffectPreparer>> =
+        effect_preparers.into_iter().map(Arc::from).collect();
+    let initial_instruments = boxed_instrument_preparers(&shared_instruments);
+    let initial_effects = boxed_effect_preparers(&shared_effects);
+    let prepared = default_session
+        .prepare_restore(
+            capabilities.clone(),
+            effects.clone(),
+            &initial_instruments,
+            &initial_effects,
+            GraphRevision::INITIAL,
+            audio_config.sample_rate(),
+            audio_config.render_capacity_frames(),
+        )
+        .map_err(ApplicationError::DefaultSessionPreparation)?;
+    let (replacement, initial_graph) = prepared.into_replacement();
+
+    let (control_boundary, audio_boundary) = boundary.into_handles();
+    let mut state = AppState::for_graph_with_effects(
+        capabilities.clone(),
+        effects.clone(),
+        config.global_parameters(),
+        GraphRevision::INITIAL,
+    )
+    .with_initial_returns(startup_returns)
+    .with_patch_creation_blueprint(patch_creation_blueprint);
+    if let Some(listing) = crate::adapter::production_instruments::production_sample_root_listing()
+        .map_err(ApplicationError::ProductionInstrumentComposition)?
+    {
+        state = state.with_sample_catalog([listing]);
+    }
+    state.apply(AppEvent::ReplacePersistedSession(Box::new(replacement)))?;
+    let mut app_loop = AppLoop::new(
+        state,
+        StateProjector::for_graph(GraphRevision::INITIAL),
+        control_boundary,
+    )?;
+    if app_loop.current_parameters() != initial_graph.initial_parameters() {
+        return Err(ApplicationError::StartupSessionCorrelation);
+    }
+
+    let (structural_control, structural_audio) = structural.into_handles();
+    let graph_worker = ThreadedGraphPreparationWorker::new_with_effects(
+        capabilities.clone(),
+        boxed_instrument_preparers(&shared_instruments),
+        effects.clone(),
+        boxed_effect_preparers(&shared_effects),
+        audio_config,
+    )?;
+    app_loop.configure_engine_selection(
+        factory,
+        graph_worker,
+        structural_control,
+        &initial_graph,
+        audio_config,
+    )?;
+
+    let candidate_worker = ThreadedSessionCandidateWorker::new(
+        capabilities,
+        boxed_instrument_preparers(&shared_instruments),
+        effects,
+        boxed_effect_preparers(&shared_effects),
+        audio_config,
+    )?;
+    let files: Arc<dyn SessionFilePort> = Arc::new(StandardSessionFileSystem);
+    let save_worker = ThreadedSessionSaveWorker::new(Arc::clone(&files))?;
+    let lifecycle = SessionLifecycleCoordinator::new(
+        default_session,
+        dialogs,
+        files,
+        Box::new(candidate_worker),
+        Box::new(save_worker),
+    );
+
+    Ok(PreparedProductionStartup {
+        app_loop,
+        lifecycle,
+        audio_boundary,
+        structural_audio,
+        initial_graph,
+    })
+}
+
+fn prepare_fixture_startup<Boundary, Structural, Source>(
     boundary: Boundary,
     instruments: InstrumentRuntimeComposition,
     structural: Structural,
@@ -1039,42 +1337,46 @@ where
     Window: AppWindow,
     Output: AudioOutput,
 {
-    /// Starts the fixed SoundFont, automatic fixture, renderer, device, and
-    /// single graphical window.
+    /// Starts the canonical default session, renderer, device, lifecycle
+    /// workers, and single graphical window. The injected fixture source is
+    /// deliberately dropped without preparation, start, or polling; explicit
+    /// demo and witness methods retain fixture behavior.
     pub fn run(self) -> Result<(), ApplicationError> {
         let Self {
             boundary,
             instruments,
             structural,
             observation,
-            source,
+            source: fixture_source,
             window,
             audio_output,
             config,
             system_midi_devices,
+            default_session_blueprint,
         } = self;
+
+        let default_session_blueprint =
+            default_session_blueprint.ok_or(ApplicationError::DefaultSessionBlueprintMissing)?;
 
         let negotiated_audio = audio_output.negotiate()?;
         let device_config = negotiated_audio.config();
-        let PreparedStartup {
+        let dialogs = window.session_dialog_port();
+        let PreparedProductionStartup {
             mut app_loop,
-            mut automatic,
+            lifecycle,
             audio_boundary,
             structural_audio,
             initial_graph,
-            ..
-        } = prepare_startup(
+        } = prepare_production_startup(
             boundary,
             instruments,
             structural,
-            source,
             config,
-            StartupPlan {
-                audio_config: device_config,
-                event_log: None,
-                worker: StartupWorker::Threaded,
-            },
+            device_config,
+            dialogs,
+            default_session_blueprint,
         )?;
+        drop(fixture_source);
         if system_midi_devices {
             let midi_worker = ThreadedMidiDeviceWorker::new(
                 crate::adapter::midir_input_device::system_midi_input_device(),
@@ -1096,13 +1398,13 @@ where
         let on_runtime_error: AudioDeviceStatusCallback =
             Box::new(move |error| device_status_writer.publish_from_callback(error));
         let audio_stream: AudioStream = negotiated_audio.start(render, on_runtime_error)?;
-        automatic.start()?;
 
         let runtime = Rc::new(RefCell::new(ControlRuntime {
-            automatic,
             app_loop,
+            lifecycle,
             device_status,
             midi_clock_micros: 0,
+            close_requested: false,
             error: None,
         }));
         let on_input = input_callback(Rc::clone(&runtime));
@@ -1110,6 +1412,8 @@ where
         let audio_observation: AudioObservationCallback =
             Box::new(move || observation_reader.read_latest_on_control());
         let midi_activity = midi_activity_observation_callback(Rc::clone(&runtime));
+        let on_session_command = session_command_callback(Rc::clone(&runtime));
+        let document_projection = document_projection_callback(Rc::clone(&runtime));
         let on_tick = tick_callback(Rc::clone(&runtime));
         let on_frame: FrameObservationCallback = Box::new(|_observation| {});
 
@@ -1118,22 +1422,24 @@ where
             projection,
             audio_observation,
             midi_activity,
+            on_session_command,
+            document_projection,
             on_tick,
             on_frame,
         );
         let runtime_error = runtime.borrow_mut().error.take();
-        let midi_shutdown_result = runtime
-            .borrow_mut()
-            .app_loop
-            .shutdown_midi_devices_on_control();
         drop(audio_stream);
-        let shutdown_result = runtime
-            .borrow_mut()
-            .app_loop
-            .shutdown_engine_selection_on_control();
+        let (lifecycle_shutdown_result, midi_shutdown_result, graph_shutdown_result) = {
+            let mut runtime = runtime.borrow_mut();
+            let lifecycle = runtime.lifecycle.shutdown_on_control();
+            let midi = runtime.app_loop.shutdown_midi_devices_on_control();
+            let graph = runtime.app_loop.shutdown_engine_selection_on_control();
+            (lifecycle, midi, graph)
+        };
         window_result?;
+        lifecycle_shutdown_result?;
         midi_shutdown_result?;
-        shutdown_result?;
+        graph_shutdown_result?;
 
         if let Some(error) = runtime_error {
             return Err(error);
@@ -1206,6 +1512,7 @@ where
             audio_output,
             config,
             system_midi_devices: _,
+            default_session_blueprint: _,
         } = self;
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
             .expect("the declared live EventLog capacity is nonzero");
@@ -1221,7 +1528,7 @@ where
             prepared_instruments,
             capability_composition,
             ..
-        } = prepare_startup(
+        } = prepare_fixture_startup(
             boundary,
             instruments,
             structural,
@@ -1310,6 +1617,17 @@ where
         let audio_observation = live_audio_observation_callback(Rc::clone(&runtime));
         let midi_activity: MidiActivityObservationCallback =
             Box::new(crate::control::MidiActivityObservation::default);
+        let on_session_command: SessionCommandCallback = Box::new(|_| false);
+        let document_projection: SessionDocumentProjectionCallback = Box::new(|| {
+            crate::shell::SessionDocumentProjection::new(
+                "Autonomous Demo",
+                false,
+                crate::shell::SessionDocumentMarker::Ready,
+                None,
+                "DEMO",
+                None,
+            )
+        });
         let on_tick = live_tick_callback(Rc::clone(&runtime));
         let on_frame = live_frame_callback(Rc::clone(&runtime));
 
@@ -1318,6 +1636,8 @@ where
             projection,
             audio_observation,
             midi_activity,
+            on_session_command,
+            document_projection,
             on_tick,
             on_frame,
         );
@@ -1392,6 +1712,7 @@ where
             audio_output: _,
             config,
             system_midi_devices: _,
+            default_session_blueprint: _,
         } = self;
         let global_parameters = config.global_parameters();
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
@@ -1404,7 +1725,7 @@ where
             initial_graph,
             deterministic_worker,
             ..
-        } = prepare_startup(
+        } = prepare_fixture_startup(
             boundary,
             instruments,
             structural,
@@ -1477,6 +1798,7 @@ where
             audio_output: _,
             config,
             system_midi_devices: _,
+            default_session_blueprint: _,
         } = self;
 
         let PreparedStartup {
@@ -1489,7 +1811,7 @@ where
             prepared_instruments,
             capability_composition,
             ..
-        } = prepare_startup(
+        } = prepare_fixture_startup(
             boundary,
             instruments,
             structural,
@@ -2028,21 +2350,20 @@ where
     )
 }
 
-struct ControlRuntime<Source, Boundary>
+struct ControlRuntime<Boundary>
 where
-    Source: MidiEventSource,
     Boundary: ControlAudioBoundary,
 {
-    automatic: AutomaticMidiTest<Source>,
     app_loop: AppLoop<Boundary>,
+    lifecycle: SessionLifecycleCoordinator,
     device_status: AudioDeviceStatusReader,
     midi_clock_micros: u64,
+    close_requested: bool,
     error: Option<ApplicationError>,
 }
 
-impl<Source, Boundary> ControlRuntime<Source, Boundary>
+impl<Boundary> ControlRuntime<Boundary>
 where
-    Source: MidiEventSource,
     Boundary: ControlAudioBoundary,
 {
     fn record_error(&mut self, error: ApplicationError) {
@@ -2052,16 +2373,16 @@ where
     }
 }
 
-fn input_callback<Source, Boundary>(
-    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
-) -> AppInputCallback
+fn input_callback<Boundary>(runtime: Rc<RefCell<ControlRuntime<Boundary>>>) -> AppInputCallback
 where
-    Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
 {
     Box::new(move |event| {
         let mut runtime = runtime.borrow_mut();
         if runtime.error.is_some() {
+            return;
+        }
+        if runtime.lifecycle.persisted_edits_blocked() && event.may_change_saved_session() {
             return;
         }
 
@@ -2079,21 +2400,76 @@ where
     })
 }
 
-fn projection_callback<Source, Boundary>(
-    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
+fn projection_callback<Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Boundary>>>,
 ) -> ProjectionCallback
 where
-    Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
 {
     Box::new(move || runtime.borrow().app_loop.current_graphical_shell())
 }
 
-fn midi_activity_observation_callback<Source, Boundary>(
-    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
+fn document_projection_callback<Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Boundary>>>,
+) -> SessionDocumentProjectionCallback
+where
+    Boundary: ControlAudioBoundary + 'static,
+{
+    Box::new(move || {
+        let runtime = runtime.borrow();
+        runtime
+            .lifecycle
+            .project_shell(&runtime.app_loop)
+            .document()
+            .clone()
+    })
+}
+
+fn session_command_callback<Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Boundary>>>,
+) -> SessionCommandCallback
+where
+    Boundary: ControlAudioBoundary + 'static,
+{
+    Box::new(move |command| {
+        let mut runtime = runtime.borrow_mut();
+        if runtime.error.is_some() || runtime.close_requested {
+            return command == SessionCommand::Close && runtime.close_requested;
+        }
+        let ControlRuntime {
+            app_loop,
+            lifecycle,
+            close_requested,
+            ..
+        } = &mut *runtime;
+        let result = match command {
+            SessionCommand::New => lifecycle.request_new(app_loop),
+            SessionCommand::Open => lifecycle.request_open(app_loop),
+            SessionCommand::Save => lifecycle.request_save(app_loop),
+            SessionCommand::SaveAs => lifecycle.request_save_as(app_loop),
+            SessionCommand::Close => lifecycle.request_close(app_loop),
+        };
+        if result.is_err() {
+            return false;
+        }
+        if command == SessionCommand::Close {
+            match lifecycle.advance(app_loop) {
+                Ok(progress) if progress.close_approved() => {
+                    *close_requested = true;
+                    true
+                }
+                Ok(_) | Err(_) => false,
+            }
+        } else {
+            false
+        }
+    })
+}
+
+fn midi_activity_observation_callback<Boundary>(
+    runtime: Rc<RefCell<ControlRuntime<Boundary>>>,
 ) -> MidiActivityObservationCallback
 where
-    Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
 {
     Box::new(move || {
@@ -2104,11 +2480,8 @@ where
     })
 }
 
-fn tick_callback<Source, Boundary>(
-    runtime: Rc<RefCell<ControlRuntime<Source, Boundary>>>,
-) -> TickCallback
+fn tick_callback<Boundary>(runtime: Rc<RefCell<ControlRuntime<Boundary>>>) -> TickCallback
 where
-    Source: MidiEventSource + 'static,
     Boundary: ControlAudioBoundary + 'static,
 {
     Box::new(move |elapsed| {
@@ -2122,15 +2495,26 @@ where
         }
 
         let ControlRuntime {
-            automatic,
             app_loop,
+            lifecycle,
             device_status: _,
             midi_clock_micros,
+            close_requested,
             error,
         } = &mut *runtime;
-        if let Err(failure) = app_loop.advance_structural() {
-            *error = Some(failure.into());
-            return false;
+        let session_was_pending = app_loop.session_replacement_pending();
+        match lifecycle.advance(app_loop) {
+            Ok(progress) if progress.close_approved() => {
+                *close_requested = true;
+                return false;
+            }
+            Ok(_) | Err(_) => {}
+        }
+        if !session_was_pending && !app_loop.session_replacement_pending() {
+            if let Err(failure) = app_loop.advance_structural() {
+                *error = Some(failure.into());
+                return false;
+            }
         }
         let elapsed_micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
         *midi_clock_micros = midi_clock_micros.saturating_add(elapsed_micros);
@@ -2138,10 +2522,7 @@ where
             *error = Some(failure.into());
             return false;
         }
-        if let Err(failure) = automatic.tick(elapsed, app_loop) {
-            *error = Some(failure.into());
-        }
-        error.is_none()
+        error.is_none() && !*close_requested
     })
 }
 
@@ -2323,7 +2704,8 @@ mod tests {
     use crate::control::app_event::Direction;
     use crate::control::event_record::EventSource;
     use crate::control::{
-        GraphicalShellProjection, InteractionMode, PatchControlId, SemanticAction,
+        DefaultSessionBlueprint, GraphicalShellProjection, InteractionMode, PatchControlId,
+        SemanticAction,
     };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -2336,7 +2718,8 @@ mod tests {
     use crate::real_time::{GraphHandoffStatus, GraphRevision};
     use crate::shell::app_window::{
         AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-        MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
+        MidiActivityObservationCallback, ProjectionCallback, SessionCommandCallback,
+        SessionDocumentProjectionCallback, TickCallback, WindowError,
     };
     use crate::shell::audio_output::{
         AudioDeviceConfig, AudioDeviceStatusCallback, AudioOutput, AudioOutputError,
@@ -2542,6 +2925,8 @@ mod tests {
             projection: ProjectionCallback,
             _audio_observation: AudioObservationCallback,
             _midi_activity: MidiActivityObservationCallback,
+            _on_session_command: SessionCommandCallback,
+            _document_projection: SessionDocumentProjectionCallback,
             _on_tick: TickCallback,
             _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -2557,6 +2942,8 @@ mod tests {
             projection: ProjectionCallback,
             _audio_observation: AudioObservationCallback,
             _midi_activity: MidiActivityObservationCallback,
+            _on_session_command: SessionCommandCallback,
+            _document_projection: SessionDocumentProjectionCallback,
             mut on_tick: TickCallback,
             _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -2604,6 +2991,84 @@ mod tests {
         ) -> Result<AudioStream, AudioOutputError> {
             let mut buffer = [0.0; 512];
             render(&mut buffer);
+            Ok(AudioStream::new(()))
+        }
+    }
+
+    struct FailIfUsedSource;
+
+    impl MidiEventSource for FailIfUsedSource {
+        fn prepare(&mut self) -> Result<Vec<InstrumentPart>, MidiSourceError> {
+            panic!("normal startup must not prepare the automatic MIDI fixture")
+        }
+
+        fn start(&mut self) {
+            panic!("normal startup must not start the automatic MIDI fixture")
+        }
+
+        fn poll(
+            &mut self,
+            _elapsed: Duration,
+            _output: &mut FixedEventBatch,
+        ) -> Result<(), MidiSourceError> {
+            panic!("normal startup must not poll the automatic MIDI fixture")
+        }
+
+        fn finished(&self) -> bool {
+            panic!("normal startup must not inspect the automatic MIDI fixture")
+        }
+    }
+
+    struct StartupWindow {
+        projection: Arc<Mutex<Option<GraphicalShellProjection>>>,
+        document: Arc<Mutex<Option<crate::shell::SessionDocumentProjection>>>,
+    }
+
+    impl AppWindow for StartupWindow {
+        fn run(
+            &self,
+            _on_input: AppInputCallback,
+            projection: ProjectionCallback,
+            _audio_observation: AudioObservationCallback,
+            _midi_activity: MidiActivityObservationCallback,
+            _on_session_command: SessionCommandCallback,
+            document_projection: SessionDocumentProjectionCallback,
+            mut on_tick: TickCallback,
+            _on_frame: FrameObservationCallback,
+        ) -> Result<(), WindowError> {
+            *self.projection.lock().unwrap() = Some(projection());
+            *self.document.lock().unwrap() = Some(document_projection());
+            assert!(on_tick(Duration::from_millis(16)));
+            Ok(())
+        }
+    }
+
+    struct StartupSilenceOutput {
+        silent: Arc<Mutex<Option<bool>>>,
+    }
+
+    impl AudioOutput for StartupSilenceOutput {
+        type Negotiated = Self;
+
+        fn negotiate(self) -> Result<Self::Negotiated, AudioOutputError> {
+            Ok(self)
+        }
+    }
+
+    impl NegotiatedAudioOutput for StartupSilenceOutput {
+        fn config(&self) -> AudioDeviceConfig {
+            AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 256).unwrap()
+        }
+
+        fn start(
+            self,
+            mut render: AudioRenderCallback,
+            _on_runtime_error: AudioDeviceStatusCallback,
+        ) -> Result<AudioStream, AudioOutputError> {
+            let mut buffer = [1.0_f32; 512];
+            render(&mut buffer);
+            *self.silent.lock().unwrap() =
+                Some(buffer.iter().all(|sample| sample.abs() <= f32::EPSILON));
             Ok(AudioStream::new(()))
         }
     }
@@ -2694,6 +3159,8 @@ mod tests {
             _projection: ProjectionCallback,
             _audio_observation: AudioObservationCallback,
             _midi_activity: MidiActivityObservationCallback,
+            _on_session_command: SessionCommandCallback,
+            _document_projection: SessionDocumentProjectionCallback,
             mut on_tick: TickCallback,
             _on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -2731,6 +3198,8 @@ mod tests {
             projection: ProjectionCallback,
             audio_observation: AudioObservationCallback,
             _midi_activity: MidiActivityObservationCallback,
+            _on_session_command: SessionCommandCallback,
+            _document_projection: SessionDocumentProjectionCallback,
             mut on_tick: TickCallback,
             mut on_frame: FrameObservationCallback,
         ) -> Result<(), WindowError> {
@@ -2912,6 +3381,10 @@ mod tests {
         .unwrap()
     }
 
+    fn test_default_session_blueprint() -> DefaultSessionBlueprint {
+        DefaultSessionBlueprint::new(CapabilityId::new("instrument.soundfont.hidef").unwrap())
+    }
+
     type TestApplication<Window, Output> = StandaloneApplication<
         TestBoundary,
         LockFreeStructuralGraphBoundary,
@@ -2954,6 +3427,7 @@ mod tests {
             ),
         )
         .unwrap()
+        .with_default_session_blueprint(test_default_session_blueprint())
     }
 
     /// Composes the live application plus its deterministic harness window.
@@ -3000,7 +3474,8 @@ mod tests {
                 ApplicationConfig::default().global_parameters(),
             ),
         )
-        .unwrap();
+        .unwrap()
+        .with_default_session_blueprint(test_default_session_blueprint());
         (application, live_window)
     }
 
@@ -3034,7 +3509,8 @@ mod tests {
                 ApplicationConfig::default().global_parameters(),
             ),
         )
-        .unwrap();
+        .unwrap()
+        .with_default_session_blueprint(test_default_session_blueprint());
         (application, EarlyCloseWindow)
     }
 
@@ -3076,7 +3552,8 @@ mod tests {
                 ApplicationConfig::default().global_parameters(),
             ),
         )
-        .unwrap();
+        .unwrap()
+        .with_default_session_blueprint(test_default_session_blueprint());
         let live_window = StalledLiveWindow {
             close_requests: Arc::clone(&witness.close_requests),
             tick_duration,
@@ -3085,7 +3562,7 @@ mod tests {
     }
 
     #[test]
-    fn normal_run_loads_once_and_joins_window_input_to_the_shared_loop() {
+    fn normal_run_prepares_only_init_and_joins_window_input_to_the_shared_loop() {
         let engine_state = Arc::new(Mutex::new(EngineState::default()));
         let projection = Arc::new(Mutex::new(None));
         let due = message();
@@ -3100,11 +3577,71 @@ mod tests {
 
         let engine_state = engine_state.lock().unwrap();
         assert_eq!(engine_state.preparer_instances, 2);
-        assert_eq!(engine_state.prepared, 2);
+        assert_eq!(engine_state.prepared, 1);
         let projection = projection.lock().unwrap();
-        let body = projection.as_ref().unwrap().workspace().diagnostic().body();
-        assert!(body.contains("TRACK T01 routedPatches=[02:"));
-        assert!(body.contains("> levelDb=1"));
+        let projection = projection.as_ref().unwrap();
+        assert_eq!(projection.context(), crate::control::TopLevelContext::Patch);
+        let json = serde_json::to_string(projection.semantic_model()).unwrap();
+        assert!(json.contains("INIT"));
+        assert!(!json.contains("Piano"));
+        assert!(!json.contains("Strings"));
+    }
+
+    #[test]
+    fn normal_startup_never_consults_fixture_and_first_shell_is_clean_silent_init() {
+        let engine_state = Arc::new(Mutex::new(EngineState::default()));
+        let projection = Arc::new(Mutex::new(None));
+        let document = Arc::new(Mutex::new(None));
+        let silent = Arc::new(Mutex::new(None));
+        let application = StandaloneApplication::new_with_effects(
+            TestBoundary {
+                bus: Arc::new(Mutex::new(Bus {
+                    commands: VecDeque::new(),
+                    parameters: parameters(),
+                    parameter_publications: 0,
+                })),
+            },
+            providers(),
+            preparers(Arc::clone(&engine_state)),
+            crate::adapter::production_effects::production_effect_providers().unwrap(),
+            crate::adapter::production_effects::production_effect_preparers().unwrap(),
+            structural_boundary(),
+            AtomicAudioObservation::default(),
+            FailIfUsedSource,
+            StartupWindow {
+                projection: Arc::clone(&projection),
+                document: Arc::clone(&document),
+            },
+            StartupSilenceOutput {
+                silent: Arc::clone(&silent),
+            },
+            ApplicationConfig::new(
+                48_000.0,
+                256,
+                ApplicationConfig::default().global_parameters(),
+            ),
+        )
+        .unwrap()
+        .with_default_session_blueprint(test_default_session_blueprint());
+
+        application.run().unwrap();
+
+        assert_eq!(*silent.lock().unwrap(), Some(true));
+        assert_eq!(engine_state.lock().unwrap().prepared, 1);
+        let projection = projection.lock().unwrap();
+        let projection = projection.as_ref().unwrap();
+        assert_eq!(projection.context(), crate::control::TopLevelContext::Patch);
+        let json = serde_json::to_string(projection.semantic_model()).unwrap();
+        assert!(json.contains("INIT"));
+        let document = document.lock().unwrap();
+        let document = document.as_ref().unwrap();
+        assert_eq!(document.name(), "Untitled");
+        assert!(!document.dirty());
+        assert_eq!(
+            document.marker(),
+            crate::shell::SessionDocumentMarker::Ready
+        );
+        assert_eq!(document.status(), "READY");
     }
 
     #[test]

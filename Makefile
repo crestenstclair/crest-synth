@@ -1,6 +1,6 @@
 .DEFAULT_GOAL := help
 
-.PHONY: help cache-guard cache-status cache-prune-preview cache-prune build check test test-engine-post-fx-options test-midi-devices test-midi-host midi-device-handoff test-webview-detail-native test-webview-options-native lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-detail-and-assets demo-live-mixer demo-live-effects-and-buses demo-live-patch-editor demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
+.PHONY: help cache-guard cache-status cache-prune-preview cache-prune build check test test-session-lifecycle test-engine-post-fx-options test-midi-devices test-midi-host midi-device-handoff test-webview-detail-native test-webview-options-native test-webview-empty-patch-native lint fmt fmt-check run play ui smoke observe demo demo-live demo-live-detail-and-assets demo-live-mixer demo-live-effects-and-buses demo-live-patch-editor demo-live-sixteen-track-mixer-routing demo-live-semantic-view-model demo-live-graphical-shell demo-live-component-library semantic-graphical-view-model-acceptance webview-tokens clean
 
 help: ## Show the available project commands
 	@grep -E '^[a-zA-Z_-]+:.*##' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*##"}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -26,6 +26,11 @@ check: cache-guard ## Type-check all targets
 test: cache-guard ## Run all tests
 	cargo test --all-targets
 
+test-session-lifecycle: cache-guard ## Run the automated New/Open/Save/Save As/close acceptance suite
+	cargo test shell::session_lifecycle --lib
+	cargo test shell::standalone_application::tests::normal_ --lib
+	cargo test --test production_runtime_contracts
+
 test-engine-post-fx-options: cache-guard ## Run focused deterministic Engine/Post FX option witnesses
 	cargo test --test engine_post_fx_option_states -- --nocapture
 
@@ -45,6 +50,10 @@ test-webview-detail-native: cache-guard ## Run the real-window Detail/Mixer witn
 test-webview-options-native: cache-guard ## Run the real-window Engine/Post FX option witness and retained Detail/Mixer scenes
 	CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_OPTION_WITNESS=1 cargo test --test webview_projection_shell -- --nocapture
 
+test-webview-empty-patch-native: cache-guard ## Run the native Shift handoff and empty/pending/capacity/newly-created PATCH witness
+	CREST_REQUIRE_KEY_WITNESS=1 cargo test --test input_capture_witness -- --nocapture
+	CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_EMPTY_PATCH_WITNESS=1 cargo test --test webview_projection_shell -- --nocapture
+
 lint: cache-guard ## Run Clippy with warnings denied
 	cargo clippy --all-targets -- -D warnings
 
@@ -54,10 +63,10 @@ fmt: ## Format all Rust sources
 fmt-check: ## Verify Rust formatting without changing files
 	cargo fmt --all -- --check
 
-run: cache-guard ## Launch crest-synth with its fixed SoundFont and MIDI fixture
+run: cache-guard ## Launch crest-synth with the clean canonical INIT session
 	cargo run --bin crest-synth
 
-play: cache-guard ## Launch the automatically playing synth
+play: cache-guard ## Launch the user-playable canonical INIT session
 	cargo run --bin crest-synth
 
 ui: cache-guard ## Launch the synth graphical window

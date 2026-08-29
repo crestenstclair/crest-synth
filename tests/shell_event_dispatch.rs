@@ -419,7 +419,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
             patch_text.state_hash(),
             app_loop.current_state_tree().state_hash()
         );
-        assert_eq!(page.patch().id(), PatchId::new(1).unwrap());
+        assert_eq!(page.patch().id(), Some(PatchId::new(1).unwrap()));
         assert_eq!(page.state_hash(), patch_text.state_hash());
         assert_eq!(patch_tree["interaction"]["activeFocus"]["context"], "patch");
         assert_eq!(patch_tree["interaction"]["activeFocus"]["patchId"], 1);

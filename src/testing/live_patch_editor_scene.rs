@@ -206,38 +206,51 @@ pub fn from_installed_state(
     // The switch itself, and the boundary refusal that answers for it. The
     // defeated scene stays on the first Patch and probes left, preserving the
     // controlled negative's one-Patch reach. The shipped scene walks from its
-    // second-Patch subject to the *actual* last installed Patch before probing
-    // right, then returns to the subject. Deriving that walk from the frozen
-    // installed order matters: the deterministic fixture has two Patches, but
-    // the physical fixture currently has fifteen.
-    let (boundary_direction, boundary_patch_id, boundary_distance) = if subject_index == 0 {
-        (Direction::Left, subject_id, 0)
+    // second-Patch subject through the *actual* last installed Patch into the
+    // interaction-only trailing empty position before probing right, then
+    // returns to the subject. Deriving that walk from the frozen installed
+    // order matters: the deterministic fixture has two Patches, but the
+    // physical fixture currently has fifteen.
+    let boundary_direction = if subject_index == 0 {
+        Direction::Left
     } else {
-        let boundary_index = state.patches.len().saturating_sub(1);
-        let boundary_patch_id = PatchId::new(state.patches[boundary_index].id)
-            .map_err(|_| LiveDemoSceneError::InvalidPatchId)?;
-        (
-            Direction::Right,
-            boundary_patch_id,
-            boundary_index.saturating_sub(subject_index),
-        )
+        Direction::Right
     };
+    let boundary_index = state.patches.len().saturating_sub(1);
+    let boundary_patch_id = PatchId::new(state.patches[boundary_index].id)
+        .map_err(|_| LiveDemoSceneError::InvalidPatchId)?;
+    let boundary_distance = boundary_index.saturating_sub(subject_index);
     let mut boundary_support_before = vec![LiveTopologySupport::Event {
         event: AppEvent::SelectContext(TopLevelContext::Patch),
     }];
-    for _ in 0..boundary_distance {
+    if subject_index == 0 {
+        boundary_support_before.push(LiveTopologySupport::VerifyPatchSubject {
+            patch_id: subject_id,
+        });
+    } else {
+        for _ in 0..boundary_distance {
+            boundary_support_before.push(LiveTopologySupport::Event {
+                event: AppEvent::SelectPatch(Direction::Right),
+            });
+        }
+        boundary_support_before.push(LiveTopologySupport::VerifyPatchSubject {
+            patch_id: boundary_patch_id,
+        });
         boundary_support_before.push(LiveTopologySupport::Event {
             event: AppEvent::SelectPatch(Direction::Right),
         });
+        boundary_support_before.push(LiveTopologySupport::VerifyEmptyPatchPosition);
     }
-    boundary_support_before.push(LiveTopologySupport::VerifyPatchSubject {
-        patch_id: boundary_patch_id,
-    });
     let mut boundary_support_after = Vec::new();
-    for _ in 0..boundary_distance {
+    if subject_index != 0 {
         boundary_support_after.push(LiveTopologySupport::Event {
             event: AppEvent::SelectPatch(Direction::Left),
         });
+        for _ in 0..boundary_distance {
+            boundary_support_after.push(LiveTopologySupport::Event {
+                event: AppEvent::SelectPatch(Direction::Left),
+            });
+        }
     }
     boundary_support_after.push(LiveTopologySupport::VerifyPatchSubject {
         patch_id: subject_id,
@@ -514,8 +527,9 @@ pub fn from_installed_state(
             support
         },
     ));
-    // The end-of-order refusal: a step past the subject's own end of the
-    // installed order leaves the focused Patch unchanged, by name.
+    // The end-of-order refusal: a step past the trailing empty position (or
+    // left of the first Patch in the controlled negative) leaves semantic
+    // position focus unchanged.
     transitions.push(transition(
         "PatchEditor.switchRefusedAtEnd",
         Some(SemanticAction::SelectPatch(boundary_direction)),

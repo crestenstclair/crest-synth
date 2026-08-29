@@ -16,6 +16,7 @@ use crest_synth::adapter::production_instruments::{
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_state::EventRejection;
 use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource};
+use crest_synth::control::DefaultSessionBlueprint;
 use crest_synth::kernel::midi_message::MidiMessageKind;
 use crest_synth::mixer::global_parameters::GlobalParameters;
 use crest_synth::mixer::mixer_state::MixerState;
@@ -29,6 +30,7 @@ use crest_synth::shell::standalone_application::{
 };
 use crest_synth::shell::webview::TauriWebviewWindow;
 use crest_synth::shell::window_input::WindowInput;
+use crest_synth::synth::CapabilityId;
 use crest_synth::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport};
 use crest_synth::testing::{
     BehavioralMutationCase, BehavioralMutationHarness, BehavioralMutationObservation,
@@ -120,7 +122,13 @@ fn run(options: Options) -> Result<()> {
             config,
         )
         .context("failed to validate the production composition")?;
-        Ok(application.with_system_midi_devices())
+        let default_session = DefaultSessionBlueprint::new(
+            CapabilityId::new(HIDEF_CAPABILITY_ID)
+                .context("the production default capability identity is invalid")?,
+        );
+        Ok(application
+            .with_default_session_blueprint(default_session)
+            .with_system_midi_devices())
     };
 
     if options.demo_component_library {
@@ -666,6 +674,7 @@ impl DemoSceneObservation {
                     push_unique(&mut midi_kinds, message.kind());
                 }
                 EventInput::SetPatchOverviewOriginEnabled { .. } => {}
+                EventInput::ReplacePersistedSession { .. } => {}
                 EventInput::EngineSelectionLifecycleAdvanced { .. } => {}
                 EventInput::EnginePrepared { .. } => event_variants[8] = true,
                 EventInput::SampleAssetLifecycleAdvanced { .. } => {}

@@ -137,7 +137,7 @@ where
         }
 
         let status = self.boundary.read_status_on_control();
-        let published_revision = self.retry_staged(status);
+        let (published_revision, publication_failure) = self.retry_staged(status);
         let status = self.boundary.read_status_on_control();
         let mut completed_revision = None;
         let mut completed_layout = None;
@@ -168,14 +168,24 @@ where
             collected_count,
             published_revision,
             completed_revision,
+            publication_failure,
         }
     }
 
-    fn retry_staged(&mut self, status: GraphHandoffStatus) -> Option<GraphRevision> {
-        let staged = self.staged.take()?;
-        if status.active_revision() != Some(staged.previous_revision) || self.in_flight.is_some() {
+    fn retry_staged(
+        &mut self,
+        status: GraphHandoffStatus,
+    ) -> (Option<GraphRevision>, Option<GraphPublicationFailure>) {
+        let Some(staged) = self.staged.take() else {
+            return (None, None);
+        };
+        if self.in_flight.is_some() {
             self.staged = Some(staged);
-            return None;
+            return (None, None);
+        }
+        if status.active_revision() != Some(staged.previous_revision) {
+            drop(staged.graph);
+            return (None, Some(GraphPublicationFailure::StaleActiveRevision));
         }
         let revision = staged.graph.revision();
         match self.boundary.publish_prepared_on_control(staged.graph) {
@@ -188,7 +198,7 @@ where
                     retired_acknowledged: false,
                     retired_collected: false,
                 });
-                Some(revision)
+                (Some(revision), None)
             }
             Err(full) => {
                 self.staged = Some(StagedGraph {
@@ -196,7 +206,7 @@ where
                     previous_revision: staged.previous_revision,
                     accepted_layout: staged.accepted_layout,
                 });
-                None
+                (None, None)
             }
         }
     }
@@ -246,6 +256,7 @@ pub struct CoordinatorProgress {
     collected_count: u64,
     published_revision: Option<GraphRevision>,
     completed_revision: Option<GraphRevision>,
+    publication_failure: Option<GraphPublicationFailure>,
 }
 
 impl CoordinatorProgress {
@@ -264,6 +275,10 @@ impl CoordinatorProgress {
     pub const fn completed_revision(self) -> Option<GraphRevision> {
         self.completed_revision
     }
+
+    pub const fn publication_failure(self) -> Option<GraphPublicationFailure> {
+        self.publication_failure
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -280,6 +295,7 @@ pub enum GraphPublicationFailure {
     NonMonotonicRevision,
     IncompatibleLayout,
     BoundaryFull,
+    StaleActiveRevision,
 }
 
 /// Publication failure that preserves the complete candidate graph.
@@ -325,6 +341,9 @@ impl fmt::Display for GraphPublicationError {
             }
             GraphPublicationFailure::BoundaryFull => {
                 "the structural graph publication queue is full"
+            }
+            GraphPublicationFailure::StaleActiveRevision => {
+                "the active graph revision changed before staged publication"
             }
         };
         formatter.write_str(message)

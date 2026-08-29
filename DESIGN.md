@@ -9,7 +9,7 @@ working contract and invariant summary; it does not replace this reference.
 This file is not a roadmap, a phase plan, or a claim that the product is
 finished.
 
-Snapshot date: 2026-08-27. The implementation reviewed for this reset began at
+Snapshot date: 2026-08-28. The implementation reviewed for this reset began at
 commit `d2d257f`.
 
 ## Authority and maintenance
@@ -237,13 +237,15 @@ sample row and stopping on release; Start is reserved elsewhere.
 ## Product as built
 
 Crest Synth is a standalone, controller-first MIDI instrument host. The
-production composition is a Rust application using a Tauri v2/WKWebView shell,
-CPAL stereo audio output, and the parsed `midi/Radiohead - Everything In Its
-Right Place - HiDef Compatible.mid` fixture for automatic playback. That
-explicit derived fixture differs from the retained source MIDI only by changing
-its unavailable percussion bank-128/program-118 request to the installed
-bank-128/program-0 drum kit; runtime capability fallback remains forbidden. It
-is not a DAW, arranger, or general-purpose sequencer.
+production composition is a Rust application using a Tauri v2/WKWebView shell
+and CPAL stereo audio output. Normal startup opens one clean, silent, playable
+`INIT` document; it does not initialize or play the bundled MIDI fixture. The
+parsed `midi/Radiohead - Everything In Its Right Place - HiDef Compatible.mid`
+fixture remains isolated to explicit demo and witness entry points. That
+derived fixture differs from the retained source MIDI only by changing its
+unavailable percussion bank-128/program-118 request to the installed
+bank-128/program-0 drum kit; runtime capability fallback remains forbidden.
+Crest Synth is not a DAW, arranger, or general-purpose sequencer.
 
 The application currently provides:
 
@@ -270,12 +272,22 @@ The application currently provides:
   pre-gate meters, Patch route/trim, and master gain;
 - versioned saved state containing stable asset references and normalized
   control values, never decoded PCM or device state;
+- native File-menu New, Open, Save, Save As, and guarded Close workflows over
+  one shell-owned Untitled-or-path document identity and content-based clean
+  baseline;
 - retained deterministic, headless, controlled-negative, and physical-demo
   commands listed later in this file.
 
-Normal `make run` opens the real application, automatically plays the fixed
-MIDI fixture, and composes the host's physical MIDI input capability. The two
-sources remain distinct (`automaticMidi` and `physicalMidi`) until both reach
+Normal `make run` resolves the composition-root-designated HiDef capability
+exactly and constructs Patch 1 `INIT`: MIDI channel 1, T00 at 0 dB Patch trim,
+neutral envelope, capability-seeded voice limit, and three empty post-effect
+slots. It also installs the default sixteen-track Mixer, 0 dB master, and the
+production return bank. The captured versioned session and its complete graph
+are validated and prepared before audio or the window starts; a missing or
+invalid designated capability is a typed fatal startup error, never registry
+fallback. The initial graph is silent until keyboard/controller or physical
+MIDI input is accepted. The automatic source exists only in explicit demo and
+witness paths, where `automaticMidi` remains distinct from `physicalMidi` until
 the shared control-side channel fan-out. Neither source emits Patch targets.
 The physical path uses `midir = 0.11.0`: CoreMIDI on Apple, ALSA on Linux, and
 WinMM on Windows through default features. JACK and WinRT remain explicit
@@ -544,10 +556,99 @@ commits an asset or mutates saved state.
 
 Saved state is versioned and stores canonical control state and stable relative
 asset references. It never stores decoded PCM, absolute library roots, browser
-or preview sessions, prepared graphs, or device state. Restore is decode →
-migrate → validate → prepare → atomic commit/handoff. Failure before commit
-leaves the active session and graph untouched; a missing Sample restores as
-explicit Unavailable.
+or preview sessions, document paths, dialog or dirty state, prepared graphs, or
+device state. The shell owns `Untitled` or one exact path, an exact typed
+`SavedSession` clean baseline, pending continuations, operation status, and
+typed lifecycle failures. Its immutable window projection exposes only the
+leaf document name, dirty marker, operation/status text, and error marker/text;
+full paths remain inside native dialog and filesystem boundaries.
+
+New and Open share one capacity-one candidate worker. Open reads bytes before
+the worker performs decode → supported migration → validation → canonical
+reconstruction/projection → complete graph preparation. The control side
+admits navigation and performance during that work but refuses saved-field
+actions once New, Open, or guarded Close has been authorized, preventing a
+later edit from being discarded without another decision. Direct Save and
+Save As continue to admit edits so the exact captured baseline can complete
+while later work remains visibly dirty. The control side then
+preflights the private one-shot persisted-content replacement against a cloned
+state and the prepared graph's initial parameters. Session replacement then
+uses the same application-wide structural coordinator as engine and topology
+changes: MIDI admission is gated with bounded all-notes-off recovery, the
+complete graph activates at a block boundary, and one correlated
+`ReplacePersistedSession` event commits through `AppState::apply`. Failed,
+busy, mismatched, or stale candidates are retired on the control side; the
+prior capture, state projection, graph revision, render output, and input path
+remain usable. No callback destroys a graph.
+
+Save workers receive an immutable typed capture and a content token. The
+filesystem adapter encodes version 2 JSON into a unique same-directory sibling,
+writes, flushes, syncs, atomically renames, and syncs the parent directory.
+Identity and baseline change only after correlated success, so a later edit
+remains dirty against the exact written capture. Create/write/flush/sync/rename
+and encoding failures stay typed and do not truncate an existing destination.
+Dirty New, Open, and Close use one resumable Save/Discard/Cancel state machine;
+cancellation is a non-error, while failures remain visible without fallback.
+
+PATCH interaction now derives one trailing empty position after the created
+Patch order. `PatchPositionId::Created(PatchId) | TrailingEmpty` is the
+canonical interaction identity for focus, remembered roots, subordinate
+sessions, return paths, and focus suspended by MIDI Settings. `TrailingEmpty`
+is not a `Patch`, has no numeric ID, route, MIDI subscription, parameter entry,
+or graph slot, and never enters `SavedSession`. Shift+Right reaches it through
+the same non-wrapping semantic Patch-navigation action used between created
+Patches; Shift+Left returns to the final created Patch. Navigation and
+prospective Overview/Detail/Choice/Utility inspection do not change saved
+capture, graph revision, or audio.
+
+One injected immutable `PatchCreationBlueprint` resolves the designated
+provider-authored Engine default used by both the initial-session factory and
+prospective creation. A first accepted Patch-owned edit reserves the greatest
+created `PatchId` plus one, derives `Patch {id}`, appended MIDI channel and
+Mixer track, 0 dB trim,
+neutral envelope, seeded voice limit, and three empty effect positions, then
+applies only the triggering edit. The pending candidate stays outside the
+created Patch vector. Loading, validation, preparation, failure, activation,
+and the final commit all pass through `AppState::apply`; only a matching graph
+activation acknowledgement appends the candidate, rekeys any still-live empty
+focus/return identity, advances the graph revision, and changes saved content.
+
+Creation reuses the capacity-one structural worker and coordinator.
+`GraphReplacementScope::AppendPatch` admits only an identical prior Patch,
+return, and device layout plus one exact final candidate. The worker prepares
+the complete graph off callback. Before staging, the control side applies the
+future commit to a clone, compares exact revision/order/identity/scalar shape
+and candidate values with the prepared graph, and refreshes prior scalar
+values accepted during preparation. Existing live engines/effects/returns are
+carried across the block-boundary swap where identities and layouts agree; the
+new engine starts silent. Failure leaves the prior session and graph usable,
+and prepared ownership retires off callback.
+
+`MAX_ACTIVE_PATCHES` is the single control, persistence, graph-layout, and RT
+array authority and remains 16. At capacity, the trailing empty interaction
+position is still reachable and projects `CAPACITY 16/16`, but creating actions
+are unavailable and direct stale attempts reject before worker submission. No
+audio-inactive, dormant, paged, or seventeenth Patch model exists. This is an
+explicit scoped mismatch with Figma's effectively unlimited Patch workflow,
+not a redefinition of that workflow or a weakening of callback bounds.
+
+Direct inspection of the live Figma file measured Patch Overview node `95:202`
+at 1920×1080 with 48/72/896/64 px shell bands, Engine plus three ordered Post
+FX positions, the persistent Utility rows, and `SHIFT+L/R:patch` guidance.
+Interaction Map node `49:3` measured 3000×2600 and explicitly sequences
+existing Patch → Shift+Right → virtual empty slot → modify parameter →
+initialized Patch, with no explicit New Patch command. The production
+projection follows that semantic sequence and reports the 16-Patch boundary;
+the current blockout has not established broad visual parity. The dedicated
+native empty-Patch witness passed on 2026-08-28. It painted empty, prospective
+Detail/Choice/Utility, all pending phases, failure, capacity, and created
+documents at requested Wide and Standard windows, then reused the exact empty
+projection at Intermediate, Compact, and enlarged-text conditions. The real
+scroll owners reached both endpoints and their first/last semantic targets;
+all interactive targets retained a 48 px floor, document horizontal overflow
+and required-content overlap measured zero, repeated paints were identical,
+and Compact Overview truthfully scrolled by 177 px. These measurements prove
+the scoped interaction blockout, not broad visual parity.
 
 ## Controller and focus contract
 
@@ -561,14 +662,15 @@ Physical bindings normalize to semantic actions before product logic:
 | Edit | toggle/confirm |
 | Shift + Up | open related Detail/Browser; MIXER → PATCH |
 | Shift + Down | return/close; PATCH → MIXER |
-| Shift + Left/Right | previous/next installed Patch |
+| Shift + Left/Right | previous/next created Patch or trailing empty endpoint |
 | Shift + Start | open temporary Settings · MIDI Devices (non-repeating) |
 | Select | multi-select only when reducer semantics exist; currently unavailable |
 | Start press/release | hold-to-preview in Sample Browser; reserved elsewhere |
 
 PATCH Main is the non-wrapping Overview order: Engine, then the three canonical
-effect-slot occupancy controls. The visual reading order is the same single
-vertical sequence at every viewport width; wider compositions expand the row
+effect-slot occupancy controls. Sibling order is every created Patch followed
+by exactly one trailing empty position. The visual reading order is the same
+single vertical sequence at every viewport width; wider compositions expand the row
 interiors and the persistent Utility region rather than turning focus movement
 into a horizontal card scan. Instrument, envelope, and configured-effect
 parameters remain on descriptor-driven Detail surfaces. PATCH Utility contains
@@ -593,7 +695,16 @@ and the physical-device visual handoff remain incomplete evidence.
 On macOS, Shift arrives through AppKit's `FlagsChanged` event rather than a key
 down/up pair. The native input adapter treats modifier transitions as
 non-repeatable and never queries key-repeat state from a modifier event; a UI
-input callback must not unwind through the Objective-C event boundary.
+input callback must not unwind through the Objective-C event boundary. The
+local monitor retains a bounded 128-signature window so WebKit's delayed
+unhandled-key redispatch cannot double-feed the translator after a full input
+burst. The strict native witness delivered 68 scripted transitions exactly
+once and produced 20 byte-exact semantic actions, including repeated Shift
+flags, Shift held across D/A, and held-K focus-loss cleanup. Its paired
+real-window journey painted Shift+Right to empty, non-creating Detail
+inspection, first edit, visible preparation failure, fresh retry, acknowledged
+creation, exact return identity, and Shift+Left through production keyboard
+normalization, `AppState::apply`, projection, and native paint.
 
 MIXER Main uses one stable `(MixerTrackId, MixerTrackParameter)` path. Left/Right
 changes T00–T0F while preserving Level/Pan/Mute/Solo row; Up/Down changes row
@@ -749,6 +860,47 @@ Overview slice:
   packets were produced by the attached controller. Cross-platform native
   builds, the continuous native Settings width sweep, and direct screenshot
   comparison with Figma node `116:2` remain incomplete acceptance.
+- on 2026-08-28, the session-lifecycle implementation passed formatting,
+  Clippy with warnings denied, the exact-selector self-test, the static
+  no-name-enumeration guard, 41 focused session library tests, and
+  `cargo test --all-targets`. The library aggregate reported 834 passed and two
+  measurement-only tests ignored; every binary and integration target passed.
+  Production-seam evidence covered the exact `INIT` default, a fixture source
+  that panics if normal startup consults it, initial silence and physical-MIDI
+  playability, New/Open prepared replacement, Save/Save As exact round trips,
+  dirty guards, typed failure preservation, block-boundary graph activation,
+  off-callback candidate retirement, and zero measured callback allocations or
+  destructions. The adapter-level native lifecycle report completed all five
+  menu shortcuts, New cancellation, failed and successful Open, Save As, and
+  dirty Close Cancel/Save/Discard with clean worker/graph teardown. The broad
+  webview target passed its headless policy and serialization checks but
+  truthfully skipped its environment-gated real-window/DOM groups because
+  `CREST_WEBVIEW_TESTS=1` was absent. This lifecycle evidence does not establish
+  broad Figma parity, packaged cross-platform storage semantics, or a manual OS
+  dialog visual handoff.
+- on 2026-08-28, empty-Patch implicit creation passed formatting, Clippy with
+  warnings denied, exact-selector and no-name guards, focused reducer,
+  projector, worker, coordinator, renderer, persistence, and session-lifecycle
+  tests, and `cargo test --all-targets`. The library aggregate reported 860
+  passed and two measurement-only tests ignored; every binary and integration
+  target passed. The headless webview witness covered 40 serialized states,
+  including prospective Overview, Detail, Choice, Utility, every creation
+  phase, typed failure, 16/16 capacity, and acknowledged creation. Production
+  evidence covered all declared first-edit families converging on one append
+  correlation, exact graph preparation and preflight, prior live-audio carry,
+  a silent new engine, activation-only saved commit, failure/retry, Save and
+  fresh Open, exact 16-Patch restore, and zero measured callback allocations
+  or destructions. Direct live-Figma inspection measured Patch Overview
+  `95:202` and Interaction Map `49:3` as recorded above. The scoped native
+  empty-Patch target passed its Wide, Standard, Intermediate, Compact, and
+  enlarged-text matrix with singular focus, active scroll-endpoint
+  reachability, 48 px target floors, zero required overlap/horizontal
+  overflow, deterministic repaint, resize-neutral identity, and owned
+  teardown. The strict native key monitor delivered all 68 scripted AppKit
+  transitions exactly once into 20 byte-exact actions, and the real window
+  painted the complete normalized empty → inspection → failed first edit →
+  retry → created → exact return → Shift+Left sequence. This scoped evidence
+  does not establish broad Figma parity or physical gamepad integration.
 
 Instrument and FX Detail have completed their scoped native manual handoff.
 The native responsive DOM measurements and handoff do not claim full Figma
@@ -775,8 +927,9 @@ make test-engine-post-fx-options
 make test-midi-devices
 make test-midi-host
 make test-webview-options-native
+make test-webview-empty-patch-native
 
-# Open the production window and automatic plus physical MIDI/audio paths.
+# Open the production window with the clean INIT and physical MIDI/audio paths.
 make run
 
 # Interactive attached-device Settings/audio handoff. The script traps
@@ -815,7 +968,12 @@ Useful validation entry points are
 `scripts/check_no_name_enumerated_identity.sh`,
 `cargo test --test webview_projection_shell -- --nocapture`, and
 `make test-webview-detail-native` for the bounded real-window Detail/Mixer
-witness. The option handoff checklist is
+witness. `make test-webview-empty-patch-native` scopes the real-window
+empty/pending/capacity/newly-created Patch fixtures, the normalized
+failure/retry journey, and the strict production AppKit input-capture witness.
+It requires an interactive macOS session; an unavailable window, missing
+first animation-frame paint, non-exact native transition log, or missing
+focus-loss edge fails the target and remains incomplete evidence. The option handoff checklist is
 `scripts/run_engine_post_fx_option_handoff.sh`; the physical MIDI checklist is
 `scripts/run_midi_device_handoff.sh`. `make test-midi-host` is safe with no
 attached input: zero ports is truthful success and backend initialization is a

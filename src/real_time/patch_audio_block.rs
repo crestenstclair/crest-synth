@@ -1,5 +1,5 @@
 use crate::kernel::patch_id::PatchId;
-use crate::real_time::parameter_snapshot::{ParameterSnapshot, MAX_PATCHES};
+use crate::real_time::parameter_snapshot::{ParameterSnapshot, MAX_ACTIVE_PATCHES};
 use core::fmt;
 
 /// The reason a prepared Patch audio block could not be used.
@@ -120,7 +120,7 @@ impl PatchStereoStem {
 pub struct PatchAudioBlock {
     frame_count: usize,
     patch_count: usize,
-    stems: [PatchStereoStem; MAX_PATCHES],
+    stems: [PatchStereoStem; MAX_ACTIVE_PATCHES],
     max_frames: usize,
 }
 
@@ -220,7 +220,7 @@ impl PatchAudioBlock {
     }
 
     /// Returns the complete prepared fixed Patch storage.
-    pub const fn storage(&self) -> &[PatchStereoStem; MAX_PATCHES] {
+    pub const fn storage(&self) -> &[PatchStereoStem; MAX_ACTIVE_PATCHES] {
         &self.stems
     }
 
@@ -247,14 +247,16 @@ mod tests {
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::patch_output::PatchOutput;
-    use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
+    use crate::real_time::parameter_snapshot::{
+        ParameterSnapshot, RtPatchParameters, MAX_ACTIVE_PATCHES,
+    };
 
     fn patch(id: u32) -> RtPatchParameters {
         RtPatchParameters::new(PatchId::new(id).unwrap(), PatchOutput::default())
     }
 
     fn snapshot(ids: &[u32]) -> ParameterSnapshot {
-        let mut patches = [patch(1); MAX_PATCHES];
+        let mut patches = [patch(1); MAX_ACTIVE_PATCHES];
         for (slot, id) in patches.iter_mut().zip(ids) {
             *slot = patch(*id);
         }
@@ -269,7 +271,7 @@ mod tests {
         assert_eq!(block.max_frames(), 4);
         assert_eq!(block.frame_count(), 0);
         assert_eq!(block.patch_count(), 0);
-        assert_eq!(block.storage().len(), MAX_PATCHES);
+        assert_eq!(block.storage().len(), MAX_ACTIVE_PATCHES);
         assert!(block
             .storage()
             .iter()
@@ -332,7 +334,7 @@ mod tests {
     #[test]
     fn clearing_and_filling_reuse_prepared_storage() {
         let mut block = PatchAudioBlock::prepare(4).unwrap();
-        let capacities: [usize; MAX_PATCHES] =
+        let capacities: [usize; MAX_ACTIVE_PATCHES] =
             std::array::from_fn(|index| block.storage()[index].samples.capacity());
         block.begin_render(&snapshot(&[7, 8]), 4).unwrap();
 

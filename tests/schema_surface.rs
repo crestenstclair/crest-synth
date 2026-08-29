@@ -4,7 +4,9 @@ use crest_synth::adapter::braids_capability::BraidsCapability;
 use crest_synth::adapter::production_effects::{
     production_chorus_config, production_effect_registry,
 };
-use crest_synth::adapter::production_instruments::production_capability_registry;
+use crest_synth::adapter::production_instruments::{
+    production_capability_registry, production_instrument_providers,
+};
 use crest_synth::adapter::sample_capability::SampleCapability;
 use crest_synth::control::{
     AppEvent, AppState, EngineSelectionFailure, EngineSelectionStatusKind,
@@ -21,11 +23,11 @@ use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
     AssetAssignment, CapabilityAvailability, CapabilityId, CapabilityRegistry,
-    EffectCapabilityDescriptor, EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId,
-    InstrumentCapabilityProvider, InstrumentConfig, Patch, PreparedSampleLandmarks,
-    PreparedSamplePcm, PreparedSampleVisualization, SampleAssetId, SampleBrowserRow,
-    SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId, SampleLoopMode,
-    SampleMetadata, VoiceEnvelope, WaveformPair,
+    DescriptorDefaultConfigFactory, EffectCapabilityDescriptor, EffectCapabilityId,
+    EffectCapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider, InstrumentConfig, Patch,
+    PreparedSampleLandmarks, PreparedSamplePcm, PreparedSampleVisualization, SampleAssetId,
+    SampleBrowserRow, SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId,
+    SampleLoopMode, SampleMetadata, VoiceEnvelope, WaveformPair,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use crest_synth::testing::{
@@ -242,6 +244,37 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             false,
         ),
     ];
+    let creation_registry = production_capability_registry().unwrap();
+    let creation_blueprint = crest_synth::control::PatchCreationBlueprint::resolve(
+        &CapabilityId::new(crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID)
+            .unwrap(),
+        &DescriptorDefaultConfigFactory::new(
+            creation_registry,
+            production_instrument_providers().unwrap(),
+        ),
+    )
+    .unwrap();
+    let mut empty_state = configured_state(soundfont_config.clone(), braids_config.clone())
+        .with_patch_creation_blueprint(creation_blueprint);
+    empty_state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    empty_state
+        .apply(AppEvent::SelectPatch(
+            crest_synth::control::Direction::Right,
+        ))
+        .unwrap();
+    empty_state
+        .apply(AppEvent::SelectPatch(
+            crest_synth::control::Direction::Right,
+        ))
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&empty_state)
+            .unwrap()
+            .4,
+    );
     let unavailable = CapabilityAvailability::Unavailable {
         reason: "schema fixture unavailable".to_owned(),
     };
@@ -824,7 +857,9 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // `PatchDetailSubject`'s own fields to camelCase in the same bump. Version
     // 18 added registry-owned capability availability; 19 adds reducer-owned
     // physical MIDI lifecycle facts while excluding handles and observations.
-    assert_eq!(StateTree::SCHEMA_VERSION, 19);
+    // Version 20 adds the explicit tagged trailing-empty Patch shape and its
+    // prospective/capacity ownership facts without inventing a Patch ID.
+    assert_eq!(StateTree::SCHEMA_VERSION, 20);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

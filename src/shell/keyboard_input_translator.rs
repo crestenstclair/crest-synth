@@ -71,9 +71,9 @@ impl KeyboardInputTranslator {
             WindowKey::Digit2 => {
                 return Some(SemanticAction::SelectContext(TopLevelContext::Patch))
             }
-            // Stepping through the installed Patch order is its own gesture,
-            // never a modifier on navigation: holding K must not turn a patch
-            // step into a parameter edit.
+            // Q/E remain direct compatibility bindings for Patch stepping;
+            // the authored Shift+Left/Right gesture below reaches the same
+            // semantic action. Holding K must not turn either into an edit.
             WindowKey::Q => return Some(SemanticAction::SelectPatch(Direction::Left)),
             WindowKey::E => return Some(SemanticAction::SelectPatch(Direction::Right)),
             _ => {}
@@ -138,7 +138,8 @@ impl KeyboardInputTranslator {
             return match direction {
                 Direction::Up => Some(SemanticAction::OpenRelated),
                 Direction::Down => Some(SemanticAction::Return),
-                Direction::Left | Direction::Right => None,
+                Direction::Left => Some(SemanticAction::SelectPatch(Direction::Left)),
+                Direction::Right => Some(SemanticAction::SelectPatch(Direction::Right)),
             };
         }
 
@@ -388,6 +389,27 @@ mod tests {
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::W)),
             Some(SemanticAction::Navigate(Direction::Up))
+        );
+    }
+
+    #[test]
+    fn shift_horizontal_maps_to_semantic_patch_navigation() {
+        let mut translator = KeyboardInputTranslator::new();
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::Shift)),
+            None
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::D)),
+            Some(SemanticAction::SelectPatch(Direction::Right))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_down(WindowKey::A)),
+            Some(SemanticAction::SelectPatch(Direction::Left))
+        );
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::Shift)),
+            None
         );
     }
 

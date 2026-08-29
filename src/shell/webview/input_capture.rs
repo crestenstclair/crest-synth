@@ -158,8 +158,11 @@ mod platform {
     /// `(type, keyCode, timestamp)` it has already delivered — two distinct
     /// physical transitions can never share an `NSEvent` timestamp, while
     /// the round-trip preserves it verbatim. The window is bounded; the
-    /// round-trip returns within a frame or two, so a small ring suffices.
-    const REDISPATCH_WINDOW: usize = 64;
+    /// round-trip normally returns within a frame or two, but WebKit may defer
+    /// the first replay until after a burst spanning the complete normalized
+    /// key vocabulary. Keep the ring bounded while retaining that 68-edge
+    /// production witness with margin.
+    const REDISPATCH_WINDOW: usize = 128;
 
     /// The identity of one delivered key event: down/up, hardware key code,
     /// and the event's own timestamp bit pattern.

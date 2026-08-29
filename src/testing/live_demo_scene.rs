@@ -1359,7 +1359,8 @@ impl LiveEngineTransition {
                 PatchControlId::Capability(parameter_id.clone())
             }
             StructuralEditIntent::SetSlotOccupancy { .. }
-            | StructuralEditIntent::SetReturnOccupancy { .. } => {
+            | StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::AppendPatch { .. } => {
                 unreachable!("live demo engine transitions carry instrument intents")
             }
         }

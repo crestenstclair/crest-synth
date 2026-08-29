@@ -6,6 +6,11 @@ pub mod component_vocabulary;
 pub mod controller_input_translator;
 pub mod density;
 pub mod keyboard_input_translator;
+pub mod session_dialog;
+pub mod session_document;
+pub mod session_files;
+pub mod session_lifecycle;
+pub mod session_save_worker;
 pub mod shell_frame_observation;
 pub mod standalone_application;
 pub mod tokens;
@@ -17,6 +22,25 @@ pub use controller_input_translator::{
     ControllerGesture, ControllerInput, ControllerInputKind, ControllerInputTranslator,
 };
 pub use keyboard_input_translator::KeyboardInputTranslator;
+pub use session_dialog::{
+    DeterministicSessionDialog, NativeSessionDialogBridge, SessionDialogFailure, SessionDialogPort,
+    SessionDialogRequest, SessionDialogRequestId, SessionDialogRequestIdError, SessionDialogResult,
+    SessionFileDialogKind, UnavailableSessionDialog, UnsavedChoice,
+};
+pub use session_document::{DocumentIdentity, SessionDocument};
+pub use session_files::{
+    SessionFileFailure, SessionFileFailureKind, SessionFilePort, StandardSessionFileSystem,
+};
+pub use session_lifecycle::{
+    PendingSessionContinuation, SessionDocumentMarker, SessionDocumentProjection,
+    SessionLifecycleCause, SessionLifecycleCoordinator, SessionLifecycleError,
+    SessionLifecycleProgress, SessionLifecycleStage, SessionOperation, SessionShellProjection,
+};
+pub use session_save_worker::{
+    SessionContentToken, SessionContentTokenError, SessionSaveFailure, SessionSaveRequest,
+    SessionSaveResult, SessionSaveWorker, SessionSaveWorkerBusy, SessionSaveWorkerBusyReason,
+    ThreadedSessionSaveWorker, ThreadedSessionSaveWorkerError,
+};
 pub use shell_frame_observation::{
     ShellFrameObservation, ShellFrameObservationError, ShellRegionId, ShellRegionObservation,
     ShellRegionRect, StripPaintObservation,

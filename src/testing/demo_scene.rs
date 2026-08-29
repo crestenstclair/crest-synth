@@ -2443,6 +2443,9 @@ fn build_expected_coverage(
             crate::control::app_event::AppEventSurfaceDescriptor::InstallPatches { .. } => {
                 expected.push("event.installPatches".to_owned());
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::ReplacePersistedSession {
+                ..
+            } => {}
             crate::control::app_event::AppEventSurfaceDescriptor::Midi { .. } => {
                 expected.push("event.midi".to_owned());
             }
@@ -3157,7 +3160,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 47);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            48
+            49
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

@@ -259,9 +259,9 @@ fn assert_page_is_exact(state: &AppState, page: &PatchPageProjection) {
         page.focused_control_id(),
         state.interaction().patch_control_focus().unwrap()
     );
-    assert_eq!(page.patch().id(), patch.id());
+    assert_eq!(page.patch().id(), Some(patch.id()));
     assert_eq!(page.patch().name(), patch.name());
-    assert_eq!(page.patch().midi_channel(), patch.channel());
+    assert_eq!(page.patch().midi_channel(), Some(patch.channel()));
     let midi_input = page
         .output()
         .iter()

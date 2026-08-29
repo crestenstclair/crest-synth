@@ -1,6 +1,8 @@
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::patch_id::PatchId;
-use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
+use crate::real_time::parameter_snapshot::{
+    ParameterSnapshot, RtPatchParameters, MAX_ACTIVE_PATCHES,
+};
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 use crate::real_time::prepared_graph::PositionCapabilityIdentity;
 use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
@@ -34,11 +36,11 @@ impl PreparedEngineSlot {
 /// Fixed-capacity ordered ownership of one prepared instrument per Patch.
 ///
 /// The rack contains no engine-specific identity or branch. Every callback
-/// operation is bounded by `MAX_PATCHES`, and rendering uses only the matching
+/// operation is bounded by `MAX_ACTIVE_PATCHES`, and rendering uses only the matching
 /// caller-owned stem.
 pub struct PreparedEngineRack {
     patch_count: usize,
-    slots: [Option<PreparedEngineSlot>; MAX_PATCHES],
+    slots: [Option<PreparedEngineSlot>; MAX_ACTIVE_PATCHES],
 }
 
 impl PreparedEngineRack {
@@ -64,7 +66,7 @@ impl PreparedEngineRack {
 
     pub(crate) fn from_slots(
         patch_count: usize,
-        slots: [Option<PreparedEngineSlot>; MAX_PATCHES],
+        slots: [Option<PreparedEngineSlot>; MAX_ACTIVE_PATCHES],
     ) -> Self {
         Self { patch_count, slots }
     }
@@ -163,7 +165,7 @@ impl PreparedEngineRack {
         Ok(())
     }
 
-    /// Silences every active instrument with work bounded by `MAX_PATCHES`.
+    /// Silences every active instrument with work bounded by `MAX_ACTIVE_PATCHES`.
     pub fn all_notes_off(&mut self) {
         for slot in self.slots[..self.patch_count].iter_mut().flatten() {
             slot.instrument.all_notes_off();
@@ -229,7 +231,7 @@ impl PreparedEngineRack {
     /// into this replacement at every slot the structural delta leaves
     /// unchanged, so sounding voices survive block-boundary activation.
     ///
-    /// Callback-safe: the work is bounded by `MAX_PATCHES` pointer-sized
+    /// Callback-safe: the work is bounded by `MAX_ACTIVE_PATCHES` pointer-sized
     /// `mem::swap`s with no allocation, deallocation, locking, blocking, or
     /// destruction. The freshly prepared (never sounded) instruments ride
     /// into the superseded rack, which retires off-callback as before.
@@ -246,10 +248,12 @@ impl PreparedEngineRack {
         superseded: &mut Self,
         exclude: Option<PatchId>,
     ) {
-        if self.patch_count != superseded.patch_count {
+        if self.patch_count < superseded.patch_count
+            || self.patch_count > superseded.patch_count.saturating_add(1)
+        {
             return;
         }
-        for index in 0..self.patch_count {
+        for index in 0..superseded.patch_count {
             let (Some(target), Some(source)) =
                 (self.slots[index].as_mut(), superseded.slots[index].as_mut())
             else {
@@ -375,7 +379,9 @@ mod tests {
     use crate::mixer::global_parameters::GlobalParameters;
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::patch_output::PatchOutput;
-    use crate::real_time::parameter_snapshot::{ParameterSnapshot, RtPatchParameters, MAX_PATCHES};
+    use crate::real_time::parameter_snapshot::{
+        ParameterSnapshot, RtPatchParameters, MAX_ACTIVE_PATCHES,
+    };
     use crate::real_time::patch_audio_block::PatchAudioBlock;
     use crate::real_time::prepared_graph::PositionCapabilityIdentity;
     use crate::synth::capability_id::CapabilityId;
@@ -419,7 +425,8 @@ mod tests {
 
     fn rack(fill: f32, capability: &str) -> PreparedEngineRack {
         let patch_id = PatchId::new(1).unwrap();
-        let mut slots: [Option<PreparedEngineSlot>; MAX_PATCHES] = std::array::from_fn(|_| None);
+        let mut slots: [Option<PreparedEngineSlot>; MAX_ACTIVE_PATCHES] =
+            std::array::from_fn(|_| None);
         slots[0] = Some(PreparedEngineSlot::new(
             patch_id,
             0,
@@ -430,19 +437,27 @@ mod tests {
         rack
     }
 
-    fn rendered_fill(rack: &mut PreparedEngineRack) -> f32 {
-        let patch_id = PatchId::new(1).unwrap();
+    fn rendered_fills(rack: &mut PreparedEngineRack) -> Vec<f32> {
+        let patch_parameters = (0..rack.patch_count())
+            .map(|index| {
+                RtPatchParameters::new(rack.patch_id(index).unwrap(), PatchOutput::default())
+            })
+            .collect::<Vec<_>>();
         let parameters = ParameterSnapshot::new(
             1,
             GlobalParameters::new(0.0).unwrap(),
             MixerState::default(),
-            &[RtPatchParameters::new(patch_id, PatchOutput::default())],
+            &patch_parameters,
         )
         .unwrap();
         let mut block = PatchAudioBlock::prepare(FRAMES).unwrap();
         block.begin_render(&parameters, FRAMES).unwrap();
         rack.render(&mut block, &parameters).unwrap();
-        block.stem(0, patch_id).unwrap().samples()[0]
+        block.stems().iter().map(|stem| stem.samples()[0]).collect()
+    }
+
+    fn rendered_fill(rack: &mut PreparedEngineRack) -> f32 {
+        rendered_fills(rack)[0]
     }
 
     /// A candidate agreeing on Patch identity and scalar layout but carrying
@@ -471,6 +486,29 @@ mod tests {
 
         assert_eq!(rendered_fill(&mut fresh), 0.75);
         assert_eq!(rendered_fill(&mut superseded), 0.25);
+    }
+
+    #[test]
+    fn append_carries_the_existing_prefix_and_leaves_the_new_engine_fresh() {
+        let mut fresh = rack(0.25, "instrument.alpha");
+        let mut superseded = rack(0.75, "instrument.alpha");
+        let appended_id = PatchId::new(2).unwrap();
+        fresh.slots[1] = Some(PreparedEngineSlot::new(
+            appended_id,
+            0,
+            Box::new(MarkerInstrument {
+                patch_id: appended_id,
+                fill: 0.5,
+            }),
+        ));
+        fresh.patch_count = 2;
+        assert!(fresh.record_capability_identity(1, appended_id, identity("instrument.alpha")));
+
+        fresh.carry_live_instruments_from(&mut superseded, None);
+
+        assert_eq!(rendered_fills(&mut fresh), [0.75, 0.5]);
+        assert_eq!(rendered_fill(&mut superseded), 0.25);
+        assert_eq!(fresh.slots[1].as_ref().unwrap().patch_id, appended_id);
     }
 
     #[test]

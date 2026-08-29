@@ -54,6 +54,10 @@ hound = "=3.5.1"
 # Webview shell runtime — the product's sole shell behind the AppWindow port.
 # Default macOS bundle only — no tray, updater, or CLI features.
 tauri = "2"
+# Platform-native file and unsaved-change dialogs. It is confined to the
+# Tauri shell adapter; canonical state and lifecycle orchestration depend only
+# on the host-neutral dialog port.
+rfd = "0.15"
 
 # Rust-side native key capture under a focused WKWebView (research R-02):
 # the NSEvent local-monitor path lives in src/shell/webview/input_capture.rs.

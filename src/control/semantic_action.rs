@@ -166,6 +166,20 @@ const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 23] = [
 ];
 
 impl SemanticAction {
+    /// Whether accepting this action can change a field represented by the
+    /// versioned saved-session capture. Session replacement orchestration uses
+    /// this closed classification to keep later edits from being silently
+    /// discarded after the user has authorized New, Open, or Close.
+    pub const fn may_change_saved_session(&self) -> bool {
+        matches!(
+            self,
+            Self::Adjust(_)
+                | Self::Activate
+                | Self::SetSlotOccupancy { .. }
+                | Self::SetReturnOccupancy { .. }
+        )
+    }
+
     /// Returns the closed Phase 2 directional/navigation surface exactly once.
     ///
     /// The occupancy actions are deliberately outside this const descriptor:
@@ -249,6 +263,10 @@ impl ValidAction {
 mod tests {
     use super::{InteractionMode, SemanticAction, SemanticActionKind, ValidAction};
     use crate::control::{Direction, SurfaceId};
+    use crate::kernel::PatchId;
+    use crate::mixer::bus_id::BusId;
+    use crate::synth::effect_slot_id::EffectSlotIndex;
+    use crate::synth::EffectCapabilityId;
     use std::collections::HashSet;
 
     #[test]
@@ -297,5 +315,27 @@ mod tests {
         assert_eq!(decoded, valid);
         assert_eq!(decoded.action(), &SemanticAction::Adjust(Direction::Right));
         assert_eq!(decoded.hint(), Some("K+D"));
+    }
+
+    #[test]
+    fn saved_field_action_classification_is_closed_and_conservative() {
+        for action in SemanticAction::surface_descriptor() {
+            assert_eq!(
+                action.may_change_saved_session(),
+                matches!(action, SemanticAction::Adjust(_) | SemanticAction::Activate)
+            );
+        }
+        let effect = EffectCapabilityId::new("effect.test").unwrap();
+        assert!(SemanticAction::SetSlotOccupancy {
+            patch_id: PatchId::new(1).unwrap(),
+            slot: EffectSlotIndex::new(0).unwrap(),
+            entry: Some(effect.clone()),
+        }
+        .may_change_saved_session());
+        assert!(SemanticAction::SetReturnOccupancy {
+            bus: BusId::new(0).unwrap(),
+            entry: Some(effect),
+        }
+        .may_change_saved_session());
     }
 }

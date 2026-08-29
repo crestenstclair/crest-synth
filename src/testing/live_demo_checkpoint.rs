@@ -977,7 +977,8 @@ impl LiveEngineCheckpoint {
             }
             StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
-            | StructuralEditIntent::PrepareAudition { .. } => return false,
+            | StructuralEditIntent::PrepareAudition { .. }
+            | StructuralEditIntent::AppendPatch { .. } => return false,
         };
         if self.transition.trim().is_empty()
             || self.request_id.is_none()
@@ -992,7 +993,8 @@ impl LiveEngineCheckpoint {
             || self.in_flight_revision == Some(self.graph_revision);
         let capability_projection_exact = match &self.intent {
             StructuralEditIntent::SetSlotOccupancy { .. }
-            | StructuralEditIntent::SetReturnOccupancy { .. } => return false,
+            | StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::AppendPatch { .. } => return false,
             StructuralEditIntent::ReplaceCapability {
                 target_capability_id,
             } => {

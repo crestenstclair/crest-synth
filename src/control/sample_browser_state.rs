@@ -97,6 +97,14 @@ impl Default for SampleBrowserState {
 }
 
 impl SampleBrowserState {
+    /// Clears every document-specific browser/preview correlation while
+    /// retaining the adapter-discovered catalog owned by the application.
+    pub(crate) fn reset_for_session(&mut self) {
+        let catalog = std::mem::take(&mut self.catalog);
+        *self = Self::default();
+        self.catalog = catalog;
+    }
+
     pub fn with_catalog(
         mut self,
         listings: impl IntoIterator<

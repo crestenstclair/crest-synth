@@ -688,11 +688,20 @@
       // defect FR-014 closes (see cross-WP finding F-28, which counts
       // `activeCapabilityId` a serialization key).
       var engine = controlById(main, "patch.engine");
-      metadata =
-        summary && summary.kind === "patch"
-          ? escapeHtml(String(summary.patchName)) +
+      metadata = summary && summary.kind === "patch"
+        ? escapeHtml(String(summary.patchName)) +
+          HINT_SEPARATOR +
+          escapeHtml(engine ? controlValueText(engine) : UNAVAILABLE_MARK)
+        : summary && summary.kind === "emptyPatch"
+          ? "NEW PATCH" +
             HINT_SEPARATOR +
-            escapeHtml(engine ? controlValueText(engine) : UNAVAILABLE_MARK)
+            "DEFAULT " +
+            escapeHtml(engine ? controlValueText(engine) : UNAVAILABLE_MARK) +
+            HINT_SEPARATOR +
+            "CAPACITY " +
+            escapeHtml(String(summary.activeCount)) +
+            "/" +
+            escapeHtml(String(summary.capacity))
           : UNAVAILABLE_MARK;
     } else {
       metadata = columns.length + " TRACKS";
@@ -1257,6 +1266,7 @@
 
   function overviewHeaderHtml(model, main) {
     var summary = (main && main.summary) || {};
+    var empty = summary.kind === "emptyPatch";
     var side = persistentSideSurface(model);
     var routing = ["patch.midiInput", "patch.output.outputTrack"];
     var routeText = "";
@@ -1274,11 +1284,21 @@
     return (
       '<header class="overview-heading" data-role="overview-heading">' +
       '<span class="type-hint patch">PATCH ' +
-      escapeHtml(String(summary.patchId || UNAVAILABLE_MARK)) +
+      escapeHtml(empty ? "NEW" : String(summary.patchId || UNAVAILABLE_MARK)) +
       "</span>" +
       '<span class="type-display" data-role="overview-patch-name">' +
-      escapeHtml(String(summary.patchName || UNAVAILABLE_MARK)) +
+      escapeHtml(empty ? "NEW PATCH / DEFAULT" : String(summary.patchName || UNAVAILABLE_MARK)) +
       "</span>" +
+      (empty
+        ? '<span class="type-hint ' +
+          (summary.creationAvailable ? "adjust" : "warning") +
+          '" data-role="patch-capacity">CAPACITY ' +
+          escapeHtml(String(summary.activeCount)) +
+          "/" +
+          escapeHtml(String(summary.capacity)) +
+          (summary.creationAvailable ? " · AVAILABLE" : " · ACTIVE AUDIO LIMIT") +
+          "</span>"
+        : "") +
       '<span class="overview-routing">' +
       routeText +
       "</span>" +
@@ -1406,8 +1426,10 @@
     var subjectSummary = summary.subject || {};
     var subjectKind = String(subjectSummary.kind || "unknown");
     var mainSummary = (main && main.summary) || {};
-    var patchName = String(mainSummary.patchName || UNAVAILABLE_MARK);
-    var patchId = summary.patchId;
+    var prospective = mainSummary.kind === "emptyPatch";
+    var patchName = prospective ? "NEW PATCH / DEFAULT" : String(mainSummary.patchName || UNAVAILABLE_MARK);
+    var patchId = prospective ? null : mainSummary.patchId;
+    var patchPosition = prospective ? summary.patchPosition : patchId;
     var originControl = controlIdOf({
       path: model.returnPath && model.returnPath.origin,
     });
@@ -1486,9 +1508,13 @@
     return (
       '<div class="detail" id="detail" data-detail-kind="' +
       escapeHtml(subjectKind) +
-      '" data-patch-id="' +
-      escapeHtml(String(patchId)) +
-      '" data-origin-control="' +
+      '" data-patch-position="' +
+      escapeHtml(String(patchPosition)) +
+      '"' +
+      (patchId === null
+        ? ""
+        : ' data-patch-id="' + escapeHtml(String(patchId)) + '"') +
+      ' data-origin-control="' +
       escapeHtml(originControl) +
       '"' +
       (slotPosition === null
@@ -1512,8 +1538,8 @@
       escapeHtml(subject) +
       "</span>" +
       '<span class="spring"></span>' +
-      '<span class="type-hint secondary" data-role="detail-patch">PATCH ' +
-      escapeHtml(String(patchId)) +
+      '<span class="type-hint secondary" data-role="detail-patch">' +
+      (prospective ? "NEW PATCH · DEFAULT" : "PATCH " + escapeHtml(String(patchId))) +
       HINT_SEPARATOR +
       escapeHtml(patchName) +
       "</span>" +
@@ -2188,7 +2214,7 @@
     if (summary.kind === "mixerInspector") {
       return mixerInspectorHtml(model, side);
     }
-    if (summary.kind === "patchUtility") {
+    if (summary.kind === "patchUtility" || summary.kind === "emptyPatchUtility") {
       return patchUtilityHtml(model, side, summary);
     }
     // A main-surface summary in the side region is incoherent: the panel has
@@ -2221,12 +2247,15 @@
     // value FR-014 keeps off the screen.
     var main = surfaceById(model, "patchMain");
     var mainSummary = (main && main.summary) || null;
+    var empty = summary.kind === "emptyPatchUtility";
     var identity =
       '<span class="type-hint focus" data-role="patch-identity">' +
-      escapeHtml(String(summary.patchId)) +
+      escapeHtml(empty ? "NEW" : String(summary.patchId)) +
       HINT_SEPARATOR +
       escapeHtml(
-        mainSummary && mainSummary.kind === "patch"
+        empty
+          ? "DEFAULT · CAPACITY " + String(summary.activeCount) + "/" + String(summary.capacity)
+          : mainSummary && mainSummary.kind === "patch"
           ? String(mainSummary.patchName)
           : UNAVAILABLE_MARK
       ) +
@@ -2932,10 +2961,14 @@
           directChildOverlap(detailSectionNodes[overlapSectionIndex])
         );
       }
+      var detailPatchIdAttribute = detailNode.getAttribute("data-patch-id");
       detail = {
         surface: textOf(detailNode, '[data-role="detail-title"] .type-label'),
         subjectKind: detailNode.getAttribute("data-detail-kind"),
-        patchId: Number(detailNode.getAttribute("data-patch-id")),
+        patchId:
+          detailPatchIdAttribute === null
+            ? null
+            : Number(detailPatchIdAttribute),
         patch: textOf(detailNode, '[data-role="detail-patch"]'),
         originControl: detailNode.getAttribute("data-origin-control"),
         slotPosition:
@@ -3312,6 +3345,7 @@
           0,
           workspaceElement.scrollHeight - workspaceElement.clientHeight
         ),
+        workspace: scrollReachability(bodyNode || workspaceElement),
         inspectorScrollableBy: Math.max(
           0,
           inspectorElement.scrollHeight - inspectorElement.clientHeight
@@ -3337,14 +3371,13 @@
         focusedVisible: inspectorFocusedVisible,
         meter: textOf(inspectorElement, "#inspector-meter-readout"),
         hintLine: textOf(inspectorElement, '[data-role="utility-hint"]'),
-        // The side region seats its entries without a scroll affordance on
-        // PATCH: measured, so a relaxed `overflow` shows up as evidence
-        // rather than as a CSS diff nobody reads.
+        // The outer side region stays pinned while its bounded control body
+        // owns responsive scrolling. Measure both facts independently.
         scrollableBy: Math.max(
           0,
           inspectorElement.scrollHeight - inspectorElement.clientHeight
         ),
-        scrollReachability: scrollReachability(inspectorElement),
+        scrollReachability: scrollReachability(inspectorBody || inspectorElement),
         bodyScrollableBy: inspectorBody
           ? Math.max(0, inspectorBody.scrollHeight - inspectorBody.clientHeight)
           : 0,

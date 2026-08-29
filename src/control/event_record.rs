@@ -303,6 +303,12 @@ pub enum EventInput {
     InstallPatches {
         patches: Vec<PatchInput>,
     },
+    ReplacePersistedSession {
+        #[serde(rename = "targetGraphRevision")]
+        target_graph_revision: GraphRevision,
+        #[serde(rename = "patchIds")]
+        patch_ids: Vec<u32>,
+    },
     Midi {
         #[serde(rename = "patchId")]
         patch_id: u32,
@@ -474,6 +480,13 @@ impl From<&AppEvent> for EventInput {
             AppEvent::Return => Self::Return,
             AppEvent::InstallPatches(patches) => Self::InstallPatches {
                 patches: patches.iter().map(PatchInput::from).collect(),
+            },
+            AppEvent::ReplacePersistedSession(replacement) => Self::ReplacePersistedSession {
+                target_graph_revision: replacement.target_graph_revision(),
+                patch_ids: replacement
+                    .patch_ids()
+                    .map(|patch_id| patch_id.value())
+                    .collect(),
             },
             AppEvent::Midi { patch_id, message } => Self::Midi {
                 patch_id: patch_id.value(),

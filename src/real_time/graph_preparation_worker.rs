@@ -130,6 +130,23 @@ impl GraphPreparationCorrelation {
         )
     }
 
+    pub fn for_append(
+        request_id: EngineSelectionRequestId,
+        patch_id: PatchId,
+        source_graph_revision: GraphRevision,
+        target_graph_revision: GraphRevision,
+    ) -> Result<Self, GraphPreparationRequestError> {
+        Self::new_with_context(
+            request_id,
+            Some(patch_id),
+            StructuralEditIntent::AppendPatch { patch_id },
+            None,
+            None,
+            source_graph_revision,
+            target_graph_revision,
+        )
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn new_with_context(
         request_id: EngineSelectionRequestId,
@@ -215,6 +232,9 @@ impl GraphPreparationCorrelation {
             StructuralEditIntent::SetReturnOccupancy { bus, .. } => {
                 Some(crate::real_time::GraphReplacementScope::BusReturn(*bus))
             }
+            StructuralEditIntent::AppendPatch { patch_id } => Some(
+                crate::real_time::GraphReplacementScope::AppendPatch(*patch_id),
+            ),
         }
     }
 }
@@ -281,7 +301,7 @@ impl GraphPreparationRequest {
         effects: &EffectCapabilityRegistry,
         returns: &BusReturnBank,
     ) -> Result<Self, GraphPreparationRequestError> {
-        if active_patches.len() > crate::real_time::MAX_PATCHES {
+        if active_patches.len() > crate::real_time::MAX_ACTIVE_PATCHES {
             return Err(GraphPreparationRequestError::PatchCapacityExceeded);
         }
         for (index, patch) in active_patches.iter().enumerate() {
@@ -371,7 +391,7 @@ impl GraphPreparationRequest {
         registry: &CapabilityRegistry,
         effects: &EffectCapabilityRegistry,
     ) -> Result<Self, GraphPreparationRequestError> {
-        if active_patches.len() > crate::real_time::MAX_PATCHES {
+        if active_patches.len() > crate::real_time::MAX_ACTIVE_PATCHES {
             return Err(GraphPreparationRequestError::PatchCapacityExceeded);
         }
         for (index, patch) in active_patches.iter().enumerate() {
@@ -418,7 +438,8 @@ impl GraphPreparationRequest {
             StructuralEditIntent::ReplaceCapability { .. }
             | StructuralEditIntent::ReplaceParameterChoice { .. }
             | StructuralEditIntent::ReplaceAsset { .. }
-            | StructuralEditIntent::PrepareAudition { .. } => {
+            | StructuralEditIntent::PrepareAudition { .. }
+            | StructuralEditIntent::AppendPatch { .. } => {
                 return Err(GraphPreparationRequestError::IntentMismatch)
             }
         }
@@ -439,6 +460,79 @@ impl GraphPreparationRequest {
             correlation,
             candidate_patches,
             candidate_returns,
+            candidate_parameters,
+            audition_candidate: None,
+            audio_config,
+        })
+    }
+
+    /// Appends one complete candidate after the exact active order and
+    /// projects the full target-revision snapshot before worker submission.
+    #[allow(clippy::too_many_arguments)]
+    pub fn append_patch(
+        correlation: GraphPreparationCorrelation,
+        active_patches: &[Patch],
+        candidate: Patch,
+        active_returns: &BusReturnBank,
+        generation: u64,
+        global: GlobalParameters,
+        mixer: MixerState,
+        audio_config: AudioDeviceConfig,
+        registry: &CapabilityRegistry,
+        effects: &EffectCapabilityRegistry,
+    ) -> Result<Self, GraphPreparationRequestError> {
+        if active_patches.len() >= crate::real_time::MAX_ACTIVE_PATCHES {
+            return Err(GraphPreparationRequestError::PatchCapacityExceeded);
+        }
+        let candidate_id = correlation
+            .patch_id()
+            .ok_or(GraphPreparationRequestError::IntentMismatch)?;
+        if correlation.intent()
+            != &(StructuralEditIntent::AppendPatch {
+                patch_id: candidate_id,
+            })
+            || candidate.id() != candidate_id
+        {
+            return Err(GraphPreparationRequestError::IntentMismatch);
+        }
+        for (index, patch) in active_patches.iter().enumerate() {
+            if active_patches[..index]
+                .iter()
+                .any(|prior| prior.id() == patch.id())
+                || patch.id() == candidate_id
+            {
+                return Err(GraphPreparationRequestError::DuplicatePatchId);
+            }
+            registry
+                .validate_config(patch.instrument_config())
+                .map_err(|_| GraphPreparationRequestError::InvalidActiveConfig)?;
+            validate_patch_effect_slots(effects, patch.effect_slots())
+                .map_err(|_| GraphPreparationRequestError::InvalidActiveEffectConfig)?;
+        }
+        registry
+            .validate_config(candidate.instrument_config())
+            .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
+        validate_patch_effect_slots(effects, candidate.effect_slots())
+            .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
+
+        let mut candidate_patches = Vec::with_capacity(active_patches.len() + 1);
+        candidate_patches.extend_from_slice(active_patches);
+        candidate_patches.push(candidate);
+        let candidate_parameters = ParameterSnapshot::project_patches_with_effects_and_returns(
+            generation,
+            correlation.target_graph_revision(),
+            global,
+            mixer,
+            &candidate_patches,
+            registry,
+            effects,
+            active_returns,
+        )
+        .map_err(|_| GraphPreparationRequestError::InvalidCandidateConfig)?;
+        Ok(Self {
+            correlation,
+            candidate_patches,
+            candidate_returns: active_returns.clone(),
             candidate_parameters,
             audition_candidate: None,
             audio_config,
@@ -473,7 +567,7 @@ impl GraphPreparationRequest {
     /// Returns the selected candidate instrument config for instrument
     /// intents; occupancy intents change no instrument config.
     pub fn candidate_config(&self) -> Option<&InstrumentConfig> {
-        if self.correlation.intent().is_occupancy() {
+        if self.correlation.intent().uses_topology_events() {
             return None;
         }
         if let Some(candidate) = self.audition_candidate.as_ref() {
@@ -500,7 +594,7 @@ impl GraphPreparationRequest {
                 .iter()
                 .find(|patch| patch.id() == patch_id)
                 .ok_or(EngineSelectionFailure::GraphIncompatible)?;
-            if !self.correlation.intent().is_occupancy()
+            if !self.correlation.intent().uses_topology_events()
                 && Some(selected.instrument_config().capability_id())
                     != self.correlation.target_capability_id()
             {
@@ -801,7 +895,8 @@ fn validate_candidate_delta(
             }
         }
         StructuralEditIntent::SetSlotOccupancy { .. }
-        | StructuralEditIntent::SetReturnOccupancy { .. } => {
+        | StructuralEditIntent::SetReturnOccupancy { .. }
+        | StructuralEditIntent::AppendPatch { .. } => {
             return Err(GraphPreparationRequestError::IntentMismatch);
         }
     }
@@ -1165,6 +1260,119 @@ mod tests {
         );
         assert_eq!(request.candidate_parameters().patch_count(), active.len());
         assert_eq!(request.audio_config(), audio_config());
+    }
+
+    #[test]
+    fn append_request_freezes_the_exact_prior_order_plus_one_candidate() {
+        let registry = production_capability_registry().unwrap();
+        let active = [
+            patch(1, 0, HIDEF_CAPABILITY_ID),
+            patch(2, 1, BRAIDS_CAPABILITY_ID),
+        ];
+        let candidate = patch(7, 2, HIDEF_CAPABILITY_ID);
+        let correlation = GraphPreparationCorrelation::for_append(
+            EngineSelectionRequestId::FIRST,
+            candidate.id(),
+            GraphRevision::INITIAL,
+            GraphRevision::new(2).unwrap(),
+        )
+        .unwrap();
+        let request = GraphPreparationRequest::append_patch(
+            correlation.clone(),
+            &active,
+            candidate.clone(),
+            &crate::mixer::bus_return::BusReturnBank::default(),
+            11,
+            globals(),
+            MixerState::default(),
+            audio_config(),
+            &registry,
+            &crate::synth::EffectCapabilityRegistry::default(),
+        )
+        .unwrap();
+
+        assert_eq!(
+            request.candidate_patches(),
+            &[active[0].clone(), active[1].clone(), candidate]
+        );
+        assert_eq!(request.candidate_parameters().patch_count(), 3);
+        assert_eq!(request.candidate_parameters().generation(), 11);
+        assert_eq!(request.candidate_config(), None);
+        assert_eq!(
+            correlation.replacement_scope(),
+            Some(crate::real_time::GraphReplacementScope::AppendPatch(
+                PatchId::new(7).unwrap()
+            ))
+        );
+
+        assert_eq!(
+            GraphPreparationRequest::append_patch(
+                GraphPreparationCorrelation::for_append(
+                    EngineSelectionRequestId::FIRST,
+                    active[0].id(),
+                    GraphRevision::INITIAL,
+                    GraphRevision::new(2).unwrap(),
+                )
+                .unwrap(),
+                &active,
+                active[0].clone(),
+                &crate::mixer::bus_return::BusReturnBank::default(),
+                11,
+                globals(),
+                MixerState::default(),
+                audio_config(),
+                &registry,
+                &crate::synth::EffectCapabilityRegistry::default(),
+            ),
+            Err(GraphPreparationRequestError::DuplicatePatchId)
+        );
+
+        assert_eq!(
+            GraphPreparationRequest::append_patch(
+                GraphPreparationCorrelation::for_append(
+                    EngineSelectionRequestId::FIRST,
+                    PatchId::new(8).unwrap(),
+                    GraphRevision::INITIAL,
+                    GraphRevision::new(2).unwrap(),
+                )
+                .unwrap(),
+                &active,
+                patch(7, 2, HIDEF_CAPABILITY_ID),
+                &crate::mixer::bus_return::BusReturnBank::default(),
+                11,
+                globals(),
+                MixerState::default(),
+                audio_config(),
+                &registry,
+                &crate::synth::EffectCapabilityRegistry::default(),
+            ),
+            Err(GraphPreparationRequestError::IntentMismatch)
+        );
+
+        let full = (1..=crate::kernel::MAX_ACTIVE_PATCHES as u32)
+            .map(|id| patch(id, (id - 1) as u8, HIDEF_CAPABILITY_ID))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            GraphPreparationRequest::append_patch(
+                GraphPreparationCorrelation::for_append(
+                    EngineSelectionRequestId::FIRST,
+                    PatchId::new(17).unwrap(),
+                    GraphRevision::INITIAL,
+                    GraphRevision::new(2).unwrap(),
+                )
+                .unwrap(),
+                &full,
+                patch(17, 0, HIDEF_CAPABILITY_ID),
+                &crate::mixer::bus_return::BusReturnBank::default(),
+                11,
+                globals(),
+                MixerState::default(),
+                audio_config(),
+                &registry,
+                &crate::synth::EffectCapabilityRegistry::default(),
+            ),
+            Err(GraphPreparationRequestError::PatchCapacityExceeded)
+        );
     }
 
     #[test]

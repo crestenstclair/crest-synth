@@ -1,5 +1,6 @@
 pub mod app_event;
 pub mod app_state;
+pub mod default_session;
 pub mod engine_selection;
 pub mod event_record;
 pub mod graphical_shell_projection;
@@ -9,6 +10,7 @@ pub mod midi_device_worker;
 pub mod midi_scan_scheduler;
 pub mod patch_control_id;
 pub mod patch_page_projection;
+pub mod patch_position_id;
 pub mod sample_browser_state;
 pub mod saved_session;
 pub mod semantic_action;
@@ -16,6 +18,8 @@ pub mod semantic_focus;
 pub mod semantic_graphical_view_model;
 pub mod semantic_resolver;
 mod serialized_state;
+pub mod session_candidate_worker;
+mod session_replacement;
 pub mod state_projector;
 pub mod state_snapshot;
 pub mod text_projection;
@@ -25,6 +29,10 @@ pub use app_event::{AppEvent, AppEventPayloadShape, AppEventSurfaceDescriptor, D
 pub use app_state::{
     AppState, ApplyOutcome, EventRejection, FocusRepairStatus, SemanticActionAvailability,
     StateAccepted,
+};
+pub use default_session::{
+    capture_default_session, DefaultSessionBlueprint, DefaultSessionError, PatchCreationBlueprint,
+    PatchCreationError, ProspectivePatch,
 };
 pub use engine_selection::{
     EngineSelectionCorrelation, EngineSelectionEffect, EngineSelectionEffectKind,
@@ -69,6 +77,7 @@ pub use patch_page_projection::{
     PatchPageProjection, PatchPageProjectionError, PatchPageSection, PatchPageSlotOccupancy,
     EMPTY_OCCUPANCY_CHOICE_ID,
 };
+pub use patch_position_id::PatchPositionId;
 pub use sample_browser_state::{SampleAssetLifecycle, SampleBrowserState, SamplePreviewState};
 pub use saved_session::{
     PreparedSavedSession, SavedSession, SavedSessionError, SavedSessionRestoreError,
@@ -90,6 +99,13 @@ pub use semantic_graphical_view_model::{
     SemanticWaveformPair,
 };
 pub use semantic_resolver::{ResolvedChoiceOption, ResolvedChoiceSource, SemanticResolver};
+pub use session_candidate_worker::{
+    SessionCandidateFailure, SessionCandidateFailureKind, SessionCandidateRequest,
+    SessionCandidateResult, SessionCandidateSource, SessionCandidateToken,
+    SessionCandidateTokenError, SessionCandidateWorker, SessionCandidateWorkerBusy,
+    SessionCandidateWorkerBusyReason,
+};
+pub use session_replacement::SessionReplacementPayload;
 pub use state_projector::{StateProjectionError, StateProjector};
 pub use state_snapshot::StateSnapshot;
 pub use text_projection::TextProjection;

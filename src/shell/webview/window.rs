@@ -45,7 +45,8 @@
 
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
-    MidiActivityObservationCallback, ProjectionCallback, TickCallback, WindowError,
+    MidiActivityObservationCallback, ProjectionCallback, SessionCommand, SessionCommandCallback,
+    SessionDocumentProjectionCallback, TickCallback, WindowError,
 };
 use crate::shell::density::RepresentativeViewport;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
@@ -57,12 +58,161 @@ use crate::shell::webview::projection_channel::{
 };
 use crate::shell::webview::{input_capture, WebviewShellError};
 use crate::shell::window_input::WindowInput;
+use crate::shell::{
+    NativeSessionDialogBridge, SessionDialogPort, SessionDialogRequest, SessionDialogResult,
+    SessionDocumentMarker, SessionDocumentProjection, SessionFileDialogKind, UnsavedChoice,
+};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Listener, Manager, RunEvent, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+
+const MENU_NEW: &str = "session.new";
+const MENU_OPEN: &str = "session.open";
+const MENU_SAVE: &str = "session.save";
+const MENU_SAVE_AS: &str = "session.save_as";
+const MENU_CLOSE: &str = "session.close";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NativeFileMenuItem {
+    id: &'static str,
+    label: &'static str,
+    accelerator: &'static str,
+    command: SessionCommand,
+}
+
+impl NativeFileMenuItem {
+    pub const fn id(self) -> &'static str {
+        self.id
+    }
+
+    pub const fn label(self) -> &'static str {
+        self.label
+    }
+
+    pub const fn accelerator(self) -> &'static str {
+        self.accelerator
+    }
+
+    pub const fn command(self) -> SessionCommand {
+        self.command
+    }
+}
+
+const NATIVE_FILE_MENU: [NativeFileMenuItem; 5] = [
+    NativeFileMenuItem {
+        id: MENU_NEW,
+        label: "New",
+        accelerator: "CmdOrCtrl+N",
+        command: SessionCommand::New,
+    },
+    NativeFileMenuItem {
+        id: MENU_OPEN,
+        label: "Open…",
+        accelerator: "CmdOrCtrl+O",
+        command: SessionCommand::Open,
+    },
+    NativeFileMenuItem {
+        id: MENU_SAVE,
+        label: "Save",
+        accelerator: "CmdOrCtrl+S",
+        command: SessionCommand::Save,
+    },
+    NativeFileMenuItem {
+        id: MENU_SAVE_AS,
+        label: "Save As…",
+        accelerator: "CmdOrCtrl+Shift+S",
+        command: SessionCommand::SaveAs,
+    },
+    NativeFileMenuItem {
+        id: MENU_CLOSE,
+        label: "Close",
+        accelerator: "CmdOrCtrl+W",
+        command: SessionCommand::Close,
+    },
+];
+
+pub const fn native_file_menu_items() -> &'static [NativeFileMenuItem] {
+    &NATIVE_FILE_MENU
+}
+
+/// Normalizes one Tauri menu identity into the host-neutral lifecycle
+/// command. Unknown menu items are deliberately ignored.
+pub fn session_command_for_menu_id(id: &str) -> Option<SessionCommand> {
+    match id {
+        MENU_NEW => Some(SessionCommand::New),
+        MENU_OPEN => Some(SessionCommand::Open),
+        MENU_SAVE => Some(SessionCommand::Save),
+        MENU_SAVE_AS => Some(SessionCommand::SaveAs),
+        MENU_CLOSE => Some(SessionCommand::Close),
+        _ => None,
+    }
+}
+
+fn native_document_title(document: &SessionDocumentProjection) -> String {
+    let marker = match document.marker() {
+        SessionDocumentMarker::Ready => "",
+        SessionDocumentMarker::Busy => " [WORKING]",
+        SessionDocumentMarker::Error => " [ERROR]",
+    };
+    let dirty = if document.dirty() { " *" } else { "" };
+    let status = document.failure().unwrap_or(document.status());
+    format!(
+        "{}{dirty}{marker} — crest-synth — {status}",
+        document.name()
+    )
+}
+
+fn present_native_dialog(request: SessionDialogRequest) -> SessionDialogResult {
+    let request_id = request.request_id();
+    match request {
+        SessionDialogRequest::File {
+            kind,
+            suggested_name,
+            ..
+        } => {
+            let mut dialog = rfd::FileDialog::new().add_filter("Crest Synth Session", &["crest"]);
+            if let Some(name) = suggested_name {
+                dialog = dialog.set_file_name(name);
+            }
+            let selected = match kind {
+                SessionFileDialogKind::Open => dialog.pick_file(),
+                SessionFileDialogKind::SaveAs => dialog.save_file(),
+            };
+            selected.map_or(SessionDialogResult::Cancelled { request_id }, |path| {
+                SessionDialogResult::FileSelected { request_id, path }
+            })
+        }
+        SessionDialogRequest::UnsavedChanges { document_name, .. } => {
+            let result = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Unsaved Crest Synth session")
+                .set_description(format!(
+                    "Save changes to {document_name} before continuing?"
+                ))
+                .set_buttons(rfd::MessageButtons::YesNoCancelCustom(
+                    "Save".to_owned(),
+                    "Discard".to_owned(),
+                    "Cancel".to_owned(),
+                ))
+                .show();
+            let choice = match result {
+                rfd::MessageDialogResult::Yes | rfd::MessageDialogResult::Ok => UnsavedChoice::Save,
+                rfd::MessageDialogResult::No => UnsavedChoice::Discard,
+                rfd::MessageDialogResult::Custom(ref label) if label == "Save" => {
+                    UnsavedChoice::Save
+                }
+                rfd::MessageDialogResult::Custom(ref label) if label == "Discard" => {
+                    UnsavedChoice::Discard
+                }
+                _ => UnsavedChoice::Cancel,
+            };
+            SessionDialogResult::UnsavedChoice { request_id, choice }
+        }
+    }
+}
 
 /// The idle tick cadence — the same 16 ms idle-frame convention the retired
 /// adapter declares as its repaint interval.
@@ -220,6 +370,7 @@ pub fn protocol_response(path: &str, index_html: &str) -> tauri::http::Response<
 pub struct TauriWebviewWindow {
     title: String,
     frames: QualifyingFrameStream,
+    dialogs: NativeSessionDialogBridge,
 }
 
 impl TauriWebviewWindow {
@@ -228,6 +379,7 @@ impl TauriWebviewWindow {
         Self {
             title: title.into(),
             frames: QualifyingFrameStream::new(),
+            dialogs: NativeSessionDialogBridge::default(),
         }
     }
 
@@ -450,12 +602,18 @@ fn close_window_once_with_retry(
 }
 
 impl AppWindow for TauriWebviewWindow {
+    fn session_dialog_port(&self) -> Box<dyn SessionDialogPort> {
+        Box::new(self.dialogs.clone())
+    }
+
     fn run(
         &self,
         on_input: AppInputCallback,
         projection: ProjectionCallback,
         audio_observation: AudioObservationCallback,
         midi_activity: MidiActivityObservationCallback,
+        mut on_session_command: SessionCommandCallback,
+        document_projection: SessionDocumentProjectionCallback,
         mut on_tick: TickCallback,
         mut on_frame: FrameObservationCallback,
     ) -> Result<(), WindowError> {
@@ -505,6 +663,74 @@ impl AppWindow for TauriWebviewWindow {
             })
             .build(crate::shell::webview::tauri_context())
             .map_err(|error| WindowError::from(WebviewShellError::RuntimeUnavailable(error)))?;
+
+        let menu_specs = native_file_menu_items();
+        let menu_new = tauri::menu::MenuItem::with_id(
+            &app,
+            menu_specs[0].id(),
+            menu_specs[0].label(),
+            true,
+            Some(menu_specs[0].accelerator()),
+        )
+        .map_err(|error| WindowError::new(format!("File menu New item failed: {error}")))?;
+        let menu_open = tauri::menu::MenuItem::with_id(
+            &app,
+            menu_specs[1].id(),
+            menu_specs[1].label(),
+            true,
+            Some(menu_specs[1].accelerator()),
+        )
+        .map_err(|error| WindowError::new(format!("File menu Open item failed: {error}")))?;
+        let menu_save = tauri::menu::MenuItem::with_id(
+            &app,
+            menu_specs[2].id(),
+            menu_specs[2].label(),
+            true,
+            Some(menu_specs[2].accelerator()),
+        )
+        .map_err(|error| WindowError::new(format!("File menu Save item failed: {error}")))?;
+        let menu_save_as = tauri::menu::MenuItem::with_id(
+            &app,
+            menu_specs[3].id(),
+            menu_specs[3].label(),
+            true,
+            Some(menu_specs[3].accelerator()),
+        )
+        .map_err(|error| WindowError::new(format!("File menu Save As item failed: {error}")))?;
+        let menu_close = tauri::menu::MenuItem::with_id(
+            &app,
+            menu_specs[4].id(),
+            menu_specs[4].label(),
+            true,
+            Some(menu_specs[4].accelerator()),
+        )
+        .map_err(|error| WindowError::new(format!("File menu Close item failed: {error}")))?;
+        let file_menu = tauri::menu::Submenu::with_items(
+            &app,
+            "File",
+            true,
+            &[
+                &menu_new,
+                &menu_open,
+                &menu_save,
+                &menu_save_as,
+                &menu_close,
+            ],
+        )
+        .map_err(|error| WindowError::new(format!("File menu creation failed: {error}")))?;
+        let menu = tauri::menu::Menu::with_items(&app, &[&file_menu]).map_err(|error| {
+            WindowError::new(format!("application menu creation failed: {error}"))
+        })?;
+        app.set_menu(menu).map_err(|error| {
+            WindowError::new(format!("application menu install failed: {error}"))
+        })?;
+
+        let (session_command_sender, session_commands) = mpsc::channel::<SessionCommand>();
+        app.on_menu_event(move |_handle, event| {
+            if let Some(command) = session_command_for_menu_id(event.id().as_ref()) {
+                let _ = session_command_sender.send(command);
+            }
+        });
 
         // Page→Rust signals: transport readiness, painted acks, and thrown
         // render failures arrive
@@ -564,6 +790,8 @@ impl AppWindow for TauriWebviewWindow {
         let mut last_tick = Instant::now();
         let mut close_requested = false;
         let mut page_ready = false;
+        let dialogs = self.dialogs.clone();
+        let mut last_document_title = None::<String>;
 
         // The first runtime failure while the window still lives — a
         // transport emit, a rejected painted ack, a page render failure, or
@@ -578,6 +806,16 @@ impl AppWindow for TauriWebviewWindow {
             crate::shell::webview::midi_activity_channel::MidiActivityChannel::new();
 
         let exit_code = app.run_return(move |handle, event| match event {
+            RunEvent::WindowEvent {
+                event: WindowEvent::CloseRequested { api, .. },
+                ..
+            } => {
+                if !close_requested && !on_session_command(SessionCommand::Close) {
+                    api.prevent_close();
+                } else {
+                    close_requested = true;
+                }
+            }
             RunEvent::WindowEvent {
                 event: WindowEvent::Focused(false),
                 ..
@@ -646,10 +884,44 @@ impl AppWindow for TauriWebviewWindow {
                         }
                     }
                 }
+                while let Ok(command) = session_commands.try_recv() {
+                    let close_now = on_session_command(command);
+                    if command == SessionCommand::Close && close_now {
+                        close_window_once_with_retry(handle, &loop_runtime_error);
+                        return;
+                    }
+                }
+                if let Some(request) = dialogs.try_take_request() {
+                    let result = present_native_dialog(request);
+                    if dialogs.complete(result).is_err() {
+                        loop_runtime_error.borrow_mut().get_or_insert_with(|| {
+                            WindowError::new("native session dialog returned a stale result")
+                        });
+                        close_requested = true;
+                        close_window_once_with_retry(handle, &loop_runtime_error);
+                        return;
+                    }
+                }
                 let now = Instant::now();
                 let elapsed = now.duration_since(last_tick);
                 last_tick = now;
                 if on_tick(elapsed) {
+                    let title = native_document_title(&document_projection());
+                    if last_document_title.as_ref() != Some(&title) {
+                        if let Some(window) = handle.get_webview_window(WINDOW_LABEL) {
+                            if let Err(error) = window.set_title(&title) {
+                                loop_runtime_error.borrow_mut().get_or_insert_with(|| {
+                                    WindowError::new(format!(
+                                        "document title update failed: {error}"
+                                    ))
+                                });
+                                close_requested = true;
+                                close_window_once_with_retry(handle, &loop_runtime_error);
+                                return;
+                            }
+                        }
+                        last_document_title = Some(title);
+                    }
                     if !page_ready {
                         return;
                     }
@@ -722,9 +994,83 @@ impl AppWindow for TauriWebviewWindow {
 #[cfg(test)]
 mod tests {
     use super::{
-        page_asset, protocol_response, TauriWebviewWindow, PAGE_CSP, PAGE_CSS, PAGE_INDEX_HTML,
-        PAGE_JS, PAGE_TOKENS_CSS,
+        native_document_title, native_file_menu_items, page_asset, protocol_response,
+        session_command_for_menu_id, TauriWebviewWindow, MENU_CLOSE, MENU_NEW, MENU_OPEN,
+        MENU_SAVE, MENU_SAVE_AS, PAGE_CSP, PAGE_CSS, PAGE_INDEX_HTML, PAGE_JS, PAGE_TOKENS_CSS,
     };
+
+    #[test]
+    fn file_menu_ids_normalize_once_to_host_neutral_commands() {
+        use crate::shell::app_window::SessionCommand;
+
+        assert_eq!(
+            session_command_for_menu_id(MENU_NEW),
+            Some(SessionCommand::New)
+        );
+        assert_eq!(
+            session_command_for_menu_id(MENU_OPEN),
+            Some(SessionCommand::Open)
+        );
+        assert_eq!(
+            session_command_for_menu_id(MENU_SAVE),
+            Some(SessionCommand::Save)
+        );
+        assert_eq!(
+            session_command_for_menu_id(MENU_SAVE_AS),
+            Some(SessionCommand::SaveAs)
+        );
+        assert_eq!(
+            session_command_for_menu_id(MENU_CLOSE),
+            Some(SessionCommand::Close)
+        );
+        assert_eq!(session_command_for_menu_id("unrelated"), None);
+        assert_eq!(native_file_menu_items().len(), 5);
+        assert_eq!(
+            native_file_menu_items()
+                .iter()
+                .map(|item| item.accelerator())
+                .collect::<Vec<_>>(),
+            [
+                "CmdOrCtrl+N",
+                "CmdOrCtrl+O",
+                "CmdOrCtrl+S",
+                "CmdOrCtrl+Shift+S",
+                "CmdOrCtrl+W",
+            ]
+        );
+        assert!(native_file_menu_items().iter().all(|item| {
+            session_command_for_menu_id(item.id()) == Some(item.command())
+                && !item.label().is_empty()
+        }));
+    }
+
+    #[test]
+    fn native_title_carries_name_dirty_shape_status_and_failure_text() {
+        use crate::shell::{SessionDocumentMarker, SessionDocumentProjection};
+
+        let busy = SessionDocumentProjection::new(
+            "Song.crest",
+            true,
+            SessionDocumentMarker::Busy,
+            Some("OPEN".to_owned()),
+            "VALIDATING AND PREPARING SESSION",
+            None,
+        );
+        assert_eq!(
+            native_document_title(&busy),
+            "Song.crest * [WORKING] — crest-synth — VALIDATING AND PREPARING SESSION"
+        );
+        let failed = SessionDocumentProjection::new(
+            "Song.crest",
+            true,
+            SessionDocumentMarker::Error,
+            None,
+            "FAILED",
+            Some("Open failed during decode".to_owned()),
+        );
+        assert!(native_document_title(&failed).contains("[ERROR]"));
+        assert!(native_document_title(&failed).contains("Open failed during decode"));
+    }
 
     #[test]
     fn webview_window_default_uses_the_product_name() {

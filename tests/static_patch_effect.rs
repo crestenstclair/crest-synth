@@ -28,7 +28,7 @@ use crest_synth::real_time::{
     GraphHandoffStatus, GraphPreparationCorrelation, GraphPreparationError,
     GraphPreparationRequest, GraphRevision, ParameterSnapshot, PatchAudioBlock,
     PatchEffectObservation, PreparedGraphBuilder, RtPostEffectParameters, StructuralGraphBoundary,
-    MAX_PATCHES,
+    MAX_ACTIVE_PATCHES,
 };
 use crest_synth::synth::{
     CapabilityId, CapabilityRegistry, DescriptorDefaultConfigFactory, EffectCapabilityError,
@@ -978,7 +978,7 @@ fn prepared_post_effect_rack_processes_only_the_configured_patch() {
     )
     .unwrap();
     let mut block = PatchAudioBlock::prepare(256).unwrap();
-    let mut observations = [PatchEffectObservation::EMPTY; MAX_PATCHES];
+    let mut observations = [PatchEffectObservation::EMPTY; MAX_ACTIVE_PATCHES];
     let mut difference = 0.0_f32;
     let mut side = 0.0_f32;
     for cycle in 0..20 {

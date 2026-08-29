@@ -1,4 +1,4 @@
-use crate::control::{MidiInputDeviceId, PatchControlId, TopLevelContext};
+use crate::control::{MidiInputDeviceId, PatchControlId, PatchPositionId, TopLevelContext};
 use crate::kernel::PatchId;
 use crate::mixer::bus_id::BusId;
 use crate::mixer::global_parameters::GlobalParameter;
@@ -220,20 +220,29 @@ impl PatchDetailSubject {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PatchChoiceSubject {
-    patch_id: PatchId,
+    #[serde(rename = "patchId")]
+    patch_position: PatchPositionId,
     control_id: PatchControlId,
 }
 
 impl PatchChoiceSubject {
     pub const fn new(patch_id: PatchId, control_id: PatchControlId) -> Self {
+        Self::at(PatchPositionId::Created(patch_id), control_id)
+    }
+
+    pub const fn at(patch_position: PatchPositionId, control_id: PatchControlId) -> Self {
         Self {
-            patch_id,
+            patch_position,
             control_id,
         }
     }
 
-    pub const fn patch_id(&self) -> PatchId {
-        self.patch_id
+    pub const fn patch_id(&self) -> Option<PatchId> {
+        self.patch_position.patch_id()
+    }
+
+    pub const fn patch_position(&self) -> PatchPositionId {
+        self.patch_position
     }
 
     pub const fn control_id(&self) -> &PatchControlId {
@@ -241,11 +250,17 @@ impl PatchChoiceSubject {
     }
 
     pub fn stable_id(&self) -> String {
-        format!(
-            "patch.{}.choice.{}",
-            self.patch_id,
-            self.control_id.as_str()
-        )
+        // The FocusPath already owns the Patch-position root. Keeping that
+        // root out of the modal-local identity lets the exact Choice row
+        // survive the empty-to-created rekey without rewriting a second,
+        // stringly encoded copy of the same identity.
+        format!("patch.choice.{}", self.control_id.as_str())
+    }
+
+    pub(crate) fn rekey_trailing_empty(&mut self, patch_id: PatchId) {
+        if self.patch_position == PatchPositionId::TrailingEmpty {
+            self.patch_position = PatchPositionId::Created(patch_id);
+        }
     }
 }
 
@@ -418,7 +433,8 @@ impl std::error::Error for FocusPathError {}
 pub struct FocusPath {
     context: TopLevelContext,
     surface: SurfaceId,
-    patch_id: Option<PatchId>,
+    #[serde(rename = "patchId")]
+    patch_position: Option<PatchPositionId>,
     capability_id: Option<FocusCapabilityId>,
     control_id: SemanticControlId,
     modal_id: Option<String>,
@@ -430,10 +446,18 @@ impl FocusPath {
         capability_id: Option<FocusCapabilityId>,
         control_id: PatchControlId,
     ) -> Self {
+        Self::patch_main_at(patch_id.into(), capability_id, control_id)
+    }
+
+    pub fn patch_main_at(
+        patch_position: PatchPositionId,
+        capability_id: Option<FocusCapabilityId>,
+        control_id: PatchControlId,
+    ) -> Self {
         Self {
             context: TopLevelContext::Patch,
             surface: SurfaceId::PatchMain,
-            patch_id: Some(patch_id),
+            patch_position: Some(patch_position),
             capability_id,
             control_id: SemanticControlId::Patch(control_id),
             modal_id: None,
@@ -441,10 +465,17 @@ impl FocusPath {
     }
 
     pub const fn patch_utility(patch_id: PatchId, control_id: PatchControlId) -> Self {
+        Self::patch_utility_at(PatchPositionId::Created(patch_id), control_id)
+    }
+
+    pub const fn patch_utility_at(
+        patch_position: PatchPositionId,
+        control_id: PatchControlId,
+    ) -> Self {
         Self {
             context: TopLevelContext::Patch,
             surface: SurfaceId::PatchUtility,
-            patch_id: Some(patch_id),
+            patch_position: Some(patch_position),
             capability_id: None,
             control_id: SemanticControlId::Patch(control_id),
             modal_id: None,
@@ -460,10 +491,22 @@ impl FocusPath {
         capability_id: FocusCapabilityId,
         control_id: PatchControlId,
     ) -> Self {
+        Self::patch_detail_at(
+            PatchPositionId::Created(patch_id),
+            capability_id,
+            control_id,
+        )
+    }
+
+    pub const fn patch_detail_at(
+        patch_position: PatchPositionId,
+        capability_id: FocusCapabilityId,
+        control_id: PatchControlId,
+    ) -> Self {
         Self {
             context: TopLevelContext::Patch,
             surface: SurfaceId::PatchDetail,
-            patch_id: Some(patch_id),
+            patch_position: Some(patch_position),
             capability_id: Some(capability_id),
             control_id: SemanticControlId::Patch(control_id),
             modal_id: None,
@@ -476,10 +519,18 @@ impl FocusPath {
         modal_id: impl Into<String>,
         choice_id: impl Into<String>,
     ) -> Self {
+        Self::patch_choice_at(patch_id.into(), modal_id, choice_id)
+    }
+
+    pub fn patch_choice_at(
+        patch_position: PatchPositionId,
+        modal_id: impl Into<String>,
+        choice_id: impl Into<String>,
+    ) -> Self {
         Self {
             context: TopLevelContext::Patch,
             surface: SurfaceId::PatchChoice,
-            patch_id: Some(patch_id),
+            patch_position: Some(patch_position),
             capability_id: None,
             control_id: SemanticControlId::Modal(ModalControlId::Choice(choice_id.into())),
             modal_id: Some(modal_id.into()),
@@ -492,10 +543,18 @@ impl FocusPath {
         modal_id: impl Into<String>,
         entry_id: impl Into<String>,
     ) -> Self {
+        Self::sample_browser_at(patch_id.into(), modal_id, entry_id)
+    }
+
+    pub fn sample_browser_at(
+        patch_position: PatchPositionId,
+        modal_id: impl Into<String>,
+        entry_id: impl Into<String>,
+    ) -> Self {
         Self {
             context: TopLevelContext::Patch,
             surface: SurfaceId::SampleBrowser,
-            patch_id: Some(patch_id),
+            patch_position: Some(patch_position),
             capability_id: None,
             control_id: SemanticControlId::Modal(ModalControlId::BrowserEntry(entry_id.into())),
             modal_id: Some(modal_id.into()),
@@ -506,7 +565,7 @@ impl FocusPath {
         Self {
             context: TopLevelContext::Mixer,
             surface: SurfaceId::MixerMain,
-            patch_id: None,
+            patch_position: None,
             capability_id: None,
             control_id: SemanticControlId::Mixer(MixerControlId::Track {
                 track_id,
@@ -552,7 +611,7 @@ impl FocusPath {
         Self {
             context: TopLevelContext::Mixer,
             surface: SurfaceId::MixerInspector,
-            patch_id: None,
+            patch_position: None,
             capability_id,
             control_id: SemanticControlId::Mixer(control),
             modal_id: None,
@@ -572,7 +631,7 @@ impl FocusPath {
                 .context()
                 .ok_or(FocusPathError::ContextSurfaceMismatch)?,
             surface,
-            patch_id: None,
+            patch_position: None,
             capability_id: None,
             control_id: SemanticControlId::SurfaceRoot,
             modal_id: None,
@@ -587,7 +646,7 @@ impl FocusPath {
         Self {
             context: suspended_context,
             surface: SurfaceId::MidiDeviceSettings,
-            patch_id: None,
+            patch_position: None,
             capability_id: None,
             control_id: SemanticControlId::MidiInputDevice(identity),
             modal_id: None,
@@ -599,7 +658,7 @@ impl FocusPath {
         Self {
             context: suspended_context,
             surface: SurfaceId::MidiDeviceSettings,
-            patch_id: None,
+            patch_position: None,
             capability_id: None,
             control_id: SemanticControlId::MidiInputListRoot,
             modal_id: None,
@@ -615,7 +674,7 @@ impl FocusPath {
         }
         match (&self.surface, &self.control_id) {
             (SurfaceId::PatchMain, SemanticControlId::Patch(control)) => {
-                if self.patch_id.is_none() {
+                if self.patch_position.is_none() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }
                 // The five Utility identities and the PatchMain order are
@@ -628,7 +687,7 @@ impl FocusPath {
             (SurfaceId::PatchUtility, SemanticControlId::Patch(control))
                 if control.is_utility() =>
             {
-                if self.patch_id.is_none() || self.capability_id.is_some() {
+                if self.patch_position.is_none() || self.capability_id.is_some() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }
             }
@@ -642,7 +701,7 @@ impl FocusPath {
                     PatchControlId::Capability(_) | PatchControlId::Envelope(_),
                 ),
             ) => {
-                if self.patch_id.is_none() {
+                if self.patch_position.is_none() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }
                 if !matches!(self.capability_id, Some(FocusCapabilityId::Instrument(_))) {
@@ -650,7 +709,7 @@ impl FocusPath {
                 }
             }
             (SurfaceId::PatchDetail, SemanticControlId::Patch(PatchControlId::Effect(..))) => {
-                if self.patch_id.is_none() {
+                if self.patch_position.is_none() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }
                 if !matches!(self.capability_id, Some(FocusCapabilityId::Effect(_))) {
@@ -658,7 +717,7 @@ impl FocusPath {
                 }
             }
             (SurfaceId::PatchChoice, SemanticControlId::Modal(ModalControlId::Choice(id))) => {
-                if self.patch_id.is_none()
+                if self.patch_position.is_none()
                     || self.capability_id.is_some()
                     || self.modal_id.as_ref().is_none_or(String::is_empty)
                     || id.is_empty()
@@ -670,7 +729,7 @@ impl FocusPath {
                 SurfaceId::SampleBrowser,
                 SemanticControlId::Modal(ModalControlId::BrowserEntry(id)),
             ) => {
-                if self.patch_id.is_none()
+                if self.patch_position.is_none()
                     || self.capability_id.is_some()
                     || self.modal_id.as_ref().is_none_or(String::is_empty)
                     || id.is_empty()
@@ -683,7 +742,7 @@ impl FocusPath {
                 SemanticControlId::Mixer(MixerControlId::Track { parameter, .. }),
             ) => {
                 if !MixerTrackParameter::MAIN.contains(parameter)
-                    || self.patch_id.is_some()
+                    || self.patch_position.is_some()
                     || self.capability_id.is_some()
                 {
                     return Err(FocusPathError::ControlSurfaceMismatch);
@@ -697,7 +756,7 @@ impl FocusPath {
                     | MixerControlId::ReturnLevel { .. },
                 ),
             ) => {
-                if self.patch_id.is_some() || self.capability_id.is_some() {
+                if self.patch_position.is_some() || self.capability_id.is_some() {
                     return Err(FocusPathError::ControlSurfaceMismatch);
                 }
             }
@@ -705,7 +764,7 @@ impl FocusPath {
                 SurfaceId::MixerInspector,
                 SemanticControlId::Mixer(MixerControlId::ReturnEffect { .. }),
             ) => {
-                if self.patch_id.is_some()
+                if self.patch_position.is_some()
                     || !matches!(self.capability_id, Some(FocusCapabilityId::Effect(_)))
                 {
                     return Err(FocusPathError::CapabilityIdentityMismatch);
@@ -715,12 +774,12 @@ impl FocusPath {
                 SurfaceId::MixerInspector,
                 SemanticControlId::Mixer(MixerControlId::Global { .. }),
             ) => {
-                if self.patch_id.is_some() || self.capability_id.is_some() {
+                if self.patch_position.is_some() || self.capability_id.is_some() {
                     return Err(FocusPathError::PatchIdentityMismatch);
                 }
             }
             (surface, SemanticControlId::SurfaceRoot) if surface.is_persistent_side() => {
-                if self.patch_id.is_some() || self.capability_id.is_some() {
+                if self.patch_position.is_some() || self.capability_id.is_some() {
                     return Err(FocusPathError::CapabilityIdentityMismatch);
                 }
             }
@@ -728,7 +787,7 @@ impl FocusPath {
                 SurfaceId::MidiDeviceSettings,
                 SemanticControlId::MidiInputDevice(_) | SemanticControlId::MidiInputListRoot,
             ) => {
-                if self.patch_id.is_some()
+                if self.patch_position.is_some()
                     || self.capability_id.is_some()
                     || self.modal_id.is_some()
                 {
@@ -755,7 +814,20 @@ impl FocusPath {
     }
 
     pub const fn patch_id(&self) -> Option<PatchId> {
-        self.patch_id
+        match self.patch_position {
+            Some(PatchPositionId::Created(patch_id)) => Some(patch_id),
+            Some(PatchPositionId::TrailingEmpty) | None => None,
+        }
+    }
+
+    pub const fn patch_position(&self) -> Option<PatchPositionId> {
+        self.patch_position
+    }
+
+    pub(crate) fn rekey_trailing_empty(&mut self, patch_id: PatchId) {
+        if self.patch_position == Some(PatchPositionId::TrailingEmpty) {
+            self.patch_position = Some(PatchPositionId::Created(patch_id));
+        }
     }
 
     pub const fn capability_id(&self) -> Option<&FocusCapabilityId> {
@@ -824,6 +896,10 @@ impl ReturnPath {
     pub const fn entered_surface(&self) -> SurfaceId {
         self.entered_surface
     }
+
+    pub(crate) fn rekey_trailing_empty(&mut self, patch_id: PatchId) {
+        self.origin.rekey_trailing_empty(patch_id);
+    }
 }
 
 #[cfg(test)]
@@ -832,7 +908,7 @@ mod tests {
         FocusPath, FocusPathError, MixerControlId, PatchDetailSubject, ReturnPath,
         SemanticControlId, SurfaceId,
     };
-    use crate::control::PatchControlId;
+    use crate::control::{PatchControlId, PatchPositionId};
     use crate::kernel::PatchId;
     use crate::mixer::global_parameters::GlobalParameter;
 
@@ -977,6 +1053,30 @@ mod tests {
             &SemanticControlId::Mixer(MixerControlId::Global {
                 parameter: GlobalParameter::MasterGainDb
             })
+        );
+    }
+
+    #[test]
+    fn trailing_empty_focus_is_explicit_without_fabricating_a_patch_id() {
+        let empty =
+            FocusPath::patch_main_at(PatchPositionId::TrailingEmpty, None, PatchControlId::Engine);
+        assert!(empty.validate().is_ok());
+        assert_eq!(empty.patch_position(), Some(PatchPositionId::TrailingEmpty));
+        assert_eq!(empty.patch_id(), None);
+
+        let json = serde_json::to_value(&empty).unwrap();
+        assert_eq!(json["patchId"], "trailingEmpty");
+        assert_eq!(serde_json::from_value::<FocusPath>(json).unwrap(), empty);
+    }
+
+    #[test]
+    fn created_focus_keeps_its_numeric_patch_id_serialization() {
+        let created = FocusPath::patch_main(PatchId::new(9).unwrap(), None, PatchControlId::Engine);
+        let json = serde_json::to_value(&created).unwrap();
+        assert_eq!(json["patchId"], 9);
+        assert_eq!(
+            created.patch_position(),
+            Some(PatchPositionId::Created(PatchId::new(9).unwrap()))
         );
     }
 

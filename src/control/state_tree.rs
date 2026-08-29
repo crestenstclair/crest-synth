@@ -152,7 +152,7 @@ pub struct StateTree {
     patch_count: usize,
     selected_line: usize,
     context: TopLevelContext,
-    patch_page_id: Option<crate::kernel::PatchId>,
+    patch_page_position: Option<crate::control::PatchPositionId>,
     state_hash: Arc<str>,
 }
 
@@ -179,6 +179,11 @@ struct MidiTreeTemplate {
 
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
+    ///
+    /// Version 20: PATCH focus gained the explicit trailing-empty position;
+    /// `patchPage.patch` and semantic PATCH summaries now carry tagged
+    /// created/empty ownership plus prospective and capacity facts. Empty
+    /// shapes omit `PatchId` and MIDI identity entirely.
     ///
     /// Version 19: reducer-owned physical MIDI registry, preference intent,
     /// scan, request, and active-revision facts joined the canonical trace.
@@ -222,7 +227,7 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 19;
+    pub const SCHEMA_VERSION: u32 = 20;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -808,7 +813,9 @@ impl StateTree {
                 matches!(
                     correlation.intent(),
                     crate::control::StructuralEditIntent::ReplaceCapability { .. }
-                )
+                ) || (correlation.intent().is_append_patch()
+                    && state.interaction.active_focus.patch_position()
+                        == Some(crate::control::PatchPositionId::TrailingEmpty))
             });
         let projected_engine_status = if engine_targeted {
             state.engine_selection.kind()
@@ -824,7 +831,7 @@ impl StateTree {
             (TopLevelContext::Patch, Some(page))
                 if page.context() == TopLevelContext::Patch
                     && page.state_hash() == snapshot.hash()
-                    && Some(page.patch().id()) == state.interaction.active_focus.patch_id()
+                    && page.patch().id() == state.interaction.active_focus.patch_id()
                     && Some(page.focused_control_id())
                         == match state.interaction.active_focus.control_id() {
                             SemanticControlId::Patch(control) => Some(control.clone()),
@@ -870,7 +877,12 @@ impl StateTree {
             patch_count: state.patches.len(),
             selected_line: projection.selected_line(),
             context: interaction_context,
-            patch_page_id: patch_page.map(|page| page.patch().id()),
+            patch_page_position: patch_page.map(|page| {
+                page.patch().id().map_or(
+                    crate::control::PatchPositionId::TrailingEmpty,
+                    crate::control::PatchPositionId::Created,
+                )
+            }),
             state_hash: Arc::from(snapshot.hash()),
         })
     }
@@ -914,10 +926,10 @@ impl StateTree {
         if graphical_shell.workspace().diagnostic() != projection {
             return Err(StateTreeError::GraphicalShellDiagnosticMismatch);
         }
-        match (self.context, self.patch_page_id, patch_page) {
+        match (self.context, self.patch_page_position, patch_page) {
             (TopLevelContext::Mixer, None, None) => {}
             (TopLevelContext::Patch, Some(expected), Some(page))
-                if page.patch().id() == expected
+                if page.patch().id() == expected.patch_id()
                     && page.context() == TopLevelContext::Patch
                     && page.state_hash() == snapshot.hash() => {}
             _ => return Err(StateTreeError::PatchPageMismatch),
@@ -945,7 +957,7 @@ impl StateTree {
             patch_count: self.patch_count,
             selected_line: self.selected_line,
             context: self.context,
-            patch_page_id: self.patch_page_id,
+            patch_page_position: self.patch_page_position,
             state_hash,
         })
     }
@@ -1007,7 +1019,7 @@ impl PartialEq for StateTree {
             && self.patch_count == other.patch_count
             && self.selected_line == other.selected_line
             && self.context == other.context
-            && self.patch_page_id == other.patch_page_id
+            && self.patch_page_position == other.patch_page_position
             && self.state_hash == other.state_hash
             && self.json() == other.json()
     }

@@ -1,7 +1,7 @@
 use crate::control::{
     FocusPath, FocusPathError, InteractionMode, MidiInputDeviceId, MixerControlId,
-    PatchChoiceSubject, PatchControlId, PatchDetailSubject, ReturnPath, SemanticControlId,
-    SurfaceId, TopLevelContext,
+    PatchChoiceSubject, PatchControlId, PatchDetailSubject, PatchPositionId, ReturnPath,
+    SemanticControlId, SurfaceId, TopLevelContext,
 };
 use crate::kernel::PatchId;
 use crate::mixer::mixer_track_id::MixerTrackId;
@@ -83,7 +83,7 @@ pub enum PatchSubordinateSession {
         suspended_return: Option<ReturnPath>,
     },
     SampleBrowser {
-        patch_id: PatchId,
+        patch_position: PatchPositionId,
         asset_parameter_id: ParameterId,
         suspended_detail: Option<PatchDetailSubject>,
         suspended_return: Option<ReturnPath>,
@@ -100,6 +100,42 @@ impl PatchSubordinateSession {
             | Self::SampleBrowser {
                 suspended_detail, ..
             } => suspended_detail.as_ref(),
+        }
+    }
+
+    fn rekey_trailing_empty(&mut self, patch_id: PatchId) {
+        match self {
+            Self::Detail { .. } => {}
+            Self::UtilityFromDetail {
+                detail_focus,
+                detail_return,
+                ..
+            } => {
+                detail_focus.rekey_trailing_empty(patch_id);
+                detail_return.rekey_trailing_empty(patch_id);
+            }
+            Self::Choice {
+                subject,
+                suspended_return,
+                ..
+            } => {
+                subject.rekey_trailing_empty(patch_id);
+                if let Some(return_path) = suspended_return {
+                    return_path.rekey_trailing_empty(patch_id);
+                }
+            }
+            Self::SampleBrowser {
+                patch_position,
+                suspended_return,
+                ..
+            } => {
+                if *patch_position == PatchPositionId::TrailingEmpty {
+                    *patch_position = PatchPositionId::Created(patch_id);
+                }
+                if let Some(return_path) = suspended_return {
+                    return_path.rekey_trailing_empty(patch_id);
+                }
+            }
         }
     }
 }
@@ -187,8 +223,8 @@ impl InteractionState {
                     && self.mode != InteractionMode::Modal
                     && detail_focus.surface() == SurfaceId::PatchDetail
                     && detail_return.entered_surface() == SurfaceId::PatchDetail
-                    && detail_focus.patch_id() == self.active_focus.patch_id()
-                    && detail_return.origin().patch_id() == self.active_focus.patch_id()
+                    && detail_focus.patch_position() == self.active_focus.patch_position()
+                    && detail_return.origin().patch_position() == self.active_focus.patch_position()
             }
             (
                 Some(PatchSubordinateSession::Choice {
@@ -308,6 +344,13 @@ impl InteractionState {
         }
     }
 
+    pub const fn patch_position_focus(&self) -> Option<PatchPositionId> {
+        match &self.remembered_patch_main {
+            Some(path) => path.patch_position(),
+            None => None,
+        }
+    }
+
     pub fn patch_control_focus(&self) -> Option<PatchControlId> {
         if let Some(PatchSubordinateSession::Choice { subject, .. }) =
             self.subordinate_session.as_ref()
@@ -366,6 +409,35 @@ impl InteractionState {
 
     pub(super) fn initialize_patch_focus(&mut self, focus: Option<FocusPath>) {
         self.remembered_patch_main = focus;
+        self.assert_subordinate_invariant();
+    }
+
+    /// Atomically replaces every interaction-owned reference to the trailing
+    /// empty Patch position with the newly committed Patch identity.
+    ///
+    /// Paths that no longer refer to the empty position are left byte-for-byte
+    /// unchanged, so a user who navigated away during preparation does not
+    /// have focus stolen by the eventual commit.
+    pub(super) fn rekey_trailing_empty(&mut self, patch_id: PatchId) {
+        self.active_focus.rekey_trailing_empty(patch_id);
+        if let Some(path) = self.remembered_patch_main.as_mut() {
+            path.rekey_trailing_empty(patch_id);
+        }
+        if let Some(path) = self.return_path.as_mut() {
+            path.rekey_trailing_empty(patch_id);
+        }
+        if let Some(session) = self.subordinate_session.as_mut() {
+            session.rekey_trailing_empty(patch_id);
+        }
+        if let Some(session) = self.midi_settings_session.as_mut() {
+            session.suspended_focus.rekey_trailing_empty(patch_id);
+            if let Some(path) = session.suspended_return_path.as_mut() {
+                path.rekey_trailing_empty(patch_id);
+            }
+            if let Some(subordinate) = session.suspended_subordinate_session.as_mut() {
+                subordinate.rekey_trailing_empty(patch_id);
+            }
+        }
         self.assert_subordinate_invariant();
     }
 
@@ -454,9 +526,9 @@ impl InteractionState {
         let origin = self.active_focus.clone();
         self.return_path = Some(ReturnPath::new(origin, surface)?);
         self.active_focus = match surface {
-            SurfaceId::PatchUtility => FocusPath::patch_utility(
+            SurfaceId::PatchUtility => FocusPath::patch_utility_at(
                 self.active_focus
-                    .patch_id()
+                    .patch_position()
                     .ok_or(FocusPathError::PatchIdentityMismatch)?,
                 PatchControlId::Output(PatchOutputParameter::TrimGain),
             ),
@@ -523,7 +595,7 @@ impl InteractionState {
         utility_focus.validate()?;
         if self.active_focus.surface() != SurfaceId::PatchDetail
             || utility_focus.surface() != SurfaceId::PatchUtility
-            || utility_focus.patch_id() != self.active_focus.patch_id()
+            || utility_focus.patch_position() != self.active_focus.patch_position()
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }
@@ -591,13 +663,15 @@ impl InteractionState {
         if self.midi_settings_session.is_some() {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
-        self.enter_modal_surface(subject.patch_id(), focus, |detail, suspended_return| {
-            PatchSubordinateSession::Choice {
+        self.enter_modal_surface(
+            subject.patch_position(),
+            focus,
+            |detail, suspended_return| PatchSubordinateSession::Choice {
                 subject,
                 suspended_detail: detail,
                 suspended_return,
-            }
-        })
+            },
+        )
     }
 
     /// Replaces the current PATCH main, Utility, or Detail surface with the
@@ -611,9 +685,21 @@ impl InteractionState {
         if self.midi_settings_session.is_some() {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
-        self.enter_modal_surface(patch_id, focus, |detail, suspended_return| {
+        self.enter_sample_browser_at(patch_id.into(), asset_parameter_id, focus)
+    }
+
+    pub(super) fn enter_sample_browser_at(
+        &mut self,
+        patch_position: PatchPositionId,
+        asset_parameter_id: ParameterId,
+        focus: FocusPath,
+    ) -> Result<(), FocusPathError> {
+        if self.midi_settings_session.is_some() {
+            return Err(FocusPathError::ControlSurfaceMismatch);
+        }
+        self.enter_modal_surface(patch_position, focus, |detail, suspended_return| {
             PatchSubordinateSession::SampleBrowser {
-                patch_id,
+                patch_position,
                 asset_parameter_id,
                 suspended_detail: detail,
                 suspended_return,
@@ -623,7 +709,7 @@ impl InteractionState {
 
     fn enter_modal_surface(
         &mut self,
-        patch_id: PatchId,
+        patch_position: PatchPositionId,
         focus: FocusPath,
         make_session: impl FnOnce(
             Option<PatchDetailSubject>,
@@ -635,7 +721,7 @@ impl InteractionState {
                 self.active_focus.surface(),
                 SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
             )
-            || self.active_focus.patch_id() != Some(patch_id)
+            || self.active_focus.patch_position() != Some(patch_position)
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }
@@ -643,7 +729,7 @@ impl InteractionState {
         if !matches!(
             focus.surface(),
             SurfaceId::PatchChoice | SurfaceId::SampleBrowser
-        ) || focus.patch_id() != Some(patch_id)
+        ) || focus.patch_position() != Some(patch_position)
         {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
@@ -961,7 +1047,7 @@ mod tests {
     use super::InteractionState;
     use crate::control::{
         FocusCapabilityId, FocusPath, InteractionMode, PatchChoiceSubject, PatchControlId,
-        PatchDetailSubject, PatchSubordinateSession, SurfaceId, TopLevelContext,
+        PatchDetailSubject, PatchPositionId, PatchSubordinateSession, SurfaceId, TopLevelContext,
     };
     use crate::kernel::PatchId;
     use crate::mixer::mixer_track_id::MixerTrackId;
@@ -1331,5 +1417,78 @@ mod tests {
         assert_eq!(state.focus_path(), &detail);
         state.return_to_origin().unwrap();
         assert_eq!(state.focus_path(), &replacement_origin);
+    }
+
+    #[test]
+    fn empty_to_created_rekey_covers_choice_focus_return_and_remembered_root() {
+        let mut state = InteractionState::new();
+        let empty_origin =
+            FocusPath::patch_main_at(PatchPositionId::TrailingEmpty, None, PatchControlId::Engine);
+        state.initialize_patch_focus(Some(empty_origin));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        let subject =
+            PatchChoiceSubject::at(PatchPositionId::TrailingEmpty, PatchControlId::Engine);
+        let choice = FocusPath::patch_choice_at(
+            PatchPositionId::TrailingEmpty,
+            subject.stable_id(),
+            "instrument.test",
+        );
+        state.enter_choice(subject, choice).unwrap();
+
+        let created = PatchId::new(12).unwrap();
+        state.rekey_trailing_empty(created);
+        assert_eq!(state.patch_focus(), Some(created));
+        assert_eq!(state.focus_path().patch_id(), Some(created));
+        assert_eq!(
+            state.return_path().unwrap().origin().patch_id(),
+            Some(created)
+        );
+        let Some(PatchSubordinateSession::Choice { subject, .. }) = state.subordinate_session()
+        else {
+            panic!("choice session must remain open")
+        };
+        assert_eq!(subject.patch_id(), Some(created));
+    }
+
+    #[test]
+    fn empty_to_created_rekey_reaches_focus_suspended_under_midi_settings() {
+        use crate::control::MidiInputDeviceId;
+
+        let mut state = InteractionState::new();
+        let empty =
+            FocusPath::patch_main_at(PatchPositionId::TrailingEmpty, None, PatchControlId::Engine);
+        state.initialize_patch_focus(Some(empty));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        state
+            .enter_surface(SurfaceId::PatchUtility)
+            .expect("empty Utility navigation is interaction-only");
+        state
+            .open_midi_settings(FocusPath::midi_device_settings(
+                TopLevelContext::Patch,
+                MidiInputDeviceId::new("midir-v1", "fixture").unwrap(),
+            ))
+            .unwrap();
+
+        let created = PatchId::new(2).unwrap();
+        state.rekey_trailing_empty(created);
+        state.return_from_midi_settings().unwrap();
+        assert_eq!(state.focus_path().patch_id(), Some(created));
+        assert_eq!(
+            state.return_path().unwrap().origin().patch_id(),
+            Some(created)
+        );
+    }
+
+    #[test]
+    fn rekey_does_not_steal_focus_after_the_user_navigates_away() {
+        let mut state = InteractionState::new();
+        let existing = PatchId::new(1).unwrap();
+        let existing_focus = FocusPath::patch_main(existing, None, PatchControlId::Engine);
+        state.initialize_patch_focus(Some(existing_focus.clone()));
+        state.select_context(TopLevelContext::Patch).unwrap();
+        let before = state.clone();
+
+        state.rekey_trailing_empty(PatchId::new(2).unwrap());
+        assert_eq!(state, before);
     }
 }

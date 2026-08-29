@@ -6,7 +6,7 @@ use crate::real_time::audio_observation::{CallbackAudioObservation, DiscardAudio
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
 use crate::real_time::graph_handoff_status::GraphHandoffStatus;
 use crate::real_time::graph_revision::GraphRevision;
-use crate::real_time::parameter_snapshot::MAX_PATCHES;
+use crate::real_time::parameter_snapshot::MAX_ACTIVE_PATCHES;
 use crate::real_time::prepared_engine_rack::RackDispatchError;
 use crate::real_time::prepared_graph::PreparedGraph;
 use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
@@ -202,7 +202,7 @@ where
         }
 
         let parameters = self.parameters;
-        let mut effect_observations = [PatchEffectObservation::EMPTY; MAX_PATCHES];
+        let mut effect_observations = [PatchEffectObservation::EMPTY; MAX_ACTIVE_PATCHES];
         {
             let (rack, patch_audio, _) = self.active_graph.callback_parts_mut();
             if patch_audio.begin_render(&parameters, frame_count).is_err() {
@@ -352,8 +352,13 @@ where
             Some(
                 crate::real_time::GraphReplacementScope::PatchSlot { .. }
                 | crate::real_time::GraphReplacementScope::BusReturn(_)
+                | crate::real_time::GraphReplacementScope::AppendPatch(_)
                 | crate::real_time::GraphReplacementScope::Audition,
             ) => {}
+            // A whole-session activation never carries live voices across.
+            Some(crate::real_time::GraphReplacementScope::WholeSession) => {
+                self.active_notes.clear_all();
+            }
         }
         self.handoff_status.record_swap(replacement_revision);
 
@@ -409,13 +414,13 @@ impl PatchNoteBits {
 }
 
 struct ActiveNoteObservation {
-    patches: [PatchNoteBits; MAX_PATCHES],
+    patches: [PatchNoteBits; MAX_ACTIVE_PATCHES],
 }
 
 impl ActiveNoteObservation {
     const fn new() -> Self {
         Self {
-            patches: [PatchNoteBits::EMPTY; MAX_PATCHES],
+            patches: [PatchNoteBits::EMPTY; MAX_ACTIVE_PATCHES],
         }
     }
 
@@ -531,7 +536,7 @@ mod tests {
     use crate::real_time::structural_graph_boundary::{
         AudioStructuralGraphBoundary, RetiredBoundaryFull,
     };
-    use crate::real_time::MAX_PATCHES;
+    use crate::real_time::MAX_ACTIVE_PATCHES;
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
     use crate::synth::patch::Patch;
@@ -1607,7 +1612,7 @@ mod tests {
             graph.patch_audio().stems();
 
         assert!(stems.is_empty());
-        assert_eq!(graph.patch_audio().storage().len(), MAX_PATCHES);
+        assert_eq!(graph.patch_audio().storage().len(), MAX_ACTIVE_PATCHES);
     }
 
     // ---- Canonical voice limit enforcement (FR-009) -----------------------
@@ -2038,7 +2043,7 @@ mod tests {
             AudioBoundary, AudioThreadBoundary, ControlAudioBoundary,
         };
         use crate::real_time::graph_revision::GraphRevision;
-        use crate::real_time::parameter_snapshot::{ParameterSnapshot, MAX_PATCHES};
+        use crate::real_time::parameter_snapshot::{ParameterSnapshot, MAX_ACTIVE_PATCHES};
         use crate::real_time::prepared_graph::PreparedGraph;
         use crate::real_time::prepared_graph_builder::PreparedGraphBuilder;
         use crate::synth::capability_id::CapabilityId;
@@ -2136,7 +2141,7 @@ mod tests {
                         .unwrap();
                 let effect_registry = production_effect_registry().unwrap();
                 let capabilities = ["effect.chorus", "effect.reverb", "effect.delay"];
-                let patches = (1..=MAX_PATCHES as u32)
+                let patches = (1..=MAX_ACTIVE_PATCHES as u32)
                     .map(|id| {
                         let occupants: Vec<(EffectSlotIndex, PostEffectConfig)> =
                             EffectSlotIndex::ALL
@@ -2276,7 +2281,7 @@ mod tests {
         }
 
         fn assert_fully_occupied(snapshot: &ParameterSnapshot) {
-            assert_eq!(snapshot.patch_count(), MAX_PATCHES);
+            assert_eq!(snapshot.patch_count(), MAX_ACTIVE_PATCHES);
             assert!(snapshot
                 .patches()
                 .iter()
@@ -2299,8 +2304,8 @@ mod tests {
             let (target, target_snapshot) = fixture.full_graph(2, 20);
             assert_fully_occupied(&source_snapshot);
             assert_fully_occupied(&target_snapshot);
-            assert_eq!(source.effect_rack().patch_count(), MAX_PATCHES);
-            for index in 0..MAX_PATCHES {
+            assert_eq!(source.effect_rack().patch_count(), MAX_ACTIVE_PATCHES);
+            for index in 0..MAX_ACTIVE_PATCHES {
                 assert_eq!(
                     source.effect_rack().occupied_slot_count(index),
                     MAX_EFFECT_SLOTS
