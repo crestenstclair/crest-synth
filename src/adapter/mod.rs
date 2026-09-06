@@ -8,6 +8,7 @@ pub mod chorus_preparer;
 pub mod cpal_audio_output;
 pub mod delay_capability;
 pub mod delay_preparer;
+pub mod filesystem_file_browser;
 pub mod filesystem_midi_input_preference;
 pub mod filesystem_sample_catalog;
 pub mod fixed_midi_event_source;

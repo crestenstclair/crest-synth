@@ -1,5 +1,5 @@
 use crate::synth::{
-    DecodedSample, SampleAssetError, SampleAssetId, SampleDecoderPort, SampleEncoding,
+    AssetFileId, DecodedSample, SampleAssetError, SampleDecoderPort, SampleEncoding,
     SampleMetadata, MAX_SAMPLE_SCALARS, MAX_SAMPLE_SOURCE_BYTES,
 };
 use std::io::Cursor;
@@ -21,10 +21,10 @@ impl WavSampleDecoder {
     /// Reads and validates the admitted RIFF/WAVE metadata without exposing
     /// dependency types. Catalog projection can therefore report format,
     /// duration, and channel state without retaining decoded PCM.
-    pub fn metadata(
-        asset: &SampleAssetId,
-        bytes: &[u8],
-    ) -> Result<SampleMetadata, SampleAssetError> {
+    pub fn metadata(asset: &AssetFileId, bytes: &[u8]) -> Result<SampleMetadata, SampleAssetError> {
+        if bytes.is_empty() {
+            return Err(SampleAssetError::EmptyFile);
+        }
         if u64::try_from(bytes.len()).map_err(|_| SampleAssetError::SourceTooLarge)?
             > MAX_SAMPLE_SOURCE_BYTES
         {
@@ -47,11 +47,7 @@ impl WavSampleDecoder {
 }
 
 impl SampleDecoderPort for WavSampleDecoder {
-    fn decode(
-        &self,
-        asset: &SampleAssetId,
-        bytes: &[u8],
-    ) -> Result<DecodedSample, SampleAssetError> {
+    fn decode(&self, asset: &AssetFileId, bytes: &[u8]) -> Result<DecodedSample, SampleAssetError> {
         let metadata = Self::metadata(asset, bytes)?;
 
         let mut reader = hound::WavReader::new(Cursor::new(bytes))
@@ -182,7 +178,7 @@ fn preflight_wave(bytes: &[u8]) -> Result<WavePreflight, SampleAssetError> {
     // Reuse the canonical admission oracle before allowing the dependency to
     // allocate or walk the payload.
     SampleMetadata::new(
-        SampleAssetId::new("preflight.wav")?,
+        AssetFileId::new("preflight.wav")?,
         bytes.len() as u64,
         sample_rate,
         channels,
@@ -276,7 +272,7 @@ fn read_u32(bytes: &[u8], offset: usize) -> Result<u32, SampleAssetError> {
 #[cfg(test)]
 mod tests {
     use super::WavSampleDecoder;
-    use crate::synth::{SampleAssetError, SampleAssetId, SampleDecoderPort, SampleEncoding};
+    use crate::synth::{AssetFileId, SampleAssetError, SampleDecoderPort, SampleEncoding};
     use std::io::Cursor;
 
     fn wav_bytes<T: hound::Sample + Copy>(spec: hound::WavSpec, samples: &[T]) -> Vec<u8> {
@@ -305,7 +301,7 @@ mod tests {
             &[i16::MIN, 0, i16::MAX],
         );
         let decoded = decoder
-            .decode(&SampleAssetId::new("mono.wav").unwrap(), &mono)
+            .decode(&AssetFileId::new("mono.wav").unwrap(), &mono)
             .unwrap();
         assert_eq!(decoded.metadata().channels(), 1);
         assert_eq!(decoded.metadata().encoding(), SampleEncoding::SignedPcm);
@@ -321,7 +317,7 @@ mod tests {
             &[-1.0_f32, 1.0, -0.5, 0.5],
         );
         let decoded = decoder
-            .decode(&SampleAssetId::new("stereo.wav").unwrap(), &stereo)
+            .decode(&AssetFileId::new("stereo.wav").unwrap(), &stereo)
             .unwrap();
         assert_eq!(decoded.metadata().channels(), 2);
         assert_eq!(decoded.metadata().frames(), 2);
@@ -342,10 +338,7 @@ mod tests {
                 &[-1_i32, 0, 1, ((1_i64 << (bits - 1)) - 1) as i32],
             );
             let decoded = decoder
-                .decode(
-                    &SampleAssetId::new(format!("pcm{bits}.wav")).unwrap(),
-                    &bytes,
-                )
+                .decode(&AssetFileId::new(format!("pcm{bits}.wav")).unwrap(), &bytes)
                 .unwrap();
             assert_eq!(decoded.metadata().bits_per_sample(), bits);
             assert_eq!(decoded.metadata().channels(), 2);
@@ -360,7 +353,8 @@ mod tests {
     #[test]
     fn renamed_non_wave_and_non_finite_float_are_typed_rejections() {
         let decoder = WavSampleDecoder;
-        let id = SampleAssetId::new("renamed.wav").unwrap();
+        let id = AssetFileId::new("renamed.wav").unwrap();
+        assert_eq!(decoder.decode(&id, &[]), Err(SampleAssetError::EmptyFile));
         assert_eq!(
             decoder.decode(&id, b"ID3-not-wave"),
             Err(SampleAssetError::UnsupportedContainer)
@@ -390,7 +384,7 @@ mod tests {
     #[test]
     fn rejects_rifx_rf64_channels_rates_depth_and_duration_from_headers() {
         let decoder = WavSampleDecoder;
-        let id = SampleAssetId::new("invalid.wav").unwrap();
+        let id = AssetFileId::new("invalid.wav").unwrap();
         for magic in [b"RIFX", b"RF64"] {
             let mut bytes = Vec::from(&magic[..]);
             bytes.extend_from_slice(&[0; 4]);

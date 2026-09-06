@@ -82,7 +82,7 @@ fn run(options: Options) -> Result<()> {
         .then(DemoSampleLibrary::create)
         .transpose()?;
     let make_application = || -> Result<_> {
-        let config = ApplicationConfig::default();
+        let config = ApplicationConfig::default().with_test_midi_on_launch();
         let initial_parameters =
             ParameterSnapshot::new(0, config.global_parameters(), MixerState::default(), &[])
                 .context("failed to construct the initial audio parameter snapshot")?;
@@ -123,7 +123,7 @@ fn run(options: Options) -> Result<()> {
         )
         .context("failed to validate the production composition")?;
         let default_session = DefaultSessionBlueprint::new(
-            CapabilityId::new(HIDEF_CAPABILITY_ID)
+            CapabilityId::new(crest_synth::adapter::sample_capability::SAMPLE_CAPABILITY_ID)
                 .context("the production default capability identity is invalid")?,
         );
         Ok(application
@@ -696,7 +696,9 @@ impl DemoSceneObservation {
                 | EventInput::MidiInputDisconnectRequested { .. }
                 | EventInput::MidiInputConnectionLost { .. }
                 | EventInput::MidiInputOperationFailed { .. }
-                | EventInput::MidiInputShutdownRequested => {}
+                | EventInput::MidiInputShutdownRequested
+                | EventInput::AssetImported { .. }
+                | EventInput::ToggleTestMidi => {}
             }
         }
 
@@ -1498,8 +1500,8 @@ mod tests {
     #[test]
     fn phase7_target_alias_negative_and_production_sample_fixtures_are_exact() {
         use crest_synth::synth::{
-            SampleAssetCatalogPort, SampleAssetId, SampleBrowserRowKind, SampleDecoderPort,
-            SampleFolderId,
+            AssetFileId, FileBrowserFolderId, FileBrowserRowKind, SampleAssetCatalogPort,
+            SampleDecoderPort,
         };
 
         assert_eq!(
@@ -1531,26 +1533,26 @@ mod tests {
                 &library.root,
             )
             .unwrap();
-        let listing = catalog.list(&SampleFolderId::default()).unwrap();
+        let listing = catalog.list(&FileBrowserFolderId::default()).unwrap();
         let files = listing
             .rows()
             .iter()
             .filter_map(|row| match row.kind() {
-                SampleBrowserRowKind::File(asset) => Some(asset.as_str()),
+                FileBrowserRowKind::File(asset) => Some(asset.as_str()),
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(files, ["A-valid.wav", "B-alternate.wav", "Z-invalid.wav"]);
         let decoder = crest_synth::adapter::wav_sample_decoder::WavSampleDecoder;
         for name in ["A-valid.wav", "B-alternate.wav"] {
-            let asset = SampleAssetId::new(name).unwrap();
+            let asset = AssetFileId::new(name).unwrap();
             let decoded = decoder
                 .decode(&asset, &catalog.read(&asset).unwrap())
                 .unwrap();
             assert_eq!(decoded.metadata().sample_rate(), 48_000);
             assert_eq!(decoded.metadata().channels(), 1);
         }
-        let invalid = SampleAssetId::new("Z-invalid.wav").unwrap();
+        let invalid = AssetFileId::new("Z-invalid.wav").unwrap();
         assert!(decoder
             .decode(&invalid, &catalog.read(&invalid).unwrap())
             .is_err());

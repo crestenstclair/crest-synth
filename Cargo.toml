@@ -63,6 +63,8 @@ rfd = "0.15"
 # the NSEvent local-monitor path lives in src/shell/webview/input_capture.rs.
 # These are the same objc2 bindings tauri/wry already carry in the tree.
 [target.'cfg(target_os = "macos")'.dependencies]
+# Read cloud-placeholder metadata in the filesystem adapter before WAV decoding.
+libc = "0.2"
 objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSEvent", "NSApplication", "NSResponder", "NSWindow", "NSGraphicsContext", "block2"] }
 objc2-foundation = "0.3"
@@ -74,6 +76,9 @@ tauri-build = "2"
 
 [dev-dependencies]
 sha2 = "0.10"
+# Fidelity witnesses compare parsed JSON numbers exactly with the production
+# Value document, including f32 waveform extrema promoted to f64 by serde.
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
 
 # Full debuginfo and per-integration-test incremental state previously allowed
 # target/ to grow far beyond the size of the source checkout. Line tables keep

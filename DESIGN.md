@@ -16,6 +16,13 @@ commit `d2d257f`.
 
 Read this file before changing product behavior or architecture.
 
+The user's functionality-first direction governs visual acceptance: Figma
+guides hierarchy and interaction, while readable controls, usable workflows,
+truthful state, and stable focus determine completion. Exact typography,
+spacing, and pixel correspondence are not completion gates. Previously accepted
+resize behavior does not require another manual handoff unless a new change
+or observed regression affects it.
+
 - OpenSpec change artifacts may complement Figma with scoped intent,
   acceptance criteria, design reasoning, and implementation tasks. They are
   temporary planning material, not a normative product definition or proof of
@@ -238,8 +245,10 @@ sample row and stopping on release; Start is reserved elsewhere.
 
 Crest Synth is a standalone, controller-first MIDI instrument host. The
 production composition is a Rust application using a Tauri v2/WKWebView shell
-and CPAL stereo audio output. Normal startup opens one clean, silent, playable
-`INIT` document; it does not initialize or play the bundled MIDI fixture. The
+and CPAL stereo audio output. Normal startup opens one clean, playable Sample
+`INIT` document and starts a bounded repeating test MIDI pattern on channel 1.
+`T` stops or restarts the pattern; the footer reports the available action.
+Test playback pauses in Sample Browser and during session replacement. The
 parsed `midi/Radiohead - Everything In Its Right Place - HiDef Compatible.mid`
 fixture remains isolated to explicit demo and witness entry points. That
 derived fixture differs from the retained source MIDI only by changing its
@@ -252,9 +261,10 @@ The application currently provides:
 - PATCH and MIXER as the only top-level contexts;
 - sparse stable Patch identities with an active graph capacity of 16 Patches;
 - HiDef SoundFont and Braids instrument capabilities in the default registry;
-- an optional Sample capability installed only when
-  `CREST_SAMPLE_LIBRARY_ROOT` and `CREST_SAMPLE_DEFAULT_ASSET` are both set and
-  the real catalog/WAV adapters validate the configured asset;
+- Sample installed by default with `Test Tone.wav` in
+  `~/Music/Crest Synth/Samples`; the bundled WAV seeds a new library without
+  overwriting an existing asset. `CREST_SAMPLE_LIBRARY_ROOT` and
+  `CREST_SAMPLE_DEFAULT_ASSET` remain paired, validated overrides;
 - Chorus, Reverb, and Delay in one effect registry;
 - three ordered Patch post-effect slots and eight bus returns;
 - one fixed bank of sixteen persistent Mixer tracks, T00 through T0F;
@@ -278,17 +288,19 @@ The application currently provides:
 - retained deterministic, headless, controlled-negative, and physical-demo
   commands listed later in this file.
 
-Normal `make run` resolves the composition-root-designated HiDef capability
+Normal `make run` resolves the composition-root-designated Sample capability
 exactly and constructs Patch 1 `INIT`: MIDI channel 1, T00 at 0 dB Patch trim,
 neutral envelope, capability-seeded voice limit, and three empty post-effect
 slots. It also installs the default sixteen-track Mixer, 0 dB master, and the
 production return bank. The captured versioned session and its complete graph
 are validated and prepared before audio or the window starts; a missing or
 invalid designated capability is a typed fatal startup error, never registry
-fallback. The initial graph is silent until keyboard/controller or physical
-MIDI input is accepted. The automatic source exists only in explicit demo and
-witness paths, where `automaticMidi` remains distinct from `physicalMidi` until
-the shared control-side channel fan-out. Neither source emits Patch targets.
+fallback. The initial graph receives the explicit test pattern through the same
+control-side channel fan-out as physical MIDI. The pattern emits at most two
+MIDI edges per window tick and never replays a catch-up burst. Its enabled flag
+changes only through `AppState::apply`, stays outside saved-session content, and
+pauses during browser audition and session replacement. `automaticMidi` remains
+distinct from `physicalMidi` in input evidence. Neither source emits Patch targets.
 The physical path uses `midir = 0.11.0`: CoreMIDI on Apple, ALSA on Linux, and
 WinMM on Windows through default features. JACK and WinRT remain explicit
 packaging-time opt-ins and are not enabled in the default build. Adapter
@@ -554,6 +566,65 @@ file-start, no-loop audio through the origin Patch's post-FX, trim, Mixer,
 sends, returns, and gates. Stop uses a prepared 5 ms de-click. Preview never
 commits an asset or mutates saved state.
 
+Return or Shift+W on Sample File opens the same in-app FileBrowser page.
+The page uses the existing semantic navigation, confirm, back, and preview
+controls; no platform asset dialog is involved. W/S navigates rows, Return
+enters folders or selects a file, Shift+S returns unchanged, and holding Space
+on a Sample file auditions it. Parent and Cancel are reachable list rows.
+`FileBrowserState` owns the exact origin and focus; the page remains a PATCH
+subordinate surface, never a new top-level context.
+
+Shared `AssetFileId`, `FileBrowserFolderId`, row, and listing types are defined
+in `synth::file_browser`. `FilesystemFileBrowser` owns directory navigation and
+WAV/SF2 filtering by `AssetKind`; engine adapters own decoding and metadata.
+This is the shared picker foundation for Sample and SoundFont. The current
+SoundFont engine still uses its fixed HiDef bank; arbitrary SF2 loading and
+asset-dependent preset catalogs are not claimed by this picker correction.
+The serialized projection schema is version 23 (`fileBrowser` surface identity,
+with unavailable metadata distinct from invalid audio).
+
+The library root also offers Home and, on macOS, Volumes locations. External
+location identities are transient and cannot be restored as saved assets.
+Selecting an external Sample emits a reducer-owned import request correlated
+to its origin, generation, and graph revision. A capacity-one shell filesystem
+worker validates it and copies it into `Imported/` with content reuse and no
+overwrite. Only its resulting library-relative identity enters structural
+assignment; cancellation, failure, and stale completion preserve the active
+asset. Browsing and importing never block the callback or window tick. Nested
+folder results select their first row initially, then preserve stable focus
+on refresh. The projected asset row shows `BROWSE`; it is not a scalar edit.
+The footer remains the sole keyboard-guide owner.
+
+On macOS, the filesystem adapter checks zero-byte files for Dropbox's legacy
+placeholder attribute before WAV parsing. These report `DownloadRequired` and
+show Make available offline guidance in the browser and after failed import;
+the active asset remains unchanged. Empty local files report `EmptyFile` rather
+than an unsupported container. Downloaded WAV bytes take precedence over any
+retained placeholder attribute. Selecting again re-reads the file; leaving and
+re-entering its folder refreshes metadata. Crest does not initiate cloud
+downloads or change Dropbox storage settings. This correction addresses legacy
+zero-byte Dropbox placeholders; other cloud-provider hydration is not claimed.
+The regression sets the real macOS Dropbox attribute on a temporary empty
+file, checks listing/read/import failures, then replaces it with WAV bytes and
+verifies successful import even with retained metadata. Production-catalog
+inspection of an existing Dropbox tracker WAV confirmed the typed result.
+Focused Sample tests and native browser paint verified actionable text,
+unavailable state, retry, and unchanged saved assignment/focus on failure.
+
+Sample Detail renders bounded min/max waveform bars with HTML/CSS, including
+both source channels, and current descriptor-linked playback/loop landmarks.
+Missing or asset-incompatible summaries produce `WAVEFORM UNAVAILABLE` without
+invented geometry. Prepared summaries become acknowledged control-side data
+on both Engine selection and asset assignment; the previous active waveform
+remains visible while replacement is pending. Scalar landmark edits do not
+replace the decoded summary. The engine-choice regression in
+`tests/phase7_sample_workflows.rs` exercises options, worker preparation,
+audio block activation, acknowledgement, and Detail projection without first
+assigning a file in the browser. Prepared session replacement also carries the
+waveform summaries belonging to its complete graph, hydrating startup and Open through `AppState::apply` without
+storing waveform caches in the saved document. Newly appended Sample Patches
+retain the summary supplied by their topology preparation.
+
 Saved state is versioned and stores canonical control state and stable relative
 asset references. It never stores decoded PCM, absolute library roots, browser
 or preview sessions, document paths, dialog or dirty state, prepared graphs, or
@@ -710,8 +781,14 @@ MIXER Main uses one stable `(MixerTrackId, MixerTrackParameter)` path. Left/Righ
 changes T00–T0F while preserving Level/Pan/Mute/Solo row; Up/Down changes row
 while preserving track. Inspector correlation is pinned to the selected track
 and control, and its send → return → global body may scroll without using
-scroll position as selection authority. Compatible meter data must match both
-the painted parameter generation and graph revision; missing/stale data paints
+scroll position as selection authority. The webview renders every visible
+Inspector control through the shared parameter row, including sends; it must
+not suppress a control kind that remains visible and focusable in the semantic
+projection. Inspector entry therefore paints and reveals the reducer-selected
+first send. The native webview witness checks the complete visible control
+order, send labels, and exactly one painted target for the semantic focus path.
+Compatible meter data must match both the painted parameter generation and
+graph revision; missing/stale data paints
 an explicit zero/stale state and cannot mutate application state.
 
 Exactly one focused control is shown. Focus, adjust, active/current,
@@ -778,6 +855,17 @@ witness fixtures only and do not select product state or authorize fixed
 coordinates.
 
 ## Evidence retained in code
+
+The focused Mixer visibility and scroll-observation repair passed
+`make test-webview-detail-native`, including repeat-render and focus checks,
+the generated width sweep across all three layout modes, and owned shutdown.
+Workspace reachability now measures the modal's inner option list when one is
+present. Scroll probes check the absolute region endpoints separately from
+revealing the first and last controls, since non-focusable headings and
+visualizations can extend beyond those controls. This run excluded manual
+dragging, and native screen capture returned `could not create image from
+display`; the structural pass supplies no new screenshot or visual-fidelity
+evidence.
 
 The repository's tests and live-scene report types are the surviving detailed
 evidence. At the documentation reset and the 2026-08-21 responsive Patch
@@ -904,8 +992,9 @@ Overview slice:
 
 Instrument and FX Detail have completed their scoped native manual handoff.
 The native responsive DOM measurements and handoff do not claim full Figma
-parity. The other remaining visual slices are Sample Detail and Browser, Mixer
-responsive composition, native scaling, and visual polish. Engine/Post FX
+parity. Sample Detail and Browser have the functional completion recorded in
+the Sample section; further pixel matching is not an acceptance gate. Remaining
+visual work includes Mixer composition, native scaling, and shared polish. Engine/Post FX
 options retain the physical-input and scoped visual gaps recorded above. Their
 existing functional surfaces are not evidence that those visual slices are
 complete.
@@ -929,7 +1018,7 @@ make test-midi-host
 make test-webview-options-native
 make test-webview-empty-patch-native
 
-# Open the production window with the clean INIT and physical MIDI/audio paths.
+# Open Sample INIT with test MIDI playing. T stops/restarts; Return opens Detail.
 make run
 
 # Interactive attached-device Settings/audio handoff. The script traps
@@ -953,8 +1042,28 @@ make demo-live-graphical-shell
 make demo-live-component-library
 ```
 
-To install Sample in the production registry, configure both values before the
-process starts:
+Sample works with plain `make run`. Return opens Detail from Engine, then
+Return on Sample File opens the in-app file page. Shift+W reaches the same page.
+W/S navigates, Return enters/assigns, Space held on a file auditions it, and
+Shift+S or the Cancel row returns unchanged. Hold K while using W/S/A/D to
+adjust editable controls; loop mode opens its canonical choice list. Cmd+S and
+Cmd+O retain the native session Save/Open dialogs.
+
+The 2026-09-05 picker correction replaces the rejected native asset dialog.
+Its focused checks cover common WAV/SF2 directory filtering, nested folders,
+canonical keyboard confirm/back, import failure and stale-result correlation,
+Sample audio/preview, and restored waveforms. The 868-test library run, 19
+Sample/Detail tests, serialized-schema test, and warnings-denied Clippy passed.
+Native production execution confirmed in-app entry, nested and Home navigation,
+Cancel with the same asset/focus, library WAV selection, and Home-based external
+WAV import returning to a READY Detail with an Imported-relative asset. The
+imported copy remained readable after removal of its original source. The
+final native renderer witness and owned close passed.
+Existing resize acceptance remains closed. Physical gamepad mapping and new
+SoundFont bank loading are separate integrations; neither is claimed here.
+
+To use an existing library and its initial asset, configure both overrides
+before the process starts:
 
 ```sh
 CREST_SAMPLE_LIBRARY_ROOT=/absolute/path/to/library \

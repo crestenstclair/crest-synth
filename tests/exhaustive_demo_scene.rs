@@ -84,7 +84,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         assert!(coverage.missing().is_empty(), "{group:?}");
         assert!(coverage.unexpected().is_empty(), "{group:?}");
     }
-    // Twenty-three normalized keys in each of two kinds, plus focus loss. The eight
+    // Twenty-four normalized keys in each of two kinds, plus focus loss. The eight
     // digits and the two bracket keys the gallery pages and steps with are
     // normalized at the window boundary and bound to no semantic action, so
     // they are exercised here as inputs without appearing among the events
@@ -95,7 +95,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .group(DemoCoverageGroup::Inputs)
             .exercised()
             .len(),
-        47
+        49
     );
     // The eleven WP-era reducer events, the five WP06 occupancy lifecycle and
     // topology outcomes, SelectPatch, and Phase 7's OpenRelated, MIDI Settings,

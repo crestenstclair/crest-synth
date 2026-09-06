@@ -1,4 +1,4 @@
-use core::fmt;
+use crate::synth::{AssetFileId, FileBrowserFolderId, FileBrowserListing};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -12,77 +12,6 @@ pub const MAX_WAVEFORM_PAIRS: usize = 2_048;
 pub const SAMPLE_VOICE_COUNT: usize = 16;
 pub const MAX_LOOP_CROSSFADE_MILLISECONDS: f32 = 200.0;
 
-/// Stable library-root-relative identity persisted by Sample configurations.
-#[derive(Clone, Debug, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct SampleAssetId(String);
-
-impl SampleAssetId {
-    pub fn new(value: impl Into<String>) -> Result<Self, SampleAssetError> {
-        let value = normalize_relative_id(value.into())?;
-        if !value.to_ascii_lowercase().ends_with(".wav") {
-            return Err(SampleAssetError::UnsupportedContainer);
-        }
-        Ok(Self(value))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for SampleAssetId {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-/// Stable relative folder identity used only by the transient browser.
-#[derive(Clone, Debug, Default, Deserialize, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
-#[serde(transparent)]
-pub struct SampleFolderId(String);
-
-impl SampleFolderId {
-    pub fn new(value: impl Into<String>) -> Result<Self, SampleAssetError> {
-        let value = value.into();
-        if value.is_empty() {
-            return Ok(Self::default());
-        }
-        Ok(Self(normalize_relative_id(value)?))
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-
-    pub fn parent(&self) -> Option<Self> {
-        if self.0.is_empty() {
-            None
-        } else {
-            Some(Self(
-                self.0
-                    .rsplit_once('/')
-                    .map_or_else(String::new, |(parent, _)| parent.to_owned()),
-            ))
-        }
-    }
-}
-
-fn normalize_relative_id(value: String) -> Result<String, SampleAssetError> {
-    if value.is_empty()
-        || value.starts_with('/')
-        || value.starts_with('\\')
-        || value.contains('\\')
-        || value.contains('\0')
-        || value
-            .split('/')
-            .any(|part| part.is_empty() || part == "." || part == "..")
-    {
-        return Err(SampleAssetError::InvalidRelativeId);
-    }
-    Ok(value)
-}
-
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SampleEncoding {
@@ -93,7 +22,7 @@ pub enum SampleEncoding {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SampleMetadata {
-    asset_id: SampleAssetId,
+    asset_id: AssetFileId,
     source_bytes: u64,
     sample_rate: u32,
     channels: u16,
@@ -106,7 +35,7 @@ pub struct SampleMetadata {
 impl SampleMetadata {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
         source_bytes: u64,
         sample_rate: u32,
         channels: u16,
@@ -149,7 +78,7 @@ impl SampleMetadata {
         })
     }
 
-    pub const fn asset_id(&self) -> &SampleAssetId {
+    pub const fn asset_id(&self) -> &AssetFileId {
         &self.asset_id
     }
     pub const fn source_bytes(&self) -> u64 {
@@ -224,7 +153,7 @@ pub struct WaveformPair {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedSamplePcm {
-    asset_id: SampleAssetId,
+    asset_id: AssetFileId,
     sample_rate: u32,
     channels: u16,
     frames: usize,
@@ -234,7 +163,7 @@ pub struct PreparedSamplePcm {
 
 impl PreparedSamplePcm {
     pub fn new(
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
         sample_rate: u32,
         channels: u16,
         interleaved: Arc<[f32]>,
@@ -261,7 +190,7 @@ impl PreparedSamplePcm {
         })
     }
 
-    pub const fn asset_id(&self) -> &SampleAssetId {
+    pub const fn asset_id(&self) -> &AssetFileId {
         &self.asset_id
     }
     pub const fn sample_rate(&self) -> u32 {
@@ -284,124 +213,13 @@ impl PreparedSamplePcm {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(tag = "kind", content = "target", rename_all = "camelCase")]
-pub enum SampleBrowserRowKind {
-    Parent(SampleFolderId),
-    Folder(SampleFolderId),
-    File(SampleAssetId),
-    Cancel,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SampleBrowserRow {
-    id: String,
-    label: String,
-    kind: SampleBrowserRowKind,
-    source_bytes: Option<u64>,
-    metadata: Option<Result<SampleMetadata, SampleAssetError>>,
-}
-
-impl SampleBrowserRow {
-    pub fn new(
-        id: impl Into<String>,
-        label: impl Into<String>,
-        kind: SampleBrowserRowKind,
-        source_bytes: Option<u64>,
-    ) -> Result<Self, SampleAssetError> {
-        let id = id.into();
-        let label = label.into();
-        if id.is_empty() || label.is_empty() {
-            return Err(SampleAssetError::InvalidRelativeId);
-        }
-        Ok(Self {
-            id,
-            label,
-            kind,
-            source_bytes,
-            metadata: None,
-        })
-    }
-
-    /// Attaches the catalog adapter's typed metadata result to an eligible
-    /// file row. Folders, parent navigation, and Cancel can never masquerade
-    /// as files carrying metadata, and successful metadata must name the same
-    /// stable library-relative asset as the row.
-    pub fn with_metadata(
-        mut self,
-        metadata: Result<SampleMetadata, SampleAssetError>,
-    ) -> Result<Self, SampleAssetError> {
-        let SampleBrowserRowKind::File(asset_id) = &self.kind else {
-            return Err(SampleAssetError::MalformedCatalog);
-        };
-        if let Ok(value) = &metadata {
-            if value.asset_id() != asset_id {
-                return Err(SampleAssetError::MalformedCatalog);
-            }
-            self.source_bytes = Some(value.source_bytes());
-        }
-        self.metadata = Some(metadata);
-        Ok(self)
-    }
-    pub fn id(&self) -> &str {
-        &self.id
-    }
-    pub fn label(&self) -> &str {
-        &self.label
-    }
-    pub const fn kind(&self) -> &SampleBrowserRowKind {
-        &self.kind
-    }
-    pub const fn source_bytes(&self) -> Option<u64> {
-        self.source_bytes
-    }
-    pub const fn metadata(&self) -> Option<&Result<SampleMetadata, SampleAssetError>> {
-        self.metadata.as_ref()
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct SampleCatalogListing {
-    folder: SampleFolderId,
-    rows: Vec<SampleBrowserRow>,
-}
-
-impl SampleCatalogListing {
-    pub fn new(
-        folder: SampleFolderId,
-        rows: Vec<SampleBrowserRow>,
-    ) -> Result<Self, SampleAssetError> {
-        if rows.is_empty()
-            || rows
-                .iter()
-                .enumerate()
-                .any(|(index, row)| rows[..index].iter().any(|prior| prior.id() == row.id()))
-        {
-            return Err(SampleAssetError::MalformedCatalog);
-        }
-        Ok(Self { folder, rows })
-    }
-    pub const fn folder(&self) -> &SampleFolderId {
-        &self.folder
-    }
-    pub fn rows(&self) -> &[SampleBrowserRow] {
-        &self.rows
-    }
-}
-
 pub trait SampleAssetCatalogPort: Send + Sync {
-    fn list(&self, folder: &SampleFolderId) -> Result<SampleCatalogListing, SampleAssetError>;
-    fn read(&self, asset: &SampleAssetId) -> Result<Vec<u8>, SampleAssetError>;
+    fn list(&self, folder: &FileBrowserFolderId) -> Result<FileBrowserListing, SampleAssetError>;
+    fn read(&self, asset: &AssetFileId) -> Result<Vec<u8>, SampleAssetError>;
 }
 
 pub trait SampleDecoderPort: Send + Sync {
-    fn decode(
-        &self,
-        asset: &SampleAssetId,
-        bytes: &[u8],
-    ) -> Result<DecodedSample, SampleAssetError>;
+    fn decode(&self, asset: &AssetFileId, bytes: &[u8]) -> Result<DecodedSample, SampleAssetError>;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -414,7 +232,7 @@ pub enum SampleLoopMode {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SamplePlaybackConfig {
-    pub asset_id: SampleAssetId,
+    pub asset_id: AssetFileId,
     pub root_note: f32,
     pub playback_start: f32,
     pub playback_end: f32,
@@ -505,7 +323,7 @@ pub struct PreparedSampleLandmarks {
 /// callback voice state remain exclusively prepared-graph ownership.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PreparedSampleVisualization {
-    asset_id: SampleAssetId,
+    asset_id: AssetFileId,
     sample_rate: u32,
     channels: u16,
     frames: usize,
@@ -525,7 +343,7 @@ impl PreparedSampleVisualization {
         }
     }
 
-    pub const fn asset_id(&self) -> &SampleAssetId {
+    pub const fn asset_id(&self) -> &AssetFileId {
         &self.asset_id
     }
     pub const fn sample_rate(&self) -> u32 {
@@ -578,6 +396,10 @@ pub enum SampleAssetError {
     MalformedCatalog,
     #[error("asset is unavailable")]
     Unavailable,
+    #[error("file is not downloaded; choose Make available offline in your cloud storage app, then select it again")]
+    DownloadRequired,
+    #[error("file is empty (0 bytes); no audio data is available")]
+    EmptyFile,
     #[error("library path escapes its configured root")]
     PathEscape,
     #[error("checked arithmetic overflow")]
@@ -597,13 +419,13 @@ pub enum SampleAssetError {
 #[cfg(test)]
 mod tests {
     use super::{
-        SampleAssetError, SampleAssetId, SampleLoopMode, SamplePlaybackConfig,
+        AssetFileId, SampleAssetError, SampleLoopMode, SamplePlaybackConfig,
         MAX_LOOP_CROSSFADE_MILLISECONDS,
     };
 
     fn playback() -> SamplePlaybackConfig {
         SamplePlaybackConfig {
-            asset_id: SampleAssetId::new("fixture.wav").unwrap(),
+            asset_id: AssetFileId::new("fixture.wav").unwrap(),
             root_note: 60.0,
             playback_start: 0.0,
             playback_end: 1.0,
@@ -637,7 +459,7 @@ mod tests {
     #[test]
     fn maximum_crossfade_and_one_frame_neighbor_boundaries_are_exact() {
         let maximum = SamplePlaybackConfig {
-            asset_id: SampleAssetId::new("maximum.wav").unwrap(),
+            asset_id: AssetFileId::new("maximum.wav").unwrap(),
             root_note: 60.0,
             playback_start: 0.0,
             playback_end: 1.0,
@@ -651,7 +473,7 @@ mod tests {
         assert_eq!((prepared.loop_start, prepared.loop_end), (0, 19_200));
 
         let one_frame = SamplePlaybackConfig {
-            asset_id: SampleAssetId::new("one-frame.wav").unwrap(),
+            asset_id: AssetFileId::new("one-frame.wav").unwrap(),
             root_note: 60.0,
             playback_start: 0.0,
             playback_end: 1.0,

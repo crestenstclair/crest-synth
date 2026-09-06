@@ -147,14 +147,14 @@ pub fn validate_sample_graph_budget<'a>(
 mod tests {
     use super::{prepare_sample_pcm, summarize_waveform, validate_sample_graph_budget};
     use crate::synth::{
-        DecodedSample, SampleAssetId, SampleEncoding, SampleMetadata, MAX_WAVEFORM_PAIRS,
+        AssetFileId, DecodedSample, SampleEncoding, SampleMetadata, MAX_WAVEFORM_PAIRS,
     };
 
     fn decoded(channels: u16, rate: u32, values: Vec<f32>) -> DecodedSample {
         let frames = values.len() as u64 / u64::from(channels);
         DecodedSample::new(
             SampleMetadata::new(
-                SampleAssetId::new("fixture.wav").unwrap(),
+                AssetFileId::new("fixture.wav").unwrap(),
                 128,
                 rate,
                 channels,

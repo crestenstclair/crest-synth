@@ -355,6 +355,10 @@ mod tests {
             vec![
                 (HIDEF_CAPABILITY_ID.to_owned(), HIDEF_POLYPHONY_CEILING),
                 (BRAIDS_CAPABILITY_ID.to_owned(), BRAIDS_FIXED_VOICES),
+                (
+                    crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID.to_owned(),
+                    crate::synth::SAMPLE_VOICE_COUNT as u16
+                ),
             ]
         );
         for (capability, ceiling) in declared {

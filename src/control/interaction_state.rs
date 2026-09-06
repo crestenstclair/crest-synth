@@ -82,7 +82,7 @@ pub enum PatchSubordinateSession {
         suspended_detail: Option<PatchDetailSubject>,
         suspended_return: Option<ReturnPath>,
     },
-    SampleBrowser {
+    FileBrowser {
         patch_position: PatchPositionId,
         asset_parameter_id: ParameterId,
         suspended_detail: Option<PatchDetailSubject>,
@@ -97,7 +97,7 @@ impl PatchSubordinateSession {
             Self::Choice {
                 suspended_detail, ..
             }
-            | Self::SampleBrowser {
+            | Self::FileBrowser {
                 suspended_detail, ..
             } => suspended_detail.as_ref(),
         }
@@ -124,7 +124,7 @@ impl PatchSubordinateSession {
                     return_path.rekey_trailing_empty(patch_id);
                 }
             }
-            Self::SampleBrowser {
+            Self::FileBrowser {
                 patch_position,
                 suspended_return,
                 ..
@@ -204,7 +204,7 @@ impl InteractionState {
     pub fn subordinate_invariant_holds(&self) -> bool {
         let entered = self.return_path.as_ref().map(ReturnPath::entered_surface);
         match (&self.subordinate_session, self.active_focus.surface()) {
-            (None, SurfaceId::PatchDetail | SurfaceId::PatchChoice | SurfaceId::SampleBrowser) => {
+            (None, SurfaceId::PatchDetail | SurfaceId::PatchChoice | SurfaceId::FileBrowser) => {
                 false
             }
             (None, _) => true,
@@ -242,14 +242,14 @@ impl InteractionState {
                             .is_some_and(|path| path.entered_surface() == SurfaceId::PatchDetail)
             }
             (
-                Some(PatchSubordinateSession::SampleBrowser {
+                Some(PatchSubordinateSession::FileBrowser {
                     suspended_detail,
                     suspended_return,
                     ..
                 }),
-                SurfaceId::SampleBrowser,
+                SurfaceId::FileBrowser,
             ) => {
-                entered == Some(SurfaceId::SampleBrowser)
+                entered == Some(SurfaceId::FileBrowser)
                     && self.mode == InteractionMode::Modal
                     && suspended_detail.is_some()
                         == suspended_return
@@ -357,7 +357,7 @@ impl InteractionState {
         {
             return Some(subject.control_id().clone());
         }
-        if self.active_focus.surface() == SurfaceId::SampleBrowser {
+        if self.active_focus.surface() == SurfaceId::FileBrowser {
             return self
                 .return_path
                 .as_ref()
@@ -491,7 +491,7 @@ impl InteractionState {
         }
         let modal_surface = matches!(
             self.active_focus.surface(),
-            SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+            SurfaceId::PatchChoice | SurfaceId::FileBrowser
         );
         let allowed = if modal_surface {
             mode == InteractionMode::Modal
@@ -543,7 +543,7 @@ impl InteractionState {
             }
             SurfaceId::PatchDetail
             | SurfaceId::PatchChoice
-            | SurfaceId::SampleBrowser
+            | SurfaceId::FileBrowser
             | SurfaceId::PatchMain
             | SurfaceId::MixerMain
             | SurfaceId::MidiDeviceSettings => return Err(FocusPathError::ControlSurfaceMismatch),
@@ -676,7 +676,7 @@ impl InteractionState {
 
     /// Replaces the current PATCH main, Utility, or Detail surface with the
     /// controller-native Sample Browser.
-    pub(super) fn enter_sample_browser(
+    pub(super) fn enter_file_browser(
         &mut self,
         patch_id: PatchId,
         asset_parameter_id: ParameterId,
@@ -685,10 +685,10 @@ impl InteractionState {
         if self.midi_settings_session.is_some() {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
-        self.enter_sample_browser_at(patch_id.into(), asset_parameter_id, focus)
+        self.enter_file_browser_at(patch_id.into(), asset_parameter_id, focus)
     }
 
-    pub(super) fn enter_sample_browser_at(
+    pub(super) fn enter_file_browser_at(
         &mut self,
         patch_position: PatchPositionId,
         asset_parameter_id: ParameterId,
@@ -698,7 +698,7 @@ impl InteractionState {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
         self.enter_modal_surface(patch_position, focus, |detail, suspended_return| {
-            PatchSubordinateSession::SampleBrowser {
+            PatchSubordinateSession::FileBrowser {
                 patch_position,
                 asset_parameter_id,
                 suspended_detail: detail,
@@ -728,7 +728,7 @@ impl InteractionState {
         focus.validate()?;
         if !matches!(
             focus.surface(),
-            SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+            SurfaceId::PatchChoice | SurfaceId::FileBrowser
         ) || focus.patch_position() != Some(patch_position)
         {
             return Err(FocusPathError::ControlSurfaceMismatch);
@@ -777,7 +777,7 @@ impl InteractionState {
                 suspended_return,
                 ..
             })
-            | Some(PatchSubordinateSession::SampleBrowser {
+            | Some(PatchSubordinateSession::FileBrowser {
                 suspended_detail,
                 suspended_return,
                 ..
@@ -1177,10 +1177,10 @@ mod tests {
 
         let before_nested_attempt = state.clone();
         assert!(state
-            .enter_sample_browser(
+            .enter_file_browser(
                 patch_id,
                 parameter_id,
-                FocusPath::sample_browser(patch_id, "browser.test", "cancel"),
+                FocusPath::file_browser(patch_id, "browser.test", "cancel"),
             )
             .is_err());
         assert_eq!(
@@ -1200,25 +1200,25 @@ mod tests {
     }
 
     #[test]
-    fn sample_browser_replaces_utility_without_fabricating_a_detail_subject() {
+    fn file_browser_replaces_utility_without_fabricating_a_detail_subject() {
         let patch_id = PatchId::new(3).unwrap();
         let origin = FocusPath::patch_main(patch_id, None, PatchControlId::Engine);
         let asset_id = crate::synth::ParameterId::new("sample.asset").unwrap();
         let browser_focus =
-            FocusPath::sample_browser(patch_id, "browser.sample.asset", "folder.drums");
+            FocusPath::file_browser(patch_id, "browser.sample.asset", "folder.drums");
         let mut state = InteractionState::new();
         state.initialize_patch_focus(Some(origin.clone()));
         state.select_context(TopLevelContext::Patch).unwrap();
         state.enter_surface(SurfaceId::PatchUtility).unwrap();
         let utility_focus = state.focus_path().clone();
         state
-            .enter_sample_browser(patch_id, asset_id.clone(), browser_focus.clone())
+            .enter_file_browser(patch_id, asset_id.clone(), browser_focus.clone())
             .unwrap();
 
         assert_eq!(state.focus_path(), &browser_focus);
         assert!(matches!(
             state.subordinate_session(),
-            Some(PatchSubordinateSession::SampleBrowser {
+            Some(PatchSubordinateSession::FileBrowser {
                 asset_parameter_id,
                 suspended_detail: None,
                 suspended_return: Some(_),

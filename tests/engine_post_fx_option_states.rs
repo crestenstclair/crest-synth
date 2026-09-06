@@ -1010,6 +1010,7 @@ fn engine_and_slot_lifecycles_retain_acknowledged_truth_until_matching_ack() {
     }
     let slot_correlation = slot.engine_selection().correlation().unwrap().clone();
     slot.apply(AppEvent::TopologyPrepared {
+        prepared_visualization: None,
         request_id: slot_correlation.request_id(),
         intent: slot_correlation.intent().clone(),
         source_graph_revision: slot_correlation.source_graph_revision(),
@@ -1137,6 +1138,7 @@ fn engine_and_slot_lifecycles_retain_acknowledged_truth_until_matching_ack() {
     }
     clear
         .apply(AppEvent::TopologyPrepared {
+            prepared_visualization: None,
             request_id: clear_correlation.request_id(),
             intent: clear_correlation.intent().clone(),
             source_graph_revision: clear_correlation.source_graph_revision(),

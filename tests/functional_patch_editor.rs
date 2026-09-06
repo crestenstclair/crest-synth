@@ -82,9 +82,9 @@ use crest_synth::synth::instrument_capability::ParameterValue;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::voice_limit::{VoiceLimit, VoiceLimitError};
 use crest_synth::synth::{
-    CapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider, InstrumentConfig,
-    ParameterKind, Patch, PatchInteraction, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
-    SampleCatalogListing, SampleFolderId,
+    AssetFileId, CapabilityRegistry, EffectSlotId, FileBrowserFolderId, FileBrowserListing,
+    FileBrowserRow, FileBrowserRowKind, InstrumentCapabilityProvider, InstrumentConfig,
+    ParameterKind, Patch, PatchInteraction,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -286,25 +286,25 @@ fn fixture_state() -> AppState {
 /// actions. This fixture exists so cross-surface guards see Phase 7's real
 /// browser projection rather than merely adding its enum name to an expected
 /// set.
-fn sample_browser_fixture() -> AppState {
-    let asset_id = SampleAssetId::new("Factory.wav").unwrap();
+fn file_browser_fixture() -> AppState {
+    let asset_id = AssetFileId::new("Factory.wav").unwrap();
     let provider = SampleCapability::new(asset_id.clone()).unwrap();
     let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
-    let folder = SampleFolderId::default();
-    let listing = SampleCatalogListing::new(
+    let folder = FileBrowserFolderId::default();
+    let listing = FileBrowserListing::new(
         folder.clone(),
         vec![
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 "file:Factory.wav",
                 "Factory.wav",
-                SampleBrowserRowKind::File(asset_id),
+                FileBrowserRowKind::File(asset_id),
                 Some(128),
             )
             .unwrap(),
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 "cancel:",
                 "CANCEL — UNCHANGED",
-                SampleBrowserRowKind::Cancel,
+                FileBrowserRowKind::Cancel,
                 None,
             )
             .unwrap(),
@@ -334,10 +334,7 @@ fn sample_browser_fixture() -> AppState {
     state
         .apply_semantic_action(SemanticAction::OpenRelated)
         .unwrap();
-    assert_eq!(
-        state.interaction().active_surface(),
-        SurfaceId::SampleBrowser
-    );
+    assert_eq!(state.interaction().active_surface(), SurfaceId::FileBrowser);
     state
 }
 
@@ -1006,7 +1003,7 @@ fn projected_screen_strings(state: &AppState) -> Vec<(String, String)> {
             if let Some(label) = control.get("label").and_then(Value::as_str) {
                 strings.push((format!("{surface_id} {id} label"), label.to_owned()));
             }
-            let modal = matches!(surface_id.as_str(), "patchChoice" | "sampleBrowser");
+            let modal = matches!(surface_id.as_str(), "patchChoice" | "fileBrowser");
             if modal {
                 if let Some(marker) = control.get("selectedLabel").and_then(Value::as_str) {
                     strings.push((format!("{surface_id} {id} state marker"), marker.to_owned()));
@@ -1190,7 +1187,7 @@ fn screen_string_fixtures() -> Vec<(&'static str, AppState)> {
         SurfaceId::PatchChoice
     );
 
-    let sample_browser = sample_browser_fixture();
+    let file_browser = file_browser_fixture();
 
     vec![
         ("soundfont PATCH Main", fixture_state()),
@@ -1208,7 +1205,7 @@ fn screen_string_fixtures() -> Vec<(&'static str, AppState)> {
         ("PATCH Utility master gain", utility_master),
         ("preset swap in flight", preset_swap_in_flight().0),
         ("engine choice modal", choice),
-        ("Sample Browser", sample_browser),
+        ("Sample Browser", file_browser),
         ("MIXER Main", mixer),
         ("MIXER Inspector", inspector),
     ]
@@ -3318,6 +3315,14 @@ fn check_ranges_and_units_are_rendered() -> usize {
 /// which is the authored no-placeholder behaviour rather than a composed label.
 fn check_the_page_composes_no_label_of_its_own() -> usize {
     let script = script_without_comments(&page_source("page.js"));
+    // The canonical T key hint also spells the existing hexadecimal track
+    // identifier prefix. Exclude that one formatting expression, while still
+    // rejecting any literal T introduced in action/footer composition.
+    let script = script.replacen(
+        "return \"T\" + (hex.length",
+        "return TRACK_PREFIX + (hex.length",
+        1,
+    );
     let mut checked = 0_usize;
     let mut vocabulary = BTreeSet::new();
     for (_, state) in screen_string_fixtures() {

@@ -341,7 +341,7 @@ where
         // advanced canonical generation on every tick and could keep the
         // otherwise-valid audio observation perpetually one generation behind.
         if let Some(evidence) = self.detail_and_assets.as_ref() {
-            let preview = app_loop.state().sample_browser().preview();
+            let preview = app_loop.state().file_browser().preview();
             if (matches!(preview, crate::control::SamplePreviewState::Playing { .. })
                 && !evidence.preview_revision_compatible())
                 || (evidence.preview_revision_compatible()
@@ -1811,19 +1811,15 @@ where
         }
         if self.detail_and_assets.is_some()
             && (!matches!(
-                app_loop.state().sample_browser().preview(),
+                app_loop.state().file_browser().preview(),
                 crate::control::SamplePreviewState::Idle
             ) || app_loop
                 .state()
-                .sample_browser()
+                .file_browser()
                 .preview_request_id()
                 .is_some()
-                || app_loop.state().sample_browser().request_id().is_some()
-                || app_loop
-                    .state()
-                    .sample_browser()
-                    .requested_asset()
-                    .is_some()
+                || app_loop.state().file_browser().request_id().is_some()
+                || app_loop.state().file_browser().requested_asset().is_some()
                 || observation.preview_playing()
                 || app_loop.staged_graph_revision().is_some()
                 || app_loop.in_flight_graph_revision().is_some())

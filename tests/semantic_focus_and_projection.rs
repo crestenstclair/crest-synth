@@ -109,6 +109,7 @@ fn commit_pending_topology(state: &mut AppState) {
     let target = source.checked_next().unwrap();
     state
         .apply(AppEvent::TopologyPrepared {
+            prepared_visualization: None,
             request_id: correlation.request_id(),
             intent: correlation.intent().clone(),
             source_graph_revision: source,
@@ -189,7 +190,7 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
             SurfaceId::PatchUtility,
             SurfaceId::PatchDetail,
             SurfaceId::PatchChoice,
-            SurfaceId::SampleBrowser,
+            SurfaceId::FileBrowser,
             SurfaceId::MixerMain,
             SurfaceId::MixerInspector,
             SurfaceId::MidiDeviceSettings,

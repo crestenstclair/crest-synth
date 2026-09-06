@@ -1114,7 +1114,9 @@ fn map_instrument_preparation_failure(
 fn map_sample_asset_failure(error: crate::synth::SampleAssetError) -> EngineSelectionFailure {
     use crate::synth::SampleAssetError;
     match error {
-        SampleAssetError::Unavailable => EngineSelectionFailure::AssetUnavailable,
+        SampleAssetError::Unavailable | SampleAssetError::DownloadRequired => {
+            EngineSelectionFailure::AssetUnavailable
+        }
         SampleAssetError::UnsupportedContainer
         | SampleAssetError::UnsupportedEncoding
         | SampleAssetError::UnsupportedBitDepth
@@ -1128,7 +1130,8 @@ fn map_sample_asset_failure(error: crate::synth::SampleAssetError) -> EngineSele
         SampleAssetError::GraphPcmCapacityExceeded => EngineSelectionFailure::GraphCapacityExceeded,
         SampleAssetError::Cancelled => EngineSelectionFailure::Cancelled,
         SampleAssetError::AllocationFailed => EngineSelectionFailure::AllocationFailed,
-        SampleAssetError::InvalidRelativeId
+        SampleAssetError::EmptyFile
+        | SampleAssetError::InvalidRelativeId
         | SampleAssetError::NonFinitePcm
         | SampleAssetError::MalformedPcm
         | SampleAssetError::MalformedWave
@@ -1164,8 +1167,8 @@ mod tests {
     use crate::real_time::GraphRevision;
     use crate::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
     use crate::synth::{
-        AssetKind, AssetReference, CapabilityId, DescriptorDefaultConfigFactory,
-        InstrumentCapabilityProvider, ParameterId, Patch, SampleAssetId,
+        AssetFileId, AssetKind, AssetReference, CapabilityId, DescriptorDefaultConfigFactory,
+        InstrumentCapabilityProvider, ParameterId, Patch,
     };
 
     fn config(id: &str) -> crate::synth::InstrumentConfig {
@@ -1377,7 +1380,7 @@ mod tests {
 
     #[test]
     fn audition_request_keeps_canonical_patch_topology_and_carries_only_transient_candidate() {
-        let provider = SampleCapability::new(SampleAssetId::new("active.wav").unwrap()).unwrap();
+        let provider = SampleCapability::new(AssetFileId::new("active.wav").unwrap()).unwrap();
         let registry = crate::synth::CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
         let active = [Patch::new(
             PatchId::new(3).unwrap(),
@@ -1389,7 +1392,7 @@ mod tests {
         let candidate = crate::synth::DescriptorDefaultConfigFactory::new(
             registry.clone(),
             vec![Box::new(
-                SampleCapability::new(SampleAssetId::new("active.wav").unwrap()).unwrap(),
+                SampleCapability::new(AssetFileId::new("active.wav").unwrap()).unwrap(),
             )],
         )
         .replace_asset(

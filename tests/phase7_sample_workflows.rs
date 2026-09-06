@@ -22,10 +22,10 @@ use crest_synth::real_time::{
 };
 use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
 use crest_synth::synth::{
-    AssetAssignment, AssetKind, AssetReference, CapabilityRegistry, DecodedSample,
-    DescriptorDefaultConfigFactory, InstrumentCapabilityProvider, InstrumentPreparer, ParameterId,
-    ParameterValue, Patch, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
-    SampleCatalogListing, SampleEncoding, SampleFolderId, SampleMetadata,
+    AssetAssignment, AssetFileId, AssetKind, AssetReference, CapabilityRegistry, DecodedSample,
+    DescriptorDefaultConfigFactory, FileBrowserFolderId, FileBrowserListing, FileBrowserRow,
+    FileBrowserRowKind, InstrumentCapabilityProvider, InstrumentPreparer, ParameterId,
+    ParameterValue, Patch, SampleEncoding, SampleMetadata,
 };
 use crest_synth::testing::{
     DeterministicGraphPreparationWorker, DeterministicSampleCatalog, DeterministicSampleDecoder,
@@ -33,7 +33,7 @@ use crest_synth::testing::{
 use std::sync::Arc;
 
 fn fixture() -> (AppState, SampleCapability, PatchId) {
-    let provider = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
+    let provider = SampleCapability::new(AssetFileId::new("Factory.wav").unwrap()).unwrap();
     let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
     let patch_id = PatchId::new(1).unwrap();
     let patch = Patch::new(
@@ -43,19 +43,19 @@ fn fixture() -> (AppState, SampleCapability, PatchId) {
         MidiChannel::new(0).unwrap(),
         PatchOutput::default(),
     );
-    let folder = SampleFolderId::default();
-    let listing = SampleCatalogListing::new(
+    let folder = FileBrowserFolderId::default();
+    let listing = FileBrowserListing::new(
         folder.clone(),
         vec![
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 "file:Alternate.wav",
                 "Alternate.wav",
-                SampleBrowserRowKind::File(SampleAssetId::new("Alternate.wav").unwrap()),
+                FileBrowserRowKind::File(AssetFileId::new("Alternate.wav").unwrap()),
                 Some(128),
             )
             .unwrap()
             .with_metadata(Ok(SampleMetadata::new(
-                SampleAssetId::new("Alternate.wav").unwrap(),
+                AssetFileId::new("Alternate.wav").unwrap(),
                 128,
                 48_000,
                 2,
@@ -65,10 +65,10 @@ fn fixture() -> (AppState, SampleCapability, PatchId) {
             )
             .unwrap()))
             .unwrap(),
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 "cancel:",
                 "CANCEL — UNCHANGED",
-                SampleBrowserRowKind::Cancel,
+                FileBrowserRowKind::Cancel,
                 None,
             )
             .unwrap(),
@@ -99,10 +99,7 @@ fn open_browser(state: &mut AppState) -> crest_synth::control::FocusPath {
     state
         .apply_semantic_action(SemanticAction::OpenRelated)
         .unwrap();
-    assert_eq!(
-        state.interaction().active_surface(),
-        SurfaceId::SampleBrowser
-    );
+    assert_eq!(state.interaction().active_surface(), SurfaceId::FileBrowser);
     assert_eq!(state.interaction().mode(), InteractionMode::Modal);
     asset_origin
 }
@@ -137,7 +134,7 @@ fn advance_engine_admission(state: &mut AppState, request_id: EngineSelectionReq
 }
 
 fn decoded_fixture(asset: &str) -> DecodedSample {
-    let asset_id = SampleAssetId::new(asset).unwrap();
+    let asset_id = AssetFileId::new(asset).unwrap();
     let interleaved = (0..128)
         .map(|frame| (frame as f32 / 128.0) * 0.5)
         .collect::<Vec<_>>();
@@ -235,7 +232,7 @@ fn browser_focus_is_stable_trapped_nonwrapping_and_preview_stops_on_navigation_a
     assert!(preview.audio_command().is_none());
     assert!(preview.engine_selection_effect().is_some());
     assert!(matches!(
-        state.sample_browser().preview(),
+        state.file_browser().preview(),
         SamplePreviewState::Preparing { asset_id, held: true }
             if asset_id.as_str() == "Alternate.wav"
     ));
@@ -247,7 +244,7 @@ fn browser_focus_is_stable_trapped_nonwrapping_and_preview_stops_on_navigation_a
         .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
         .unwrap();
     assert!(matches!(
-        state.sample_browser().preview(),
+        state.file_browser().preview(),
         SamplePreviewState::Preparing { asset_id, held: false }
             if asset_id.as_str() == "Alternate.wav"
     ));
@@ -264,7 +261,7 @@ fn browser_focus_is_stable_trapped_nonwrapping_and_preview_stops_on_navigation_a
     state.apply_semantic_action(SemanticAction::Return).unwrap();
     assert_eq!(state.interaction().focus_path(), &asset_origin);
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Cancelled
     );
 }
@@ -274,19 +271,19 @@ fn catalog_refresh_preserves_stable_row_focus_and_reprojects_typed_metadata() {
     let (mut state, _, patch_id) = fixture();
     open_browser(&mut state);
     let focused = state.interaction().focus_path().clone();
-    let folder = SampleFolderId::default();
-    let refreshed = SampleCatalogListing::new(
+    let folder = FileBrowserFolderId::default();
+    let refreshed = FileBrowserListing::new(
         folder.clone(),
         vec![
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 "file:Alternate.wav",
                 "Alternate.wav",
-                SampleBrowserRowKind::File(SampleAssetId::new("Alternate.wav").unwrap()),
+                FileBrowserRowKind::File(AssetFileId::new("Alternate.wav").unwrap()),
                 Some(512),
             )
             .unwrap()
             .with_metadata(Ok(SampleMetadata::new(
-                SampleAssetId::new("Alternate.wav").unwrap(),
+                AssetFileId::new("Alternate.wav").unwrap(),
                 512,
                 96_000,
                 1,
@@ -296,10 +293,10 @@ fn catalog_refresh_preserves_stable_row_focus_and_reprojects_typed_metadata() {
             )
             .unwrap()))
             .unwrap(),
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 "cancel:",
                 "CANCEL — UNCHANGED",
-                SampleBrowserRowKind::Cancel,
+                FileBrowserRowKind::Cancel,
                 None,
             )
             .unwrap(),
@@ -316,7 +313,7 @@ fn catalog_refresh_preserves_stable_row_focus_and_reprojects_typed_metadata() {
     let (_, _, _, shell, _) = StateProjector::new().project_with_shell(&state).unwrap();
     let metadata = shell
         .semantic_model()
-        .surface(SurfaceId::SampleBrowser)
+        .surface(SurfaceId::FileBrowser)
         .unwrap()
         .controls()[0]
         .browser_metadata()
@@ -333,19 +330,16 @@ fn catalog_refresh_preserves_stable_row_focus_and_reprojects_typed_metadata() {
             listing: Err(crest_synth::synth::SampleAssetError::Unavailable),
         })
         .unwrap();
-    assert_eq!(
-        state.interaction().active_surface(),
-        SurfaceId::SampleBrowser
-    );
-    assert_eq!(state.sample_browser().rows().len(), 1);
+    assert_eq!(state.interaction().active_surface(), SurfaceId::FileBrowser);
+    assert_eq!(state.file_browser().rows().len(), 1);
     assert!(matches!(
-        state.sample_browser().rows()[0].kind(),
-        SampleBrowserRowKind::Cancel
+        state.file_browser().rows()[0].kind(),
+        FileBrowserRowKind::Cancel
     ));
     assert!(SemanticResolver::new(&state).resolves(state.interaction().focus_path()));
     assert_eq!(state.interaction().focus_path().patch_id(), Some(patch_id));
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Unavailable
     );
 }
@@ -396,7 +390,7 @@ fn preview_emits_no_audio_before_activation_and_never_changes_the_assigned_asset
         ))
     );
     assert!(matches!(
-        state.sample_browser().preview(),
+        state.file_browser().preview(),
         SamplePreviewState::Playing { asset_id } if asset_id.as_str() == "Alternate.wav"
     ));
     assert_eq!(state.patches()[0].instrument_config(), &original);
@@ -411,7 +405,7 @@ fn preview_emits_no_audio_before_activation_and_never_changes_the_assigned_asset
             effect.request_id().value()
         ))
     );
-    assert_eq!(state.sample_browser().preview(), &SamplePreviewState::Idle);
+    assert_eq!(state.file_browser().preview(), &SamplePreviewState::Idle);
     assert_eq!(state.patches()[0].instrument_config(), &original);
 }
 
@@ -430,7 +424,7 @@ fn release_before_preview_activation_suppresses_both_start_and_stop_commands() {
         .unwrap();
     assert!(released.audio_command().is_none());
     assert!(matches!(
-        state.sample_browser().preview(),
+        state.file_browser().preview(),
         SamplePreviewState::Preparing { held: false, .. }
     ));
 
@@ -462,7 +456,7 @@ fn release_before_preview_activation_suppresses_both_start_and_stop_commands() {
         .unwrap()
         .audio_command()
         .is_none());
-    assert_eq!(state.sample_browser().preview(), &SamplePreviewState::Idle);
+    assert_eq!(state.file_browser().preview(), &SamplePreviewState::Idle);
 }
 
 #[test]
@@ -481,7 +475,7 @@ fn active_preview_stops_exactly_once_on_navigation_assignment_and_browser_cancel
             preview.request_id().value()
         ))
     );
-    assert_eq!(state.sample_browser().preview(), &SamplePreviewState::Idle);
+    assert_eq!(state.file_browser().preview(), &SamplePreviewState::Idle);
 
     // Activating the previewed file stops that voice and starts only the
     // separately correlated assignment preparation.
@@ -499,7 +493,7 @@ fn active_preview_stops_exactly_once_on_navigation_assignment_and_browser_cancel
         ))
     );
     assert!(assigned.engine_selection_effect().is_some());
-    assert_eq!(state.sample_browser().preview(), &SamplePreviewState::Idle);
+    assert_eq!(state.file_browser().preview(), &SamplePreviewState::Idle);
 
     // Returning from the browser is cancellation and carries the same exact
     // fixed-size stop command. A second Stop is rejected, so it cannot emit a
@@ -517,7 +511,7 @@ fn active_preview_stops_exactly_once_on_navigation_assignment_and_browser_cancel
     );
     assert_eq!(state.interaction().focus_path(), &origin);
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Cancelled
     );
     assert!(state
@@ -533,7 +527,7 @@ fn preview_rejects_start_outside_browser_and_stale_preparation_without_mutation(
         .apply_semantic_action(SemanticAction::PreviewStart)
         .is_err());
     assert_eq!(state.generation(), generation);
-    assert_eq!(state.sample_browser().preview(), &SamplePreviewState::Idle);
+    assert_eq!(state.file_browser().preview(), &SamplePreviewState::Idle);
 
     open_browser(&mut state);
     let effect = state
@@ -542,7 +536,7 @@ fn preview_rejects_start_outside_browser_and_stale_preparation_without_mutation(
         .engine_selection_effect()
         .unwrap()
         .clone();
-    let expected_preview = state.sample_browser().preview().clone();
+    let expected_preview = state.file_browser().preview().clone();
     let generation = state.generation();
     let stale_request = EngineSelectionRequestId::new(effect.request_id().value() + 1).unwrap();
     let target_revision = GraphRevision::INITIAL.checked_next().unwrap();
@@ -560,7 +554,7 @@ fn preview_rejects_start_outside_browser_and_stale_preparation_without_mutation(
         })
         .is_err());
     assert_eq!(state.generation(), generation);
-    assert_eq!(state.sample_browser().preview(), &expected_preview);
+    assert_eq!(state.file_browser().preview(), &expected_preview);
     assert!(state
         .apply(AppEvent::EnginePreparationFailed {
             request_id: stale_request,
@@ -574,7 +568,7 @@ fn preview_rejects_start_outside_browser_and_stale_preparation_without_mutation(
         })
         .is_err());
     assert_eq!(state.generation(), generation);
-    assert_eq!(state.sample_browser().preview(), &expected_preview);
+    assert_eq!(state.file_browser().preview(), &expected_preview);
 }
 
 #[test]
@@ -590,13 +584,13 @@ fn asset_assignment_is_correlated_failure_safe_and_ready_only_after_activation()
     assert_eq!(state.patches()[0].instrument_config(), &original);
     assert_eq!(
         state
-            .sample_browser()
+            .file_browser()
             .requested_asset()
-            .map(SampleAssetId::as_str),
+            .map(AssetFileId::as_str),
         Some("Alternate.wav")
     );
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Loading
     );
 
@@ -615,7 +609,7 @@ fn asset_assignment_is_correlated_failure_safe_and_ready_only_after_activation()
         .unwrap();
     assert_eq!(state.patches()[0].instrument_config(), &original);
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Invalid
     );
 
@@ -665,7 +659,7 @@ fn asset_assignment_is_correlated_failure_safe_and_ready_only_after_activation()
         })
         .unwrap();
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Activating
     );
     assert_eq!(
@@ -686,7 +680,7 @@ fn asset_assignment_is_correlated_failure_safe_and_ready_only_after_activation()
         })
         .unwrap();
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Ready
     );
     assert_eq!(
@@ -716,7 +710,7 @@ fn asset_lifecycle_is_ordered_correlated_and_keeps_typed_terminal_states() {
         .unwrap()
         .clone();
     assert_eq!(
-        state.sample_browser().lifecycle(),
+        state.file_browser().lifecycle(),
         SampleAssetLifecycle::Loading
     );
 
@@ -744,7 +738,7 @@ fn asset_lifecycle_is_ordered_correlated_and_keeps_typed_terminal_states() {
                 lifecycle,
             })
             .unwrap();
-        assert_eq!(state.sample_browser().lifecycle(), lifecycle);
+        assert_eq!(state.file_browser().lifecycle(), lifecycle);
     }
 
     for (failure, terminal) in [
@@ -785,7 +779,7 @@ fn asset_lifecycle_is_ordered_correlated_and_keeps_typed_terminal_states() {
                 failure,
             })
             .unwrap();
-        assert_eq!(terminal_state.sample_browser().lifecycle(), terminal);
+        assert_eq!(terminal_state.file_browser().lifecycle(), terminal);
     }
 }
 
@@ -896,7 +890,7 @@ fn asset_projection_keeps_active_and_requested_distinct_and_names_every_lifecycl
         .apply_semantic_action(SemanticAction::Activate)
         .unwrap();
     assert_eq!(
-        browser_cancelled.sample_browser().lifecycle(),
+        browser_cancelled.file_browser().lifecycle(),
         SampleAssetLifecycle::Cancelled
     );
     let (_, _, _, cancelled_shell, _) = StateProjector::new()
@@ -909,11 +903,491 @@ fn asset_projection_keeps_active_and_requested_distinct_and_names_every_lifecycl
     );
 }
 
+fn external_file_listing() -> FileBrowserListing {
+    FileBrowserListing::new(
+        FileBrowserFolderId::default(),
+        vec![
+            FileBrowserRow::new(
+                "file:Alternate.wav",
+                "External.wav",
+                FileBrowserRowKind::File(AssetFileId::new("@home/External.wav").unwrap()),
+                Some(128),
+            )
+            .unwrap(),
+            FileBrowserRow::new(
+                "cancel:",
+                "CANCEL — UNCHANGED",
+                FileBrowserRowKind::Cancel,
+                None,
+            )
+            .unwrap(),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn keyboard_confirm_and_back_use_the_shared_file_page_and_preserve_the_asset() {
+    use crest_synth::shell::{KeyboardInputTranslator, WindowInput, WindowKey};
+    let (mut state, _, _) = fixture();
+    let saved = crest_synth::control::SavedSession::capture(&state);
+    let mut keys = KeyboardInputTranslator::default();
+    for input in [
+        WindowInput::key_down(WindowKey::Return),
+        WindowInput::key_up(WindowKey::Return),
+    ] {
+        if let Some(action) = keys.translate(input) {
+            state.apply_semantic_action(action).unwrap();
+        }
+    }
+    let origin = state.interaction().focus_path().clone();
+    for input in [
+        WindowInput::key_down(WindowKey::Return),
+        WindowInput::key_up(WindowKey::Return),
+        WindowInput::key_down(WindowKey::Shift),
+        WindowInput::key_down(WindowKey::S),
+        WindowInput::key_up(WindowKey::S),
+        WindowInput::key_up(WindowKey::Shift),
+    ] {
+        if let Some(action) = keys.translate(input) {
+            state.apply_semantic_action(action).unwrap();
+        }
+    }
+    assert_eq!(state.interaction().focus_path(), &origin);
+    assert_eq!(crest_synth::control::SavedSession::capture(&state), saved);
+    assert!(state.file_browser().import_request().is_none());
+}
+
+#[test]
+fn in_app_file_import_failure_selection_and_stale_completion_are_correlated() {
+    use crest_synth::control::{AssetImportResult, SavedSession};
+    use crest_synth::synth::SampleAssetError;
+    for result in [
+        Err(SampleAssetError::UnsupportedContainer),
+        Err(SampleAssetError::DownloadRequired),
+        Ok(AssetFileId::new("Alternate.wav").unwrap()),
+    ] {
+        let (mut state, _, _) = fixture();
+        state
+            .apply_semantic_action(SemanticAction::OpenRelated)
+            .unwrap();
+        let origin = state.interaction().focus_path().clone();
+        let saved = SavedSession::capture(&state);
+        state
+            .apply_semantic_action(SemanticAction::Activate)
+            .unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::FileBrowser);
+        state
+            .apply(AppEvent::SampleCatalogRefreshed {
+                folder: FileBrowserFolderId::default(),
+                listing: Ok(external_file_listing()),
+            })
+            .unwrap();
+        state
+            .apply_semantic_action(SemanticAction::Activate)
+            .unwrap();
+        let request = state.file_browser().import_request().unwrap().clone();
+        assert!(state
+            .apply_semantic_action(SemanticAction::Activate)
+            .is_err());
+        let selection = AssetImportResult {
+            request,
+            result: result.clone(),
+        };
+        let outcome = state
+            .apply(AppEvent::AssetImported(selection.clone()))
+            .unwrap();
+        assert_eq!(state.interaction().focus_path(), &origin);
+        assert_eq!(
+            SavedSession::capture(&state),
+            saved,
+            "selection never commits before audio activation"
+        );
+        assert_eq!(outcome.engine_selection_effect().is_some(), result.is_ok());
+        assert!(state.file_browser().import_request().is_none());
+        assert!(
+            state.apply(AppEvent::AssetImported(selection)).is_err(),
+            "duplicate completion cannot assign twice"
+        );
+        if let Err(cause) = result {
+            assert_eq!(state.file_browser().file_selection_failure(), Some(cause));
+            if cause == SampleAssetError::DownloadRequired {
+                assert_eq!(
+                    state.file_browser().lifecycle(),
+                    SampleAssetLifecycle::Unavailable
+                );
+                let shell = StateProjector::new().project_with_shell(&state).unwrap().3;
+                let detail = shell
+                    .semantic_model()
+                    .surface(SurfaceId::PatchDetail)
+                    .unwrap();
+                assert!(detail.visualizations().iter().any(|view| matches!(
+                    view.data(), SemanticVisualizationData::Waveform { status, .. }
+                        if status.starts_with("UNAVAILABLE")
+                            && status.contains("Make available offline")
+                            && !status.contains("INVALID")
+                )));
+            }
+        }
+    }
+}
+
+#[test]
+fn cloud_file_metadata_names_download_action_and_refresh_recovers_without_moving_focus() {
+    use crest_synth::synth::SampleAssetError;
+    let (mut state, _, _) = fixture();
+    open_browser(&mut state);
+    let focus = state.interaction().focus_path().clone();
+    let saved = crest_synth::control::SavedSession::capture(&state);
+    let original = state.file_browser().rows().to_vec();
+    let unavailable = original
+        .iter()
+        .cloned()
+        .map(|row| {
+            if matches!(row.kind(), FileBrowserRowKind::File(_)) {
+                row.with_metadata(Err(SampleAssetError::DownloadRequired))
+                    .unwrap()
+            } else {
+                row
+            }
+        })
+        .collect();
+    for (rows, expected) in [
+        (unavailable, SemanticBrowserMetadataStatus::Unavailable),
+        (original, SemanticBrowserMetadataStatus::Ready),
+    ] {
+        let folder = FileBrowserFolderId::default();
+        state
+            .apply(AppEvent::SampleCatalogRefreshed {
+                folder: folder.clone(),
+                listing: Ok(FileBrowserListing::new(folder, rows).unwrap()),
+            })
+            .unwrap();
+        assert_eq!(state.interaction().focus_path(), &focus);
+        assert_eq!(crest_synth::control::SavedSession::capture(&state), saved);
+        let shell = StateProjector::new().project_with_shell(&state).unwrap().3;
+        let metadata = shell
+            .semantic_model()
+            .surface(SurfaceId::FileBrowser)
+            .unwrap()
+            .controls()[0]
+            .browser_metadata()
+            .unwrap();
+        assert_eq!(metadata.status(), expected);
+        if expected == SemanticBrowserMetadataStatus::Unavailable {
+            assert!(metadata.text().contains("MAKE AVAILABLE OFFLINE"));
+            assert!(!metadata.text().contains("INVALID"));
+            let wire = serde_json::to_value(metadata).unwrap();
+            assert_eq!(wire["cause"], "downloadRequired");
+            assert_eq!(wire["status"], "unavailable");
+        }
+    }
+}
+
+#[test]
+fn saved_sample_restore_recovers_waveform_and_edited_landmarks() {
+    use crest_synth::control::SavedSession;
+    let (mut state, _, _) = fixture();
+    state
+        .apply_semantic_action(SemanticAction::OpenRelated)
+        .unwrap();
+    for _ in 0..2 {
+        state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
+            .unwrap();
+    }
+    state
+        .apply_semantic_action(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
+        .unwrap();
+    state
+        .apply_semantic_action(SemanticAction::Adjust(Direction::Right))
+        .unwrap();
+    let saved = SavedSession::capture(&state);
+    let asset = AssetFileId::new("Factory.wav").unwrap();
+    let catalog = Arc::new(DeterministicSampleCatalog::new(
+        [],
+        [(asset.clone(), Ok(vec![1]))],
+    ));
+    let decoder = Arc::new(DeterministicSampleDecoder::new([(
+        asset,
+        Ok(decoded_fixture("Factory.wav")),
+    )]));
+    let preparers: Vec<Box<dyn InstrumentPreparer>> =
+        vec![Box::new(SamplePreparer::new(catalog, decoder).unwrap())];
+    let prepared = saved
+        .prepare_restore(
+            state.capabilities().clone(),
+            state.effects().clone(),
+            &preparers,
+            &[],
+            GraphRevision::INITIAL.checked_next().unwrap(),
+            48_000.0,
+            64,
+        )
+        .unwrap();
+    let (replacement, _graph) = prepared.into_replacement();
+    // An in-app selection import may finish after Open replaces the session.
+    state
+        .apply_semantic_action(SemanticAction::SetInteractionMode(
+            InteractionMode::Navigate,
+        ))
+        .unwrap();
+    for _ in 0..2 {
+        state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Up))
+            .unwrap();
+    }
+    state
+        .apply_semantic_action(SemanticAction::Activate)
+        .unwrap();
+    state
+        .apply(AppEvent::SampleCatalogRefreshed {
+            folder: FileBrowserFolderId::default(),
+            listing: Ok(external_file_listing()),
+        })
+        .unwrap();
+    state
+        .apply_semantic_action(SemanticAction::Activate)
+        .unwrap();
+    let obsolete_import = state.file_browser().import_request().unwrap().clone();
+    state
+        .apply(AppEvent::ReplacePersistedSession(Box::new(replacement)))
+        .unwrap();
+    assert!(state
+        .apply(AppEvent::AssetImported(
+            crest_synth::control::AssetImportResult {
+                request: obsolete_import,
+                result: Ok(AssetFileId::new("Alternate.wav").unwrap()),
+            }
+        ))
+        .is_err());
+    assert_eq!(SavedSession::capture(&state), saved);
+    state
+        .apply_semantic_action(SemanticAction::SelectContext(
+            crest_synth::control::TopLevelContext::Patch,
+        ))
+        .unwrap();
+    state
+        .apply_semantic_action(SemanticAction::OpenRelated)
+        .unwrap();
+    let shell = StateProjector::new().project_with_shell(&state).unwrap().3;
+    let document = serde_json::to_value(shell.semantic_model()).unwrap();
+    let waveform = document["surfaces"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|surface| surface["id"] == "patchDetail")
+        .unwrap()["visualizations"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|view| view["data"]["kind"] == "waveform")
+        .unwrap();
+    assert_eq!(waveform["data"]["asset"]["locator"], "Factory.wav");
+    assert!(!waveform["data"]["pairs"].as_array().unwrap().is_empty());
+    assert!(waveform["data"]["landmarks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|landmark| landmark["role"] == "playbackStart"
+            && landmark["normalizedPosition"].as_f64().unwrap() > 0.0));
+}
+
+#[test]
+fn engine_choice_keeps_prepared_waveform_after_sample_activation() {
+    use crest_synth::adapter::braids_capability::BraidsCapability;
+    use crest_synth::adapter::braids_preparer::BraidsPreparer;
+
+    let source = BraidsCapability::new().unwrap();
+    let asset = AssetFileId::new("Factory.wav").unwrap();
+    let sample = SampleCapability::new(asset.clone()).unwrap();
+    let registry = CapabilityRegistry::new(vec![source.descriptor(), sample.descriptor()]).unwrap();
+    let mut state = AppState::for_graph(
+        registry.clone(),
+        GlobalParameters::new(0.0).unwrap(),
+        GraphRevision::INITIAL,
+    );
+    state
+        .apply(AppEvent::InstallPatches(vec![Patch::new(
+            PatchId::new(1).unwrap(),
+            "Engine choice".to_owned(),
+            source.default_config().unwrap(),
+            MidiChannel::new(0).unwrap(),
+            PatchOutput::default(),
+        )]))
+        .unwrap();
+    state
+        .apply_semantic_action(SemanticAction::SelectContext(
+            crest_synth::control::TopLevelContext::Patch,
+        ))
+        .unwrap();
+
+    let transport = ParameterSnapshot::new(
+        0,
+        GlobalParameters::new(0.0).unwrap(),
+        MixerState::default(),
+        &[],
+    )
+    .unwrap();
+    let (audio_control, audio_handle) = LockFreeAudioBoundary::new(64, transport).into_handles();
+    let mut app_loop = AppLoop::new(
+        state,
+        StateProjector::for_graph(GraphRevision::INITIAL),
+        audio_control,
+    )
+    .unwrap();
+    let audio_config = AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 64).unwrap();
+    let initial_preparers: Vec<Box<dyn InstrumentPreparer>> =
+        vec![Box::new(BraidsPreparer::new().unwrap())];
+    let initial_graph = PreparedGraphBuilder::new(&registry, &initial_preparers)
+        .build(
+            GraphRevision::INITIAL,
+            app_loop.patches(),
+            *app_loop.current_parameters(),
+            audio_config.sample_rate(),
+            audio_config.render_capacity_frames(),
+        )
+        .unwrap();
+    let (structural_control, structural_audio) = LockFreeStructuralGraphBoundary::new(
+        1,
+        1,
+        GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+    )
+    .unwrap()
+    .into_handles();
+    let catalog = Arc::new(DeterministicSampleCatalog::new(
+        [],
+        [(asset.clone(), Ok(vec![1]))],
+    ));
+    let decoder = Arc::new(DeterministicSampleDecoder::new([(
+        asset.clone(),
+        Ok(decoded_fixture(asset.as_str())),
+    )]));
+    let worker = DeterministicGraphPreparationWorker::new(
+        registry.clone(),
+        vec![
+            Box::new(BraidsPreparer::new().unwrap()),
+            Box::new(SamplePreparer::new(catalog, decoder).unwrap()),
+        ],
+        audio_config,
+    );
+    let worker_handle = worker.advance_handle();
+    app_loop
+        .configure_engine_selection(
+            DescriptorDefaultConfigFactory::new(registry, vec![Box::new(source), Box::new(sample)]),
+            worker,
+            structural_control,
+            &initial_graph,
+            audio_config,
+        )
+        .unwrap();
+    let mut renderer = AudioRenderer::new(audio_handle, structural_audio, initial_graph);
+
+    // The normal Engine options journey, without a browser assignment to seed the cache.
+    app_loop
+        .dispatch_action(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
+        .unwrap();
+    app_loop
+        .dispatch_action(SemanticAction::Adjust(Direction::Up))
+        .unwrap();
+    app_loop
+        .dispatch_action(SemanticAction::Navigate(Direction::Down))
+        .unwrap();
+    app_loop.dispatch_action(SemanticAction::Activate).unwrap();
+    for lifecycle in [
+        EngineSelectionStatusKind::Validating,
+        EngineSelectionStatusKind::Preparing,
+    ] {
+        assert_eq!(
+            app_loop
+                .advance_structural()
+                .unwrap()
+                .engine_selection_lifecycle_advanced(),
+            Some(lifecycle)
+        );
+    }
+    assert!(worker_handle.advance());
+    let target = GraphRevision::INITIAL.checked_next().unwrap();
+    assert_eq!(
+        app_loop.advance_structural().unwrap().graph_published(),
+        Some(target)
+    );
+    assert_ne!(
+        app_loop.patches()[0]
+            .instrument_config()
+            .capability_id()
+            .as_str(),
+        SAMPLE_CAPABILITY_ID
+    );
+    renderer.render(&mut [0.0_f32; 128]);
+    assert_eq!(
+        app_loop
+            .advance_structural()
+            .unwrap()
+            .activation_acknowledged(),
+        Some(target)
+    );
+    assert_eq!(
+        app_loop.patches()[0]
+            .instrument_config()
+            .capability_id()
+            .as_str(),
+        SAMPLE_CAPABILITY_ID
+    );
+    app_loop
+        .dispatch_action(SemanticAction::OpenRelated)
+        .unwrap();
+    let shell = app_loop.current_graphical_shell();
+    let detail = shell
+        .semantic_model()
+        .surfaces()
+        .iter()
+        .find(|surface| surface.id() == SurfaceId::PatchDetail)
+        .unwrap();
+    let waveform = detail
+        .visualizations()
+        .iter()
+        .find(|visualization| {
+            matches!(
+                visualization.data(),
+                SemanticVisualizationData::Waveform { .. }
+            )
+        })
+        .unwrap();
+    match waveform.data() {
+        SemanticVisualizationData::Waveform {
+            asset: Some(active),
+            pairs,
+            status,
+            ..
+        } => {
+            assert_eq!(active.locator(), asset.as_str());
+            assert!(
+                !pairs.is_empty(),
+                "Engine selection must retain the worker's decoded waveform"
+            );
+            assert_eq!(status, "READY");
+        }
+        _ => panic!("Sample Detail must project the acknowledged asset waveform"),
+    }
+    let file = detail
+        .controls()
+        .iter()
+        .find(|control| control.kind() == SemanticControlKind::Asset)
+        .unwrap();
+    assert!(file
+        .valid_actions()
+        .iter()
+        .any(|action| action.action() == &SemanticAction::OpenRelated));
+    drop(renderer);
+    app_loop.shutdown_engine_selection_on_control().unwrap();
+}
+
 #[test]
 fn coordinator_advances_assignment_through_activation_before_committing_the_asset() {
     let (state, provider, patch_id) = fixture();
-    let factory_asset = SampleAssetId::new("Factory.wav").unwrap();
-    let alternate_asset = SampleAssetId::new("Alternate.wav").unwrap();
+    let factory_asset = AssetFileId::new("Factory.wav").unwrap();
+    let alternate_asset = AssetFileId::new("Alternate.wav").unwrap();
     let catalog = Arc::new(DeterministicSampleCatalog::new(
         [],
         [
@@ -932,6 +1406,14 @@ fn coordinator_advances_assignment_through_activation_before_committing_the_asse
         ),
     ]));
     let registry = state.capabilities().clone();
+    let factory = DescriptorDefaultConfigFactory::new(registry.clone(), vec![Box::new(provider)]);
+    let blueprint = crest_synth::control::PatchCreationBlueprint::resolve(
+        &crest_synth::synth::CapabilityId::new(SAMPLE_CAPABILITY_ID).unwrap(),
+        &factory,
+    )
+    .unwrap();
+    let state = state.with_patch_creation_blueprint(blueprint);
+
     let audio_config = AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 64).unwrap();
     let initial_transport = ParameterSnapshot::new(
         0,
@@ -974,7 +1456,7 @@ fn coordinator_advances_assignment_through_activation_before_committing_the_asse
     let worker_handle = worker.advance_handle();
     app_loop
         .configure_engine_selection(
-            DescriptorDefaultConfigFactory::new(registry, vec![Box::new(provider)]),
+            factory,
             worker,
             structural_control,
             &initial_graph,
@@ -1069,6 +1551,45 @@ fn coordinator_advances_assignment_through_activation_before_committing_the_asse
         "only the block-boundary activation acknowledgement commits the asset"
     );
     assert_eq!(app_loop.patches()[0].id(), patch_id);
+
+    // Creating another Sample must hydrate its own waveform through the same
+    // prepared topology acknowledgement, without first reassigning its file.
+    app_loop.dispatch_action(SemanticAction::Return).unwrap();
+    app_loop
+        .dispatch_action(SemanticAction::SelectPatch(Direction::Right))
+        .unwrap();
+    app_loop
+        .dispatch_action(SemanticAction::SetInteractionMode(InteractionMode::Adjust))
+        .unwrap();
+    app_loop
+        .dispatch_action(SemanticAction::Adjust(Direction::Up))
+        .unwrap();
+    app_loop.dispatch_action(SemanticAction::Activate).unwrap();
+    for _ in 0..2 {
+        app_loop.advance_structural().unwrap();
+    }
+    assert!(worker_handle.advance());
+    app_loop.advance_structural().unwrap();
+    renderer.render(&mut output);
+    app_loop.advance_structural().unwrap();
+    assert_eq!(app_loop.patches().len(), 2);
+    app_loop.dispatch_action(SemanticAction::Return).unwrap();
+    app_loop
+        .dispatch_action(SemanticAction::OpenRelated)
+        .unwrap();
+    let shell = app_loop.current_graphical_shell();
+    let document = serde_json::to_value(shell.semantic_model()).unwrap();
+    assert!(
+        document["surfaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|surface| surface["visualizations"].as_array().into_iter().flatten())
+            .any(|view| view["data"]["kind"] == "waveform"
+                && view["data"]["asset"]["locator"] == "Factory.wav"
+                && !view["data"]["pairs"].as_array().unwrap().is_empty()),
+        "new Sample waveform survives topology activation"
+    );
 
     drop(renderer);
     app_loop.shutdown_engine_selection_on_control().unwrap();
@@ -1224,7 +1745,7 @@ fn sample_detail_and_browser_project_generic_sections_rows_status_and_visualizat
     let (_, _, _, browser_shell, _) = StateProjector::new().project_with_shell(&state).unwrap();
     let browser = browser_shell
         .semantic_model()
-        .surface(SurfaceId::SampleBrowser)
+        .surface(SurfaceId::FileBrowser)
         .unwrap();
     assert_eq!(
         browser
@@ -1257,7 +1778,7 @@ fn sample_detail_and_browser_project_generic_sections_rows_status_and_visualizat
     assert!(metadata.text().contains("24-BIT SIGNED PCM"));
     assert!(metadata.text().contains("STEREO"));
     assert!(browser.controls()[1].browser_metadata().is_none());
-    let SemanticSurfaceSummary::SampleBrowser {
+    let SemanticSurfaceSummary::FileBrowser {
         patch_id: projected_patch,
         active_asset,
         requested_asset,

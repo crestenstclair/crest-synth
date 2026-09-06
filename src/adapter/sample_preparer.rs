@@ -5,10 +5,10 @@ use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::parameter_snapshot::RtPatchParameters;
 use crate::synth::{
-    prepare_sample_pcm, AssetReference, CapabilityId, InstrumentConfig, InstrumentPreparationError,
-    InstrumentPreparer, ParameterId, Patch, PreparedAssetFootprint, PreparedAudition,
-    PreparedInstrument, PreparedInstrumentError, PreparedSampleLandmarks, PreparedSamplePcm,
-    PreparedSampleVisualization, SampleAssetCatalogPort, SampleAssetError, SampleAssetId,
+    prepare_sample_pcm, AssetFileId, AssetReference, CapabilityId, InstrumentConfig,
+    InstrumentPreparationError, InstrumentPreparer, ParameterId, Patch, PreparedAssetFootprint,
+    PreparedAudition, PreparedInstrument, PreparedInstrumentError, PreparedSampleLandmarks,
+    PreparedSamplePcm, PreparedSampleVisualization, SampleAssetCatalogPort, SampleAssetError,
     SampleDecoderPort, SampleLoopMode, VoiceEnvelopeState, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE,
     SAMPLE_VOICE_COUNT,
 };
@@ -23,7 +23,7 @@ pub struct SamplePreparer {
     capability_id: CapabilityId,
     catalog: Arc<dyn SampleAssetCatalogPort>,
     decoder: Arc<dyn SampleDecoderPort>,
-    prepared_pcm: Mutex<BTreeMap<(SampleAssetId, u32), Arc<PreparedSamplePcm>>>,
+    prepared_pcm: Mutex<BTreeMap<(AssetFileId, u32), Arc<PreparedSamplePcm>>>,
 }
 
 impl SamplePreparer {
@@ -88,7 +88,7 @@ impl SamplePreparer {
         patch_id: PatchId,
         config: &InstrumentConfig,
         sample_rate: u32,
-    ) -> Result<(AssetReference, SampleAssetId, Arc<PreparedSamplePcm>), InstrumentPreparationError>
+    ) -> Result<(AssetReference, AssetFileId, Arc<PreparedSamplePcm>), InstrumentPreparationError>
     {
         let asset_parameter =
             ParameterId::new(SAMPLE_ASSET_PARAMETER_ID).map_err(|_| invalid_config(patch_id))?;
@@ -96,8 +96,8 @@ impl SamplePreparer {
             .asset_reference(&asset_parameter)
             .ok_or_else(|| invalid_config(patch_id))?
             .clone();
-        let asset_id = SampleAssetId::new(reference.locator())
-            .map_err(|cause| sample_error(patch_id, cause))?;
+        let asset_id =
+            AssetFileId::new(reference.locator()).map_err(|cause| sample_error(patch_id, cause))?;
         let preparation_key = (asset_id.clone(), sample_rate);
         let cached = self
             .prepared_pcm
@@ -763,12 +763,12 @@ mod tests {
     impl SampleAssetCatalogPort for FixturePort {
         fn list(
             &self,
-            _folder: &crate::synth::SampleFolderId,
-        ) -> Result<crate::synth::SampleCatalogListing, SampleAssetError> {
+            _folder: &crate::synth::FileBrowserFolderId,
+        ) -> Result<crate::synth::FileBrowserListing, SampleAssetError> {
             Err(SampleAssetError::Unavailable)
         }
 
-        fn read(&self, _asset: &SampleAssetId) -> Result<Vec<u8>, SampleAssetError> {
+        fn read(&self, _asset: &AssetFileId) -> Result<Vec<u8>, SampleAssetError> {
             Ok(vec![1])
         }
     }
@@ -776,7 +776,7 @@ mod tests {
     impl SampleDecoderPort for FixturePort {
         fn decode(
             &self,
-            _asset: &SampleAssetId,
+            _asset: &AssetFileId,
             _bytes: &[u8],
         ) -> Result<DecodedSample, SampleAssetError> {
             Ok(self.decoded.clone())
@@ -784,7 +784,7 @@ mod tests {
     }
 
     fn fixture(channels: u16, samples: Vec<f32>) -> FixturePort {
-        let asset = SampleAssetId::new("fixture.wav").unwrap();
+        let asset = AssetFileId::new("fixture.wav").unwrap();
         FixturePort {
             decoded: DecodedSample::new(
                 SampleMetadata::new(
@@ -804,7 +804,7 @@ mod tests {
     }
 
     fn patch_with(id: u32, changes: &[(&str, ParameterValue)]) -> (Patch, SampleCapability) {
-        let provider = SampleCapability::new(SampleAssetId::new("fixture.wav").unwrap()).unwrap();
+        let provider = SampleCapability::new(AssetFileId::new("fixture.wav").unwrap()).unwrap();
         let mut config = provider.default_config().unwrap();
         let descriptor = provider.descriptor();
         for (id, value) in changes {
@@ -822,7 +822,7 @@ mod tests {
         (patch, provider)
     }
 
-    fn patch_for_asset(id: u32, asset_id: SampleAssetId) -> Patch {
+    fn patch_for_asset(id: u32, asset_id: AssetFileId) -> Patch {
         let provider = SampleCapability::new(asset_id).unwrap();
         Patch::new(
             PatchId::new(id).unwrap(),
@@ -833,7 +833,7 @@ mod tests {
         )
     }
 
-    fn decoded_for(asset_id: SampleAssetId) -> DecodedSample {
+    fn decoded_for(asset_id: AssetFileId) -> DecodedSample {
         DecodedSample::new(
             SampleMetadata::new(asset_id, 64, 48_000, 1, 32, SampleEncoding::Float, 16).unwrap(),
             vec![0.0; 16],
@@ -1072,11 +1072,11 @@ mod tests {
         impl SampleAssetCatalogPort for Missing {
             fn list(
                 &self,
-                _folder: &crate::synth::SampleFolderId,
-            ) -> Result<crate::synth::SampleCatalogListing, SampleAssetError> {
+                _folder: &crate::synth::FileBrowserFolderId,
+            ) -> Result<crate::synth::FileBrowserListing, SampleAssetError> {
                 Err(SampleAssetError::Unavailable)
             }
-            fn read(&self, _asset: &SampleAssetId) -> Result<Vec<u8>, SampleAssetError> {
+            fn read(&self, _asset: &AssetFileId) -> Result<Vec<u8>, SampleAssetError> {
                 Err(SampleAssetError::Unavailable)
             }
         }
@@ -1108,9 +1108,9 @@ mod tests {
     fn preparer_retains_only_pcm_owned_by_a_live_prepared_value() {
         use crate::testing::{DeterministicSampleCatalog, DeterministicSampleDecoder};
 
-        let first_id = SampleAssetId::new("first.wav").unwrap();
-        let second_id = SampleAssetId::new("second.wav").unwrap();
-        let third_id = SampleAssetId::new("third.wav").unwrap();
+        let first_id = AssetFileId::new("first.wav").unwrap();
+        let second_id = AssetFileId::new("second.wav").unwrap();
+        let third_id = AssetFileId::new("third.wav").unwrap();
         let catalog = Arc::new(DeterministicSampleCatalog::new(
             [],
             [
@@ -1155,8 +1155,8 @@ mod tests {
     fn preparer_rejects_a_decoder_result_for_another_asset_identity() {
         use crate::testing::{DeterministicSampleCatalog, DeterministicSampleDecoder};
 
-        let requested = SampleAssetId::new("requested.wav").unwrap();
-        let wrong = SampleAssetId::new("wrong.wav").unwrap();
+        let requested = AssetFileId::new("requested.wav").unwrap();
+        let wrong = AssetFileId::new("wrong.wav").unwrap();
         let catalog = Arc::new(DeterministicSampleCatalog::new(
             [],
             [(requested.clone(), Ok(vec![1]))],

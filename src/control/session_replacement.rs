@@ -17,12 +17,18 @@ pub struct SessionReplacementPayload {
     global: GlobalParameters,
     returns: BusReturnBank,
     target_graph_revision: GraphRevision,
+    sample_visualizations:
+        std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
 }
 
 impl SessionReplacementPayload {
     pub(crate) fn from_prepared_state(
         state: &crate::control::AppState,
         target_graph_revision: GraphRevision,
+        sample_visualizations: std::collections::BTreeMap<
+            PatchId,
+            crate::synth::PreparedSampleVisualization,
+        >,
     ) -> Self {
         Self {
             patches: state.patches().to_vec(),
@@ -30,6 +36,7 @@ impl SessionReplacementPayload {
             global: *state.global(),
             returns: state.bus_returns().clone(),
             target_graph_revision,
+            sample_visualizations,
         }
     }
 
@@ -41,6 +48,7 @@ impl SessionReplacementPayload {
         GlobalParameters,
         BusReturnBank,
         GraphRevision,
+        std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
     ) {
         (
             self.patches,
@@ -48,6 +56,7 @@ impl SessionReplacementPayload {
             self.global,
             self.returns,
             self.target_graph_revision,
+            self.sample_visualizations,
         )
     }
 

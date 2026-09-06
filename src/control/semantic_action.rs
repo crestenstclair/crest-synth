@@ -76,6 +76,7 @@ pub enum SemanticAction {
     Activate,
     /// Begins a cancellable browser-only preview hold.
     PreviewStart,
+    ToggleTestMidi,
     /// Ends or cancels the current browser preview hold.
     PreviewStop,
     EnterSurface(SurfaceId),
@@ -103,6 +104,7 @@ pub enum SemanticActionKind {
     OpenMidiSettings,
     Activate,
     PreviewStart,
+    ToggleTestMidi,
     PreviewStop,
     EnterSurface,
     Return,
@@ -111,7 +113,7 @@ pub enum SemanticActionKind {
 }
 
 impl SemanticActionKind {
-    pub const ALL: [Self; 14] = [
+    pub const ALL: [Self; 15] = [
         Self::SelectContext,
         Self::SelectPatch,
         Self::Navigate,
@@ -121,6 +123,7 @@ impl SemanticActionKind {
         Self::OpenMidiSettings,
         Self::Activate,
         Self::PreviewStart,
+        Self::ToggleTestMidi,
         Self::PreviewStop,
         Self::EnterSurface,
         Self::Return,
@@ -133,7 +136,7 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 23] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 24] = [
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
     // Only the horizontal pair: moving along the installed Patch order is an
@@ -154,6 +157,7 @@ const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 23] = [
     SemanticAction::OpenMidiSettings,
     SemanticAction::Activate,
     SemanticAction::PreviewStart,
+    SemanticAction::ToggleTestMidi,
     SemanticAction::PreviewStop,
     SemanticAction::EnterSurface(SurfaceId::PatchUtility),
     // The descriptor lists the *admitted* surfaces, which `SurfaceId::is_enterable`
@@ -201,6 +205,7 @@ impl SemanticAction {
             Self::OpenMidiSettings => SemanticActionKind::OpenMidiSettings,
             Self::Activate => SemanticActionKind::Activate,
             Self::PreviewStart => SemanticActionKind::PreviewStart,
+            Self::ToggleTestMidi => SemanticActionKind::ToggleTestMidi,
             Self::PreviewStop => SemanticActionKind::PreviewStop,
             Self::EnterSurface(_) => SemanticActionKind::EnterSurface,
             Self::Return => SemanticActionKind::Return,
@@ -271,7 +276,7 @@ mod tests {
 
     #[test]
     fn semantic_action_descriptors_are_closed_unique_and_phase_two_safe() {
-        assert_eq!(SemanticActionKind::surface_descriptor().len(), 14);
+        assert_eq!(SemanticActionKind::surface_descriptor().len(), 15);
         assert_eq!(InteractionMode::surface_descriptor().len(), 4);
         assert_eq!(InteractionMode::PHASE_TWO.len(), 2);
         assert_eq!(InteractionMode::PHASE_SEVEN.len(), 3);
@@ -300,7 +305,7 @@ mod tests {
                 "{surface:?}: the descriptor lists exactly the admitted surfaces"
             );
         }
-        assert_eq!(SemanticAction::surface_descriptor().len(), 23);
+        assert_eq!(SemanticAction::surface_descriptor().len(), 24);
     }
 
     #[test]

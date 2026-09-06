@@ -31,6 +31,13 @@ pub use native_session_lifecycle_handoff::{
 pub mod sample_asset_fakes;
 pub use sample_asset_fakes::{DeterministicSampleCatalog, DeterministicSampleDecoder};
 
+pub mod visual_composition_review;
+pub use visual_composition_review::{
+    compare_composition_facts, render_composition_review_html, CompositionDiscrepancy,
+    CompositionFact, CompositionRect, CompositionReviewCapture, NativeCaptureIdentity,
+    NormativeCaptureIdentity, ReviewManifest, ReviewManifestError,
+};
+
 pub mod exhaustive_gui_demo;
 pub use exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoError};
 

@@ -23,7 +23,7 @@ pub enum SurfaceId {
     PatchUtility,
     PatchDetail,
     PatchChoice,
-    SampleBrowser,
+    FileBrowser,
     MixerMain,
     MixerInspector,
     MidiDeviceSettings,
@@ -35,7 +35,7 @@ impl SurfaceId {
         Self::PatchUtility,
         Self::PatchDetail,
         Self::PatchChoice,
-        Self::SampleBrowser,
+        Self::FileBrowser,
         Self::MixerMain,
         Self::MixerInspector,
         Self::MidiDeviceSettings,
@@ -53,7 +53,7 @@ impl SurfaceId {
             | Self::PatchUtility
             | Self::PatchDetail
             | Self::PatchChoice
-            | Self::SampleBrowser => Some(TopLevelContext::Patch),
+            | Self::FileBrowser => Some(TopLevelContext::Patch),
             Self::MixerMain | Self::MixerInspector => Some(TopLevelContext::Mixer),
             Self::MidiDeviceSettings => None,
         }
@@ -89,7 +89,7 @@ impl SurfaceId {
     pub const fn is_subordinate(self) -> bool {
         matches!(
             self,
-            Self::PatchDetail | Self::PatchChoice | Self::SampleBrowser
+            Self::PatchDetail | Self::PatchChoice | Self::FileBrowser
         )
     }
 
@@ -131,7 +131,7 @@ impl SurfaceId {
         match self {
             Self::PatchUtility | Self::MixerInspector | Self::PatchDetail => true,
             Self::PatchChoice
-            | Self::SampleBrowser
+            | Self::FileBrowser
             | Self::PatchMain
             | Self::MixerMain
             | Self::MidiDeviceSettings => false,
@@ -144,7 +144,7 @@ impl SurfaceId {
             Self::PatchUtility => "UTILITY",
             Self::PatchDetail => "DETAIL",
             Self::PatchChoice => "OPTIONS",
-            Self::SampleBrowser => "SAMPLE BROWSER",
+            Self::FileBrowser => "FILE BROWSER",
             Self::MixerMain => "MIXER",
             Self::MixerInspector => "INSPECTOR",
             Self::MidiDeviceSettings => "MIDI DEVICES",
@@ -538,22 +538,22 @@ impl FocusPath {
     }
 
     /// One stable parent/folder/file/cancel row inside the Sample Browser.
-    pub fn sample_browser(
+    pub fn file_browser(
         patch_id: PatchId,
         modal_id: impl Into<String>,
         entry_id: impl Into<String>,
     ) -> Self {
-        Self::sample_browser_at(patch_id.into(), modal_id, entry_id)
+        Self::file_browser_at(patch_id.into(), modal_id, entry_id)
     }
 
-    pub fn sample_browser_at(
+    pub fn file_browser_at(
         patch_position: PatchPositionId,
         modal_id: impl Into<String>,
         entry_id: impl Into<String>,
     ) -> Self {
         Self {
             context: TopLevelContext::Patch,
-            surface: SurfaceId::SampleBrowser,
+            surface: SurfaceId::FileBrowser,
             patch_position: Some(patch_position),
             capability_id: None,
             control_id: SemanticControlId::Modal(ModalControlId::BrowserEntry(entry_id.into())),
@@ -726,7 +726,7 @@ impl FocusPath {
                 }
             }
             (
-                SurfaceId::SampleBrowser,
+                SurfaceId::FileBrowser,
                 SemanticControlId::Modal(ModalControlId::BrowserEntry(id)),
             ) => {
                 if self.patch_position.is_none()
@@ -797,7 +797,7 @@ impl FocusPath {
             _ => return Err(FocusPathError::ControlSurfaceMismatch),
         }
         if self.surface != SurfaceId::PatchChoice
-            && self.surface != SurfaceId::SampleBrowser
+            && self.surface != SurfaceId::FileBrowser
             && self.modal_id.is_some()
         {
             return Err(FocusPathError::ModalIdentityUnavailable);
@@ -869,7 +869,7 @@ impl ReturnPath {
     pub fn new(origin: FocusPath, entered_surface: SurfaceId) -> Result<Self, FocusPathError> {
         origin.validate()?;
         let origin_allowed = match entered_surface {
-            SurfaceId::PatchChoice | SurfaceId::SampleBrowser => {
+            SurfaceId::PatchChoice | SurfaceId::FileBrowser => {
                 matches!(
                     origin.surface(),
                     SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
@@ -977,7 +977,7 @@ mod tests {
             assert!(offered.is_enterable());
             assert!(offered.is_return_target());
         }
-        for subject_opened in [SurfaceId::PatchChoice, SurfaceId::SampleBrowser] {
+        for subject_opened in [SurfaceId::PatchChoice, SurfaceId::FileBrowser] {
             assert!(!subject_opened.is_enterable());
             assert!(subject_opened.is_return_target());
         }

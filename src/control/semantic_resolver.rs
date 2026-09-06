@@ -350,9 +350,9 @@ impl<'a> SemanticResolver<'a> {
         Ok(paths)
     }
 
-    pub fn sample_browser_paths(&self) -> Result<Vec<FocusPath>, EventRejection> {
+    pub fn file_browser_paths(&self) -> Result<Vec<FocusPath>, EventRejection> {
         let (patch_id, parameter_id) = match self.state.interaction().subordinate_session() {
-            Some(PatchSubordinateSession::SampleBrowser {
+            Some(PatchSubordinateSession::FileBrowser {
                 patch_position,
                 asset_parameter_id,
                 ..
@@ -364,18 +364,18 @@ impl<'a> SemanticResolver<'a> {
             ),
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
-        if self.state.sample_browser().patch_id() != Some(patch_id)
-            || self.state.sample_browser().asset_parameter_id() != Some(parameter_id)
+        if self.state.file_browser().patch_id() != Some(patch_id)
+            || self.state.file_browser().asset_parameter_id() != Some(parameter_id)
         {
             return Err(EventRejection::InvalidSelection);
         }
         let paths = self
             .state
-            .sample_browser()
+            .file_browser()
             .rows()
             .iter()
             .map(|row| {
-                FocusPath::sample_browser(
+                FocusPath::file_browser(
                     patch_id,
                     parameter_id.as_str().to_owned(),
                     row.id().to_owned(),
@@ -842,7 +842,7 @@ impl<'a> SemanticResolver<'a> {
                 }
                 _ => Err(EventRejection::ActionUnavailableInContext),
             },
-            SurfaceId::SampleBrowser => self.sample_browser_paths(),
+            SurfaceId::FileBrowser => self.file_browser_paths(),
             SurfaceId::MixerInspector => self.mixer_inspector_paths(self.selected_mixer_track()?),
             SurfaceId::MidiDeviceSettings => self.midi_input_settings_paths(),
         }
@@ -871,7 +871,18 @@ impl<'a> SemanticResolver<'a> {
             .filter(|action| availability.accepts(action))
             .cloned()
             .map(|action| {
-                let (label, hint) = action_presentation(&action);
+                let (label, hint) = match action {
+                    SemanticAction::ToggleTestMidi if self.state.test_midi_enabled() => {
+                        ("Stop test MIDI", Some("T"))
+                    }
+                    SemanticAction::ToggleTestMidi => ("Start test MIDI", Some("T")),
+                    SemanticAction::Activate
+                        if self.state.interaction().active_surface() == SurfaceId::PatchDetail =>
+                    {
+                        ("Browse files", Some("Return"))
+                    }
+                    _ => action_presentation(&action),
+                };
                 ValidAction::new(action, label, hint)
             })
             .collect()
@@ -1014,20 +1025,21 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         SemanticAction::OpenMidiSettings => ("Open MIDI Devices", Some("Shift+Start")),
         SemanticAction::Activate => ("Choose", Some("Return")),
         SemanticAction::PreviewStart => ("Preview", Some("hold Space")),
+        SemanticAction::ToggleTestMidi => ("Toggle test MIDI", Some("T")),
         SemanticAction::PreviewStop => ("Stop preview", Some("release Space")),
         SemanticAction::SetSlotOccupancy { .. } => ("Set slot occupancy", None),
         SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
         SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", Some("Return")),
         SemanticAction::EnterSurface(SurfaceId::PatchChoice)
-        | SemanticAction::EnterSurface(SurfaceId::SampleBrowser) => ("Unavailable surface", None),
+        | SemanticAction::EnterSurface(SurfaceId::FileBrowser) => ("Unavailable surface", None),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)
         | SemanticAction::EnterSurface(SurfaceId::MixerMain)
         | SemanticAction::EnterSurface(SurfaceId::MidiDeviceSettings) => {
             ("Unavailable surface", None)
         }
-        SemanticAction::Return => ("Return", Some("A / Return")),
+        SemanticAction::Return => ("Return", Some("Shift+S")),
     }
 }
 

@@ -1,11 +1,28 @@
 use crate::control::{EngineSelectionFailure, EngineSelectionRequestId};
 use crate::kernel::PatchId;
 use crate::synth::{
-    ParameterId, SampleAssetError, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
-    SampleCatalogListing, SampleFolderId,
+    AssetFileId, FileBrowserFolderId, FileBrowserListing, FileBrowserRow, FileBrowserRowKind,
+    ParameterId, SampleAssetError,
 };
 use serde::Serialize;
 use std::collections::BTreeMap;
+
+/// Canonical correlation for an in-app file selection awaiting import.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetImportRequest {
+    pub(crate) generation: u64,
+    pub(crate) asset_id: AssetFileId,
+    pub(crate) origin: crate::control::FocusPath,
+    pub(crate) graph_revision: crate::real_time::GraphRevision,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssetImportResult {
+    pub request: AssetImportRequest,
+    pub result: Result<AssetFileId, SampleAssetError>,
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -46,47 +63,51 @@ impl SampleAssetLifecycle {
 pub enum SamplePreviewState {
     Idle,
     Held {
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
     },
     Preparing {
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
         /// Whether Start is still physically held when preparation completes.
         held: bool,
     },
     Playing {
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
     },
     Stopping {
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
     },
     Failed {
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
         cause: SampleAssetError,
     },
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct SampleBrowserState {
-    catalog: BTreeMap<SampleFolderId, Result<SampleCatalogListing, SampleAssetError>>,
+pub struct FileBrowserState {
+    import_request: Option<AssetImportRequest>,
+    file_selection_failure: Option<SampleAssetError>,
+    catalog: BTreeMap<FileBrowserFolderId, Result<FileBrowserListing, SampleAssetError>>,
     patch_id: Option<PatchId>,
     asset_parameter_id: Option<ParameterId>,
-    folder: SampleFolderId,
-    rows: Vec<SampleBrowserRow>,
+    folder: FileBrowserFolderId,
+    rows: Vec<FileBrowserRow>,
     lifecycle: SampleAssetLifecycle,
-    requested_asset: Option<SampleAssetId>,
+    requested_asset: Option<AssetFileId>,
     request_id: Option<EngineSelectionRequestId>,
     preview_request_id: Option<EngineSelectionRequestId>,
     preview: SamplePreviewState,
 }
 
-impl Default for SampleBrowserState {
+impl Default for FileBrowserState {
     fn default() -> Self {
         Self {
+            import_request: None,
+            file_selection_failure: None,
             catalog: BTreeMap::new(),
             patch_id: None,
             asset_parameter_id: None,
-            folder: SampleFolderId::default(),
-            rows: fallback_rows(&SampleFolderId::default()),
+            folder: FileBrowserFolderId::default(),
+            rows: fallback_rows(&FileBrowserFolderId::default()),
             lifecycle: SampleAssetLifecycle::Unavailable,
             requested_asset: None,
             request_id: None,
@@ -96,7 +117,38 @@ impl Default for SampleBrowserState {
     }
 }
 
-impl SampleBrowserState {
+impl FileBrowserState {
+    pub fn import_request(&self) -> Option<&AssetImportRequest> {
+        self.import_request.as_ref()
+    }
+
+    pub const fn file_selection_failure(&self) -> Option<SampleAssetError> {
+        self.file_selection_failure
+    }
+
+    pub(crate) fn request_file_import(
+        &mut self,
+        request: AssetImportRequest,
+        patch_id: PatchId,
+        parameter: ParameterId,
+    ) {
+        self.begin(patch_id, parameter);
+        self.import_request = Some(request);
+        self.lifecycle = SampleAssetLifecycle::Loading;
+    }
+
+    pub(crate) fn finish_file_import(&mut self, result: &Result<AssetFileId, SampleAssetError>) {
+        self.import_request = None;
+        self.file_selection_failure = result.as_ref().err().copied();
+        self.lifecycle = match result {
+            Ok(_) => SampleAssetLifecycle::Ready,
+            Err(SampleAssetError::Cancelled) => SampleAssetLifecycle::Cancelled,
+            Err(SampleAssetError::Unavailable | SampleAssetError::DownloadRequired) => {
+                SampleAssetLifecycle::Unavailable
+            }
+            Err(_) => SampleAssetLifecycle::Invalid,
+        };
+    }
     /// Clears every document-specific browser/preview correlation while
     /// retaining the adapter-discovered catalog owned by the application.
     pub(crate) fn reset_for_session(&mut self) {
@@ -109,8 +161,8 @@ impl SampleBrowserState {
         mut self,
         listings: impl IntoIterator<
             Item = (
-                SampleFolderId,
-                Result<SampleCatalogListing, SampleAssetError>,
+                FileBrowserFolderId,
+                Result<FileBrowserListing, SampleAssetError>,
             ),
         >,
     ) -> Self {
@@ -126,11 +178,11 @@ impl SampleBrowserState {
         self.asset_parameter_id.as_ref()
     }
 
-    pub const fn folder(&self) -> &SampleFolderId {
+    pub const fn folder(&self) -> &FileBrowserFolderId {
         &self.folder
     }
 
-    pub fn rows(&self) -> &[SampleBrowserRow] {
+    pub fn rows(&self) -> &[FileBrowserRow] {
         &self.rows
     }
 
@@ -138,7 +190,7 @@ impl SampleBrowserState {
         self.lifecycle
     }
 
-    pub const fn requested_asset(&self) -> Option<&SampleAssetId> {
+    pub const fn requested_asset(&self) -> Option<&AssetFileId> {
         self.requested_asset.as_ref()
     }
 
@@ -163,21 +215,22 @@ impl SampleBrowserState {
         )
     }
 
-    pub fn row(&self, id: &str) -> Option<&SampleBrowserRow> {
+    pub fn row(&self, id: &str) -> Option<&FileBrowserRow> {
         self.rows.iter().find(|row| row.id() == id)
     }
 
     pub(crate) fn begin(&mut self, patch_id: PatchId, asset_parameter_id: ParameterId) {
+        self.file_selection_failure = None;
         self.patch_id = Some(patch_id);
         self.asset_parameter_id = Some(asset_parameter_id);
         self.requested_asset = None;
         self.request_id = None;
         self.preview_request_id = None;
         self.preview = SamplePreviewState::Idle;
-        self.load_folder(SampleFolderId::default());
+        self.load_folder(FileBrowserFolderId::default());
     }
 
-    pub(crate) fn load_folder(&mut self, folder: SampleFolderId) {
+    pub(crate) fn load_folder(&mut self, folder: FileBrowserFolderId) {
         self.preview = SamplePreviewState::Idle;
         self.preview_request_id = None;
         self.folder = folder.clone();
@@ -186,7 +239,11 @@ impl SampleBrowserState {
                 self.rows = listing.rows().to_vec();
                 self.lifecycle = SampleAssetLifecycle::Ready;
             }
-            Some(Err(SampleAssetError::Unavailable)) | None => {
+            None => {
+                self.rows = fallback_rows(&folder);
+                self.lifecycle = SampleAssetLifecycle::Loading;
+            }
+            Some(Err(SampleAssetError::Unavailable | SampleAssetError::DownloadRequired)) => {
                 self.rows = fallback_rows(&folder);
                 self.lifecycle = SampleAssetLifecycle::Unavailable;
             }
@@ -210,8 +267,8 @@ impl SampleBrowserState {
     /// AppState responsibility because only the reducer owns FocusPath.
     pub(crate) fn refresh_listing(
         &mut self,
-        folder: SampleFolderId,
-        listing: Result<SampleCatalogListing, SampleAssetError>,
+        folder: FileBrowserFolderId,
+        listing: Result<FileBrowserListing, SampleAssetError>,
     ) -> bool {
         let reload = self.patch_id.is_some() && self.folder == folder;
         self.catalog.insert(folder.clone(), listing);
@@ -223,7 +280,7 @@ impl SampleBrowserState {
 
     pub(crate) fn preview_requested(
         &mut self,
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
         request_id: EngineSelectionRequestId,
     ) {
         self.preview_request_id = Some(request_id);
@@ -321,14 +378,23 @@ impl SampleBrowserState {
 
     pub(crate) fn assignment_requested(
         &mut self,
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
         request_id: EngineSelectionRequestId,
     ) {
+        self.file_selection_failure = None;
         self.requested_asset = Some(asset_id);
         self.request_id = Some(request_id);
         self.preview_request_id = None;
         self.lifecycle = SampleAssetLifecycle::Loading;
         self.preview = SamplePreviewState::Idle;
+    }
+
+    pub(crate) fn assignment_unchanged(&mut self) {
+        self.requested_asset = None;
+        self.request_id = None;
+        self.preview_request_id = None;
+        self.preview = SamplePreviewState::Idle;
+        self.lifecycle = SampleAssetLifecycle::Ready;
     }
 
     pub(crate) fn assignment_lifecycle_advanced(
@@ -402,11 +468,11 @@ impl SampleBrowserState {
     }
 }
 
-fn fallback_rows(folder: &SampleFolderId) -> Vec<SampleBrowserRow> {
-    vec![SampleBrowserRow::new(
+fn fallback_rows(folder: &FileBrowserFolderId) -> Vec<FileBrowserRow> {
+    vec![FileBrowserRow::new(
         format!("cancel:{}", folder.as_str()),
         "CANCEL — UNCHANGED",
-        SampleBrowserRowKind::Cancel,
+        FileBrowserRowKind::Cancel,
         None,
     )
     .expect("static fallback browser row is valid")]

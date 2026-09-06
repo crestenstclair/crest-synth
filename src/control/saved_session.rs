@@ -239,6 +239,17 @@ impl SavedSession {
         }
         let mut patches = Vec::with_capacity(self.patches.len());
         for saved in &self.patches {
+            if saved
+                .instrument
+                .asset_references()
+                .iter()
+                .any(|assignment| {
+                    crate::synth::AssetFileId::new(assignment.reference().locator())
+                        .is_ok_and(|asset| asset.is_external())
+                })
+            {
+                return Err(SavedSessionError::InvalidCapability);
+            }
             capabilities
                 .validate_config(&saved.instrument)
                 .map_err(|_| SavedSessionError::InvalidCapability)?;
@@ -338,8 +349,22 @@ impl PreparedSavedSession {
     /// accompany its exact prepared graph. No mutable candidate `AppState`
     /// escapes the saved-session boundary.
     pub fn into_replacement(self) -> (SessionReplacementPayload, PreparedGraph) {
-        let payload =
-            SessionReplacementPayload::from_prepared_state(&self.state, self.graph.revision());
+        let visualizations = self
+            .state
+            .patches()
+            .iter()
+            .filter_map(|patch| {
+                self.graph
+                    .prepared_sample_visualization(patch.id())
+                    .cloned()
+                    .map(|value| (patch.id(), value))
+            })
+            .collect();
+        let payload = SessionReplacementPayload::from_prepared_state(
+            &self.state,
+            self.graph.revision(),
+            visualizations,
+        );
         (payload, self.graph)
     }
 }
@@ -389,15 +414,14 @@ mod tests {
     use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::RtPatchParameters;
     use crate::synth::{
-        AssetKind, AssetReference, CapabilityId, InstrumentCapabilityProvider,
+        AssetFileId, AssetKind, AssetReference, CapabilityId, InstrumentCapabilityProvider,
         InstrumentPreparationError, ParameterId, ParameterValue, PreparedAssetFootprint,
         PreparedInstrument, PreparedInstrumentError, RackPreparationError, SampleAssetError,
-        SampleAssetId, MAX_SAMPLE_GRAPH_PCM_BYTES,
+        MAX_SAMPLE_GRAPH_PCM_BYTES,
     };
 
     fn state() -> AppState {
-        let provider =
-            SampleCapability::new(SampleAssetId::new("folder/kick.wav").unwrap()).unwrap();
+        let provider = SampleCapability::new(AssetFileId::new("folder/kick.wav").unwrap()).unwrap();
         let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
         let descriptor = provider.descriptor();
         let config = provider
@@ -422,6 +446,24 @@ mod tests {
     }
 
     #[test]
+    fn saved_assets_cannot_reference_transient_browser_locations() {
+        let state = state();
+        let document = SavedSession::capture(&state)
+            .to_json()
+            .unwrap()
+            .replace("folder/kick.wav", "@home/Music/kick.wav");
+        let saved = SavedSession::from_json(&document, state.capabilities()).unwrap();
+        assert!(matches!(
+            saved.restore_candidate(
+                state.capabilities().clone(),
+                state.effects().clone(),
+                GraphRevision::INITIAL
+            ),
+            Err(SavedSessionError::InvalidCapability)
+        ));
+    }
+
+    #[test]
     fn version_two_round_trip_keeps_relative_asset_and_normalized_values_only() {
         let state = state();
         let saved = SavedSession::capture(&state);
@@ -432,7 +474,7 @@ mod tests {
             value["patches"][0]["instrument"]["assetReferences"][0]["reference"]["locator"],
             "folder/kick.wav"
         );
-        assert!(!json.contains("sampleBrowser"));
+        assert!(!json.contains("fileBrowser"));
         assert!(!json.contains("preview"));
         assert!(!json.contains("engineSelection"));
         assert!(!json.contains("focus"));
@@ -445,10 +487,10 @@ mod tests {
             crate::adapter::sample_preparer::SamplePreparer::new(
                 std::sync::Arc::new(crate::testing::DeterministicSampleCatalog::new(
                     [],
-                    [(SampleAssetId::new("folder/kick.wav").unwrap(), Ok(vec![1]))],
+                    [(AssetFileId::new("folder/kick.wav").unwrap(), Ok(vec![1]))],
                 )),
                 std::sync::Arc::new(crate::testing::DeterministicSampleDecoder::new([(
-                    SampleAssetId::new("folder/kick.wav").unwrap(),
+                    AssetFileId::new("folder/kick.wav").unwrap(),
                     Ok(decoded("folder/kick.wav")),
                 )])),
             )
@@ -482,7 +524,7 @@ mod tests {
             Some(&ParameterValue::continuous(0.25).unwrap())
         );
         assert_eq!(
-            restored.sample_browser().lifecycle(),
+            restored.file_browser().lifecycle(),
             crate::control::SampleAssetLifecycle::Unavailable,
             "restore makes unresolved asset availability explicit and never substitutes"
         );
@@ -617,7 +659,7 @@ mod tests {
         let samples = vec![0.0_f32; 128];
         crate::synth::DecodedSample::new(
             crate::synth::SampleMetadata::new(
-                SampleAssetId::new(asset).unwrap(),
+                AssetFileId::new(asset).unwrap(),
                 256,
                 48_000,
                 1,
@@ -635,7 +677,7 @@ mod tests {
         read: Result<Vec<u8>, SampleAssetError>,
         decode: Result<crate::synth::DecodedSample, SampleAssetError>,
     ) -> Vec<Box<dyn InstrumentPreparer>> {
-        let asset = SampleAssetId::new("folder/kick.wav").unwrap();
+        let asset = AssetFileId::new("folder/kick.wav").unwrap();
         vec![Box::new(
             crate::adapter::sample_preparer::SamplePreparer::new(
                 std::sync::Arc::new(crate::testing::DeterministicSampleCatalog::new(

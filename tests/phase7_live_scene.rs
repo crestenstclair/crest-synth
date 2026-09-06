@@ -31,13 +31,13 @@ use crest_synth::shell::{
 };
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
+use crest_synth::synth::{AssetFileId, CapabilityRegistry, InstrumentCapabilityProvider, Patch};
 use crest_synth::synth::{
-    CapabilityId, DecodedSample, DescriptorDefaultConfigFactory, InstrumentPreparationError,
+    CapabilityId, DecodedSample, DescriptorDefaultConfigFactory, FileBrowserFolderId,
+    FileBrowserListing, FileBrowserRow, FileBrowserRowKind, InstrumentPreparationError,
     InstrumentPreparer, PreparedInstrument, PreparedInstrumentError, SampleAssetCatalogPort,
-    SampleAssetError, SampleBrowserRow, SampleBrowserRowKind, SampleCatalogListing,
-    SampleDecoderPort, SampleEncoding, SampleFolderId, SampleMetadata,
+    SampleAssetError, SampleDecoderPort, SampleEncoding, SampleMetadata,
 };
-use crest_synth::synth::{CapabilityRegistry, InstrumentCapabilityProvider, Patch, SampleAssetId};
 use crest_synth::testing::automatic_midi_test::{create_soundfont_config, AutomaticMidiTest};
 use crest_synth::testing::instrument_part::InstrumentPart;
 use crest_synth::testing::live_demo_scene::LiveDemoScene;
@@ -271,7 +271,7 @@ fn decoded_asset(asset: &str, frequency: f32) -> DecodedSample {
         .collect::<Vec<_>>();
     DecodedSample::new(
         SampleMetadata::new(
-            SampleAssetId::new(asset).unwrap(),
+            AssetFileId::new(asset).unwrap(),
             samples.len() as u64 * 4,
             SAMPLE_RATE as u32,
             1,
@@ -285,9 +285,9 @@ fn decoded_asset(asset: &str, frequency: f32) -> DecodedSample {
     .unwrap()
 }
 
-fn sample_listing() -> SampleCatalogListing {
-    let folder = SampleFolderId::default();
-    SampleCatalogListing::new(
+fn sample_listing() -> FileBrowserListing {
+    let folder = FileBrowserFolderId::default();
+    FileBrowserListing::new(
         folder,
         [
             ("A-valid.wav", "A-valid.wav"),
@@ -296,18 +296,18 @@ fn sample_listing() -> SampleCatalogListing {
         ]
         .into_iter()
         .map(|(id, label)| {
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 format!("file:{id}"),
                 label,
-                SampleBrowserRowKind::File(SampleAssetId::new(id).unwrap()),
+                FileBrowserRowKind::File(AssetFileId::new(id).unwrap()),
                 Some(4_096),
             )
             .unwrap()
         })
-        .chain([SampleBrowserRow::new(
+        .chain([FileBrowserRow::new(
             "cancel:",
             "CANCEL — UNCHANGED",
-            SampleBrowserRowKind::Cancel,
+            FileBrowserRowKind::Cancel,
             None,
         )
         .unwrap()])
@@ -319,7 +319,7 @@ fn sample_listing() -> SampleCatalogListing {
 fn tree() -> crest_synth::control::StateTree {
     let soundfont = production_soundfont_capability().unwrap();
     let braids = BraidsCapability::new().unwrap();
-    let sample = SampleCapability::new(SampleAssetId::new("A-valid.wav").unwrap()).unwrap();
+    let sample = SampleCapability::new(AssetFileId::new("A-valid.wav").unwrap()).unwrap();
     let registry = CapabilityRegistry::new(vec![
         soundfont.descriptor(),
         braids.descriptor(),
@@ -463,7 +463,7 @@ fn phase7_live_scene_is_cumulative_semantic_bounded_and_has_a_falsifying_negativ
 fn run_phase7_headless(defeat_preview: bool) -> crest_synth::testing::LiveDemoReport {
     let soundfont = production_soundfont_capability().unwrap();
     let braids = BraidsCapability::new().unwrap();
-    let sample = SampleCapability::new(SampleAssetId::new("A-valid.wav").unwrap()).unwrap();
+    let sample = SampleCapability::new(AssetFileId::new("A-valid.wav").unwrap()).unwrap();
     let providers: Vec<Box<dyn InstrumentCapabilityProvider>> =
         vec![Box::new(soundfont), Box::new(braids), Box::new(sample)];
     let registry = CapabilityRegistry::new(
@@ -485,7 +485,7 @@ fn run_phase7_headless(defeat_preview: bool) -> crest_synth::testing::LiveDemoRe
             .with_initial_returns(
                 crest_synth::adapter::production_effects::startup_bus_returns(&effects),
             )
-            .with_sample_catalog([(SampleFolderId::default(), Ok(listing))]),
+            .with_sample_catalog([(FileBrowserFolderId::default(), Ok(listing))]),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         EventLog::new(4_096).unwrap(),
@@ -501,9 +501,9 @@ fn run_phase7_headless(defeat_preview: bool) -> crest_synth::testing::LiveDemoRe
     )
     .unwrap();
 
-    let a = SampleAssetId::new("A-valid.wav").unwrap();
-    let b = SampleAssetId::new("B-alternate.wav").unwrap();
-    let z = SampleAssetId::new("Z-invalid.wav").unwrap();
+    let a = AssetFileId::new("A-valid.wav").unwrap();
+    let b = AssetFileId::new("B-alternate.wav").unwrap();
+    let z = AssetFileId::new("Z-invalid.wav").unwrap();
     let catalog: Arc<dyn SampleAssetCatalogPort> = Arc::new(DeterministicSampleCatalog::new(
         [],
         [
@@ -696,7 +696,7 @@ fn phase7_headless_scene_correlates_worker_renderer_projection_and_lossless_repo
     assert!(evidence
         .checkpoints()
         .iter()
-        .any(|checkpoint| checkpoint.focus().surface() == SurfaceId::SampleBrowser));
+        .any(|checkpoint| checkpoint.focus().surface() == SurfaceId::FileBrowser));
     assert!(
         evidence.checkpoints().iter().any(|checkpoint| {
             checkpoint.preview_revision_compatible()

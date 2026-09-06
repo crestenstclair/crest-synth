@@ -607,7 +607,7 @@ body {
   letter-spacing: var(--type-label-control-tracking);
 }
 
-.prow[data-interaction="readOnly"] {
+.prow[data-interaction="readOnly"]:not([data-browsable="true"]) {
   border-left: var(--keyline-emphasis) dashed var(--color-border-strong);
 }
 
@@ -891,36 +891,118 @@ body {
 
 .waveform-shape {
   position: relative;
-  min-height: calc(var(--min-interactive-target) + var(--min-interactive-target));
-  padding: var(--space-8) 0;
+  height: clamp(
+    calc(var(--min-interactive-target) * 3),
+    20vh,
+    calc(var(--min-interactive-target) * 4)
+  );
   border-block: var(--keyline-resting) solid var(--color-border-strong);
   display: flex;
   align-items: center;
-  gap: var(--keyline-resting);
+  justify-content: center;
   overflow: hidden;
 }
 
-.waveform-shape > i {
+.waveform-bars {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  gap: var(--keyline-resting);
+}
+
+.waveform-bars > i {
+  position: relative;
   flex: 1 1 0;
-  min-width: var(--keyline-resting);
-  height: calc(var(--wave-height, 0.02) * 80%);
-  background: var(--color-accent-patch);
+  min-width: 0;
+  top: calc(var(--wave-top, 0) * 100%);
+  height: calc(var(--wave-height, 0) * 100%);
+  background: var(--color-accent-adjust);
 }
 
 .waveform-shape > b {
   position: absolute;
   inset-block: 0;
-  left: calc(var(--landmark-position, 0) * 100%);
-  width: var(--keyline-resting);
-  background: var(--color-accent-focus);
+  left: clamp(0%, calc(var(--landmark-position, 0) * 100%), calc(100% - var(--keyline-emphasis)));
+  width: var(--keyline-emphasis);
+  border-left: var(--keyline-emphasis) solid var(--color-accent-focus);
 }
 
-.waveform-shape > b > span {
-  position: absolute;
-  top: 0;
-  left: var(--space-4);
-  color: var(--color-text-primary);
-  white-space: nowrap;
+.waveform-shape > b[data-landmark="loopStart"],
+.waveform-shape > b[data-landmark="loopEnd"] {
+  border-left-style: dashed;
+  border-left-color: var(--color-accent-instrument-plates);
+}
+
+.waveform-shape > b[data-landmark="playbackEnd"] {
+  border-left-style: double;
+  border-left-color: var(--color-accent-adjust);
+}
+
+.waveform-legend,
+.waveform-reading {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-16);
+  padding-block: var(--space-8);
+}
+
+.waveform-legend [data-landmark-label] {
+  border-left: var(--keyline-emphasis) solid var(--color-accent-focus);
+  padding-left: var(--space-8);
+}
+
+.waveform-legend [data-landmark-label="loopStart"],
+.waveform-legend [data-landmark-label="loopEnd"] {
+  border-left-style: dashed;
+  border-left-color: var(--color-accent-instrument-plates);
+}
+
+.waveform-legend [data-landmark-label="playbackEnd"] {
+  border-left-style: double;
+  border-left-color: var(--color-accent-adjust);
+}
+
+[data-waveform-state="unavailable"] .waveform-shape {
+  border: var(--keyline-resting) dashed var(--color-border-strong);
+}
+
+.detail-asset {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--space-8) var(--space-12);
+  padding-block: var(--space-12);
+  border-bottom: var(--keyline-resting) solid var(--color-border-strong);
+  color: var(--color-accent-adjust);
+  overflow-wrap: anywhere;
+  flex-shrink: 0;
+}
+
+.detail-asset [data-role="detail-asset-status"] {
+  margin-left: auto;
+  color: var(--color-text-secondary);
+}
+
+.has-waveform > .detail-visualization {
+  flex-shrink: 0;
+  padding: 0;
+  border: 0;
+  border-bottom: var(--keyline-resting) solid var(--color-border-default);
+}
+
+.detail[data-detail-kind="instrument"].has-waveform .detail-kind,
+.has-waveform [data-role="detail-subject"] {
+  color: var(--color-accent-adjust);
+}
+
+.has-waveform .prow-position-fill,
+.has-waveform .prow-position-fill::after {
+  background: var(--color-accent-adjust);
+}
+
+.has-waveform .detail-visualizations:empty {
+  display: none;
 }
 
 /* Shared authored subordinate modal: the same option-row primitive seats

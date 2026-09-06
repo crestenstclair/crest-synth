@@ -78,6 +78,9 @@ impl KeyboardInputTranslator {
             WindowKey::E => return Some(SemanticAction::SelectPatch(Direction::Right)),
             _ => {}
         }
+        if key == WindowKey::T {
+            return Some(SemanticAction::ToggleTestMidi);
+        }
         if key == WindowKey::K {
             self.k_held = true;
             return Some(SemanticAction::SetInteractionMode(InteractionMode::Adjust));
@@ -131,7 +134,8 @@ impl KeyboardInputTranslator {
             | WindowKey::Shift
             | WindowKey::Return
             | WindowKey::Space
-            | WindowKey::Other => return None,
+            | WindowKey::Other
+            | WindowKey::T => return None,
         };
 
         if self.shift_held {

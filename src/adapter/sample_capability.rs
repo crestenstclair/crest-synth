@@ -1,11 +1,11 @@
 use crate::kernel::midi_message::MidiMessageKind;
 use crate::synth::{
-    AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityDescriptor,
-    CapabilityError, CapabilityId, CapabilitySection, CapabilityVisualization,
-    InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment, ParameterChoice,
-    ParameterDefault, ParameterId, ParameterKind, ParameterPredicate, ParameterRange,
-    ParameterSpec, ParameterUpdate, ParameterValue, PatchInteraction, SampleAssetError,
-    SampleAssetId, SampleLoopMode, SamplePlaybackConfig, VoicePolicy, WaveformLandmarkRole,
+    AssetAssignment, AssetFileId, AssetKind, AssetReference, AssetRequirement,
+    CapabilityDescriptor, CapabilityError, CapabilityId, CapabilitySection,
+    CapabilityVisualization, InstrumentCapabilityProvider, InstrumentConfig, ParameterAssignment,
+    ParameterChoice, ParameterDefault, ParameterId, ParameterKind, ParameterPredicate,
+    ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue, PatchInteraction,
+    SampleAssetError, SampleLoopMode, SamplePlaybackConfig, VoicePolicy, WaveformLandmarkRole,
     WaveformLandmarkSpec, MAX_INSTRUMENT_SCALAR_PARAMETERS, SAMPLE_VOICE_COUNT,
 };
 
@@ -41,7 +41,7 @@ pub struct SampleCapability {
 }
 
 impl SampleCapability {
-    pub fn new(initial_asset: SampleAssetId) -> Result<Self, CapabilityError> {
+    pub fn new(initial_asset: AssetFileId) -> Result<Self, CapabilityError> {
         let asset_id = parameter_id(SAMPLE_ASSET_PARAMETER_ID)?;
         let asset = ParameterSpec::new(
             asset_id.clone(),
@@ -235,7 +235,7 @@ impl SampleCapability {
             _ => return Err(SampleAssetError::InvalidLandmark),
         };
         let playback = SamplePlaybackConfig {
-            asset_id: SampleAssetId::new(reference.locator())?,
+            asset_id: AssetFileId::new(reference.locator())?,
             root_note: continuous(SAMPLE_ROOT_NOTE_PARAMETER_ID)?,
             playback_start: continuous(SAMPLE_PLAYBACK_START_PARAMETER_ID)?,
             playback_end: continuous(SAMPLE_PLAYBACK_END_PARAMETER_ID)?,
@@ -328,7 +328,7 @@ mod tests {
     use super::*;
 
     fn provider() -> SampleCapability {
-        SampleCapability::new(SampleAssetId::new("Factory/Init.wav").unwrap()).unwrap()
+        SampleCapability::new(AssetFileId::new("Factory/Init.wav").unwrap()).unwrap()
     }
 
     #[test]

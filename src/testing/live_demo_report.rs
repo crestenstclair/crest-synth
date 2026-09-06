@@ -81,7 +81,7 @@ impl LiveShellCoverage {
             }
             SurfaceId::PatchUtility => self.patch_utility_observed = true,
             SurfaceId::PatchDetail => self.patch_detail_observed = true,
-            SurfaceId::PatchChoice | SurfaceId::SampleBrowser => {}
+            SurfaceId::PatchChoice | SurfaceId::FileBrowser => {}
             SurfaceId::MixerMain => {
                 self.mixer_main_observed = true;
                 if self.mixer_inspector_observed && frame.return_path().is_none() {
@@ -994,7 +994,7 @@ impl LiveDetailAssetsEvidence {
         shell: &GraphicalShellProjection,
         audio: AudioObservationSnapshot,
     ) {
-        let browser = state.sample_browser();
+        let browser = state.file_browser();
         self.cancelled_observed |= browser.lifecycle() == SampleAssetLifecycle::Cancelled;
         self.invalid_observed |= browser.lifecycle() == SampleAssetLifecycle::Invalid;
 
@@ -1012,7 +1012,7 @@ impl LiveDetailAssetsEvidence {
                     })
             })
             .map(|assignment| assignment.reference().locator().to_owned());
-        if state.interaction().active_surface() == SurfaceId::SampleBrowser {
+        if state.interaction().active_surface() == SurfaceId::FileBrowser {
             self.pending_return_origin = state
                 .interaction()
                 .return_path()
@@ -1090,7 +1090,7 @@ impl LiveDetailAssetsEvidence {
 
         let phase7_surface = matches!(
             state.interaction().active_surface(),
-            SurfaceId::PatchDetail | SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+            SurfaceId::PatchDetail | SurfaceId::PatchChoice | SurfaceId::FileBrowser
         );
         if phase7_surface && self.checkpoints.len() < LIVE_DETAIL_ASSET_CHECKPOINT_CAPACITY {
             let checkpoint = LiveDetailAssetsCheckpoint {

@@ -21,8 +21,8 @@ use crest_synth::real_time::{
     PreparedGraph, PreparedGraphBuilder, StructuralGraphBoundary,
 };
 use crest_synth::synth::{
-    CapabilityRegistry, DecodedSample, InstrumentCapabilityProvider, InstrumentPreparer, Patch,
-    SampleAssetId, SampleEncoding, SampleMetadata,
+    AssetFileId, CapabilityRegistry, DecodedSample, InstrumentCapabilityProvider,
+    InstrumentPreparer, Patch, SampleEncoding, SampleMetadata,
 };
 use crest_synth::testing::{DeterministicSampleCatalog, DeterministicSampleDecoder};
 use std::alloc::System;
@@ -107,7 +107,7 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let asset = SampleAssetId::new("audit.wav").unwrap();
+        let asset = AssetFileId::new("audit.wav").unwrap();
         let capability = SampleCapability::new(asset.clone()).unwrap();
         let patch_id = PatchId::new(1).unwrap();
         let patch = Patch::new(

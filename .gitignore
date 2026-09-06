@@ -1,5 +1,6 @@
 /target
 *.wav
+!/assets/sample-test.wav
 *.db
 *.db-shm
 *.db-wal

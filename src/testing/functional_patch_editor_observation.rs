@@ -872,7 +872,7 @@ const fn surface_identity(id: SurfaceId) -> &'static str {
         SurfaceId::PatchUtility => "patchUtility",
         SurfaceId::PatchDetail => "patchDetail",
         SurfaceId::PatchChoice => "patchChoice",
-        SurfaceId::SampleBrowser => "sampleBrowser",
+        SurfaceId::FileBrowser => "fileBrowser",
         SurfaceId::MixerMain => "mixerMain",
         SurfaceId::MixerInspector => "mixerInspector",
         SurfaceId::MidiDeviceSettings => "midiDeviceSettings",

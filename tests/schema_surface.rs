@@ -22,11 +22,11 @@ use crest_synth::real_time::GraphRevision;
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    AssetAssignment, CapabilityAvailability, CapabilityId, CapabilityRegistry,
+    AssetAssignment, AssetFileId, CapabilityAvailability, CapabilityId, CapabilityRegistry,
     DescriptorDefaultConfigFactory, EffectCapabilityDescriptor, EffectCapabilityId,
-    EffectCapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider, InstrumentConfig, Patch,
-    PreparedSampleLandmarks, PreparedSamplePcm, PreparedSampleVisualization, SampleAssetId,
-    SampleBrowserRow, SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId,
+    EffectCapabilityRegistry, EffectSlotId, FileBrowserFolderId, FileBrowserListing,
+    FileBrowserRow, FileBrowserRowKind, InstrumentCapabilityProvider, InstrumentConfig, Patch,
+    PreparedSampleLandmarks, PreparedSamplePcm, PreparedSampleVisualization, SampleEncoding,
     SampleLoopMode, SampleMetadata, VoiceEnvelope, WaveformPair,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
@@ -510,7 +510,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
     // configured. Build it through the same reducer/projector boundary with
     // the real capability so its active asset and correlated preview leaves
     // remain part of the bidirectional schema witness in every environment.
-    let sample = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
+    let sample = SampleCapability::new(AssetFileId::new("Factory.wav").unwrap()).unwrap();
     let sample_patch = Patch::new(
         PatchId::new(1).unwrap(),
         "Schema Sample".to_owned(),
@@ -518,18 +518,18 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
         MidiChannel::new(0).unwrap(),
         PatchOutput::default(),
     );
-    let folder = SampleFolderId::default();
-    let listing = SampleCatalogListing::new(
+    let folder = FileBrowserFolderId::default();
+    let listing = FileBrowserListing::new(
         folder.clone(),
-        vec![SampleBrowserRow::new(
+        vec![FileBrowserRow::new(
             "file:Preview.wav",
             "Preview.wav",
-            SampleBrowserRowKind::File(SampleAssetId::new("Preview.wav").unwrap()),
+            FileBrowserRowKind::File(AssetFileId::new("Preview.wav").unwrap()),
             Some(128),
         )
         .unwrap()
         .with_metadata(Ok(SampleMetadata::new(
-            SampleAssetId::new("Preview.wav").unwrap(),
+            AssetFileId::new("Preview.wav").unwrap(),
             128,
             48_000,
             1,
@@ -626,7 +626,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
         .create_config(source_config.values(), &candidate_assets)
         .unwrap();
     let preview_pcm = PreparedSamplePcm::new(
-        SampleAssetId::new("Preview.wav").unwrap(),
+        AssetFileId::new("Preview.wav").unwrap(),
         48_000,
         1,
         Arc::from([0.0_f32, 0.5, -0.5, 0.0]),
@@ -859,7 +859,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // physical MIDI lifecycle facts while excluding handles and observations.
     // Version 20 adds the explicit tagged trailing-empty Patch shape and its
     // prospective/capacity ownership facts without inventing a Patch ID.
-    assert_eq!(StateTree::SCHEMA_VERSION, 20);
+    assert_eq!(StateTree::SCHEMA_VERSION, 23);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(
@@ -1004,7 +1004,11 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
             .iter()
             .map(|descriptor| descriptor["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        ["instrument.soundfont.hidef", "instrument.braids"]
+        [
+            "instrument.soundfont.hidef",
+            "instrument.braids",
+            "instrument.sample"
+        ]
     );
     assert_eq!(
         tree["patches"]

@@ -192,6 +192,39 @@ pub const ALL_REPRESENTATIVE_VIEWPORTS: [RepresentativeViewport; 5] = [
     RepresentativeViewport::ScaledText,
 ];
 
+/// Generates a monotonic responsive-width exploration from a range and a
+/// sample count. The two layout thresholds contribute neighbors derived at
+/// runtime, so every current reflow is crossed without maintaining a viewport
+/// table. Named reference widths are not consulted.
+pub fn generated_resize_widths(
+    minimum_width_px: f32,
+    maximum_width_px: f32,
+    sample_count: usize,
+) -> Vec<f32> {
+    if !minimum_width_px.is_finite()
+        || !maximum_width_px.is_finite()
+        || minimum_width_px <= 0.0
+        || maximum_width_px <= minimum_width_px
+        || sample_count < 2
+    {
+        return Vec::new();
+    }
+    let step = (maximum_width_px - minimum_width_px) / (sample_count - 1) as f32;
+    let mut widths = (0..sample_count)
+        .map(|index| minimum_width_px + step * index as f32)
+        .collect::<Vec<_>>();
+    for threshold in [COMPACT_MAX_WIDTH_PX, STANDARD_MAX_WIDTH_PX] {
+        for neighbor in [threshold - 1.0, threshold + 1.0] {
+            if neighbor >= minimum_width_px && neighbor <= maximum_width_px {
+                widths.push(neighbor);
+            }
+        }
+    }
+    widths.sort_by(f32::total_cmp);
+    widths.dedup_by(|left, right| (*left - *right).abs() < f32::EPSILON);
+    widths
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ViewportFixture {
     pub width_px: f32,
@@ -261,6 +294,35 @@ mod tests {
         assert_eq!(
             ResponsiveLayoutMode::resolve(1_920.0),
             ResponsiveLayoutMode::Wide
+        );
+    }
+
+    #[test]
+    fn generated_resize_exploration_crosses_every_current_reflow_without_a_table() {
+        let widths = generated_resize_widths(900.0, 2_050.0, 9);
+        assert!(
+            widths.len() > 9,
+            "threshold neighbors augment generated samples"
+        );
+        assert_eq!(widths.first().copied(), Some(900.0));
+        assert_eq!(widths.last().copied(), Some(2_050.0));
+        let modes = widths
+            .iter()
+            .map(|width| ResponsiveLayoutMode::resolve(*width))
+            .collect::<std::collections::HashSet<_>>();
+        assert_eq!(modes, ALL_LAYOUT_MODES.into_iter().collect());
+        for threshold in [COMPACT_MAX_WIDTH_PX, STANDARD_MAX_WIDTH_PX] {
+            assert!(widths.iter().any(|width| *width < threshold));
+            assert!(widths.iter().any(|width| *width > threshold));
+        }
+        let named = ALL_REPRESENTATIVE_VIEWPORTS
+            .map(RepresentativeViewport::fixture)
+            .map(|fixture| fixture.width_px);
+        assert!(
+            widths
+                .iter()
+                .any(|width| named.iter().all(|named| width != named)),
+            "the exploration includes widths that are not named fixtures"
         );
     }
 

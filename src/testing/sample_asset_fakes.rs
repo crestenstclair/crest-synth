@@ -1,6 +1,6 @@
 use crate::synth::{
-    DecodedSample, SampleAssetCatalogPort, SampleAssetError, SampleAssetId, SampleCatalogListing,
-    SampleDecoderPort, SampleFolderId,
+    AssetFileId, DecodedSample, FileBrowserFolderId, FileBrowserListing, SampleAssetCatalogPort,
+    SampleAssetError, SampleDecoderPort,
 };
 use std::collections::BTreeMap;
 
@@ -8,19 +8,19 @@ use std::collections::BTreeMap;
 /// supplied explicitly. It never substitutes a production asset.
 #[derive(Clone, Debug, Default)]
 pub struct DeterministicSampleCatalog {
-    listings: BTreeMap<SampleFolderId, Result<SampleCatalogListing, SampleAssetError>>,
-    assets: BTreeMap<SampleAssetId, Result<Vec<u8>, SampleAssetError>>,
+    listings: BTreeMap<FileBrowserFolderId, Result<FileBrowserListing, SampleAssetError>>,
+    assets: BTreeMap<AssetFileId, Result<Vec<u8>, SampleAssetError>>,
 }
 
 impl DeterministicSampleCatalog {
     pub fn new(
         listings: impl IntoIterator<
             Item = (
-                SampleFolderId,
-                Result<SampleCatalogListing, SampleAssetError>,
+                FileBrowserFolderId,
+                Result<FileBrowserListing, SampleAssetError>,
             ),
         >,
-        assets: impl IntoIterator<Item = (SampleAssetId, Result<Vec<u8>, SampleAssetError>)>,
+        assets: impl IntoIterator<Item = (AssetFileId, Result<Vec<u8>, SampleAssetError>)>,
     ) -> Self {
         Self {
             listings: listings.into_iter().collect(),
@@ -30,14 +30,14 @@ impl DeterministicSampleCatalog {
 }
 
 impl SampleAssetCatalogPort for DeterministicSampleCatalog {
-    fn list(&self, folder: &SampleFolderId) -> Result<SampleCatalogListing, SampleAssetError> {
+    fn list(&self, folder: &FileBrowserFolderId) -> Result<FileBrowserListing, SampleAssetError> {
         self.listings
             .get(folder)
             .cloned()
             .unwrap_or(Err(SampleAssetError::Unavailable))
     }
 
-    fn read(&self, asset: &SampleAssetId) -> Result<Vec<u8>, SampleAssetError> {
+    fn read(&self, asset: &AssetFileId) -> Result<Vec<u8>, SampleAssetError> {
         self.assets
             .get(asset)
             .cloned()
@@ -50,12 +50,12 @@ impl SampleAssetCatalogPort for DeterministicSampleCatalog {
 /// cause an unconfigured fixture to appear.
 #[derive(Clone, Debug, Default)]
 pub struct DeterministicSampleDecoder {
-    decoded: BTreeMap<SampleAssetId, Result<DecodedSample, SampleAssetError>>,
+    decoded: BTreeMap<AssetFileId, Result<DecodedSample, SampleAssetError>>,
 }
 
 impl DeterministicSampleDecoder {
     pub fn new(
-        decoded: impl IntoIterator<Item = (SampleAssetId, Result<DecodedSample, SampleAssetError>)>,
+        decoded: impl IntoIterator<Item = (AssetFileId, Result<DecodedSample, SampleAssetError>)>,
     ) -> Self {
         Self {
             decoded: decoded.into_iter().collect(),
@@ -64,11 +64,7 @@ impl DeterministicSampleDecoder {
 }
 
 impl SampleDecoderPort for DeterministicSampleDecoder {
-    fn decode(
-        &self,
-        asset: &SampleAssetId,
-        bytes: &[u8],
-    ) -> Result<DecodedSample, SampleAssetError> {
+    fn decode(&self, asset: &AssetFileId, bytes: &[u8]) -> Result<DecodedSample, SampleAssetError> {
         if bytes.is_empty() {
             return Err(SampleAssetError::MalformedWave);
         }
@@ -82,18 +78,18 @@ impl SampleDecoderPort for DeterministicSampleDecoder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::synth::{SampleBrowserRow, SampleBrowserRowKind};
+    use crate::synth::{FileBrowserRow, FileBrowserRowKind};
 
     #[test]
     fn fakes_return_only_explicit_results_and_fail_closed() {
-        let asset = SampleAssetId::new("fixture.wav").unwrap();
-        let folder = SampleFolderId::default();
-        let listing = SampleCatalogListing::new(
+        let asset = AssetFileId::new("fixture.wav").unwrap();
+        let folder = FileBrowserFolderId::default();
+        let listing = FileBrowserListing::new(
             folder.clone(),
-            vec![SampleBrowserRow::new(
+            vec![FileBrowserRow::new(
                 "cancel:",
                 "CANCEL — UNCHANGED",
-                SampleBrowserRowKind::Cancel,
+                FileBrowserRowKind::Cancel,
                 None,
             )
             .unwrap()],
@@ -106,7 +102,7 @@ mod tests {
         assert_eq!(catalog.list(&folder), Ok(listing));
         assert_eq!(catalog.read(&asset), Ok(vec![1]));
         assert_eq!(
-            catalog.read(&SampleAssetId::new("missing.wav").unwrap()),
+            catalog.read(&AssetFileId::new("missing.wav").unwrap()),
             Err(SampleAssetError::Unavailable)
         );
         assert_eq!(

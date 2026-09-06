@@ -688,8 +688,11 @@ mod tests {
             active.effects().clone(),
             GlobalParameters::new(-6.0).unwrap(),
         );
-        let replacement =
-            SessionReplacementPayload::from_prepared_state(&empty, GraphRevision::new(2).unwrap());
+        let replacement = SessionReplacementPayload::from_prepared_state(
+            &empty,
+            GraphRevision::new(2).unwrap(),
+            Default::default(),
+        );
 
         assert_eq!(
             active.apply(AppEvent::ReplacePersistedSession(Box::new(replacement))),

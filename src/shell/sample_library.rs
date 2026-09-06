@@ -1,0 +1,257 @@
+use crate::adapter::filesystem_sample_catalog::FilesystemSampleCatalog;
+use crate::control::{
+    AppEvent, AppLoop, AssetImportRequest, AssetImportResult, SamplePreviewState, SurfaceId,
+};
+use crate::real_time::{BoundaryFull, ControlAudioBoundary};
+use crate::synth::{
+    AssetFileId, FileBrowserFolderId, FileBrowserListing, SampleAssetCatalogPort, SampleAssetError,
+};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+
+enum LibraryWork {
+    Import(
+        AssetImportRequest,
+        JoinHandle<Result<AssetFileId, SampleAssetError>>,
+    ),
+    List(
+        FileBrowserFolderId,
+        JoinHandle<Result<FileBrowserListing, SampleAssetError>>,
+    ),
+}
+
+impl LibraryWork {
+    fn is_finished(&self) -> bool {
+        match self {
+            Self::Import(_, worker) => worker.is_finished(),
+            Self::List(_, worker) => worker.is_finished(),
+        }
+    }
+}
+
+/// Capacity-one filesystem work for the reducer-owned in-app file browser. Product state and
+/// request identity remain in AppState; paths never enter projections/events.
+pub(crate) struct SampleLibraryRuntime {
+    catalog: Option<Arc<FilesystemSampleCatalog>>,
+    work: Option<LibraryWork>,
+    visited: Option<(crate::kernel::PatchId, FileBrowserFolderId)>,
+}
+
+impl SampleLibraryRuntime {
+    pub fn new(catalog: Option<Arc<FilesystemSampleCatalog>>) -> Self {
+        Self {
+            catalog,
+            work: None,
+            visited: None,
+        }
+    }
+
+    pub fn advance<B: ControlAudioBoundary>(
+        &mut self,
+        app: &mut AppLoop<B>,
+    ) -> Result<(), BoundaryFull> {
+        if self.work.as_ref().is_some_and(LibraryWork::is_finished) {
+            // Catalog completion must not interrupt a held browser preview.
+            let preview_held = app.state().file_browser().preview() != &SamplePreviewState::Idle
+                || app.state().engine_selection().is_in_flight();
+            if !matches!(self.work, Some(LibraryWork::List(..))) || !preview_held {
+                match self.work.take().expect("finished work exists") {
+                    LibraryWork::Import(request, worker) => {
+                        let result = worker.join().unwrap_or(Err(SampleAssetError::Unavailable));
+                        Self::complete(app, AssetImportResult { request, result })?;
+                    }
+                    LibraryWork::List(folder, worker) => {
+                        let listing = worker.join().unwrap_or(Err(SampleAssetError::Unavailable));
+                        if app.state().interaction().active_surface() == SurfaceId::FileBrowser
+                            && app.state().file_browser().folder() == &folder
+                        {
+                            if let Ok(result) =
+                                app.dispatch(AppEvent::SampleCatalogRefreshed { folder, listing })
+                            {
+                                if let Some(error) = result.boundary_full() {
+                                    return Err(error);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        if self.work.is_some() {
+            return Ok(());
+        }
+        if let Some(request) = app.state().file_browser().import_request().cloned() {
+            if let Some(catalog) = self.catalog.clone() {
+                let asset = request.asset_id.clone();
+                match std::thread::Builder::new()
+                    .name("asset-import".into())
+                    .spawn(move || catalog.import_browser_asset(&asset))
+                {
+                    Ok(worker) => self.work = Some(LibraryWork::Import(request, worker)),
+                    Err(_) => Self::complete(
+                        app,
+                        AssetImportResult {
+                            request,
+                            result: Err(SampleAssetError::Unavailable),
+                        },
+                    )?,
+                }
+            } else {
+                Self::complete(
+                    app,
+                    AssetImportResult {
+                        request,
+                        result: Err(SampleAssetError::Unavailable),
+                    },
+                )?;
+            }
+            return Ok(());
+        }
+
+        if app.state().interaction().active_surface() != SurfaceId::FileBrowser {
+            self.visited = None;
+            return Ok(());
+        }
+        let browser = app.state().file_browser();
+        let Some(patch_id) = browser.patch_id() else {
+            return Ok(());
+        };
+        let folder = browser.folder().clone();
+        let key = (patch_id, folder.clone());
+        if self.visited.as_ref() == Some(&key) {
+            return Ok(());
+        }
+        self.visited = Some(key);
+        if let Some(catalog) = self.catalog.clone() {
+            let requested = folder.clone();
+            match std::thread::Builder::new()
+                .name("sample-catalog".into())
+                .spawn(move || catalog.list(&requested))
+            {
+                Ok(worker) => self.work = Some(LibraryWork::List(folder, worker)),
+                Err(_) => {
+                    let _ = app.dispatch(AppEvent::SampleCatalogRefreshed {
+                        folder,
+                        listing: Err(SampleAssetError::Unavailable),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn complete<B: ControlAudioBoundary>(
+        app: &mut AppLoop<B>,
+        selection: AssetImportResult,
+    ) -> Result<(), BoundaryFull> {
+        if let Ok(result) = app.dispatch(AppEvent::AssetImported(selection)) {
+            if let Some(error) = result.boundary_full() {
+                return Err(error);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn shutdown(&mut self) {
+        if let Some(work) = self.work.take() {
+            match work {
+                LibraryWork::Import(_, worker) => {
+                    let _ = worker.join();
+                }
+                LibraryWork::List(_, worker) => {
+                    let _ = worker.join();
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+    use crate::adapter::sample_capability::SampleCapability;
+    use crate::control::{
+        AppState, Direction, SavedSession, SemanticAction, StateProjector, TopLevelContext,
+    };
+    use crate::kernel::{MidiChannel, PatchId};
+    use crate::mixer::{
+        global_parameters::GlobalParameters, mixer_state::MixerState, patch_output::PatchOutput,
+    };
+    use crate::real_time::{AudioBoundary, ParameterSnapshot};
+    use crate::synth::{
+        CapabilityRegistry, FileBrowserRowKind, InstrumentCapabilityProvider, Patch,
+    };
+
+    #[test]
+    fn browser_worker_loads_nested_files_and_preserves_cancelled_assignment() {
+        let root = std::env::temp_dir().join(format!("crest-nested-sample-{}", std::process::id()));
+        std::fs::create_dir_all(root.join("Drums/Kicks")).unwrap();
+        std::fs::write(
+            root.join("Drums/Kicks/Test.wav"),
+            include_bytes!("../../assets/sample-test.wav"),
+        )
+        .unwrap();
+        let catalog = Arc::new(FilesystemSampleCatalog::new(&root).unwrap());
+        let sample =
+            SampleCapability::new(AssetFileId::new("Drums/Kicks/Test.wav").unwrap()).unwrap();
+        let global = GlobalParameters::new(0.0).unwrap();
+        let mut state = AppState::new(
+            CapabilityRegistry::new(vec![sample.descriptor()]).unwrap(),
+            global,
+        );
+        state
+            .apply(AppEvent::InstallPatches(vec![Patch::new(
+                PatchId::new(1).unwrap(),
+                "Sample".into(),
+                sample.default_config().unwrap(),
+                MidiChannel::new(0).unwrap(),
+                PatchOutput::default(),
+            )]))
+            .unwrap();
+        state
+            .apply_semantic_action(SemanticAction::SelectContext(TopLevelContext::Patch))
+            .unwrap();
+        let saved = SavedSession::capture(&state);
+        let (control, _audio) = LockFreeAudioBoundary::new(
+            32,
+            ParameterSnapshot::new(0, global, MixerState::default(), &[]).unwrap(),
+        )
+        .into_handles();
+        let mut app = AppLoop::new(state, StateProjector::new(), control).unwrap();
+        let mut runtime = SampleLibraryRuntime::new(Some(catalog));
+        app.dispatch_action(SemanticAction::Activate).unwrap();
+        let origin = app.state().interaction().focus_path().clone();
+        app.dispatch_action(SemanticAction::OpenRelated).unwrap();
+        for (folder, target) in [
+            ("", "Drums"),
+            ("Drums", "Kicks"),
+            ("Drums/Kicks", "Test.wav"),
+        ] {
+            runtime.advance(&mut app).unwrap();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while runtime.work.is_some() && std::time::Instant::now() < deadline {
+                std::thread::yield_now();
+                runtime.advance(&mut app).unwrap();
+            }
+            assert!(runtime.work.is_none(), "catalog worker completes");
+            assert_eq!(app.state().file_browser().folder().as_str(), folder);
+            let rows = app.state().file_browser().rows();
+            let index = rows.iter().position(|row| row.label() == target).unwrap();
+            for _ in 0..index {
+                app.dispatch_action(SemanticAction::Navigate(Direction::Down))
+                    .unwrap();
+            }
+            if target != "Test.wav" {
+                app.dispatch_action(SemanticAction::Activate).unwrap();
+            }
+        }
+        assert!(app.state().file_browser().rows().iter().any(|row| matches!(row.kind(), FileBrowserRowKind::File(asset) if asset.as_str() == "Drums/Kicks/Test.wav")));
+        app.dispatch_action(SemanticAction::Return).unwrap();
+        assert_eq!(app.state().interaction().focus_path(), &origin);
+        assert_eq!(SavedSession::capture(app.state()), saved);
+        runtime.shutdown();
+        std::fs::remove_dir_all(root).unwrap();
+    }
+}

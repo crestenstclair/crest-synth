@@ -7,12 +7,12 @@ use crate::control::engine_selection::{
 use crate::control::interaction_state::{InteractionState, Selection, SelectionSection};
 use crate::control::top_level_context::TopLevelContext;
 use crate::control::{
-    ConnectMidiInput, FocusPath, MidiActiveInputIdentity, MidiConnectionRequestId,
-    MidiConnectionRevision, MidiDeviceContractError, MidiDeviceEffect, MidiDeviceFailure,
-    MidiInputConnectionIntent, MidiInputDescriptor, MidiInputDeviceId, MidiInputPreference,
-    MidiInputRegistryEntry, MidiInputRowAction, MidiInputScanState, MidiInputState,
-    MidiPreferredInput, MixerControlId, ModalControlId, PatchControlId, PatchPositionId,
-    PatchSubordinateSession, SampleBrowserState, SamplePreviewState, SemanticAction,
+    ConnectMidiInput, FileBrowserState, FocusPath, MidiActiveInputIdentity,
+    MidiConnectionRequestId, MidiConnectionRevision, MidiDeviceContractError, MidiDeviceEffect,
+    MidiDeviceFailure, MidiInputConnectionIntent, MidiInputDescriptor, MidiInputDeviceId,
+    MidiInputPreference, MidiInputRegistryEntry, MidiInputRowAction, MidiInputScanState,
+    MidiInputState, MidiPreferredInput, MixerControlId, ModalControlId, PatchControlId,
+    PatchPositionId, PatchSubordinateSession, SamplePreviewState, SemanticAction,
     SemanticControlId, SemanticResolver, SurfaceId,
 };
 use crate::kernel::midi_channel::MidiChannel;
@@ -38,8 +38,8 @@ use crate::synth::instrument_capability::{
 use crate::synth::patch::{Patch, PatchEditableTarget};
 use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
-    AssetKind, AssetReference, EffectCapabilityError, EffectCapabilityId, EffectCapabilityRegistry,
-    EffectSlotId, ParameterId, PostEffectConfig, SampleAssetId, SampleBrowserRowKind,
+    AssetFileId, AssetKind, AssetReference, EffectCapabilityError, EffectCapabilityId,
+    EffectCapabilityRegistry, EffectSlotId, FileBrowserRowKind, ParameterId, PostEffectConfig,
     VoiceEnvelopeParameter,
 };
 use core::fmt;
@@ -460,7 +460,8 @@ pub(crate) fn exercise_reducer_table_rejections(
         },
         disabled_patch_overview_origins: std::collections::BTreeSet::new(),
         focus_repair_status: None,
-        sample_browser: SampleBrowserState::default(),
+        file_browser: FileBrowserState::default(),
+        test_midi_enabled: false,
         midi_input: MidiInputState::default(),
         pending_instrument_config: None,
         pending_patch_creation: None,
@@ -550,7 +551,8 @@ pub struct AppState {
     disabled_patch_overview_origins: std::collections::BTreeSet<(PatchId, PatchControlId)>,
     focus_repair_status: Option<FocusRepairStatus>,
     engine_selection: EngineSelectionStatus,
-    sample_browser: SampleBrowserState,
+    file_browser: FileBrowserState,
+    test_midi_enabled: bool,
     midi_input: MidiInputState,
     /// Complete prepared instrument candidate retained off callback until the
     /// corresponding graph activation is acknowledged. This is transient
@@ -693,7 +695,8 @@ impl AppState {
             disabled_patch_overview_origins: std::collections::BTreeSet::new(),
             focus_repair_status: None,
             engine_selection: EngineSelectionStatus::ready(active_graph_revision),
-            sample_browser: SampleBrowserState::default(),
+            file_browser: FileBrowserState::default(),
+            test_midi_enabled: false,
             midi_input: MidiInputState::default(),
             pending_instrument_config: None,
             pending_patch_creation: None,
@@ -758,15 +761,26 @@ impl AppState {
     pub fn sample_visualization(
         &self,
         patch_id: PatchId,
+        asset: &crate::synth::AssetReference,
     ) -> Option<&crate::synth::PreparedSampleVisualization> {
+        let matches_asset = |visualization: &&crate::synth::PreparedSampleVisualization| {
+            asset.kind() == crate::synth::AssetKind::Sample
+                && asset.locator() == visualization.asset_id().as_str()
+        };
         self.pending_sample_visualization
             .as_ref()
             .filter(|(request_id, _)| {
-                self.sample_browser.preview_request_id() == Some(*request_id)
-                    || self.sample_browser.request_id() == Some(*request_id)
+                self.file_browser.patch_id() == Some(patch_id)
+                    && (self.file_browser.preview_request_id() == Some(*request_id)
+                        || self.file_browser.request_id() == Some(*request_id))
             })
             .map(|(_, visualization)| visualization)
-            .or_else(|| self.sample_visualizations.get(&patch_id))
+            .filter(matches_asset)
+            .or_else(|| {
+                self.sample_visualizations
+                    .get(&patch_id)
+                    .filter(matches_asset)
+            })
     }
 
     /// Returns the canonical eight-return bank in ascending `BusId` order.
@@ -781,17 +795,21 @@ impl AppState {
         mut self,
         listings: impl IntoIterator<
             Item = (
-                crate::synth::SampleFolderId,
-                Result<crate::synth::SampleCatalogListing, crate::synth::SampleAssetError>,
+                crate::synth::FileBrowserFolderId,
+                Result<crate::synth::FileBrowserListing, crate::synth::SampleAssetError>,
             ),
         >,
     ) -> Self {
-        self.sample_browser = self.sample_browser.with_catalog(listings);
+        self.file_browser = self.file_browser.with_catalog(listings);
         self
     }
 
-    pub const fn sample_browser(&self) -> &SampleBrowserState {
-        &self.sample_browser
+    pub const fn test_midi_enabled(&self) -> bool {
+        self.test_midi_enabled
+    }
+
+    pub const fn file_browser(&self) -> &FileBrowserState {
+        &self.file_browser
     }
 
     pub const fn midi_input(&self) -> &MidiInputState {
@@ -1093,8 +1111,7 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::Navigate(direction) => {
-                let audio_command = if self.interaction.active_surface() == SurfaceId::SampleBrowser
-                {
+                let audio_command = if self.interaction.active_surface() == SurfaceId::FileBrowser {
                     self.preview_stop_command()
                 } else {
                     None
@@ -1135,6 +1152,11 @@ impl AppState {
                 })
             }
             AppEvent::Activate => self.activate_focused_subordinate(),
+            AppEvent::AssetImported(selection) => self.complete_asset_import(selection),
+            AppEvent::ToggleTestMidi => {
+                self.test_midi_enabled = !self.test_midi_enabled;
+                Ok(ReducerEffects::default())
+            }
             AppEvent::PreviewStart => {
                 let engine_selection_effect = self.preview_start()?;
                 Ok(ReducerEffects {
@@ -1168,14 +1190,13 @@ impl AppState {
                         .map_err(|_| EventRejection::ActionUnavailableInContext)?;
                     return Ok(ReducerEffects::default());
                 }
-                let audio_command = if self.interaction.active_surface() == SurfaceId::SampleBrowser
-                {
+                let audio_command = if self.interaction.active_surface() == SurfaceId::FileBrowser {
                     self.preview_stop_command()
                 } else {
                     None
                 };
-                if self.interaction.active_surface() == SurfaceId::SampleBrowser {
-                    self.sample_browser.cancelled();
+                if self.interaction.active_surface() == SurfaceId::FileBrowser {
+                    self.file_browser.cancelled();
                 }
                 self.interaction
                     .return_to_origin()
@@ -1243,7 +1264,7 @@ impl AppState {
                 lifecycle,
             } => {
                 if !self
-                    .sample_browser
+                    .file_browser
                     .assignment_lifecycle_advanced(request_id, lifecycle)
                 {
                     return Err(EventRejection::MismatchedEngineSelection);
@@ -1251,24 +1272,31 @@ impl AppState {
                 Ok(ReducerEffects::default())
             }
             AppEvent::SampleCatalogRefreshed { folder, listing } => {
+                let initial_listing =
+                    self.file_browser.lifecycle() == crate::control::SampleAssetLifecycle::Loading;
                 let refreshing_visible = self.interaction.active_surface()
-                    == SurfaceId::SampleBrowser
-                    && self.sample_browser.folder() == &folder;
+                    == SurfaceId::FileBrowser
+                    && self.file_browser.folder() == &folder;
                 let (held, old_order, audio_command) = if refreshing_visible {
                     (
                         Some(self.interaction.focus_path().clone()),
-                        Some(SemanticResolver::new(self).sample_browser_paths()?),
+                        Some(SemanticResolver::new(self).file_browser_paths()?),
                         self.preview_stop_command(),
                     )
                 } else {
                     (None, None, None)
                 };
-                let reloaded = self.sample_browser.refresh_listing(folder, listing);
+                let reloaded = self.file_browser.refresh_listing(folder, listing);
                 if reloaded {
                     let held = held.ok_or(EventRejection::InvalidSelection)?;
                     let old_order = old_order.ok_or(EventRejection::InvalidSelection)?;
-                    let new_order = SemanticResolver::new(self).sample_browser_paths()?;
-                    let repaired = if new_order.contains(&held) {
+                    let new_order = SemanticResolver::new(self).file_browser_paths()?;
+                    let repaired = if initial_listing {
+                        new_order
+                            .first()
+                            .cloned()
+                            .ok_or(EventRejection::InvalidSelection)?
+                    } else if new_order.contains(&held) {
                         held
                     } else {
                         SemanticResolver::recover(&held, &old_order, &new_order)
@@ -1359,6 +1387,7 @@ impl AppState {
                 intent,
                 source_graph_revision,
                 target_graph_revision,
+                prepared_visualization,
             } => {
                 let effect = self.topology_prepared(
                     request_id,
@@ -1366,6 +1395,8 @@ impl AppState {
                     source_graph_revision,
                     target_graph_revision,
                 )?;
+                self.pending_sample_visualization =
+                    prepared_visualization.map(|value| (request_id, value));
                 Ok(ReducerEffects {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
@@ -1471,7 +1502,7 @@ impl AppState {
         if self.interaction.mode() != crate::control::InteractionMode::Navigate
             || self.interaction.active_surface() == SurfaceId::MidiDeviceSettings
             || self.interaction.midi_settings_session().is_some()
-            || self.sample_browser.preview_is_held()
+            || self.file_browser.preview_is_held()
         {
             return Err(EventRejection::ActionUnavailableInContext);
         }
@@ -2055,7 +2086,8 @@ impl AppState {
         &mut self,
         replacement: crate::control::SessionReplacementPayload,
     ) -> Result<(), EventRejection> {
-        let (patches, mixer, global, returns, target_graph_revision) = replacement.into_parts();
+        let (patches, mixer, global, returns, target_graph_revision, sample_visualizations) =
+            replacement.into_parts();
         if patches.is_empty() {
             return Err(EventRejection::NoPatchesInstalled);
         }
@@ -2100,10 +2132,10 @@ impl AppState {
         self.disabled_patch_overview_origins.clear();
         self.focus_repair_status = None;
         self.engine_selection = EngineSelectionStatus::ready(target_graph_revision);
-        self.sample_browser.reset_for_session();
+        self.file_browser.reset_for_session();
         self.pending_instrument_config = None;
         self.pending_patch_creation = None;
-        self.sample_visualizations.clear();
+        self.sample_visualizations = sample_visualizations;
         self.pending_sample_visualization = None;
 
         let first_patch = self
@@ -2159,17 +2191,20 @@ impl AppState {
     fn open_related_surface(&mut self) -> Result<(), EventRejection> {
         match self.interaction.active_surface() {
             SurfaceId::PatchMain => self.enter_patch_detail(),
-            SurfaceId::PatchDetail => self.open_sample_browser(),
+            SurfaceId::PatchDetail => self.open_file_browser(),
             SurfaceId::PatchUtility
             | SurfaceId::PatchChoice
-            | SurfaceId::SampleBrowser
+            | SurfaceId::FileBrowser
             | SurfaceId::MixerMain
             | SurfaceId::MixerInspector
             | SurfaceId::MidiDeviceSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
-    fn open_sample_browser(&mut self) -> Result<(), EventRejection> {
+    fn open_file_browser(&mut self) -> Result<(), EventRejection> {
+        if self.file_browser.import_request().is_some() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
         let patch_id = self
             .interaction
             .patch_focus()
@@ -2196,21 +2231,21 @@ impl AppState {
             .asset_reference(spec.id())
             .filter(|reference| reference.kind() == AssetKind::Sample)
             .ok_or(EventRejection::ActionUnavailableInContext)?;
-        let _ = SampleAssetId::new(reference.locator())
+        let _ = AssetFileId::new(reference.locator())
             .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
-        self.sample_browser.begin(patch_id, parameter_id.clone());
+        self.file_browser.begin(patch_id, parameter_id.clone());
         let row = self
-            .sample_browser
+            .file_browser
             .rows()
             .first()
             .ok_or(EventRejection::InvalidSelection)?;
-        let focus = FocusPath::sample_browser(
+        let focus = FocusPath::file_browser(
             patch_id,
             parameter_id.as_str().to_owned(),
             row.id().to_owned(),
         );
         self.interaction
-            .enter_sample_browser(patch_id, parameter_id, focus)
+            .enter_file_browser(patch_id, parameter_id, focus)
             .map_err(|_| EventRejection::ActionUnavailableInContext)
     }
 
@@ -2240,7 +2275,81 @@ impl AppState {
             .map_err(|_| EventRejection::ActionUnavailableInContext)
     }
 
+    fn sample_asset_origin(
+        &self,
+        origin: &FocusPath,
+    ) -> Result<(PatchId, ParameterId), EventRejection> {
+        if origin.surface() != SurfaceId::PatchDetail {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        let patch_id = origin
+            .patch_id()
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        let SemanticControlId::Patch(PatchControlId::Capability(parameter)) = origin.control_id()
+        else {
+            return Err(EventRejection::ActionUnavailableInContext);
+        };
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id() == patch_id)
+            .ok_or(EventRejection::NoPatchesInstalled)?;
+        if !patch
+            .instrument_config()
+            .asset_reference(parameter)
+            .is_some_and(|asset| asset.kind() == AssetKind::Sample)
+        {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        Ok((patch_id, parameter.clone()))
+    }
+
+    fn complete_asset_import(
+        &mut self,
+        selection: crate::control::AssetImportResult,
+    ) -> Result<ReducerEffects, EventRejection> {
+        if self.file_browser.import_request() != Some(&selection.request) {
+            return Err(EventRejection::StaleEngineSelection);
+        }
+        if selection.request.graph_revision != self.engine_selection.active_graph_revision()
+            || self.engine_selection.is_in_flight()
+        {
+            self.file_browser
+                .finish_file_import(&Err(crate::synth::SampleAssetError::Cancelled));
+            return Ok(ReducerEffects::default());
+        }
+        let (patch_id, parameter) = self.sample_asset_origin(&selection.request.origin)?;
+        self.file_browser.finish_file_import(&selection.result);
+        let Ok(asset) = selection.result else {
+            return Ok(ReducerEffects::default());
+        };
+        let asset =
+            AssetFileId::new(asset.as_str()).map_err(|_| EventRejection::InvalidParameterValue)?;
+        if asset.is_external() {
+            return Err(EventRejection::InvalidParameterValue);
+        }
+        let effect = match self.request_asset_assignment_for(patch_id, parameter, asset.clone()) {
+            Ok(effect) => effect,
+            Err(EventRejection::ParameterAtBoundary) => return Ok(ReducerEffects::default()),
+            Err(error) => return Err(error),
+        };
+        self.file_browser
+            .assignment_requested(asset, effect.request_id());
+        Ok(ReducerEffects {
+            engine_selection_effect: Some(effect),
+            ..ReducerEffects::default()
+        })
+    }
+
     fn activate_focused_subordinate(&mut self) -> Result<ReducerEffects, EventRejection> {
+        if self.interaction.active_surface() == SurfaceId::PatchMain {
+            self.open_related_surface()?;
+            return Ok(ReducerEffects::default());
+        }
+        if self.interaction.active_surface() == SurfaceId::PatchDetail {
+            self.open_file_browser()?;
+            return Ok(ReducerEffects::default());
+        }
         if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
             let identity = match self.interaction.focus_path().control_id() {
                 SemanticControlId::MidiInputDevice(identity) => identity.clone(),
@@ -2267,13 +2376,13 @@ impl AppState {
         }
         if matches!(
             self.interaction.subordinate_session(),
-            Some(PatchSubordinateSession::SampleBrowser { .. })
+            Some(PatchSubordinateSession::FileBrowser { .. })
         ) {
-            return self.activate_sample_browser_row();
+            return self.activate_file_browser_row();
         }
         let subject = match self.interaction.subordinate_session() {
             Some(PatchSubordinateSession::Choice { subject, .. }) => subject.clone(),
-            Some(PatchSubordinateSession::SampleBrowser { .. })
+            Some(PatchSubordinateSession::FileBrowser { .. })
             | Some(PatchSubordinateSession::Detail { .. })
             | Some(PatchSubordinateSession::UtilityFromDetail { .. })
             | None => return Err(EventRejection::ActionUnavailableInContext),
@@ -2529,22 +2638,22 @@ impl AppState {
         })
     }
 
-    fn activate_sample_browser_row(&mut self) -> Result<ReducerEffects, EventRejection> {
+    fn activate_file_browser_row(&mut self) -> Result<ReducerEffects, EventRejection> {
         let audio_command = self.preview_stop_command();
         let entry_id = match self.interaction.focus_path().control_id() {
             SemanticControlId::Modal(ModalControlId::BrowserEntry(id)) => id.clone(),
             _ => return Err(EventRejection::InvalidSelection),
         };
         let row = self
-            .sample_browser
+            .file_browser
             .row(&entry_id)
             .cloned()
             .ok_or(EventRejection::InvalidSelection)?;
         match row.kind().clone() {
-            SampleBrowserRowKind::Parent(folder) | SampleBrowserRowKind::Folder(folder) => {
-                self.sample_browser.load_folder(folder);
+            FileBrowserRowKind::Parent(folder) | FileBrowserRowKind::Folder(folder) => {
+                self.file_browser.load_folder(folder);
                 let focus = SemanticResolver::new(self)
-                    .sample_browser_paths()?
+                    .file_browser_paths()?
                     .into_iter()
                     .next()
                     .ok_or(EventRejection::InvalidSelection)?;
@@ -2555,21 +2664,59 @@ impl AppState {
                     midi_device_effects: Vec::new(),
                 })
             }
-            SampleBrowserRowKind::File(asset_id) => {
-                let effect = self.request_asset_assignment(asset_id.clone())?;
-                self.sample_browser
-                    .assignment_requested(asset_id, effect.request_id());
+            FileBrowserRowKind::File(asset_id) => {
+                if asset_id.is_external() {
+                    if self.engine_selection.is_in_flight()
+                        || self.file_browser.import_request().is_some()
+                    {
+                        return Err(EventRejection::StructuralEditBusy);
+                    }
+                    let origin = self
+                        .interaction
+                        .return_path()
+                        .ok_or(EventRejection::InvalidSelection)?
+                        .origin()
+                        .clone();
+                    let (patch_id, parameter) = self.sample_asset_origin(&origin)?;
+                    let request = crate::control::AssetImportRequest {
+                        generation: self.generation,
+                        asset_id,
+                        origin,
+                        graph_revision: self.engine_selection.active_graph_revision(),
+                    };
+                    self.file_browser
+                        .request_file_import(request, patch_id, parameter);
+                    self.interaction
+                        .return_to_origin()
+                        .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+                    return Ok(ReducerEffects {
+                        audio_command,
+                        ..ReducerEffects::default()
+                    });
+                }
+                let effect = match self.request_asset_assignment(asset_id.clone()) {
+                    Ok(effect) => {
+                        self.file_browser
+                            .assignment_requested(asset_id, effect.request_id());
+                        Some(effect)
+                    }
+                    Err(EventRejection::ParameterAtBoundary) => {
+                        self.file_browser.assignment_unchanged();
+                        None
+                    }
+                    Err(error) => return Err(error),
+                };
                 self.interaction
                     .return_to_origin()
                     .map_err(|_| EventRejection::ActionUnavailableInContext)?;
                 Ok(ReducerEffects {
                     audio_command,
-                    engine_selection_effect: Some(effect),
+                    engine_selection_effect: effect,
                     midi_device_effects: Vec::new(),
                 })
             }
-            SampleBrowserRowKind::Cancel => {
-                self.sample_browser.cancelled();
+            FileBrowserRowKind::Cancel => {
+                self.file_browser.cancelled();
                 self.interaction
                     .return_to_origin()
                     .map_err(|_| EventRejection::ActionUnavailableInContext)?;
@@ -2584,13 +2731,13 @@ impl AppState {
 
     fn request_asset_assignment(
         &mut self,
-        asset_id: SampleAssetId,
+        asset_id: AssetFileId,
     ) -> Result<EngineSelectionEffect, EventRejection> {
         if self.engine_selection.is_in_flight() {
             return Err(EventRejection::StructuralEditBusy);
         }
         let (patch_id, parameter_id) = match self.interaction.subordinate_session() {
-            Some(PatchSubordinateSession::SampleBrowser {
+            Some(PatchSubordinateSession::FileBrowser {
                 patch_position,
                 asset_parameter_id,
                 ..
@@ -2602,6 +2749,18 @@ impl AppState {
             ),
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
+        self.request_asset_assignment_for(patch_id, parameter_id, asset_id)
+    }
+
+    fn request_asset_assignment_for(
+        &mut self,
+        patch_id: PatchId,
+        parameter_id: ParameterId,
+        asset_id: AssetFileId,
+    ) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
         let patch = self
             .patches
             .iter()
@@ -2961,7 +3120,7 @@ impl AppState {
         let asset_assignment = matches!(intent, StructuralEditIntent::ReplaceAsset { .. });
         let audition = matches!(intent, StructuralEditIntent::PrepareAudition { .. });
         if asset_assignment
-            && self.sample_browser.lifecycle() != crate::control::SampleAssetLifecycle::Preparing
+            && self.file_browser.lifecycle() != crate::control::SampleAssetLifecycle::Preparing
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
@@ -2973,9 +3132,9 @@ impl AppState {
         self.pending_sample_visualization = prepared_visualization.map(|value| (request_id, value));
         self.engine_selection = status;
         if asset_assignment {
-            self.sample_browser.assignment_activating(request_id);
+            self.file_browser.assignment_activating(request_id);
         } else if audition {
-            self.sample_browser.preview_activating(request_id);
+            self.file_browser.preview_activating(request_id);
         }
         Ok(effect)
     }
@@ -3033,10 +3192,10 @@ impl AppState {
         if matches!(intent, StructuralEditIntent::ReplaceAsset { .. }) {
             self.pending_instrument_config = None;
             self.pending_sample_visualization = None;
-            self.sample_browser.assignment_failed(request_id, failure);
+            self.file_browser.assignment_failed(request_id, failure);
         } else if matches!(intent, StructuralEditIntent::PrepareAudition { .. }) {
             self.pending_sample_visualization = None;
-            self.sample_browser.preview_failed(request_id, failure);
+            self.file_browser.preview_failed(request_id, failure);
         }
         Ok(())
     }
@@ -3100,13 +3259,14 @@ impl AppState {
                 .find(|patch| patch.id() == patch_id)
                 .ok_or(EventRejection::MismatchedEngineSelection)?;
             patch.replace_instrument_config(candidate, target_policy);
-            if asset_assignment {
-                if let Some((pending_request, visualization)) =
-                    self.pending_sample_visualization.take()
-                {
-                    if pending_request == request_id {
-                        self.sample_visualizations.insert(patch_id, visualization);
-                    }
+            // Every acknowledged instrument edit owns its prepared waveform,
+            // including choosing Sample as the Engine for the first time.
+            // Clear obsolete data when the new instrument has no waveform.
+            self.sample_visualizations.remove(&patch_id);
+            if let Some((pending_request, visualization)) = self.pending_sample_visualization.take()
+            {
+                if pending_request == request_id {
+                    self.sample_visualizations.insert(patch_id, visualization);
                 }
             }
             self.pending_instrument_config = None;
@@ -3159,6 +3319,12 @@ impl AppState {
             validate_effect_slots(&self.effects, candidate.effect_slots())
                 .map_err(|_| EventRejection::MismatchedEngineSelection)?;
             self.patches.push(candidate);
+            if let Some((pending_request, visualization)) = self.pending_sample_visualization.take()
+            {
+                if pending_request == request_id {
+                    self.sample_visualizations.insert(*patch_id, visualization);
+                }
+            }
             self.interaction.rekey_trailing_empty(*patch_id);
         }
         self.engine_selection = self
@@ -3166,9 +3332,9 @@ impl AppState {
             .acknowledged()
             .map_err(|_| EventRejection::MismatchedEngineSelection)?;
         if asset_assignment {
-            self.sample_browser.assignment_ready(request_id);
+            self.file_browser.assignment_ready(request_id);
         }
-        let audio_command = if audition && self.sample_browser.preview_ready(request_id) {
+        let audio_command = if audition && self.file_browser.preview_ready(request_id) {
             Some(AudioCommand::preview_start(
                 correlation
                     .patch_id()
@@ -3503,7 +3669,7 @@ impl AppState {
             | SurfaceId::PatchUtility
             | SurfaceId::PatchDetail
             | SurfaceId::PatchChoice
-            | SurfaceId::SampleBrowser
+            | SurfaceId::FileBrowser
             | SurfaceId::MidiDeviceSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
@@ -3579,11 +3745,11 @@ impl AppState {
                     Err(EventRejection::ActionUnavailableInContext)
                 }
             }
-            SurfaceId::SampleBrowser => {
+            SurfaceId::FileBrowser => {
                 if matches!(direction, Direction::Up | Direction::Down) {
-                    let paths = SemanticResolver::new(self).sample_browser_paths()?;
+                    let paths = SemanticResolver::new(self).file_browser_paths()?;
                     self.navigate_side_nonwrapping(&paths, direction == Direction::Down)?;
-                    self.sample_browser.preview_stop();
+                    self.file_browser.preview_stop();
                     Ok(())
                 } else {
                     Err(EventRejection::ActionUnavailableInContext)
@@ -3909,8 +4075,8 @@ impl AppState {
     }
 
     fn preview_start(&mut self) -> Result<EngineSelectionEffect, EventRejection> {
-        if self.interaction.active_surface() != SurfaceId::SampleBrowser
-            || !matches!(self.sample_browser.preview(), SamplePreviewState::Idle)
+        if self.interaction.active_surface() != SurfaceId::FileBrowser
+            || !matches!(self.file_browser.preview(), SamplePreviewState::Idle)
             || self.engine_selection.is_in_flight()
         {
             return Err(EventRejection::ActionUnavailableInContext);
@@ -3919,12 +4085,12 @@ impl AppState {
             SemanticControlId::Modal(ModalControlId::BrowserEntry(id)) => id,
             _ => return Err(EventRejection::InvalidSelection),
         };
-        let asset_id = match self.sample_browser.row(entry_id).map(|row| row.kind()) {
-            Some(SampleBrowserRowKind::File(asset_id)) => asset_id.clone(),
+        let asset_id = match self.file_browser.row(entry_id).map(|row| row.kind()) {
+            Some(FileBrowserRowKind::File(asset_id)) => asset_id.clone(),
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
         let (patch_id, parameter_id) = match self.interaction.subordinate_session() {
-            Some(PatchSubordinateSession::SampleBrowser {
+            Some(PatchSubordinateSession::FileBrowser {
                 patch_position,
                 asset_parameter_id,
                 ..
@@ -3982,13 +4148,13 @@ impl AppState {
         .map_err(|_| EventRejection::MismatchedEngineSelection)?;
         self.engine_selection = status;
         self.last_engine_selection_request_id = request_id;
-        self.sample_browser.preview_requested(asset_id, request_id);
+        self.file_browser.preview_requested(asset_id, request_id);
         Ok(effect)
     }
 
     fn preview_stop(&mut self) -> Result<Option<AudioCommand>, EventRejection> {
-        if self.interaction.active_surface() != SurfaceId::SampleBrowser
-            || matches!(self.sample_browser.preview(), SamplePreviewState::Idle)
+        if self.interaction.active_surface() != SurfaceId::FileBrowser
+            || matches!(self.file_browser.preview(), SamplePreviewState::Idle)
         {
             return Err(EventRejection::ActionUnavailableInContext);
         }
@@ -3996,10 +4162,10 @@ impl AppState {
     }
 
     fn preview_stop_command(&mut self) -> Option<AudioCommand> {
-        let patch_id = self.sample_browser.patch_id()?;
-        let request_id = self.sample_browser.preview_request_id()?;
+        let patch_id = self.file_browser.patch_id()?;
+        let request_id = self.file_browser.preview_request_id()?;
         let command = self
-            .sample_browser
+            .file_browser
             .preview_stop()
             .then(|| AudioCommand::preview_stop(patch_id, request_id.value()));
         if command.is_some() {
@@ -4907,7 +5073,7 @@ impl AppState {
                 SurfaceId::PatchUtility
                 | SurfaceId::PatchDetail
                 | SurfaceId::PatchChoice
-                | SurfaceId::SampleBrowser
+                | SurfaceId::FileBrowser
                 | SurfaceId::MixerInspector
                 | SurfaceId::MidiDeviceSettings => return Err(EventRejection::InvalidSelection),
             };
@@ -6027,6 +6193,7 @@ mod tests {
         let target = GraphRevision::INITIAL.checked_next().unwrap();
         let prepared = state
             .apply(AppEvent::TopologyPrepared {
+                prepared_visualization: None,
                 request_id,
                 intent: effect.intent().clone(),
                 source_graph_revision: GraphRevision::INITIAL,
@@ -6115,6 +6282,7 @@ mod tests {
         let target = GraphRevision::INITIAL.checked_next().unwrap();
         state
             .apply(AppEvent::TopologyPrepared {
+                prepared_visualization: None,
                 request_id: effect.request_id(),
                 intent: effect.intent().clone(),
                 source_graph_revision: GraphRevision::INITIAL,
@@ -8275,6 +8443,7 @@ mod tests {
         advance_engine_to_preparing(&mut state);
         state
             .apply(AppEvent::TopologyPrepared {
+                prepared_visualization: None,
                 request_id: correlation.request_id(),
                 intent: correlation.intent().clone(),
                 source_graph_revision: source,
@@ -8518,11 +8687,11 @@ mod tests {
         assert_rejected_unchanged(&mut modal);
 
         let mut held_preview = installed_state();
-        held_preview.sample_browser.preview_requested(
-            SampleAssetId::new("test/held-preview.wav").unwrap(),
+        held_preview.file_browser.preview_requested(
+            AssetFileId::new("test/held-preview.wav").unwrap(),
             EngineSelectionRequestId::FIRST,
         );
-        assert!(held_preview.sample_browser.preview_is_held());
+        assert!(held_preview.file_browser.preview_is_held());
         assert_rejected_unchanged(&mut held_preview);
 
         let mut recursive = installed_state();

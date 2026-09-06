@@ -2519,7 +2519,9 @@ fn build_expected_coverage(
                 ..
             }
             | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputScanStarted
-            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputShutdownRequested => {
+            | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputShutdownRequested
+            | crate::control::app_event::AppEventSurfaceDescriptor::AssetImported { .. }
+            | crate::control::app_event::AppEventSurfaceDescriptor::ToggleTestMidi => {
             }
         }
     }
@@ -3023,6 +3025,8 @@ fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyUp, WindowKey::Return) => "keyUp.return",
         (WindowInputKind::KeyUp, WindowKey::Space) => "keyUp.space",
         (WindowInputKind::KeyUp, WindowKey::Other) => "keyUp.other",
+        (WindowInputKind::KeyDown, WindowKey::T) => "keyDown.t",
+        (WindowInputKind::KeyUp, WindowKey::T) => "keyUp.t",
         (WindowInputKind::FocusLost, _) => "focusLost",
     }
 }
@@ -3157,10 +3161,10 @@ mod tests {
             .expected_coverage()
             .windows(2)
             .all(|pair| pair[0] < pair[1]));
-        assert_eq!(WindowInput::surface_descriptor().len(), 47);
+        assert_eq!(WindowInput::surface_descriptor().len(), 49);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            49
+            51
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

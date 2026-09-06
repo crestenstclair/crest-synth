@@ -11,8 +11,8 @@ use crate::mixer::bus_id::BusId;
 use crate::real_time::GraphRevision;
 use crate::synth::effect_slot_id::EffectSlotIndex;
 use crate::synth::{
-    CapabilityId, EffectCapabilityId, InstrumentConfig, Patch, SampleAssetError,
-    SampleCatalogListing, SampleFolderId,
+    CapabilityId, EffectCapabilityId, FileBrowserFolderId, FileBrowserListing, InstrumentConfig,
+    Patch, SampleAssetError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -49,9 +49,10 @@ pub enum AppEventPayloadShape {
     InstrumentConfig,
     PreparedSampleVisualization,
     SampleAssetLifecycle,
-    SampleFolderId,
-    SampleCatalogListing,
+    FileBrowserFolderId,
+    FileBrowserListing,
     SampleAssetError,
+    AssetImportResult,
     EngineSelectionFailure,
     EngineSelectionStatusKind,
     Boolean,
@@ -98,7 +99,11 @@ pub enum AppEventSurfaceDescriptor {
     OpenRelated,
     OpenMidiSettings,
     Activate,
+    AssetImported {
+        selection: AppEventPayloadShape,
+    },
     PreviewStart,
+    ToggleTestMidi,
     PreviewStop,
     EnterSurface {
         surface: SurfaceId,
@@ -174,6 +179,7 @@ pub enum AppEventSurfaceDescriptor {
         intent: AppEventPayloadShape,
         source_graph_revision: AppEventPayloadShape,
         target_graph_revision: AppEventPayloadShape,
+        prepared_visualization: AppEventPayloadShape,
     },
     TopologyPreparationFailed {
         request_id: AppEventPayloadShape,
@@ -225,7 +231,10 @@ pub enum AppEventSurfaceDescriptor {
     MidiInputShutdownRequested,
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 49] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 51] = [
+    AppEventSurfaceDescriptor::AssetImported {
+        selection: AppEventPayloadShape::AssetImportResult,
+    },
     AppEventSurfaceDescriptor::SelectContext {
         context: TopLevelContext::Patch,
     },
@@ -272,6 +281,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 49] = [
     AppEventSurfaceDescriptor::OpenMidiSettings,
     AppEventSurfaceDescriptor::Activate,
     AppEventSurfaceDescriptor::PreviewStart,
+    AppEventSurfaceDescriptor::ToggleTestMidi,
     AppEventSurfaceDescriptor::PreviewStop,
     AppEventSurfaceDescriptor::EnterSurface {
         surface: SurfaceId::PatchUtility,
@@ -318,8 +328,8 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 49] = [
         lifecycle: AppEventPayloadShape::SampleAssetLifecycle,
     },
     AppEventSurfaceDescriptor::SampleCatalogRefreshed {
-        folder: AppEventPayloadShape::SampleFolderId,
-        listing: AppEventPayloadShape::SampleCatalogListing,
+        folder: AppEventPayloadShape::FileBrowserFolderId,
+        listing: AppEventPayloadShape::FileBrowserListing,
         failure: AppEventPayloadShape::SampleAssetError,
     },
     AppEventSurfaceDescriptor::EnginePreparationFailed {
@@ -353,6 +363,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 49] = [
         intent: AppEventPayloadShape::StructuralEditIntent,
         source_graph_revision: AppEventPayloadShape::GraphRevision,
         target_graph_revision: AppEventPayloadShape::GraphRevision,
+        prepared_visualization: AppEventPayloadShape::PreparedSampleVisualization,
     },
     AppEventSurfaceDescriptor::TopologyPreparationFailed {
         request_id: AppEventPayloadShape::EngineSelectionRequestId,
@@ -428,6 +439,7 @@ pub enum AppEvent {
     OpenMidiSettings,
     Activate,
     PreviewStart,
+    ToggleTestMidi,
     PreviewStop,
     /// Enter one context-compatible persistent side surface.
     EnterSurface(SurfaceId),
@@ -438,6 +450,7 @@ pub enum AppEvent {
     /// Whether installation is still permitted is enforced by AppState::apply
     /// on the control thread.
     InstallPatches(Vec<Patch>),
+    AssetImported(crate::control::AssetImportResult),
     /// Commits all persisted content only after the payload's correlated
     /// complete graph has activated. The payload can be produced only by the
     /// saved-session preparation boundary.
@@ -484,8 +497,8 @@ pub enum AppEvent {
     /// Stable row focus is retained when the identity remains present and is
     /// repaired deterministically when it does not.
     SampleCatalogRefreshed {
-        folder: SampleFolderId,
-        listing: Result<SampleCatalogListing, SampleAssetError>,
+        folder: FileBrowserFolderId,
+        listing: Result<FileBrowserListing, SampleAssetError>,
     },
     /// Records one correlated typed preparation failure without adapter detail.
     EnginePreparationFailed {
@@ -530,6 +543,7 @@ pub enum AppEvent {
         intent: StructuralEditIntent,
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
+        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
     },
     /// Records one correlated typed occupancy refusal without adapter detail.
     TopologyPreparationFailed {
@@ -608,6 +622,7 @@ impl AppEvent {
             SemanticAction::OpenMidiSettings => Self::OpenMidiSettings,
             SemanticAction::Activate => Self::Activate,
             SemanticAction::PreviewStart => Self::PreviewStart,
+            SemanticAction::ToggleTestMidi => Self::ToggleTestMidi,
             SemanticAction::PreviewStop => Self::PreviewStop,
             SemanticAction::EnterSurface(surface) => Self::EnterSurface(surface),
             SemanticAction::Return => Self::Return,
@@ -640,6 +655,7 @@ impl AppEvent {
                 | Self::SetInteractionMode(_)
                 | Self::OpenRelated
                 | Self::OpenMidiSettings
+                | Self::ToggleTestMidi
                 | Self::PreviewStart
                 | Self::PreviewStop
                 | Self::SetPatchOverviewOriginEnabled { .. }
@@ -692,7 +708,11 @@ impl AppEvent {
             Self::OpenRelated => AppEventSurfaceDescriptor::OpenRelated,
             Self::OpenMidiSettings => AppEventSurfaceDescriptor::OpenMidiSettings,
             Self::Activate => AppEventSurfaceDescriptor::Activate,
+            Self::AssetImported(_) => AppEventSurfaceDescriptor::AssetImported {
+                selection: AppEventPayloadShape::AssetImportResult,
+            },
             Self::PreviewStart => AppEventSurfaceDescriptor::PreviewStart,
+            Self::ToggleTestMidi => AppEventSurfaceDescriptor::ToggleTestMidi,
             Self::PreviewStop => AppEventSurfaceDescriptor::PreviewStop,
             Self::EnterSurface(surface) => {
                 AppEventSurfaceDescriptor::EnterSurface { surface: *surface }
@@ -742,8 +762,8 @@ impl AppEvent {
             }
             Self::SampleCatalogRefreshed { .. } => {
                 AppEventSurfaceDescriptor::SampleCatalogRefreshed {
-                    folder: AppEventPayloadShape::SampleFolderId,
-                    listing: AppEventPayloadShape::SampleCatalogListing,
+                    folder: AppEventPayloadShape::FileBrowserFolderId,
+                    listing: AppEventPayloadShape::FileBrowserListing,
                     failure: AppEventPayloadShape::SampleAssetError,
                 }
             }
@@ -782,6 +802,7 @@ impl AppEvent {
                 intent: AppEventPayloadShape::StructuralEditIntent,
                 source_graph_revision: AppEventPayloadShape::GraphRevision,
                 target_graph_revision: AppEventPayloadShape::GraphRevision,
+                prepared_visualization: AppEventPayloadShape::PreparedSampleVisualization,
             },
             Self::TopologyPreparationFailed { .. } => {
                 AppEventSurfaceDescriptor::TopologyPreparationFailed {
@@ -902,7 +923,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 49);
+        assert_eq!(descriptor.len(), 51);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -983,8 +1004,8 @@ mod tests {
         );
         assert!(
             descriptor.contains(&AppEventSurfaceDescriptor::SampleCatalogRefreshed {
-                folder: AppEventPayloadShape::SampleFolderId,
-                listing: AppEventPayloadShape::SampleCatalogListing,
+                folder: AppEventPayloadShape::FileBrowserFolderId,
+                listing: AppEventPayloadShape::FileBrowserListing,
                 failure: AppEventPayloadShape::SampleAssetError,
             })
         );

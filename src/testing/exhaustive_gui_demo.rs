@@ -1686,7 +1686,9 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
             | EventInput::MidiInputConnectionLost { .. }
             | EventInput::MidiInputOperationFailed { .. }
             | EventInput::MidiInputShutdownRequested
-            | EventInput::ReplacePersistedSession { .. } => {}
+            | EventInput::ReplacePersistedSession { .. }
+            | EventInput::AssetImported { .. }
+            | EventInput::ToggleTestMidi => {}
         }
 
         if let Some(rejection) = record.rejection() {
@@ -2288,6 +2290,8 @@ const fn window_input_identifier(input: WindowInput) -> &'static str {
         (WindowInputKind::KeyUp, WindowKey::Return) => "keyUp.return",
         (WindowInputKind::KeyUp, WindowKey::Space) => "keyUp.space",
         (WindowInputKind::KeyUp, WindowKey::Other) => "keyUp.other",
+        (WindowInputKind::KeyDown, WindowKey::T) => "keyDown.t",
+        (WindowInputKind::KeyUp, WindowKey::T) => "keyUp.t",
         (WindowInputKind::FocusLost, _) => "focusLost",
     }
 }

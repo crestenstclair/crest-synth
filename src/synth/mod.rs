@@ -1,3 +1,7 @@
+pub mod file_browser;
+pub use file_browser::{
+    AssetFileId, FileBrowserFolderId, FileBrowserListing, FileBrowserRow, FileBrowserRowKind,
+};
 pub mod capability_id;
 pub mod capability_visualization;
 pub mod descriptor_default_config_factory;
@@ -58,12 +62,10 @@ pub use prepared_post_effect_rack_builder::{
 };
 pub use sample_asset::{
     DecodedSample, PreparedSampleLandmarks, PreparedSamplePcm, PreparedSampleVisualization,
-    SampleAssetCatalogPort, SampleAssetError, SampleAssetId, SampleBrowserRow,
-    SampleBrowserRowKind, SampleCatalogListing, SampleDecoderPort, SampleEncoding, SampleFolderId,
-    SampleLoopMode, SampleMetadata, SamplePlaybackConfig, WaveformPair,
-    MAX_LOOP_CROSSFADE_MILLISECONDS, MAX_SAMPLE_DURATION_SECONDS, MAX_SAMPLE_GRAPH_PCM_BYTES,
-    MAX_SAMPLE_RATE, MAX_SAMPLE_SCALARS, MAX_SAMPLE_SOURCE_BYTES, MAX_WAVEFORM_PAIRS,
-    MIN_SAMPLE_RATE, SAMPLE_VOICE_COUNT,
+    SampleAssetCatalogPort, SampleAssetError, SampleDecoderPort, SampleEncoding, SampleLoopMode,
+    SampleMetadata, SamplePlaybackConfig, WaveformPair, MAX_LOOP_CROSSFADE_MILLISECONDS,
+    MAX_SAMPLE_DURATION_SECONDS, MAX_SAMPLE_GRAPH_PCM_BYTES, MAX_SAMPLE_RATE, MAX_SAMPLE_SCALARS,
+    MAX_SAMPLE_SOURCE_BYTES, MAX_WAVEFORM_PAIRS, MIN_SAMPLE_RATE, SAMPLE_VOICE_COUNT,
 };
 pub use sample_preparation::{
     prepare_sample_pcm, summarize_waveform, validate_sample_graph_budget,

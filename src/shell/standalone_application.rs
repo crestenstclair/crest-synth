@@ -106,6 +106,7 @@ const CHANNEL_SEPARATOR: &str = "-----------------------------------------------
 /// Fixed startup values shared by normal and headless execution.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ApplicationConfig {
+    test_midi_on_launch: bool,
     sample_rate: f32,
     max_frames: usize,
     global_parameters: GlobalParameters,
@@ -118,6 +119,7 @@ impl ApplicationConfig {
         global_parameters: GlobalParameters,
     ) -> Self {
         Self {
+            test_midi_on_launch: false,
             sample_rate,
             max_frames,
             global_parameters,
@@ -126,6 +128,11 @@ impl ApplicationConfig {
 
     pub const fn sample_rate(self) -> f32 {
         self.sample_rate
+    }
+
+    pub const fn with_test_midi_on_launch(mut self) -> Self {
+        self.test_midi_on_launch = true;
+        self
     }
 
     pub const fn max_frames(self) -> usize {
@@ -1377,6 +1384,9 @@ where
             default_session_blueprint,
         )?;
         drop(fixture_source);
+        if config.test_midi_on_launch {
+            app_loop.dispatch_action(crate::control::SemanticAction::ToggleTestMidi)?;
+        }
         if system_midi_devices {
             let midi_worker = ThreadedMidiDeviceWorker::new(
                 crate::adapter::midir_input_device::system_midi_input_device(),
@@ -1400,6 +1410,11 @@ where
         let audio_stream: AudioStream = negotiated_audio.start(render, on_runtime_error)?;
 
         let runtime = Rc::new(RefCell::new(ControlRuntime {
+            test_midi: crate::shell::test_midi::TestMidiPattern::default(),
+            sample_library: crate::shell::sample_library::SampleLibraryRuntime::new(
+                crate::adapter::production_instruments::production_sample_catalog()
+                    .map_err(ApplicationError::ProductionInstrumentComposition)?,
+            ),
             app_loop,
             lifecycle,
             device_status,
@@ -1431,6 +1446,7 @@ where
         drop(audio_stream);
         let (lifecycle_shutdown_result, midi_shutdown_result, graph_shutdown_result) = {
             let mut runtime = runtime.borrow_mut();
+            runtime.sample_library.shutdown();
             let lifecycle = runtime.lifecycle.shutdown_on_control();
             let midi = runtime.app_loop.shutdown_midi_devices_on_control();
             let graph = runtime.app_loop.shutdown_engine_selection_on_control();
@@ -2354,6 +2370,8 @@ struct ControlRuntime<Boundary>
 where
     Boundary: ControlAudioBoundary,
 {
+    test_midi: crate::shell::test_midi::TestMidiPattern,
+    sample_library: crate::shell::sample_library::SampleLibraryRuntime,
     app_loop: AppLoop<Boundary>,
     lifecycle: SessionLifecycleCoordinator,
     device_status: AudioDeviceStatusReader,
@@ -2498,10 +2516,16 @@ where
             app_loop,
             lifecycle,
             device_status: _,
+            sample_library,
+            test_midi,
             midi_clock_micros,
             close_requested,
             error,
         } = &mut *runtime;
+        if let Err(failure) = sample_library.advance(app_loop) {
+            *error = Some(failure.into());
+            return false;
+        }
         let session_was_pending = app_loop.session_replacement_pending();
         match lifecycle.advance(app_loop) {
             Ok(progress) if progress.close_approved() => {
@@ -2519,6 +2543,10 @@ where
         let elapsed_micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
         *midi_clock_micros = midi_clock_micros.saturating_add(elapsed_micros);
         if let Err(failure) = app_loop.advance_midi_devices(*midi_clock_micros) {
+            *error = Some(failure.into());
+            return false;
+        }
+        if let Err(failure) = test_midi.advance(app_loop, elapsed) {
             *error = Some(failure.into());
             return false;
         }

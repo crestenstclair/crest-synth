@@ -11,15 +11,15 @@ use crate::adapter::{
 use crate::synth::instrument_capability::{CapabilityError, CapabilityRegistry};
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
-use crate::synth::{SampleAssetCatalogPort, SampleAssetError, SampleAssetId, SampleDecoderPort};
+use crate::synth::{AssetFileId, SampleAssetCatalogPort, SampleAssetError, SampleDecoderPort};
 use std::sync::{Arc, OnceLock};
 
 pub const SAMPLE_LIBRARY_ROOT_ENV: &str = "CREST_SAMPLE_LIBRARY_ROOT";
 pub const SAMPLE_DEFAULT_ASSET_ENV: &str = "CREST_SAMPLE_DEFAULT_ASSET";
 
 pub type ProductionSampleRootListing = Option<(
-    crate::synth::SampleFolderId,
-    Result<crate::synth::SampleCatalogListing, SampleAssetError>,
+    crate::synth::FileBrowserFolderId,
+    Result<crate::synth::FileBrowserListing, SampleAssetError>,
 )>;
 
 static SHARED_TEST_COMPOSITION_ASSET: OnceLock<
@@ -32,7 +32,7 @@ static OPTIONAL_PRODUCTION_SAMPLE: OnceLock<
 #[derive(Clone)]
 struct ProductionSamplePorts {
     capability: SampleCapability,
-    catalog: Arc<dyn SampleAssetCatalogPort>,
+    catalog: Arc<FilesystemSampleCatalog>,
     decoder: Arc<dyn SampleDecoderPort>,
 }
 
@@ -81,16 +81,18 @@ fn load_optional_production_sample(
         std::env::var_os(SAMPLE_LIBRARY_ROOT_ENV),
         std::env::var_os(SAMPLE_DEFAULT_ASSET_ENV),
     ) {
-        (None, None) => return Ok(None),
+        (None, None) => default_sample_library()?,
         (Some(root), Some(asset)) => (root, asset),
         _ => return Err(ProductionInstrumentCompositionError::IncompleteSampleConfiguration),
     };
     let asset = asset.into_string().map_err(|_| {
         ProductionInstrumentCompositionError::Sample(SampleAssetError::InvalidRelativeId)
     })?;
-    let asset = SampleAssetId::new(asset).map_err(ProductionInstrumentCompositionError::Sample)?;
+    let asset = AssetFileId::new(asset).map_err(ProductionInstrumentCompositionError::Sample)?;
     let catalog = Arc::new(
-        FilesystemSampleCatalog::new(root).map_err(ProductionInstrumentCompositionError::Sample)?,
+        FilesystemSampleCatalog::new(root)
+            .map_err(ProductionInstrumentCompositionError::Sample)?
+            .with_user_locations(),
     );
     let decoder = Arc::new(WavSampleDecoder);
     // Registration is all-or-nothing: prove the configured default through
@@ -108,6 +110,49 @@ fn load_optional_production_sample(
         catalog,
         decoder,
     }))
+}
+
+fn default_sample_library(
+) -> Result<(std::ffi::OsString, std::ffi::OsString), ProductionInstrumentCompositionError> {
+    use std::io::Write;
+    let home = std::env::var_os("HOME").ok_or(ProductionInstrumentCompositionError::Sample(
+        SampleAssetError::Unavailable,
+    ))?;
+    let root = std::path::PathBuf::from(home).join("Music/Crest Synth/Samples");
+    std::fs::create_dir_all(&root)
+        .map_err(|_| ProductionInstrumentCompositionError::Sample(SampleAssetError::Unavailable))?;
+    let path = root.join("Test Tone.wav");
+    match std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+    {
+        Ok(mut file) => {
+            if file
+                .write_all(include_bytes!("../../assets/sample-test.wav"))
+                .and_then(|_| file.sync_all())
+                .is_err()
+            {
+                let _ = std::fs::remove_file(path);
+                return Err(ProductionInstrumentCompositionError::Sample(
+                    SampleAssetError::Unavailable,
+                ));
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(_) => {
+            return Err(ProductionInstrumentCompositionError::Sample(
+                SampleAssetError::Unavailable,
+            ))
+        }
+    }
+    Ok((root.into_os_string(), "Test Tone.wav".into()))
+}
+
+/// The same library used by graph preparation, browser enumeration, and import.
+pub fn production_sample_catalog(
+) -> Result<Option<Arc<FilesystemSampleCatalog>>, ProductionInstrumentCompositionError> {
+    Ok(optional_production_sample()?.map(|sample| sample.catalog))
 }
 
 /// Builds the production providers in stable fixture/discovery order.
@@ -138,7 +183,7 @@ pub fn production_capability_registry(
     .map_err(ProductionInstrumentCompositionError::Capability)
 }
 
-/// Prepares both production factories in the same exact capability order.
+/// Prepares the installed production factories in the same exact capability order.
 pub fn production_instrument_preparers(
 ) -> Result<Vec<Box<dyn InstrumentPreparer>>, ProductionInstrumentCompositionError> {
     let mut preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
@@ -165,7 +210,7 @@ pub fn production_sample_root_listing(
     let Some(sample) = optional_production_sample()? else {
         return Ok(None);
     };
-    let folder = crate::synth::SampleFolderId::default();
+    let folder = crate::synth::FileBrowserFolderId::default();
     Ok(Some((folder.clone(), sample.catalog.list(&folder))))
 }
 
@@ -176,7 +221,7 @@ mod tests {
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 
     #[test]
-    fn production_composition_installs_exactly_both_matching_engine_ports() {
+    fn production_composition_installs_exactly_three_matching_engine_ports() {
         let providers = production_instrument_providers().unwrap();
         let registry = production_capability_registry().unwrap();
         let preparers = production_instrument_preparers().unwrap();
@@ -187,14 +232,22 @@ mod tests {
                 .iter()
                 .map(|descriptor| descriptor.id().as_str())
                 .collect::<Vec<_>>(),
-            [HIDEF_CAPABILITY_ID, BRAIDS_CAPABILITY_ID]
+            [
+                HIDEF_CAPABILITY_ID,
+                BRAIDS_CAPABILITY_ID,
+                crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID
+            ]
         );
         assert_eq!(
             preparers
                 .iter()
                 .map(|preparer| preparer.capability_id().as_str())
                 .collect::<Vec<_>>(),
-            [HIDEF_CAPABILITY_ID, BRAIDS_CAPABILITY_ID]
+            [
+                HIDEF_CAPABILITY_ID,
+                BRAIDS_CAPABILITY_ID,
+                crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID
+            ]
         );
     }
 }

@@ -1355,7 +1355,7 @@ impl PatchPageProjection {
             .filter(|_| {
                 matches!(
                     state.interaction().active_surface(),
-                    SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+                    SurfaceId::PatchChoice | SurfaceId::FileBrowser
                 )
             })
             .map(|path| path.origin().surface());

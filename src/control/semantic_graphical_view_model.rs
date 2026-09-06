@@ -195,6 +195,7 @@ impl SemanticError {
 pub enum SemanticBrowserMetadataStatus {
     Pending,
     Ready,
+    Unavailable,
     Failed,
 }
 
@@ -547,12 +548,12 @@ pub enum SemanticSurfaceSummary {
         patch_position: crate::control::PatchPositionId,
         subject: PatchChoiceSubject,
     },
-    SampleBrowser {
+    FileBrowser {
         patch_id: PatchId,
         asset_parameter_id: crate::synth::ParameterId,
-        folder: crate::synth::SampleFolderId,
+        folder: crate::synth::FileBrowserFolderId,
         active_asset: Option<AssetReference>,
-        requested_asset: Option<crate::synth::SampleAssetId>,
+        requested_asset: Option<crate::synth::AssetFileId>,
         lifecycle: SampleAssetLifecycle,
         preview_request_id: Option<EngineSelectionRequestId>,
         preview: SamplePreviewState,
@@ -574,7 +575,7 @@ impl SemanticSurfaceSummary {
         match self {
             Self::Patch { patch_id, .. }
             | Self::PatchUtility { patch_id, .. }
-            | Self::SampleBrowser { patch_id, .. } => Some(*patch_id),
+            | Self::FileBrowser { patch_id, .. } => Some(*patch_id),
             Self::PatchDetail { patch_position, .. } | Self::PatchChoice { patch_position, .. } => {
                 patch_position.patch_id()
             }
@@ -590,7 +591,7 @@ impl SemanticSurfaceSummary {
         match self {
             Self::Patch { patch_id, .. }
             | Self::PatchUtility { patch_id, .. }
-            | Self::SampleBrowser { patch_id, .. } => {
+            | Self::FileBrowser { patch_id, .. } => {
                 Some(crate::control::PatchPositionId::Created(*patch_id))
             }
             Self::EmptyPatch { .. } | Self::EmptyPatchUtility { .. } => {
@@ -2673,7 +2674,7 @@ fn project_patch_surfaces(
         });
     }
 
-    if let Some(PatchSubordinateSession::SampleBrowser {
+    if let Some(PatchSubordinateSession::FileBrowser {
         patch_position,
         asset_parameter_id,
         ..
@@ -2682,24 +2683,22 @@ fn project_patch_surfaces(
         let patch_id = patch_position
             .patch_id()
             .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
-        let paths = resolver
-            .sample_browser_paths()
-            .map_err(map_resolver_error)?;
+        let paths = resolver.file_browser_paths().map_err(map_resolver_error)?;
         let controls = paths
             .into_iter()
-            .zip(state.sample_browser().rows())
+            .zip(state.file_browser().rows())
             .map(|(path, row)| {
                 let (kind, marker) = match row.kind() {
-                    crate::synth::SampleBrowserRowKind::Parent(_) => {
+                    crate::synth::FileBrowserRowKind::Parent(_) => {
                         (SemanticControlKind::BrowserParent, "PARENT")
                     }
-                    crate::synth::SampleBrowserRowKind::Folder(_) => {
+                    crate::synth::FileBrowserRowKind::Folder(_) => {
                         (SemanticControlKind::BrowserFolder, "FOLDER")
                     }
-                    crate::synth::SampleBrowserRowKind::File(_) => {
+                    crate::synth::FileBrowserRowKind::File(_) => {
                         (SemanticControlKind::BrowserFile, "FILE")
                     }
-                    crate::synth::SampleBrowserRowKind::Cancel => {
+                    crate::synth::FileBrowserRowKind::Cancel => {
                         (SemanticControlKind::BrowserCancel, "CANCEL — UNCHANGED")
                     }
                 };
@@ -2731,13 +2730,13 @@ fn project_patch_surfaces(
             .capabilities()
             .descriptor(patch.instrument_config().capability_id())
             .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
-        let preview_asset = match state.sample_browser().preview() {
+        let preview_asset = match state.file_browser().preview() {
             SamplePreviewState::Held { asset_id }
             | SamplePreviewState::Preparing { asset_id, .. }
             | SamplePreviewState::Playing { asset_id }
             | SamplePreviewState::Stopping { asset_id }
             | SamplePreviewState::Failed { asset_id, .. } => Some(asset_id),
-            SamplePreviewState::Idle => state.sample_browser().requested_asset(),
+            SamplePreviewState::Idle => state.file_browser().requested_asset(),
         };
         let browser_asset = preview_asset
             .and_then(|asset_id| AssetReference::new(AssetKind::Sample, asset_id.as_str()).ok())
@@ -2767,24 +2766,24 @@ fn project_patch_surfaces(
             )
         });
         surfaces.push(SemanticSurfaceViewModel {
-            id: SurfaceId::SampleBrowser,
-            label: "SAMPLE BROWSER".to_owned(),
+            id: SurfaceId::FileBrowser,
+            label: "FILE BROWSER".to_owned(),
             role: SemanticSurfaceRole::Modal,
             controls,
             sections: Vec::new(),
             visualizations,
-            summary: SemanticSurfaceSummary::SampleBrowser {
+            summary: SemanticSurfaceSummary::FileBrowser {
                 patch_id,
                 asset_parameter_id: asset_parameter_id.clone(),
-                folder: state.sample_browser().folder().clone(),
+                folder: state.file_browser().folder().clone(),
                 active_asset: patch
                     .instrument_config()
                     .asset_reference(asset_parameter_id)
                     .cloned(),
-                requested_asset: state.sample_browser().requested_asset().cloned(),
-                lifecycle: state.sample_browser().lifecycle(),
-                preview_request_id: state.sample_browser().preview_request_id(),
-                preview: state.sample_browser().preview().clone(),
+                requested_asset: state.file_browser().requested_asset().cloned(),
+                lifecycle: state.file_browser().lifecycle(),
+                preview_request_id: state.file_browser().preview_request_id(),
+                preview: state.file_browser().preview().clone(),
             },
         });
     }
@@ -2792,10 +2791,8 @@ fn project_patch_surfaces(
     Ok(surfaces)
 }
 
-fn project_browser_metadata(
-    row: &crate::synth::SampleBrowserRow,
-) -> Option<SemanticBrowserMetadata> {
-    if !matches!(row.kind(), crate::synth::SampleBrowserRowKind::File(_)) {
+fn project_browser_metadata(row: &crate::synth::FileBrowserRow) -> Option<SemanticBrowserMetadata> {
+    if !matches!(row.kind(), crate::synth::FileBrowserRowKind::File(_)) {
         return None;
     }
     Some(match row.metadata() {
@@ -2829,8 +2826,14 @@ fn project_browser_metadata(
             }
         }
         Some(Err(cause)) => SemanticBrowserMetadata {
-            status: SemanticBrowserMetadataStatus::Failed,
-            text: format!("METADATA INVALID · {cause}").to_ascii_uppercase(),
+            status: match cause {
+                crate::synth::SampleAssetError::Unavailable
+                | crate::synth::SampleAssetError::DownloadRequired => {
+                    SemanticBrowserMetadataStatus::Unavailable
+                }
+                _ => SemanticBrowserMetadataStatus::Failed,
+            },
+            text: cause.to_string().to_ascii_uppercase(),
             source_bytes: row.source_bytes(),
             sample_rate: None,
             channels: None,
@@ -2999,43 +3002,26 @@ fn project_visualizations<'a>(
                     let active_asset = asset(asset_parameter_id);
                     let created_patch_id = patch.created_patch().map(Patch::id);
                     let prepared = created_patch_id
-                        .and_then(|patch_id| state.sample_visualization(patch_id))
-                        .filter(|prepared| {
-                            active_asset.as_ref().is_some_and(|reference| {
-                                reference.locator() == prepared.asset_id().as_str()
-                            })
-                        });
+                        .zip(active_asset.as_ref())
+                        .and_then(|(patch_id, asset)| state.sample_visualization(patch_id, asset));
                     let frames = prepared.map(|prepared| prepared.frames());
-                    let prepared_landmarks = prepared.map(|prepared| prepared.landmarks());
-                    let normalized =
-                        |role: crate::synth::WaveformLandmarkRole, parameter_id: &ParameterId| {
-                            let prepared_value =
-                                prepared_landmarks.zip(frames).map(|(exact, frames)| {
-                                    let frame = match role {
-                                        crate::synth::WaveformLandmarkRole::PlaybackStart => {
-                                            exact.start
-                                        }
-                                        crate::synth::WaveformLandmarkRole::PlaybackEnd => {
-                                            exact.end
-                                        }
-                                        crate::synth::WaveformLandmarkRole::LoopStart => {
-                                            exact.loop_start
-                                        }
-                                        crate::synth::WaveformLandmarkRole::LoopEnd => {
-                                            exact.loop_end
-                                        }
-                                    };
-                                    frame as f32 / frames.max(1) as f32
-                                });
-                            prepared_value.or_else(|| match value(parameter_id) {
-                                Some(ParameterValue::Continuous(value)) => Some(*value as f32),
-                                _ => None,
-                            })
-                        };
-                    let correlated_asset_lifecycle = (state.sample_browser().patch_id()
+                    // Markers show the current descriptor-linked scalar
+                    // positions. Prepared frame landmarks predate later
+                    // scalar edits; only asset geometry belongs to that cache.
+                    // Missing or invalid positions remain absent, never a
+                    // fallback to an obsolete prepared position.
+                    let normalized = |parameter_id: &ParameterId| match value(parameter_id) {
+                        Some(ParameterValue::Continuous(value))
+                            if value.is_finite() && (0.0..=1.0).contains(value) =>
+                        {
+                            Some(*value as f32)
+                        }
+                        _ => None,
+                    };
+                    let correlated_asset_lifecycle = (state.file_browser().patch_id()
                         == created_patch_id
-                        && state.sample_browser().asset_parameter_id() == Some(asset_parameter_id))
-                    .then(|| state.sample_browser().lifecycle());
+                        && state.file_browser().asset_parameter_id() == Some(asset_parameter_id))
+                    .then(|| state.file_browser().lifecycle());
                     SemanticVisualizationData::Waveform {
                         asset: active_asset,
                         sample_rate: prepared.map(|value| value.sample_rate()),
@@ -3058,12 +3044,12 @@ fn project_visualizations<'a>(
                         landmarks: landmarks
                             .iter()
                             .filter_map(|landmark| {
-                                normalized(landmark.role(), landmark.parameter_id()).map(
-                                    |normalized_position| SemanticWaveformLandmark {
+                                normalized(landmark.parameter_id()).map(|normalized_position| {
+                                    SemanticWaveformLandmark {
                                         role: landmark.role(),
                                         normalized_position,
-                                    },
-                                )
+                                    }
+                                })
                             })
                             .collect(),
                         status: correlated_asset_lifecycle.map_or_else(
@@ -3075,7 +3061,11 @@ fn project_visualizations<'a>(
                                 }
                             },
                             |lifecycle| {
-                                if lifecycle == SampleAssetLifecycle::Ready && prepared.is_none() {
+                                if let Some(error) = state.file_browser().file_selection_failure() {
+                                    format!("{} · {error}", lifecycle.label())
+                                } else if lifecycle == SampleAssetLifecycle::Ready
+                                    && prepared.is_none()
+                                {
                                     "READY · WAVEFORM UNAVAILABLE".to_owned()
                                 } else {
                                     lifecycle.label().to_owned()
@@ -3614,7 +3604,7 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
                 && (path.origin().surface().is_main()
                     || (matches!(
                         data.active_surface,
-                        SurfaceId::PatchChoice | SurfaceId::SampleBrowser
+                        SurfaceId::PatchChoice | SurfaceId::FileBrowser
                     ) && matches!(
                         path.origin().surface(),
                         SurfaceId::PatchUtility | SurfaceId::PatchDetail
@@ -4820,28 +4810,28 @@ mod projection_enrichment_tests {
             .expect("the fixture opens the global MIDI device Settings surface");
 
         let sample_provider = crate::adapter::sample_capability::SampleCapability::new(
-            crate::synth::SampleAssetId::new("Factory.wav").unwrap(),
+            crate::synth::AssetFileId::new("Factory.wav").unwrap(),
         )
         .unwrap();
         let sample_registry =
             crate::synth::CapabilityRegistry::new(vec![sample_provider.descriptor()]).unwrap();
-        let folder = crate::synth::SampleFolderId::default();
-        let listing = crate::synth::SampleCatalogListing::new(
+        let folder = crate::synth::FileBrowserFolderId::default();
+        let listing = crate::synth::FileBrowserListing::new(
             folder.clone(),
             vec![
-                crate::synth::SampleBrowserRow::new(
+                crate::synth::FileBrowserRow::new(
                     "file:Alternate.wav",
                     "Alternate.wav",
-                    crate::synth::SampleBrowserRowKind::File(
-                        crate::synth::SampleAssetId::new("Alternate.wav").unwrap(),
+                    crate::synth::FileBrowserRowKind::File(
+                        crate::synth::AssetFileId::new("Alternate.wav").unwrap(),
                     ),
                     Some(128),
                 )
                 .unwrap(),
-                crate::synth::SampleBrowserRow::new(
+                crate::synth::FileBrowserRow::new(
                     "cancel:",
                     "CANCEL — UNCHANGED",
-                    crate::synth::SampleBrowserRowKind::Cancel,
+                    crate::synth::FileBrowserRowKind::Cancel,
                     None,
                 )
                 .unwrap(),

@@ -897,6 +897,7 @@ fn commit_pending_topology(state: &mut AppState) {
         .expect("the fixture revision space is not exhausted");
     state
         .apply(AppEvent::TopologyPrepared {
+            prepared_visualization: None,
             request_id: correlation.request_id(),
             intent: correlation.intent().clone(),
             source_graph_revision: source,

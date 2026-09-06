@@ -3,6 +3,7 @@ pub mod app_state;
 pub mod default_session;
 pub mod engine_selection;
 pub mod event_record;
+pub mod file_browser_state;
 pub mod graphical_shell_projection;
 pub mod interaction_state;
 pub mod midi_device;
@@ -11,7 +12,6 @@ pub mod midi_scan_scheduler;
 pub mod patch_control_id;
 pub mod patch_page_projection;
 pub mod patch_position_id;
-pub mod sample_browser_state;
 pub mod saved_session;
 pub mod semantic_action;
 pub mod semantic_focus;
@@ -43,6 +43,10 @@ pub use engine_selection::{
 pub use event_record::{
     AudioEffect, EmittedEvent, EventDirection, EventInput, EventOutcome, EventRecord,
     EventRecordError, EventSource, MidiInput, MidiKind, PatchInput,
+};
+pub use file_browser_state::{
+    AssetImportRequest, AssetImportResult, FileBrowserState, SampleAssetLifecycle,
+    SamplePreviewState,
 };
 pub use graphical_shell_projection::{
     GraphicalShellProjection, GraphicalShellProjectionError, ShellContextLine, ShellFooter,
@@ -78,7 +82,6 @@ pub use patch_page_projection::{
     EMPTY_OCCUPANCY_CHOICE_ID,
 };
 pub use patch_position_id::PatchPositionId;
-pub use sample_browser_state::{SampleAssetLifecycle, SampleBrowserState, SamplePreviewState};
 pub use saved_session::{
     PreparedSavedSession, SavedSession, SavedSessionError, SavedSessionRestoreError,
     SAVED_SESSION_VERSION,

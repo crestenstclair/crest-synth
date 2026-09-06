@@ -1,19 +1,87 @@
 use crate::adapter::wav_sample_decoder::WavSampleDecoder;
 use crate::synth::{
-    SampleAssetCatalogPort, SampleAssetError, SampleAssetId, SampleBrowserRow,
-    SampleBrowserRowKind, SampleCatalogListing, SampleFolderId, MAX_SAMPLE_SOURCE_BYTES,
+    AssetFileId, FileBrowserFolderId, FileBrowserListing, FileBrowserRowKind,
+    SampleAssetCatalogPort, SampleAssetError, SampleDecoderPort, MAX_SAMPLE_SOURCE_BYTES,
 };
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
-/// Configured library-root filesystem adapter with no native dialog surface.
+/// Library-relative Sample assets, using the shared in-app file browser.
 #[derive(Clone, Debug)]
 pub struct FilesystemSampleCatalog {
     root: PathBuf,
+    browser: crate::adapter::filesystem_file_browser::FilesystemFileBrowser,
 }
 
 impl FilesystemSampleCatalog {
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Validates one explicitly selected file before publishing a stable copy.
+    /// Existing library files retain their identity; imports never overwrite.
+    pub fn import_file(&self, source: &Path) -> Result<AssetFileId, SampleAssetError> {
+        let source = source
+            .canonicalize()
+            .map_err(|_| SampleAssetError::Unavailable)?;
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(SampleAssetError::InvalidRelativeId)?;
+        let candidate = AssetFileId::new(name)?;
+        let bytes = read_sample_path(&source)?;
+        WavSampleDecoder.decode(&candidate, &bytes)?;
+        if let Ok(relative) = source.strip_prefix(&self.root) {
+            return AssetFileId::new(
+                relative
+                    .to_str()
+                    .ok_or(SampleAssetError::InvalidRelativeId)?
+                    .replace('\\', "/"),
+            );
+        }
+        let import_root = self.root.join("Imported");
+        std::fs::create_dir_all(&import_root).map_err(|_| SampleAssetError::Unavailable)?;
+        self.resolve("Imported")?;
+        let stem = source
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or(SampleAssetError::InvalidRelativeId)?;
+        for suffix in 0..10_000 {
+            let name = if suffix == 0 {
+                name.to_owned()
+            } else {
+                format!("{stem}-{suffix}.wav")
+            };
+            let id = AssetFileId::new(format!("Imported/{name}"))?;
+            let path = import_root.join(name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    if file
+                        .write_all(&bytes)
+                        .and_then(|_| file.sync_all())
+                        .is_err()
+                    {
+                        let _ = std::fs::remove_file(path);
+                        return Err(SampleAssetError::Unavailable);
+                    }
+                    return Ok(id);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if self.read(&id).is_ok_and(|existing| existing == bytes) {
+                        return Ok(id);
+                    }
+                }
+                Err(_) => return Err(SampleAssetError::Unavailable),
+            }
+        }
+        Err(SampleAssetError::Unavailable)
+    }
+
     pub fn new(root: impl AsRef<Path>) -> Result<Self, SampleAssetError> {
         let root = root
             .as_ref()
@@ -22,135 +90,116 @@ impl FilesystemSampleCatalog {
         if !root.is_dir() {
             return Err(SampleAssetError::Unavailable);
         }
-        Ok(Self { root })
+        let browser = crate::adapter::filesystem_file_browser::FilesystemFileBrowser::new(&root)?;
+        Ok(Self { root, browser })
+    }
+
+    pub fn with_user_locations(mut self) -> Self {
+        self.browser = self.browser.with_user_locations();
+        self
+    }
+
+    pub fn import_browser_asset(
+        &self,
+        asset: &AssetFileId,
+    ) -> Result<AssetFileId, SampleAssetError> {
+        self.import_file(&self.browser.resolve(asset.as_str())?)
     }
 
     fn resolve(&self, relative: &str) -> Result<PathBuf, SampleAssetError> {
-        let joined = if relative.is_empty() {
-            self.root.clone()
-        } else {
-            self.root.join(relative)
-        };
-        let canonical = joined
-            .canonicalize()
-            .map_err(|_| SampleAssetError::Unavailable)?;
-        if !canonical.starts_with(&self.root) {
-            return Err(SampleAssetError::PathEscape);
-        }
-        Ok(canonical)
-    }
-
-    fn child_id(folder: &SampleFolderId, name: &str) -> String {
-        if folder.as_str().is_empty() {
-            name.to_owned()
-        } else {
-            format!("{}/{}", folder.as_str(), name)
-        }
+        self.browser.resolve(relative)
     }
 }
 
 impl SampleAssetCatalogPort for FilesystemSampleCatalog {
-    fn list(&self, folder: &SampleFolderId) -> Result<SampleCatalogListing, SampleAssetError> {
-        let path = self.resolve(folder.as_str())?;
-        if !path.is_dir() {
-            return Err(SampleAssetError::Unavailable);
-        }
-        let mut folders = Vec::new();
-        let mut files = Vec::new();
-        for entry in std::fs::read_dir(path).map_err(|_| SampleAssetError::Unavailable)? {
-            let entry = entry.map_err(|_| SampleAssetError::Unavailable)?;
-            let Some(name) = entry.file_name().to_str().map(str::to_owned) else {
-                continue;
-            };
-            if name.is_empty() || name == "." || name == ".." || name.contains('/') {
-                continue;
-            }
-            let relative = Self::child_id(folder, &name);
-            let canonical = self.resolve(&relative)?;
-            if canonical.is_dir() {
-                let id = SampleFolderId::new(relative)?;
-                folders.push(SampleBrowserRow::new(
-                    format!("folder:{}", id.as_str()),
-                    name,
-                    SampleBrowserRowKind::Folder(id),
-                    None,
-                )?);
-            } else if canonical.is_file()
-                && canonical
-                    .extension()
-                    .and_then(|extension| extension.to_str())
-                    .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
-            {
-                let bytes = canonical
-                    .metadata()
-                    .map_err(|_| SampleAssetError::Unavailable)?
-                    .len();
-                let id = SampleAssetId::new(relative)?;
+    fn list(&self, folder: &FileBrowserFolderId) -> Result<FileBrowserListing, SampleAssetError> {
+        let listing = self.browser.list(folder, crate::synth::AssetKind::Sample)?;
+        let rows = listing
+            .rows()
+            .iter()
+            .cloned()
+            .map(|row| {
+                let FileBrowserRowKind::File(id) = row.kind() else {
+                    return Ok(row);
+                };
                 let metadata = self
-                    .read(&id)
-                    .and_then(|source| WavSampleDecoder::metadata(&id, &source));
-                files.push(
-                    SampleBrowserRow::new(
-                        format!("file:{id}"),
-                        name,
-                        SampleBrowserRowKind::File(id),
-                        Some(bytes),
-                    )?
-                    .with_metadata(metadata)?,
-                );
-            }
-        }
-        let key = |row: &SampleBrowserRow| (row.label().to_lowercase(), row.label().to_owned());
-        folders.sort_by_key(&key);
-        files.sort_by_key(&key);
-        let mut rows = Vec::new();
-        if let Some(parent) = folder.parent() {
-            rows.push(SampleBrowserRow::new(
-                format!("parent:{}", folder.as_str()),
-                "..",
-                SampleBrowserRowKind::Parent(parent),
-                None,
-            )?);
-        }
-        rows.extend(folders);
-        rows.extend(files);
-        rows.push(SampleBrowserRow::new(
-            format!("cancel:{}", folder.as_str()),
-            "CANCEL — UNCHANGED",
-            SampleBrowserRowKind::Cancel,
-            None,
-        )?);
-        SampleCatalogListing::new(folder.clone(), rows)
+                    .read(id)
+                    .and_then(|bytes| WavSampleDecoder::metadata(id, &bytes));
+                row.with_metadata(metadata)
+            })
+            .collect::<Result<Vec<_>, SampleAssetError>>()?;
+        FileBrowserListing::new(folder.clone(), rows)
     }
 
-    fn read(&self, asset: &SampleAssetId) -> Result<Vec<u8>, SampleAssetError> {
+    fn read(&self, asset: &AssetFileId) -> Result<Vec<u8>, SampleAssetError> {
         let path = self.resolve(asset.as_str())?;
-        if !path.is_file() {
-            return Err(SampleAssetError::Unavailable);
+        read_sample_path(&path)
+    }
+}
+
+fn read_sample_path(path: &Path) -> Result<Vec<u8>, SampleAssetError> {
+    if !path.is_file() {
+        return Err(SampleAssetError::Unavailable);
+    }
+    let length = path
+        .metadata()
+        .map_err(|_| SampleAssetError::Unavailable)?
+        .len();
+    if length == 0 {
+        #[cfg(target_os = "macos")]
+        if is_dropbox_placeholder(path)? {
+            return Err(SampleAssetError::DownloadRequired);
         }
-        let length = path
-            .metadata()
-            .map_err(|_| SampleAssetError::Unavailable)?
-            .len();
-        if length > MAX_SAMPLE_SOURCE_BYTES {
-            return Err(SampleAssetError::SourceTooLarge);
-        }
-        let capacity = usize::try_from(length).map_err(|_| SampleAssetError::SourceTooLarge)?;
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(capacity)
-            .map_err(|_| SampleAssetError::AllocationFailed)?;
-        File::open(path)
-            .map_err(|_| SampleAssetError::Unavailable)?
-            .take(MAX_SAMPLE_SOURCE_BYTES + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| SampleAssetError::Unavailable)?;
-        if u64::try_from(bytes.len()).map_err(|_| SampleAssetError::SourceTooLarge)?
-            > MAX_SAMPLE_SOURCE_BYTES
-        {
-            return Err(SampleAssetError::SourceTooLarge);
-        }
-        Ok(bytes)
+        return Err(SampleAssetError::EmptyFile);
+    }
+    if length > MAX_SAMPLE_SOURCE_BYTES {
+        return Err(SampleAssetError::SourceTooLarge);
+    }
+    let capacity = usize::try_from(length).map_err(|_| SampleAssetError::SourceTooLarge)?;
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(capacity)
+        .map_err(|_| SampleAssetError::AllocationFailed)?;
+    File::open(path)
+        .map_err(|_| SampleAssetError::Unavailable)?
+        .take(MAX_SAMPLE_SOURCE_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| SampleAssetError::Unavailable)?;
+    if u64::try_from(bytes.len()).map_err(|_| SampleAssetError::SourceTooLarge)?
+        > MAX_SAMPLE_SOURCE_BYTES
+    {
+        return Err(SampleAssetError::SourceTooLarge);
+    }
+    Ok(bytes)
+}
+
+/// Legacy Dropbox online-only files can read successfully as zero bytes. The
+/// provider marker distinguishes them from empty local files; downloaded WAVs
+/// bypass this check even if Dropbox retains the attribute.
+#[cfg(target_os = "macos")]
+fn is_dropbox_placeholder(path: &Path) -> Result<bool, SampleAssetError> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())
+        .map_err(|_| SampleAssetError::InvalidRelativeId)?;
+    // SAFETY: Names are NUL-terminated and live for the call. A null buffer and
+    // zero size request only the attribute length; no audio or attribute value
+    // is read. Filesystem access remains outside the audio callback.
+    let length = unsafe {
+        libc::getxattr(
+            path.as_ptr(),
+            c"com.dropbox.placeholder".as_ptr(),
+            std::ptr::null_mut(),
+            0,
+            0,
+            0,
+        )
+    };
+    if length >= 0 {
+        return Ok(true);
+    }
+    match std::io::Error::last_os_error().raw_os_error() {
+        Some(libc::ENOATTR | libc::ENOTSUP) => Ok(false),
+        _ => Err(SampleAssetError::Unavailable),
     }
 }
 
@@ -158,12 +207,87 @@ impl SampleAssetCatalogPort for FilesystemSampleCatalog {
 mod tests {
     use super::FilesystemSampleCatalog;
     use crate::synth::{
-        SampleAssetCatalogPort, SampleAssetError, SampleAssetId, SampleBrowserRowKind,
-        SampleFolderId,
+        AssetFileId, FileBrowserFolderId, FileBrowserRowKind, SampleAssetCatalogPort,
+        SampleAssetError,
     };
     use std::path::PathBuf;
 
     struct FixtureRoot(PathBuf);
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn dropbox_placeholder_reports_download_required_and_import_retries_after_download() {
+        use std::os::unix::ffi::OsStrExt;
+
+        let fixture = FixtureRoot::new();
+        let library = fixture.0.join("Library");
+        std::fs::create_dir(&library).unwrap();
+        let catalog = FilesystemSampleCatalog::new(&library).unwrap();
+        let source = fixture.0.join("Cloud.wav");
+        std::fs::write(&source, []).unwrap();
+        let path = std::ffi::CString::new(source.as_os_str().as_bytes()).unwrap();
+        let marker = b"placeholder fixture";
+        // SAFETY: Both names are NUL-terminated, and marker is readable for its
+        // full length. Only this test's temporary file is modified.
+        assert_eq!(
+            unsafe {
+                libc::setxattr(
+                    path.as_ptr(),
+                    c"com.dropbox.placeholder".as_ptr(),
+                    marker.as_ptr().cast(),
+                    marker.len(),
+                    0,
+                    0,
+                )
+            },
+            0
+        );
+
+        let error = catalog.import_file(&source).unwrap_err();
+        assert_eq!(error, SampleAssetError::DownloadRequired);
+        assert_eq!(error.to_string(), "file is not downloaded; choose Make available offline in your cloud storage app, then select it again");
+        assert!(!library.join("Imported").exists());
+        let source_catalog = FilesystemSampleCatalog::new(&fixture.0).unwrap();
+        let listing = source_catalog
+            .list(&FileBrowserFolderId::default())
+            .unwrap();
+        let row = listing
+            .rows()
+            .iter()
+            .find(|row| row.label() == "Cloud.wav")
+            .unwrap();
+        assert_eq!(row.metadata(), Some(&Err(error)));
+        assert_eq!(
+            source_catalog.read(&AssetFileId::new("Cloud.wav").unwrap()),
+            Err(error)
+        );
+
+        // A downloaded file may retain provider metadata. Actual audio must win.
+        let wave = mono_pcm16_wave();
+        std::fs::write(&source, &wave).unwrap();
+        let imported = catalog.import_file(&source).unwrap();
+        assert_eq!(imported.as_str(), "Imported/Cloud.wav");
+        assert_eq!(catalog.read(&imported).unwrap(), wave);
+        let listing = source_catalog
+            .list(&FileBrowserFolderId::default())
+            .unwrap();
+        assert!(listing
+            .rows()
+            .iter()
+            .find(|row| row.label() == "Cloud.wav")
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .is_ok());
+
+        let empty = fixture.0.join("Empty.wav");
+        std::fs::write(&empty, []).unwrap();
+        assert_eq!(
+            catalog.import_file(&empty),
+            Err(SampleAssetError::EmptyFile)
+        );
+        assert!(!library.join("Imported/Empty.wav").exists());
+    }
 
     fn mono_pcm16_wave() -> Vec<u8> {
         let mut bytes = Vec::new();
@@ -206,10 +330,49 @@ mod tests {
     }
 
     #[test]
+    fn import_validates_before_writing_and_never_overwrites_another_asset() {
+        let root = FixtureRoot::new();
+        let catalog = FilesystemSampleCatalog::new(&root.0).unwrap();
+        let external = root.0.with_extension("external");
+        std::fs::create_dir_all(&external).unwrap();
+        let path = external.join("Picked.wav");
+        std::fs::write(&path, b"not a WAV").unwrap();
+        assert_eq!(
+            catalog.import_file(&path),
+            Err(SampleAssetError::UnsupportedContainer)
+        );
+        assert!(!root.0.join("Imported").exists());
+        std::fs::write(&path, mono_pcm16_wave()).unwrap();
+        let first = catalog.import_file(&path).unwrap();
+        assert_eq!(first.as_str(), "Imported/Picked.wav");
+        assert_eq!(
+            catalog.import_file(&path).unwrap(),
+            first,
+            "same content reuses its stable copy"
+        );
+        let mut changed = mono_pcm16_wave();
+        *changed.last_mut().unwrap() = 1;
+        std::fs::write(&path, &changed).unwrap();
+        let second = catalog.import_file(&path).unwrap();
+        assert_ne!(first, second);
+        assert_eq!(catalog.read(&first).unwrap(), mono_pcm16_wave());
+        assert_eq!(catalog.read(&second).unwrap(), changed);
+        assert_eq!(
+            catalog.import_file(&root.0.join(first.as_str())).unwrap(),
+            first
+        );
+        std::fs::remove_dir_all(external).unwrap();
+        assert!(
+            catalog.read(&first).is_ok(),
+            "the original external file is no longer required"
+        );
+    }
+
+    #[test]
     fn listing_is_stable_folder_first_and_ids_are_library_relative() {
         let root = FixtureRoot::new();
         let catalog = FilesystemSampleCatalog::new(&root.0).unwrap();
-        let listing = catalog.list(&SampleFolderId::default()).unwrap();
+        let listing = catalog.list(&FileBrowserFolderId::default()).unwrap();
         let labels = listing
             .rows()
             .iter()
@@ -221,7 +384,7 @@ mod tests {
         );
         assert!(matches!(
             listing.rows()[0].kind(),
-            SampleBrowserRowKind::Folder(folder) if folder.as_str() == "Drums"
+            FileBrowserRowKind::Folder(folder) if folder.as_str() == "Drums"
         ));
         let alpha = &listing.rows()[1];
         let metadata = alpha
@@ -238,7 +401,7 @@ mod tests {
             Some(Err(SampleAssetError::UnsupportedContainer))
         ));
         let bytes = catalog
-            .read(&SampleAssetId::new("Drums/kick.wav").unwrap())
+            .read(&AssetFileId::new("Drums/kick.wav").unwrap())
             .unwrap();
         assert_eq!(bytes, b"kick");
     }
@@ -253,11 +416,11 @@ mod tests {
         symlink(&outside, root.0.join("escape.wav")).unwrap();
         let catalog = FilesystemSampleCatalog::new(&root.0).unwrap();
         assert_eq!(
-            catalog.read(&SampleAssetId::new("escape.wav").unwrap()),
+            catalog.read(&AssetFileId::new("escape.wav").unwrap()),
             Err(SampleAssetError::PathEscape)
         );
         assert_eq!(
-            SampleAssetId::new("../outside.wav"),
+            AssetFileId::new("../outside.wav"),
             Err(SampleAssetError::InvalidRelativeId)
         );
         let _ = std::fs::remove_file(outside);

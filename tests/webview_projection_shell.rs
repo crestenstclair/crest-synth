@@ -122,7 +122,7 @@ use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::patch_output::PatchOutput;
 use crest_synth::real_time::{AudioObservationSnapshot, GraphRevision};
 use crest_synth::shell::density::{
-    RepresentativeViewport, ResponsiveLayoutMode, ResponsiveShellContract,
+    generated_resize_widths, RepresentativeViewport, ResponsiveLayoutMode, ResponsiveShellContract,
 };
 use crest_synth::shell::webview::meter_channel::{
     MeterChannel, MeterEmit, METER_EVENT, METER_INTERVAL, METER_RATE_HZ,
@@ -140,11 +140,11 @@ use crest_synth::shell::{
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityAvailability, CapabilityDescriptor, CapabilityId, CapabilityRegistry,
+    AssetFileId, CapabilityAvailability, CapabilityDescriptor, CapabilityId, CapabilityRegistry,
     CapabilitySection, DescriptorDefaultConfigFactory, EffectCapabilityDescriptor,
-    EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, InstrumentCapabilityProvider,
-    InstrumentConfig, Patch, SampleAssetId, SampleBrowserRow, SampleBrowserRowKind,
-    SampleCatalogListing, SampleEncoding, SampleFolderId, SampleMetadata,
+    EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, FileBrowserFolderId,
+    FileBrowserListing, FileBrowserRow, FileBrowserRowKind, InstrumentCapabilityProvider,
+    InstrumentConfig, Patch, SampleEncoding, SampleMetadata,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -157,6 +157,14 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crest_synth::shell::webview::projection_channel::PAINTED_EVENT;
+
+#[path = "support/phase03_visual_evidence.rs"]
+mod phase03_visual_evidence_support;
+use phase03_visual_evidence_support::native_responsive_observation;
+#[path = "support/sample_detail_fixtures.rs"]
+mod sample_detail_fixtures;
+#[path = "support/sample_detail_native.rs"]
+mod sample_detail_native;
 
 /// The harness-only event the driver uses to pull `renderObservation`
 /// payloads and page-side statistics back out of the page.
@@ -507,6 +515,7 @@ fn production_empty_patch_activating_state() -> AppState {
     let correlation = state.engine_selection().correlation().unwrap().clone();
     state
         .apply(AppEvent::TopologyPrepared {
+            prepared_visualization: None,
             request_id: correlation.request_id(),
             intent: correlation.intent().clone(),
             source_graph_revision: correlation.source_graph_revision(),
@@ -1201,8 +1210,8 @@ fn production_patch_detail_unavailable_state() -> AppState {
     state
 }
 
-fn production_sample_browser_state() -> AppState {
-    let provider = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
+fn production_file_browser_state() -> AppState {
+    let provider = SampleCapability::new(AssetFileId::new("Factory.wav").unwrap()).unwrap();
     let patch = Patch::new(
         PatchId::new(1).unwrap(),
         "Sample Browser Fixture".to_owned(),
@@ -1210,19 +1219,19 @@ fn production_sample_browser_state() -> AppState {
         MidiChannel::new(0).unwrap(),
         PatchOutput::default(),
     );
-    let folder = SampleFolderId::default();
-    let listing = SampleCatalogListing::new(
+    let folder = FileBrowserFolderId::default();
+    let listing = FileBrowserListing::new(
         folder.clone(),
         vec![
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
                 "file:Preview.wav",
                 "Preview.wav",
-                SampleBrowserRowKind::File(SampleAssetId::new("Preview.wav").unwrap()),
+                FileBrowserRowKind::File(AssetFileId::new("Preview.wav").unwrap()),
                 Some(4_096),
             )
             .unwrap()
             .with_metadata(Ok(SampleMetadata::new(
-                SampleAssetId::new("Preview.wav").unwrap(),
+                AssetFileId::new("Preview.wav").unwrap(),
                 4_096,
                 48_000,
                 2,
@@ -1232,10 +1241,19 @@ fn production_sample_browser_state() -> AppState {
             )
             .unwrap()))
             .unwrap(),
-            SampleBrowserRow::new(
+            FileBrowserRow::new(
+                "file:Cloud.wav",
+                "Cloud.wav",
+                FileBrowserRowKind::File(AssetFileId::new("@home/Dropbox/Cloud.wav").unwrap()),
+                Some(0),
+            )
+            .unwrap()
+            .with_metadata(Err(crest_synth::synth::SampleAssetError::DownloadRequired))
+            .unwrap(),
+            FileBrowserRow::new(
                 "cancel:",
                 "CANCEL — UNCHANGED",
-                SampleBrowserRowKind::Cancel,
+                FileBrowserRowKind::Cancel,
                 None,
             )
             .unwrap(),
@@ -1261,7 +1279,7 @@ fn production_sample_browser_state() -> AppState {
 /// reducer/projector disabled state rather than equating read-only with
 /// disabled.
 fn production_sample_disabled_detail_state() -> AppState {
-    let provider = SampleCapability::new(SampleAssetId::new("Factory.wav").unwrap()).unwrap();
+    let provider = SampleCapability::new(AssetFileId::new("Factory.wav").unwrap()).unwrap();
     let patch = Patch::new(
         PatchId::new(1).unwrap(),
         "Disabled Dependency Fixture".to_owned(),
@@ -1448,40 +1466,24 @@ fn check_state_fidelity(
     // text equals a fresh serialization of the projector's model through the
     // identical serde route. Any webview-only struct, trimmed field, or
     // reordered value in the emit path lands here.
-    let independent = serde_json::to_string(
-        &serde_json::to_value(model).expect("the projector's model converts to a JSON value"),
-    )
-    .expect("the projector's model serializes to JSON text");
+    let model_value =
+        serde_json::to_value(model).expect("the projector's model converts to a JSON value");
+    let independent =
+        serde_json::to_string(&model_value).expect("the projector's model serializes to JSON text");
     assert_eq!(
         emitted_bytes, independent,
         "{label}: the emit path's document must be byte-identical to the projector's serialization"
     );
 
-    // Byte identity against the projector's own direct `to_string`,
-    // canonicalized through `serde_json::Value`. (serde_json maps hold keys
-    // in sorted order, so the struct-declaration-order text is canonicalized
-    // before the byte comparison; values and keys are untouched — a fork of
-    // any kind still lands here.)
-    let direct = serde_json::to_string(model)
-        .expect("the projector's model serializes directly to JSON text");
-    let direct_canonical = serde_json::to_string(
-        &serde_json::from_str::<Value>(&direct).expect("the projector's text parses"),
-    )
-    .expect("the canonicalized projector text serializes");
-    assert_eq!(
-        emitted_bytes, direct_canonical,
-        "{label}: the emit path's bytes must equal the canonicalized bytes of \
-         serde_json::to_string of the projector's model"
-    );
-
     // Structural round-trip: the emitted string parses back into a Value
     // equal to the model's own serialized Value — the declared anti-fork
     // assertion ("any webview-only struct in the emit path fails this
-    // section by construction").
+    // section by construction"). Use the production Value route: direct
+    // struct-to-text serialization prints shortest f32 decimals, whereas
+    // Value widens f32 to f64. Those valid encodings need not be byte-identical
+    // (for example 0.7845961 versus 0.7845960855484009).
     let round_tripped: Value =
         serde_json::from_str(&emitted_bytes).expect("the emitted document round-trips");
-    let model_value: Value =
-        serde_json::from_str(&direct).expect("the projector's document round-trips");
     assert_eq!(
         round_tripped, model_value,
         "{label}: the emitted document must round-trip into a Value equal to the model's"
@@ -1669,10 +1671,10 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         "PATCH two-section FX Detail",
     );
     let mut sample_channel = ProjectionChannel::new();
-    let (patch_generation_f, patch_sample_browser) = check_state_fidelity(
+    let (patch_generation_f, patch_file_browser) = check_state_fidelity(
         &projector,
         &mut sample_channel,
-        &production_sample_browser_state(),
+        &production_file_browser_state(),
         "PATCH state F (Sample Browser open)",
     );
     let mut disabled_detail_channel = ProjectionChannel::new();
@@ -1980,7 +1982,7 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
          plus eight Detail shape/position fixtures, emit path byte-identical + \
          structural round-trip + declared key surface)"
     );
-    FidelityEvidence {
+    let mut evidence = FidelityEvidence {
         document_a,
         mixer_inspector_document,
         patch_documents: vec![
@@ -2004,7 +2006,7 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
             ("patch-effect-position-2", patch_effect_position_2),
             ("patch-effect-short-detail", patch_effect_short_detail),
             ("patch-effect-long-detail", patch_effect_long_detail),
-            ("patch-sample-browser", patch_sample_browser),
+            ("patch-sample-browser", patch_file_browser),
             ("patch-sample-disabled-detail", patch_sample_disabled_detail),
             ("patch-maximum-content", patch_maximum_content),
             ("patch-loading", patch_loading),
@@ -2065,7 +2067,13 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         ],
         zero_level_document,
         patch_geometry_document,
+    };
+    for (label, state) in sample_detail_fixtures::sample_detail_states() {
+        let (_, bytes) =
+            check_state_fidelity(&projector, &mut ProjectionChannel::new(), &state, label);
+        evidence.patch_documents.push((label, bytes));
     }
+    evidence
 }
 
 // ---------------------------------------------------------------------------
@@ -4041,11 +4049,40 @@ fn evidence_dir() -> PathBuf {
 
 fn screenshot(name: &str) -> PathBuf {
     let path = evidence_dir().join(name);
-    let _ = Command::new("screencapture")
+    let captured = Command::new("screencapture")
         .args(["-x", &path.to_string_lossy()])
         .status();
-    println!("  evidence screenshot: {}", path.display());
+    if captured.is_ok_and(|status| status.success()) && path.is_file() {
+        println!("  evidence screenshot: {}", path.display());
+    } else {
+        println!("  desktop screenshot unavailable: {name}");
+    }
     path
+}
+
+fn sample_capture(
+    window: &tauri::WebviewWindow,
+    name: &str,
+    document: &str,
+    observation: &Value,
+) -> Result<(), String> {
+    let path = evidence_dir().join(name);
+    sample_detail_native::capture(window, &path)?;
+    let evidence = native_responsive_observation(document, observation, 0, 0)?;
+    std::fs::write(
+        path.with_extension("observation.json"),
+        serde_json::to_vec_pretty(observation).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    std::fs::write(
+        path.with_extension("evidence.json"),
+        serde_json::to_vec_pretty(&evidence).map_err(|error| error.to_string())?,
+    )
+    .map_err(|error| error.to_string())?;
+    std::fs::write(path.with_extension("semantic.json"), document)
+        .map_err(|error| error.to_string())?;
+    println!("  native Sample capture: {}", path.display());
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -4333,6 +4370,103 @@ fn observe_render(
         .get("observation")
         .cloned()
         .ok_or_else(|| format!("harness phase {tag:?} carried no observation"))
+}
+
+fn prove_manual_resize_drag(
+    window: &tauri::WebviewWindow,
+    receiver: &mpsc::Receiver<Value>,
+    document_json: &str,
+) -> Result<usize, String> {
+    let script = format!(
+        "(function () {{ var doc = {document_json}; \
+         if (window.__phase03ManualResizeListener) {{ \
+           window.removeEventListener('resize', window.__phase03ManualResizeListener); \
+         }} \
+         window.__phase03ManualResizeWidths = []; \
+         window.__phase03ManualResizeListener = function () {{ \
+           window.clearTimeout(window.__phase03ManualResizeTimer); \
+           window.__phase03ManualResizeTimer = window.setTimeout(function () {{ \
+             var observation = window.crest.renderObservation(doc); \
+             window.__phase03ManualResizeWidths.push(window.innerWidth); \
+             window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ \
+               phase: 'phase03-manual-resize', width: window.innerWidth, \
+               observation: observation \
+             }}); \
+           }}, 70); \
+         }}; \
+         window.addEventListener('resize', window.__phase03ManualResizeListener); \
+         window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ phase: 'phase03-manual-resize-ready' }}); \
+       }})();"
+    );
+    window
+        .eval(&script)
+        .map_err(|error| format!("installing manual resize observation failed: {error}"))?;
+    receive_phase(
+        receiver,
+        "phase03-manual-resize-ready",
+        Duration::from_secs(10),
+    )?;
+    println!(
+        "PHASE03 MANUAL RESIZE READY: drag the native window edge through at least five \
+         distinct widths spanning 120 CSS px; semantic input and reducer counts must stay zero"
+    );
+    // This is an explicitly operator-gated run. Leave enough time for the
+    // terminal-to-window handoff without weakening the five-width/span gate.
+    let deadline = Instant::now() + Duration::from_secs(300);
+    let mut widths = Vec::<f64>::new();
+    while Instant::now() < deadline {
+        match receiver.recv_timeout(Duration::from_millis(500)) {
+            Ok(message)
+                if message.get("phase").and_then(Value::as_str)
+                    == Some("phase03-manual-resize") =>
+            {
+                let width = message
+                    .get("width")
+                    .and_then(Value::as_f64)
+                    .ok_or_else(|| "manual resize observation names its width".to_owned())?;
+                let observation = message
+                    .get("observation")
+                    .ok_or_else(|| "manual resize observation carries page evidence".to_owned())?;
+                native_responsive_observation(document_json, observation, 0, 0)
+                    .map_err(|error| format!("manual resize evidence rejected: {error}"))?;
+                if widths.iter().all(|prior| (prior - width).abs() > 1.0) {
+                    widths.push(width);
+                }
+                let minimum = widths.iter().copied().reduce(f64::min).unwrap_or(width);
+                let maximum = widths.iter().copied().reduce(f64::max).unwrap_or(width);
+                if widths.len() >= 5 && maximum - minimum >= 120.0 {
+                    break;
+                }
+            }
+            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                return Err("manual resize observation channel disconnected".to_owned());
+            }
+        }
+    }
+    window
+        .eval(
+            "if (window.__phase03ManualResizeListener) { \
+             window.removeEventListener('resize', window.__phase03ManualResizeListener); \
+             window.__phase03ManualResizeListener = null; }",
+        )
+        .map_err(|error| format!("removing manual resize observation failed: {error}"))?;
+    let minimum = widths.iter().copied().reduce(f64::min).unwrap_or(0.0);
+    let maximum = widths.iter().copied().reduce(f64::max).unwrap_or(0.0);
+    if widths.len() < 5 || maximum - minimum < 120.0 {
+        return Err(format!(
+            "manual resize captured {} distinct widths spanning {:.1}px; need at least 5 and 120px",
+            widths.len(),
+            maximum - minimum
+        ));
+    }
+    println!(
+        "T024 manual native drag: PASS ({} distinct post-paint observations spanning \
+         {:.1}px; every manifest-complete record kept semantic input/reducer counts at zero)",
+        widths.len(),
+        maximum - minimum
+    );
+    Ok(widths.len())
 }
 
 fn apply_keyboard_gesture(
@@ -4678,6 +4812,7 @@ fn prove_native_empty_patch_input_journey(
     }
     state
         .apply(AppEvent::TopologyPrepared {
+            prepared_visualization: None,
             request_id: retry.request_id(),
             intent: retry.intent().clone(),
             source_graph_revision: source_revision,
@@ -5141,6 +5276,13 @@ fn assert_observation_structure(
     );
     assert_eq!(
         observation
+            .pointer("/focus/matchCount")
+            .and_then(Value::as_u64),
+        Some(1),
+        "{label}: exactly one painted target carries the semantic focus path"
+    );
+    assert_eq!(
+        observation
             .pointer("/focus/semanticVisible")
             .and_then(Value::as_bool),
         Some(true),
@@ -5338,8 +5480,8 @@ fn assert_observation_structure(
         "{label}: the Inspector cursor must name the focused track (got {cursor:?})"
     );
 
-    // Send controls remain in the semantic document but are intentionally not
-    // painted while their visual treatment is deferred.
+    // Every visible projected send is painted in canonical order, including
+    // the first row that owns focus on Inspector entry.
     let expected_sends: Vec<String> = document
         .get("surfaces")
         .and_then(Value::as_array)
@@ -5354,10 +5496,11 @@ fn assert_observation_structure(
                 .unwrap_or_default()
         })
         .filter(|control| {
-            control
-                .pointer("/path/controlId/id/kind")
-                .and_then(Value::as_str)
-                == Some("send")
+            control.get("visible").and_then(Value::as_bool) == Some(true)
+                && control
+                    .pointer("/path/controlId/id/kind")
+                    .and_then(Value::as_str)
+                    == Some("send")
                 && control
                     .pointer("/path/controlId/id/trackId")
                     .and_then(Value::as_u64)
@@ -5388,9 +5531,8 @@ fn assert_observation_structure(
         "{label}: the backend projection retains sends for the focused track"
     );
     assert_eq!(
-        painted_sends.len(),
-        0,
-        "{label}: deferred Inspector send visuals must stay hidden"
+        painted_sends, expected_sends,
+        "{label}: Inspector send rows match the projected visible send order"
     );
 
     let expected_routes: Vec<(String, String)> = inspector_surface
@@ -5442,13 +5584,7 @@ fn assert_observation_structure(
         .and_then(Value::as_array)
         .into_iter()
         .flatten()
-        .filter(|control| {
-            control.get("visible").and_then(Value::as_bool) == Some(true)
-                && control
-                    .pointer("/path/controlId/id/kind")
-                    .and_then(Value::as_str)
-                    != Some("send")
-        })
+        .filter(|control| control.get("visible").and_then(Value::as_bool) == Some(true))
         .map(|control| {
             control
                 .pointer("/path/controlId/id")
@@ -5466,7 +5602,7 @@ fn assert_observation_structure(
         .collect();
     assert_eq!(
         painted_control_order, expected_control_order,
-        "{label}: painted Inspector rows retain canonical return → global order"
+        "{label}: painted Inspector rows retain canonical send → return → global order"
     );
 
     // The persistent side region honors the authored floor.
@@ -5542,6 +5678,15 @@ fn assert_observation_structure(
 /// derived with the shipped product-condition precedence: a failed edit
 /// outranks an in-flight one. Focus/adjustment is observed separately because
 /// it remains visible while lifecycle or failure state is also present.
+fn asset_browser_admitted(control: &Value) -> bool {
+    control["kind"] == "asset"
+        && control["validActions"].as_array().is_some_and(|actions| {
+            actions
+                .iter()
+                .any(|action| action["action"]["kind"] == "openRelated")
+        })
+}
+
 fn expected_control_state(control: &Value, mode: &str) -> String {
     if control.get("error").is_some_and(|error| !error.is_null()) {
         return "error".to_owned();
@@ -5562,7 +5707,8 @@ fn expected_control_state(control: &Value, mode: &str) -> String {
         };
     }
     if control.get("enabled").and_then(Value::as_bool) == Some(true)
-        && control.get("editable").and_then(Value::as_bool) == Some(true)
+        && (control.get("editable").and_then(Value::as_bool) == Some(true)
+            || asset_browser_admitted(control))
     {
         "resting".to_owned()
     } else {
@@ -6091,7 +6237,7 @@ fn assert_patch_modal_composition(
     let browser = modal_surface
         .pointer("/summary/kind")
         .and_then(Value::as_str)
-        == Some("sampleBrowser");
+        == Some("fileBrowser");
     if !browser {
         let subject_control = modal_surface
             .pointer("/summary/subject/controlId")
@@ -6307,6 +6453,11 @@ fn assert_patch_modal_composition(
             "{label}: the last registry row is reachable at the list end"
         );
         assert_eq!(
+            observation.pointer("/reachability/workspace"),
+            modal.get("listReachability"),
+            "{label}: workspace reachability measures the scrollable option list"
+        );
+        assert_eq!(
             modal
                 .get("listHorizontalOverflowPx")
                 .and_then(Value::as_u64),
@@ -6392,6 +6543,19 @@ fn assert_patch_modal_composition(
         painted, expected,
         "{label}: modal rows reconcile by semantic data"
     );
+    for option in modal["options"].as_array().unwrap() {
+        if option["metadataState"] == "unavailable" {
+            let marker = option["state"].as_str().unwrap();
+            assert!(
+                marker.contains("UNAVAILABLE"),
+                "{label}: unavailable row marker"
+            );
+            assert!(
+                !marker.contains("INVALID"),
+                "{label}: missing bytes are not invalid audio"
+            );
+        }
+    }
     assert_eq!(
         painted
             .iter()
@@ -7055,9 +7219,39 @@ fn assert_patch_detail_composition(
         }),
         "{label}: projected Detail visualizations are explicitly outside focus order"
     );
-    for (painted, projected) in painted_visualizations.iter().zip(&expected_visualizations) {
+    let mut visualization_ids = HashSet::new();
+    for painted in painted_visualizations {
+        assert!(visualization_ids.insert(painted["id"].as_str().unwrap()));
+        let projected = expected_visualizations
+            .iter()
+            .find(|projected| projected["id"] == painted["id"])
+            .unwrap_or_else(|| panic!("{label}: painted visualization is declared"));
         assert_eq!(painted.get("id"), projected.get("id"));
         assert_eq!(painted.get("kind"), projected.pointer("/data/kind"));
+        if projected.pointer("/data/kind").and_then(Value::as_str) == Some("waveform") {
+            sample_detail_native::assert_waveform(detail, painted, &projected["data"], label);
+            let main = document["surfaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|surface| surface["id"] == "patchMain")
+                .unwrap();
+            let summary = &main["summary"];
+            if summary["kind"] == "patch" {
+                assert_eq!(
+                    observation["sampleIdentity"]["patch"],
+                    format!("PATCH {:02}", summary["patchId"].as_u64().unwrap())
+                );
+                assert_eq!(
+                    observation["sampleIdentity"]["name"],
+                    format!("/ {}", summary["patchName"].as_str().unwrap())
+                );
+            }
+            assert_eq!(
+                observation["footer"]["breadcrumb"],
+                format!("PATCH / DETAIL / {owner_value}")
+            );
+        }
         if projected.pointer("/data/kind").and_then(Value::as_str) != Some("envelope") {
             continue;
         }
@@ -7238,6 +7432,7 @@ fn assert_patch_detail_composition(
         .flatten()
         .filter(|control| {
             control.get("patchInteraction").and_then(Value::as_str) == Some("readOnly")
+                && !asset_browser_admitted(control)
         })
         .collect();
     // Every detail row carries the capability's declared interaction, so a
@@ -7279,8 +7474,23 @@ fn assert_patch_detail_composition(
         assert_eq!(
             declared,
             row.get("readOnly").and_then(Value::as_str) == Some("READ-ONLY"),
-            "{label}: the detail row {control} marks the capability's declared \
-             interaction in text, and only when it is declared (got {row:?})"
+            "{label}: the detail row {control} marks read-only only without an admitted browser action (got {row:?})"
+        );
+        let browsable = detail_surface["controls"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|candidate| {
+                candidate
+                    .pointer("/path/controlId/id")
+                    .and_then(Value::as_str)
+                    == Some(control)
+                    && asset_browser_admitted(candidate)
+            });
+        assert_eq!(
+            row["browse"] == "BROWSE",
+            browsable,
+            "{label}: {control} exposes its admitted asset browser action"
         );
     }
 }
@@ -7328,7 +7538,16 @@ fn drive_live_window(
         .filter(|(label, _)| label.starts_with("patch-empty") || *label == "patch-newly-created")
         .cloned()
         .collect::<Vec<_>>();
-    let patch_documents: &[(&'static str, String)] = if scoped_witness.option {
+    let sample_witness = std::env::var("CREST_WEBVIEW_SAMPLE_WITNESS").as_deref() == Ok("1");
+    let sample_documents = fidelity
+        .patch_documents
+        .iter()
+        .filter(|(label, _)| label.starts_with("patch-sample"))
+        .cloned()
+        .collect::<Vec<_>>();
+    let patch_documents: &[(&'static str, String)] = if sample_witness {
+        &sample_documents
+    } else if scoped_witness.option {
         &option_patch_documents
     } else if scoped_witness.empty_patch {
         &empty_patch_documents
@@ -7517,7 +7736,12 @@ fn drive_live_window(
             desktop_side,
             &format!("T024 desktop 1920x1080 {patch_label}"),
         );
-        screenshot(&format!("t024-{patch_label}-desktop-1920x1080.png"));
+        let name = format!("t024-{patch_label}-desktop-1920x1080.png");
+        if sample_witness && patch_document["activeSurface"] == "patchDetail" {
+            sample_capture(&window, &name, patch_bytes, &first)?;
+        } else {
+            screenshot(&name);
+        }
     }
 
     window
@@ -7712,14 +7936,21 @@ fn drive_live_window(
             standard_side,
             &format!("T024 standard 1280x800 {patch_label}"),
         );
-        screenshot(&format!("t024-{patch_label}-compact-1280x800.png"));
+        let name = format!("t024-{patch_label}-compact-1280x800.png");
+        if sample_witness && patch_document["activeSurface"] == "patchDetail" {
+            sample_capture(&window, &name, patch_bytes, &first)?;
+        } else {
+            screenshot(&name);
+        }
     }
 
     // Intermediate, Compact, and scaled-text witnesses reuse the exact same
     // accepted document. Resizing and text scaling are presentation-only:
     // generation, state hash, semantic focus, surfaces, and controls remain
     // the serialized document's, while painted geometry and mode may change.
-    let responsive_root = if scoped_witness.option {
+    let responsive_root = if sample_witness {
+        "patch-sample-root-focused"
+    } else if scoped_witness.option {
         "patch-engine-options-maximum"
     } else if scoped_witness.empty_patch {
         "patch-empty"
@@ -7793,6 +8024,96 @@ fn drive_live_window(
          reused one exact projection across Intermediate, Compact, and ScaledText; page resize \
          path exposes no semantic event and native shell exposes no reducer application path)"
     );
+
+    // Phase 03 extends the orientation-point fixtures with a generated width
+    // sweep. Its samples come from a range plus current reflow-threshold
+    // neighbors; there is no renderer resolution table and named Figma widths
+    // are not inputs. Every observation joins exact document bytes to the
+    // production page's paint acknowledgement and complete native evidence.
+    let generated_widths = generated_resize_widths(900.0, 1_800.0, 9);
+    if generated_widths.is_empty() {
+        return Err("the generated responsive width exploration is empty".to_owned());
+    }
+    let named_widths = [
+        RepresentativeViewport::WideReference,
+        RepresentativeViewport::StandardReference,
+        RepresentativeViewport::Intermediate,
+        RepresentativeViewport::Compact,
+        RepresentativeViewport::ScaledText,
+    ]
+    .map(RepresentativeViewport::fixture)
+    .map(|fixture| fixture.width_px);
+    if !generated_widths
+        .iter()
+        .any(|width| named_widths.iter().all(|named| width != named))
+    {
+        return Err("generated exploration contains only named viewport widths".to_owned());
+    }
+    let mut generated_modes = HashSet::new();
+    for (index, width) in generated_widths.iter().copied().enumerate() {
+        window
+            .set_size(tauri::LogicalSize::new(f64::from(width), 900.0))
+            .map_err(|error| format!("generated resize {index} to {width}px failed: {error}"))?;
+        window
+            .eval("document.documentElement.style.setProperty('--shell-text-scale', '1');")
+            .map_err(|error| {
+                format!("generated resize {index} reset text scale failed: {error}")
+            })?;
+        std::thread::sleep(Duration::from_millis(150));
+        assert_page_viewport_width(
+            &window,
+            receiver,
+            width,
+            &format!("phase03-generated-viewport-{index}"),
+        )?;
+        let observation = observe_render(
+            &window,
+            receiver,
+            root_bytes,
+            &format!("phase03-generated-render-{index}"),
+        )?;
+        let complete = native_responsive_observation(root_bytes, &observation, 0, 0)
+            .map_err(|error| format!("generated resize {index} evidence rejected: {error}"))?;
+        if complete.get("inputEventCount").and_then(Value::as_u64) != Some(0)
+            || complete
+                .get("reducerApplicationCount")
+                .and_then(Value::as_u64)
+                != Some(0)
+        {
+            return Err(format!(
+                "generated resize {index} recorded semantic input or reducer activity"
+            ));
+        }
+        assert_eq!(
+            observation.get("generation"),
+            root_document.get("generation")
+        );
+        assert_eq!(observation.get("stateHash"), root_document.get("stateHash"));
+        assert_patch_observation_structure(
+            &observation,
+            &root_document,
+            ResponsiveShellContract::get().side_track.minimum_px,
+            &format!("T024 generated width {width}px {root_label}"),
+        );
+        generated_modes.insert(ResponsiveLayoutMode::resolve(width));
+    }
+    if generated_modes.len() != 3 {
+        return Err(format!(
+            "generated exploration crossed {} responsive modes instead of all three",
+            generated_modes.len()
+        ));
+    }
+    println!(
+        "T024 generated native resize: PASS ({} widths from 900–1800 CSS px, including \
+         unauthored widths and both threshold neighborhoods, crossed all three observed \
+         reflows with complete paint/semantic/scale/target/overflow/scroll/compatibility \
+         evidence and zero semantic input or reducer applications)",
+        generated_widths.len()
+    );
+
+    if std::env::var("CREST_PHASE03_MANUAL_RESIZE").as_deref() == Ok("1") {
+        prove_manual_resize_drag(&window, receiver, root_bytes)?;
+    }
     window
         .eval("document.documentElement.style.setProperty('--shell-text-scale', '1');")
         .map_err(|error| format!("resetting text scale failed: {error}"))?;

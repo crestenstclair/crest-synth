@@ -1477,13 +1477,13 @@ where
         }
         let mut progress = StructuralProgress::default();
 
-        let next_sample_lifecycle = match self.state.sample_browser().lifecycle() {
+        let next_sample_lifecycle = match self.state.file_browser().lifecycle() {
             SampleAssetLifecycle::Loading => Some(SampleAssetLifecycle::Validating),
             SampleAssetLifecycle::Validating => Some(SampleAssetLifecycle::Preparing),
             _ => None,
         };
         if let (Some(request_id), Some(lifecycle)) = (
-            self.state.sample_browser().request_id(),
+            self.state.file_browser().request_id(),
             next_sample_lifecycle,
         ) {
             match self.dispatch_from(
@@ -1710,6 +1710,7 @@ where
                 let pending_candidate_config = candidate_config.clone();
                 let event = if correlation.intent().uses_topology_events() {
                     AppEvent::TopologyPrepared {
+                        prepared_visualization,
                         request_id: correlation.request_id(),
                         intent: correlation.intent().clone(),
                         source_graph_revision: correlation.source_graph_revision(),
@@ -1824,6 +1825,7 @@ where
         let mut future = self.state.clone();
         future
             .apply(AppEvent::TopologyPrepared {
+                prepared_visualization: None,
                 request_id: correlation.request_id(),
                 intent: correlation.intent().clone(),
                 source_graph_revision: correlation.source_graph_revision(),

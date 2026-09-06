@@ -439,7 +439,7 @@
       }
       return { name: "unknown", raw: modeName };
     }
-    if (control.enabled && control.editable) {
+    if (control.enabled && (control.editable || browsableAsset(control))) {
       return { name: "resting", raw: null };
     }
     return { name: "disabled", raw: null };
@@ -688,6 +688,16 @@
       // defect FR-014 closes (see cross-WP finding F-28, which counts
       // `activeCapabilityId` a serialization key).
       var engine = controlById(main, "patch.engine");
+      if (hasWaveform(surfaceByRole(model, "detail")) && !surfaceByRole(model, "modal")) {
+        return '<span class="type-label patch" data-role="sample-patch-number">' +
+          escapeHtml(summary && summary.kind === "patch"
+            ? "PATCH " + String(summary.patchId).padStart(2, "0") : "NEW PATCH") +
+          '</span><span class="type-heading" data-role="sample-patch-name">/ ' +
+          escapeHtml(summary && summary.kind === "patch" ? String(summary.patchName) : "DEFAULT") +
+          '</span><span class="spring"></span><span class="type-hint muted" data-role="sample-subject-annotation">' +
+          escapeHtml(engine ? controlValueText(engine) : UNAVAILABLE_MARK) +
+          ' · INSTRUMENT DETAIL</span>';
+      }
       metadata = summary && summary.kind === "patch"
         ? escapeHtml(String(summary.patchName)) +
           HINT_SEPARATOR +
@@ -1052,15 +1062,17 @@
     );
   }
 
-  // Whether the capability declared this row read-only.
-  //
-  // This is `patchInteraction`, not `editable`. `editable` answers "would the
-  // reducer accept an adjustment here, now" and is uniformly false on every
-  // detail row in this phase, so it discriminates nothing about the
-  // capability's own declaration; `patchInteraction` is that declaration,
-  // projected from its single producer.
+  // Asset assignment uses the admitted related-surface action, independently
+  // of scalar editability. Never label an accessible browser row read-only.
+  function browsableAsset(control) {
+    return control && control.kind === "asset" &&
+      (control.validActions || []).some(function (entry) {
+        return entry.action && entry.action.kind === "openRelated";
+      });
+  }
+
   function readOnly(control) {
-    return control && control.patchInteraction === "readOnly";
+    return control && control.patchInteraction === "readOnly" && !browsableAsset(control);
   }
 
   // One projected control as a subordinate or Utility row: label left, the state's
@@ -1096,6 +1108,7 @@
           '"';
       }
     }
+    var browse = browsableAsset(control);
     var locked = readOnly(control);
     // A read-only row says READ-ONLY rather than the generic "Locked": the
     // declaration is the more specific fact and both are the same mark slot.
@@ -1127,7 +1140,9 @@
       ? '<span class="prow-readonly type-hint muted" data-role="read-only">' +
         READ_ONLY_MARK +
         "</span>"
-      : "";
+      : browse
+        ? '<span class="type-hint" data-role="browse">BROWSE</span>'
+        : "";
     var indexed = ordinal !== null && ordinal !== undefined;
     var ordinalMarkup = indexed
       ? '<span class="prow-cursor type-label" aria-hidden="true">' +
@@ -1155,6 +1170,8 @@
       String(control.editable === true) +
       '" data-valid-action-count="' +
       String((control.validActions || []).length) +
+      '" data-browsable="' +
+      String(browse) +
       '"' +
       mixerAttributes +
       (control.patchInteraction
@@ -1415,6 +1432,12 @@
   // The semantic model supplies the descriptor-authored sections and their
   // control paths. Section and row order therefore remain projected facts;
   // this shell only arranges them.
+  function hasWaveform(surface) {
+    return Boolean(surface && (surface.visualizations || []).some(function (visualization) {
+      return visualization.data && visualization.data.kind === "waveform";
+    }));
+  }
+
   function detailShellHtml(model) {
     var detail = surfaceByRole(model, "detail");
     var controls = (detail && detail.controls) || [];
@@ -1501,12 +1524,20 @@
         "</section>";
     }
     var visualizationMarkup = "";
+    var waveformMarkup = "";
     var visualizations = (detail && detail.visualizations) || [];
     for (var visualizationIndex = 0; visualizationIndex < visualizations.length; visualizationIndex += 1) {
-      visualizationMarkup += detailVisualizationHtml(visualizations[visualizationIndex]);
+      var visualization = visualizations[visualizationIndex];
+      if (visualization.data && visualization.data.kind === "waveform") {
+        waveformMarkup += waveformAssetHtml(visualization.data, controls) +
+          detailVisualizationHtml(visualization);
+      } else {
+        visualizationMarkup += detailVisualizationHtml(visualization);
+      }
     }
     return (
-      '<div class="detail" id="detail" data-detail-kind="' +
+      '<div class="detail' + (waveformMarkup ? " has-waveform" : "") +
+      '" id="detail" data-detail-kind="' +
       escapeHtml(subjectKind) +
       '" data-patch-position="' +
       escapeHtml(String(patchPosition)) +
@@ -1521,6 +1552,7 @@
         ? ""
         : ' data-slot-position="' + String(slotPosition) + '"') +
       ">" +
+      waveformMarkup +
       '<header class="detail-title detail-header" data-role="detail-title">' +
       '<span class="type-label muted">' +
       escapeHtml(String((detail && detail.label) || "DETAIL")) +
@@ -1560,6 +1592,84 @@
       visualizationMarkup +
       "</div></div>"
     );
+  }
+
+  // The projected asset supplies identity; the associated control retains its
+  // sole focus target in descriptor order below the informative waveform.
+  function waveformAssetHtml(data, controls) {
+    var asset = data.asset;
+    var control = controls.find(function (candidate) {
+      return candidate.value && candidate.value.kind === "asset" &&
+        asset && candidate.value.value.locator === asset.locator;
+    });
+    return '<div class="detail-asset" data-role="detail-asset">' +
+      '<span class="type-label" data-role="detail-asset-label">' +
+      escapeHtml(control ? String(control.label) : "ASSET") +
+      '</span><span class="type-value" data-role="detail-asset-path">' +
+      escapeHtml(asset ? String(asset.locator) : UNAVAILABLE_MARK) +
+      '</span><span class="type-hint" data-role="detail-asset-status">' +
+      escapeHtml(String(data.status || UNAVAILABLE)) + '</span></div>';
+  }
+
+  function waveformHtml(data) {
+    var pairs = data.pairs || [];
+    var compatible = data.asset && Number.isInteger(data.frames) && data.frames > 0 &&
+      Number.isInteger(data.sampleRate) && data.sampleRate > 0 && pairs.length > 0 &&
+      pairs.every(function (pair) {
+        return [pair.leftMin, pair.leftMax, pair.rightMin, pair.rightMax].every(function (value) {
+          return typeof value === "number" && Number.isFinite(value) && value >= -1 && value <= 1;
+        }) && pair.leftMin <= pair.leftMax && pair.rightMin <= pair.rightMax;
+      });
+    var bars = "";
+    var markers = "";
+    var legend = "";
+    if (compatible) {
+      // Aggregate every prepared pair in each display bin, across both channels.
+      // Silent bins have zero height; no minimum amplitude is manufactured.
+      var stride = Math.max(1, Math.ceil(pairs.length / 192));
+      for (var index = 0; index < pairs.length; index += stride) {
+        var low = 1;
+        var high = -1;
+        for (var sample = index; sample < Math.min(index + stride, pairs.length); sample += 1) {
+          low = Math.min(low, pairs[sample].leftMin, pairs[sample].rightMin);
+          high = Math.max(high, pairs[sample].leftMax, pairs[sample].rightMax);
+        }
+        bars += '<i data-wave-top="' + ((1 - high) / 2).toFixed(6) +
+          '" data-wave-height="' + ((high - low) / 2).toFixed(6) + '"></i>';
+      }
+      var labels = {
+        playbackStart: "START", playbackEnd: "END",
+        loopStart: "LOOP IN", loopEnd: "LOOP OUT"
+      };
+      var landmarks = data.landmarks || [];
+      for (var landmarkIndex = 0; landmarkIndex < landmarks.length; landmarkIndex += 1) {
+        var landmark = landmarks[landmarkIndex];
+        var position = landmark.normalizedPosition;
+        if (typeof position !== "number" || !Number.isFinite(position) || position < 0 || position > 1) {
+          continue;
+        }
+        var label = labels[landmark.role] || String(landmark.role);
+        markers += '<b data-landmark="' + escapeHtml(String(landmark.role)) +
+          '" data-landmark-position="' + position.toFixed(6) +
+          '" aria-label="' + escapeHtml(label) + '"></b>';
+        legend += '<span data-landmark-label="' + escapeHtml(String(landmark.role)) +
+          '">' + escapeHtml(label) + ' ' + compactNumericText(position * 100, 0.1) + '%</span>';
+      }
+    }
+    var status = String(data.status || UNAVAILABLE);
+    return '<div class="waveform-region" data-waveform-state="' +
+      (compatible ? "available" : "unavailable") + '">' +
+      '<div class="waveform-legend type-hint" data-role="waveform-legend">' +
+      (legend || (compatible ? "LANDMARKS UNAVAILABLE" : "")) + '</div>' +
+      '<div class="waveform-shape" data-role="waveform-shape">' +
+      (compatible ? '<div class="waveform-bars">' + bars + '</div>' + markers :
+        '<span class="type-label muted">WAVEFORM UNAVAILABLE</span>') +
+      '</div><div class="waveform-reading type-hint">' +
+      '<span data-role="waveform-status">' + escapeHtml(status) + '</span>' +
+      (compatible ? '<span data-role="waveform-metadata">' +
+        escapeHtml(String(data.sampleRate)) + ' Hz · ' + escapeHtml(String(data.channels)) +
+        ' CH · ' + compactNumericText(data.frames / data.sampleRate, 0.001) + ' s</span>' : '') +
+      '</div></div>';
   }
 
   function detailVisualizationHtml(visualization) {
@@ -1607,38 +1717,7 @@
         releaseMaximumMilliseconds: releaseMaximumMilliseconds,
       });
     } else if (data.kind === "waveform") {
-      var pairs = data.pairs || [];
-      var bars = "";
-      var stride = Math.max(1, Math.ceil(pairs.length / 192));
-      for (var pairIndex = 0; pairIndex < pairs.length; pairIndex += stride) {
-        var pair = pairs[pairIndex];
-        var height = Math.max(
-          0.02,
-          Math.min(1, Number(pair.leftMax || 0) - Number(pair.leftMin || 0))
-        );
-        bars += '<i style="--wave-height:' + height.toFixed(6) + '"></i>';
-      }
-      var landmarks = "";
-      var landmarkValues = data.landmarks || [];
-      for (var landmarkIndex = 0; landmarkIndex < landmarkValues.length; landmarkIndex += 1) {
-        var landmark = landmarkValues[landmarkIndex];
-        landmarks +=
-          '<b data-landmark="' +
-          escapeHtml(String(landmark.role)) +
-          '" style="--landmark-position:' +
-          Math.max(0, Math.min(1, Number(landmark.normalizedPosition || 0))).toFixed(6) +
-          '"><span class="type-hint">' +
-          escapeHtml(String(landmark.role).toUpperCase()) +
-          "</span></b>";
-      }
-      body =
-        '<div class="waveform-shape" data-role="waveform-shape">' +
-        (bars || '<span class="type-hint muted">NO PREPARED SUMMARY</span>') +
-        landmarks +
-        "</div>" +
-        '<span class="type-hint" data-role="waveform-status">' +
-        escapeHtml(String(data.status || UNAVAILABLE)) +
-        "</span>";
+      body = waveformHtml(data);
     } else {
       body = '<span class="type-hint">' + escapeHtml(String(data.text || UNAVAILABLE)) + "</span>";
     }
@@ -1928,7 +2007,7 @@
       return "";
     }
     var summary = modal.summary || {};
-    var browser = summary.kind === "sampleBrowser";
+    var browser = summary.kind === "fileBrowser";
     var controls = modal.controls || [];
     if (browser) {
       var browserRows = "";
@@ -1950,6 +2029,8 @@
         var browserMetadata = browserControl.browserMetadata || null;
         if (browserMetadata && browserMetadata.status === "pending") {
           browserMarker.push("LOADING");
+        } else if (browserMetadata && browserMetadata.status === "unavailable") {
+          browserMarker.push(UNAVAILABLE);
         } else if (browserMetadata && browserMetadata.status === "failed") {
           browserMarker.push("INVALID");
         }
@@ -2016,7 +2097,7 @@
         '<div class="modal-title">' +
         '<span class="type-label muted">LIBRARY</span>' +
         '<span class="type-heading focus">' +
-        escapeHtml(String(modal.label || "SAMPLE BROWSER")) +
+        escapeHtml(String(modal.label || "FILE BROWSER")) +
         "</span></div>" +
         browserStatus +
         '<div class="browser-visualizations" data-role="browser-visualizations">' +
@@ -2376,14 +2457,7 @@
     var controlRows = "";
     var controls = inspector.controls || [];
     for (var c = 0; c < controls.length; c += 1) {
-      var controlId =
-        controls[c].path &&
-        controls[c].path.controlId &&
-        controls[c].path.controlId.id;
-      // Send controls remain in the semantic projection and reducer; only
-      // their current visual treatment is deferred.
-      var isSend = controlId && controlId.kind === "send";
-      if (controls[c].visible && !isSend) {
+      if (controls[c].visible) {
         controlRows += patchRowHtml(controls[c], model.interactionMode, "panel");
       }
     }
@@ -2419,9 +2493,13 @@
     var breadcrumb = midiSettingsSurface(model)
       ? "SETTINGS"
       : String(model.context || "").toUpperCase();
-    var identity = focusIdentity(model);
-    if (identity) {
-      breadcrumb += " / " + identity;
+    if (hasWaveform(surfaceByRole(model, "detail")) && !surfaceByRole(model, "modal")) {
+      var origin = controlByPath(surfaceById(model, "patchMain"), model.returnPath && model.returnPath.origin);
+      breadcrumb += " / DETAIL / " + (origin ? controlValueText(origin) : UNAVAILABLE_MARK);
+      if (model.activeSurface === "patchUtility") breadcrumb += " / UTILITY";
+    } else {
+      var identity = focusIdentity(model);
+      if (identity) breadcrumb += " / " + identity;
     }
     return (
       '<span class="type-hint secondary" data-role="breadcrumb">' +
@@ -2460,6 +2538,14 @@
         "--position",
         positions[j].getAttribute("data-position")
       );
+    }
+    var waveformValues = ["wave-top", "wave-height", "landmark-position"];
+    for (var field = 0; field < waveformValues.length; field += 1) {
+      var name = waveformValues[field];
+      var nodes = doc.querySelectorAll("[data-" + name + "]");
+      for (var node = 0; node < nodes.length; node += 1) {
+        nodes[node].style.setProperty("--" + name, nodes[node].getAttribute("data-" + name));
+      }
     }
   }
 
@@ -2591,18 +2677,25 @@
       element.scrollTop = 0;
       var startReachable = Math.abs(element.scrollTop) <= 1;
       var containerRect = element.getBoundingClientRect();
-      var firstRect = firstTarget ? firstTarget.getBoundingClientRect() : null;
-      var firstTargetReachable =
-        !firstRect ||
-        (firstRect.top >= containerRect.top - 1 &&
-          firstRect.bottom <= containerRect.bottom + 1);
+      // Headings can precede the first control and passive visualizations can
+      // follow the last. Reach each target using this region's actual scroll
+      // range; a control need not coincide with an absolute content endpoint.
+      function targetReachable(target) {
+        if (!target) {
+          return true;
+        }
+        var rect = target.getBoundingClientRect();
+        element.scrollTop += rect.top - containerRect.top;
+        rect = target.getBoundingClientRect();
+        return (
+          rect.top >= containerRect.top - 1 &&
+          rect.bottom <= containerRect.bottom + 1
+        );
+      }
+      var firstTargetReachable = targetReachable(firstTarget);
       element.scrollTop = maximumTop;
       var endReachable = Math.abs(element.scrollTop - maximumTop) <= 1;
-      var lastRect = lastTarget ? lastTarget.getBoundingClientRect() : null;
-      var lastTargetReachable =
-        !lastRect ||
-        (lastRect.top >= containerRect.top - 1 &&
-          lastRect.bottom <= containerRect.bottom + 1);
+      var lastTargetReachable = targetReachable(lastTarget);
       element.scrollTop = originalTop;
       return {
         scrollableBy: maximumTop,
@@ -2740,6 +2833,7 @@
           hints: textOf(rowNode, '[data-role="row-hints"]'),
           interaction: rowNode.getAttribute("data-interaction"),
           readOnly: textOf(rowNode, '[data-role="read-only"]'),
+          browse: textOf(rowNode, '[data-role="browse"]'),
           position: rowNode.querySelector("[data-position]")
             ? Number(
                 rowNode
@@ -2875,6 +2969,9 @@
       ) {
         var detailVisualizationNode =
           detailVisualizationNodes[detailVisualizationIndex];
+        var waveformShape = detailVisualizationNode.querySelector('[data-role="waveform-shape"]');
+        var waveformRegion = detailVisualizationNode.querySelector("[data-waveform-state]");
+        var waveBars = detailVisualizationNode.querySelector(".waveform-bars");
         var envelopeShape = detailVisualizationNode.querySelector(
           '[data-role="envelope-shape"]'
         );
@@ -2894,6 +2991,35 @@
           focusPath: detailVisualizationNode.getAttribute("data-focus-path"),
           bounds: rectOf(detailVisualizationNode),
           shapeBounds: rectOf(envelopeShape),
+          waveform: waveformShape ? {
+            state: waveformRegion.getAttribute("data-waveform-state"),
+            status: textOf(detailVisualizationNode, '[data-role="waveform-status"]'),
+            metadata: textOf(detailVisualizationNode, '[data-role="waveform-metadata"]'),
+            asset: textOf(detailVisualizationNode.previousElementSibling, '[data-role="detail-asset-path"]'),
+            assetBounds: rectOf(detailVisualizationNode.previousElementSibling),
+            bounds: rectOf(waveformShape),
+            legendBounds: rectOf(detailVisualizationNode.querySelector(".waveform-legend")),
+            trackBounds: rectOf(waveBars),
+            labelFont: window.getComputedStyle(detailVisualizationNode.querySelector("figcaption")).fontFamily,
+            unavailableBorder: window.getComputedStyle(waveformShape).borderTopStyle,
+            bars: Array.from(detailVisualizationNode.querySelectorAll(".waveform-bars > i")).map(function (bar) {
+              return {
+                top: Number(bar.style.getPropertyValue("--wave-top")),
+                height: Number(bar.style.getPropertyValue("--wave-height")),
+                color: window.getComputedStyle(bar).backgroundColor,
+                bounds: rectOf(bar)
+              };
+            }),
+            landmarks: Array.from(detailVisualizationNode.querySelectorAll("[data-landmark]")).map(function (marker) {
+              return {
+                role: marker.getAttribute("data-landmark"),
+                position: Number(marker.style.getPropertyValue("--landmark-position")),
+                label: marker.getAttribute("aria-label"),
+                border: window.getComputedStyle(marker).borderLeftStyle,
+                bounds: rectOf(marker)
+              };
+            })
+          } : null,
           envelope: envelopeShape
             ? {
                 attackMilliseconds: Number(
@@ -2962,7 +3088,30 @@
         );
       }
       var detailPatchIdAttribute = detailNode.getAttribute("data-patch-id");
+      function typeReading(selector) {
+        var element = detailNode.querySelector(selector);
+        if (!element) return null;
+        var style = window.getComputedStyle(element);
+        return {
+          font: style.fontFamily, size: parseFloat(style.fontSize),
+          weight: Number(style.fontWeight), line: parseFloat(style.lineHeight),
+          color: style.color
+        };
+      }
       detail = {
+        textScale: Number(computedRoot.getPropertyValue("--shell-text-scale")) || 1,
+        typography: {
+          assetLabel: typeReading('[data-role="detail-asset-label"]'),
+          assetPath: typeReading('[data-role="detail-asset-path"]'),
+          subject: typeReading('[data-role="detail-subject"]'),
+          sectionLabel: typeReading('[data-role="detail-section-label"]'),
+          parameterLabel: typeReading('.prow-label'),
+          parameterValue: typeReading('.prow-value'),
+          status: typeReading('[data-role="waveform-status"]')
+        },
+        hierarchy: Array.from(detailNode.children).map(function (child) {
+          return child.getAttribute("data-role") || child.getAttribute("data-visualization-kind");
+        }),
         surface: textOf(detailNode, '[data-role="detail-title"] .type-label'),
         subjectKind: detailNode.getAttribute("data-detail-kind"),
         patchId:
@@ -3043,7 +3192,7 @@
           id: visualizationNodes[modalVisualizationIndex].getAttribute("data-visualization"),
           kind: visualizationNodes[modalVisualizationIndex].getAttribute("data-visualization-kind"),
           landmarkCount: visualizationNodes[modalVisualizationIndex].querySelectorAll("[data-landmark]").length,
-          pairCount: visualizationNodes[modalVisualizationIndex].querySelectorAll(".waveform-shape > i").length,
+          pairCount: visualizationNodes[modalVisualizationIndex].querySelectorAll(".waveform-bars > i").length,
           status: textOf(visualizationNodes[modalVisualizationIndex], '[data-role="waveform-status"]'),
         });
       }
@@ -3280,9 +3429,44 @@
         offFooterActionHintCount += 1;
       }
     }
+    var activeSemanticSurface = surfaceById(model, model.activeSurface);
+    var activeSummary = activeSemanticSurface ? activeSemanticSurface.summary : null;
+    var fileBrowserSummary = surfaceById(model, "fileBrowser");
+    fileBrowserSummary = fileBrowserSummary ? fileBrowserSummary.summary : null;
+    var minimumTargetFloor = Number(
+      computedRoot.getPropertyValue("--min-interactive-target").replace("px", "").trim()
+    );
+    var undersizedTargets = targetSizes.filter(function (target) {
+      return (
+        !target.bounds ||
+        target.bounds.widthPx + 0.5 < minimumTargetFloor ||
+        target.bounds.heightPx + 0.5 < minimumTargetFloor
+      );
+    });
+    var compatibility = {
+      parameterGeneration: model.generation,
+      activeGraphRevision:
+        model.status && model.status.graphRevision !== undefined
+          ? model.status.graphRevision
+          : null,
+      previewRequestId: fileBrowserSummary
+        ? fileBrowserSummary.previewRequestId || null
+        : null,
+      previewPatchId: fileBrowserSummary ? fileBrowserSummary.patchId : null,
+    };
     return {
       generation: model.generation,
       stateHash: model.stateHash,
+      deviceScale: window.devicePixelRatio,
+      semanticEvidence: {
+        context: model.context,
+        activeSurface: model.activeSurface,
+        focusPath: model.focusPath,
+        subject: activeSummary,
+        returnIdentity: model.returnPath || null,
+        validActions: model.validActions || [],
+        observationCompatibility: compatibility,
+      },
       bands: bands,
       viewport: {
         widthPx: window.innerWidth,
@@ -3322,6 +3506,11 @@
         breadcrumb: textOf(doc, '#footer [data-role="breadcrumb"]'),
         guidance: textOf(doc, '#footer [data-role="footer-guidance"]'),
       },
+      sampleIdentity: {
+        patch: textOf(doc, '[data-role="sample-patch-number"]'),
+        name: textOf(doc, '[data-role="sample-patch-name"]'),
+        subject: textOf(doc, '[data-role="sample-subject-annotation"]'),
+      },
       actionGuidance: {
         count: actionHintNodes.length,
         offFooterCount: offFooterActionHintCount,
@@ -3340,16 +3529,24 @@
         targetBounds: rectOf(semanticFocusedNode),
       },
       targetSizes: targetSizes,
+      minimumTarget: {
+        floorPx: minimumTargetFloor,
+        compliant: undersizedTargets.length === 0,
+        failureCount: undersizedTargets.length,
+      },
       reachability: {
         workspaceScrollableBy: Math.max(
           0,
           workspaceElement.scrollHeight - workspaceElement.clientHeight
         ),
-        workspace: scrollReachability(bodyNode || workspaceElement),
+        workspace: modal
+          ? modal.listReachability
+          : scrollReachability(bodyNode || workspaceElement),
         inspectorScrollableBy: Math.max(
           0,
           inspectorElement.scrollHeight - inspectorElement.clientHeight
         ),
+        inspector: scrollReachability(inspectorBody || inspectorElement),
         focusedVisible: fullyVisible(semanticFocusedNode),
       },
       inspector: {
@@ -3564,7 +3761,7 @@
     if (!region || !latestModel) {
       return;
     }
-    var browser = surfaceById(latestModel, "sampleBrowser");
+    var browser = surfaceById(latestModel, "fileBrowser");
     var summary = (browser && browser.summary) || {};
     var canonical = summary.preview || { kind: "idle" };
     var expectedIdentity = Number(summary.previewRequestId || 0);
@@ -3670,6 +3867,7 @@
         widthPx: window.innerWidth,
         heightPx: window.innerHeight,
       },
+      deviceScale: window.devicePixelRatio,
       regions: regions,
     };
   }

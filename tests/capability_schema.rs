@@ -113,9 +113,12 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     let braids_descriptor = braids_provider.descriptor();
     let registry = production_capability_registry().unwrap();
 
+    assert_eq!(registry.descriptors().len(), 3);
+    assert_eq!(registry.descriptors()[0], descriptor);
+    assert_eq!(registry.descriptors()[1], braids_descriptor);
     assert_eq!(
-        registry.descriptors(),
-        &[descriptor.clone(), braids_descriptor.clone()]
+        registry.descriptors()[2].id().as_str(),
+        crest_synth::adapter::sample_capability::SAMPLE_CAPABILITY_ID
     );
     assert_eq!(descriptor.id().as_str(), HIDEF_CAPABILITY_ID);
     assert_eq!(descriptor.label(), "HiDef SoundFont");
@@ -237,7 +240,11 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
             .iter()
             .map(|descriptor| descriptor["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        [HIDEF_CAPABILITY_ID, BRAIDS_CAPABILITY_ID]
+        [
+            HIDEF_CAPABILITY_ID,
+            BRAIDS_CAPABILITY_ID,
+            crest_synth::adapter::sample_capability::SAMPLE_CAPABILITY_ID
+        ]
     );
     assert_eq!(
         tree["patches"][0]["instrument"],

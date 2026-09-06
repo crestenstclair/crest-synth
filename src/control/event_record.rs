@@ -230,7 +230,7 @@ impl From<&Patch> for PatchInput {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreparedSampleVisualizationInput {
-    asset_id: crate::synth::SampleAssetId,
+    asset_id: crate::synth::AssetFileId,
     sample_rate: u32,
     channels: u16,
     frames: usize,
@@ -244,7 +244,7 @@ pub struct PreparedSampleVisualizationInput {
 }
 
 impl PreparedSampleVisualizationInput {
-    pub const fn asset_id(&self) -> &crate::synth::SampleAssetId {
+    pub const fn asset_id(&self) -> &crate::synth::AssetFileId {
         &self.asset_id
     }
 
@@ -294,7 +294,11 @@ pub enum EventInput {
     OpenRelated,
     OpenMidiSettings,
     Activate,
+    AssetImported {
+        selection: crate::control::AssetImportResult,
+    },
     PreviewStart,
+    ToggleTestMidi,
     PreviewStop,
     EnterSurface {
         surface: SurfaceId,
@@ -350,8 +354,8 @@ pub enum EventInput {
         lifecycle: crate::control::SampleAssetLifecycle,
     },
     SampleCatalogRefreshed {
-        folder: crate::synth::SampleFolderId,
-        listing: Option<crate::synth::SampleCatalogListing>,
+        folder: crate::synth::FileBrowserFolderId,
+        listing: Option<crate::synth::FileBrowserListing>,
         failure: Option<crate::synth::SampleAssetError>,
     },
     EnginePreparationFailed {
@@ -398,6 +402,7 @@ pub enum EventInput {
         source_graph_revision: GraphRevision,
         #[serde(rename = "targetGraphRevision")]
         target_graph_revision: GraphRevision,
+        prepared_visualization: Option<PreparedSampleVisualizationInput>,
     },
     TopologyPreparationFailed {
         #[serde(rename = "requestId")]
@@ -474,7 +479,11 @@ impl From<&AppEvent> for EventInput {
             AppEvent::OpenRelated => Self::OpenRelated,
             AppEvent::OpenMidiSettings => Self::OpenMidiSettings,
             AppEvent::Activate => Self::Activate,
+            AppEvent::AssetImported(selection) => Self::AssetImported {
+                selection: selection.clone(),
+            },
             AppEvent::PreviewStart => Self::PreviewStart,
+            AppEvent::ToggleTestMidi => Self::ToggleTestMidi,
             AppEvent::PreviewStop => Self::PreviewStop,
             AppEvent::EnterSurface(surface) => Self::EnterSurface { surface: *surface },
             AppEvent::Return => Self::Return,
@@ -599,11 +608,15 @@ impl From<&AppEvent> for EventInput {
                 intent,
                 source_graph_revision,
                 target_graph_revision,
+                prepared_visualization,
             } => Self::TopologyPrepared {
                 request_id: *request_id,
                 intent: intent.clone(),
                 source_graph_revision: *source_graph_revision,
                 target_graph_revision: *target_graph_revision,
+                prepared_visualization: prepared_visualization
+                    .as_ref()
+                    .map(PreparedSampleVisualizationInput::from),
             },
             AppEvent::TopologyPreparationFailed {
                 request_id,
@@ -697,6 +710,7 @@ impl EventInput {
                 | Self::SetInteractionMode { .. }
                 | Self::OpenRelated
                 | Self::OpenMidiSettings
+                | Self::ToggleTestMidi
                 | Self::PreviewStart
                 | Self::PreviewStop
                 | Self::SetPatchOverviewOriginEnabled { .. }
@@ -1259,9 +1273,9 @@ mod tests {
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::voice_envelope::VoiceEnvelope;
     use crate::synth::{
+        AssetFileId, FileBrowserFolderId, FileBrowserListing, FileBrowserRow, FileBrowserRowKind,
         ParameterId, ParameterValue, PreparedSampleLandmarks, PreparedSamplePcm,
-        PreparedSampleVisualization, SampleAssetError, SampleAssetId, SampleBrowserRow,
-        SampleBrowserRowKind, SampleCatalogListing, SampleEncoding, SampleFolderId, SampleLoopMode,
+        PreparedSampleVisualization, SampleAssetError, SampleEncoding, SampleLoopMode,
         SampleMetadata, WaveformPair,
     };
     use crate::testing::automatic_midi_test::create_soundfont_config;
@@ -1429,15 +1443,15 @@ mod tests {
             preset_status.correlation().unwrap(),
         )
         .unwrap();
-        let catalog_folder = SampleFolderId::default();
-        let catalog_asset = SampleAssetId::new("catalog-ready.wav").unwrap();
-        let catalog_listing = SampleCatalogListing::new(
+        let catalog_folder = FileBrowserFolderId::default();
+        let catalog_asset = AssetFileId::new("catalog-ready.wav").unwrap();
+        let catalog_listing = FileBrowserListing::new(
             catalog_folder.clone(),
             vec![
-                SampleBrowserRow::new(
+                FileBrowserRow::new(
                     "file:catalog-ready.wav",
                     "catalog-ready.wav",
-                    SampleBrowserRowKind::File(catalog_asset.clone()),
+                    FileBrowserRowKind::File(catalog_asset.clone()),
                     Some(256),
                 )
                 .unwrap()
@@ -1452,19 +1466,19 @@ mod tests {
                 )
                 .unwrap()))
                 .unwrap(),
-                SampleBrowserRow::new(
+                FileBrowserRow::new(
                     "file:catalog-invalid.wav",
                     "catalog-invalid.wav",
-                    SampleBrowserRowKind::File(SampleAssetId::new("catalog-invalid.wav").unwrap()),
+                    FileBrowserRowKind::File(AssetFileId::new("catalog-invalid.wav").unwrap()),
                     Some(12),
                 )
                 .unwrap()
                 .with_metadata(Err(SampleAssetError::MalformedWave))
                 .unwrap(),
-                SampleBrowserRow::new(
+                FileBrowserRow::new(
                     "cancel:",
                     "CANCEL — UNCHANGED",
-                    SampleBrowserRowKind::Cancel,
+                    FileBrowserRowKind::Cancel,
                     None,
                 )
                 .unwrap(),
@@ -1578,7 +1592,7 @@ mod tests {
                     target_graph_revision,
                     candidate_config: candidate_config.clone(),
                     prepared_visualization: Some(PreparedSampleVisualizationInput {
-                        asset_id: SampleAssetId::new("event-log.wav").unwrap(),
+                        asset_id: AssetFileId::new("event-log.wav").unwrap(),
                         sample_rate: 48_000,
                         channels: 2,
                         frames: 128,
@@ -1674,7 +1688,7 @@ mod tests {
             schema_record(
                 EventSource::Worker,
                 EventInput::SampleCatalogRefreshed {
-                    folder: SampleFolderId::default(),
+                    folder: FileBrowserFolderId::default(),
                     listing: None,
                     failure: Some(SampleAssetError::Unavailable),
                 },
@@ -1733,7 +1747,7 @@ mod tests {
 
     #[test]
     fn engine_prepared_event_input_keeps_the_bounded_visualization_without_pcm() {
-        let asset = SampleAssetId::new("event-input.wav").unwrap();
+        let asset = AssetFileId::new("event-input.wav").unwrap();
         let pair = WaveformPair {
             left_min: -0.75,
             left_max: 0.5,

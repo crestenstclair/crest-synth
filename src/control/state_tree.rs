@@ -180,6 +180,9 @@ struct MidiTreeTemplate {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     ///
+    /// Version 23: browser metadata distinguishes unavailable files from
+    /// invalid audio and carries download-required and empty-file causes.
+    ///
     /// Version 20: PATCH focus gained the explicit trailing-empty position;
     /// `patchPage.patch` and semantic PATCH summaries now carry tagged
     /// created/empty ownership plus prospective and capacity facts. Empty
@@ -227,7 +230,7 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 20;
+    pub const SCHEMA_VERSION: u32 = 23;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",

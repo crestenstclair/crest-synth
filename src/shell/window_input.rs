@@ -39,6 +39,7 @@ pub enum WindowKey {
     Shift,
     Return,
     Space,
+    T,
     Other,
 }
 
@@ -47,7 +48,7 @@ pub enum WindowKey {
 /// The descriptor below carries a key-down and a key-up for each of these plus
 /// the single focus-loss value, so this list and
 /// [`WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN`] move together.
-pub const ALL_WINDOW_KEYS: [WindowKey; 23] = [
+pub const ALL_WINDOW_KEYS: [WindowKey; 24] = [
     WindowKey::Digit1,
     WindowKey::Digit2,
     WindowKey::Digit3,
@@ -70,6 +71,7 @@ pub const ALL_WINDOW_KEYS: [WindowKey; 23] = [
     WindowKey::Shift,
     WindowKey::Return,
     WindowKey::Space,
+    WindowKey::T,
     WindowKey::Other,
 ];
 
@@ -79,7 +81,7 @@ pub const ALL_WINDOW_KEYS: [WindowKey; 23] = [
 /// asserted equal to the constructed descriptor, so a key added to
 /// [`ALL_WINDOW_KEYS`] without a matching pair of descriptor entries fails
 /// rather than shipping a vocabulary the descriptor does not cover.
-pub const WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN: usize = 47;
+pub const WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN: usize = 49;
 
 /// The normalized kind of a window-boundary input.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -128,6 +130,7 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; WINDOW_INPUT_SURFACE_DESCRI
     WindowInput::key_down(WindowKey::Shift),
     WindowInput::key_down(WindowKey::Return),
     WindowInput::key_down(WindowKey::Space),
+    WindowInput::key_down(WindowKey::T),
     WindowInput::key_down(WindowKey::Other),
     WindowInput::key_up(WindowKey::Digit1),
     WindowInput::key_up(WindowKey::Digit2),
@@ -151,6 +154,7 @@ const WINDOW_INPUT_SURFACE_DESCRIPTOR: [WindowInput; WINDOW_INPUT_SURFACE_DESCRI
     WindowInput::key_up(WindowKey::Shift),
     WindowInput::key_up(WindowKey::Return),
     WindowInput::key_up(WindowKey::Space),
+    WindowInput::key_up(WindowKey::T),
     WindowInput::key_up(WindowKey::Other),
     WindowInput::focus_lost(),
 ];
@@ -217,9 +221,9 @@ mod tests {
         // Exact equality, not a minimum: the point of this assertion is to
         // fail when the key vocabulary grows without the descriptor growing
         // with it, and a `>=` would pass through exactly that change.
-        assert_eq!(descriptor.len(), 47);
+        assert_eq!(descriptor.len(), 49);
         assert_eq!(descriptor.len(), WINDOW_INPUT_SURFACE_DESCRIPTOR_LEN);
-        assert_eq!(ALL_WINDOW_KEYS.len() * 2 + 1, 47);
+        assert_eq!(ALL_WINDOW_KEYS.len() * 2 + 1, 49);
         for (index, input) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(input),
@@ -252,7 +256,7 @@ mod tests {
     /// key.
     #[test]
     fn the_declared_key_list_names_every_key_once() {
-        assert_eq!(ALL_WINDOW_KEYS.len(), 23);
+        assert_eq!(ALL_WINDOW_KEYS.len(), 24);
         for (index, key) in ALL_WINDOW_KEYS.iter().enumerate() {
             assert!(
                 !ALL_WINDOW_KEYS[..index].contains(key),

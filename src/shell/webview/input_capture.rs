@@ -130,6 +130,7 @@ pub const fn window_key_from_macos_key_code(key_code: u16) -> WindowKey {
         56 => WindowKey::Shift,
         36 => WindowKey::Return,
         49 => WindowKey::Space,
+        17 => WindowKey::T,
         _ => WindowKey::Other,
     }
 }
@@ -141,8 +142,9 @@ mod platform {
     use core::ptr::NonNull;
     use objc2::rc::Retained;
     use objc2::runtime::AnyObject;
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType};
+    use objc2::{ClassType, MainThreadMarker};
+    use objc2_app_kit::{NSEvent, NSEventMask, NSEventModifierFlags, NSEventType, NSPanel};
+    use objc2_foundation::NSObjectProtocol;
     use std::cell::RefCell;
     use std::collections::VecDeque;
 
@@ -213,9 +215,7 @@ mod platform {
     pub fn install(
         sink: impl FnMut(RawKeyEvent) + 'static,
     ) -> Result<InputCaptureHandle, InputCaptureError> {
-        if MainThreadMarker::new().is_none() {
-            return Err(InputCaptureError::NotMainThread);
-        }
+        let main_thread = MainThreadMarker::new().ok_or(InputCaptureError::NotMainThread)?;
         let sink = RefCell::new(sink);
         let delivered: RefCell<VecDeque<DeliveredSignature>> =
             RefCell::new(VecDeque::with_capacity(REDISPATCH_WINDOW));
@@ -223,6 +223,22 @@ mod platform {
             // SAFETY: AppKit hands the monitor a valid event for the duration
             // of the call; we only read from it.
             let observed = unsafe { event.as_ref() };
+            // AppKit owns menu/text shortcuts; Cmd+S must never also move
+            // semantic focus down, nor Cmd+W up, before the menu handles it.
+            if observed
+                .modifierFlags()
+                .intersects(NSEventModifierFlags((1 << 20) | (1 << 19) | (1 << 18)))
+            {
+                return event.as_ptr();
+            }
+            // Native Open/Save panels own their typing. Their keys must not
+            // become instrument edits when the asynchronous panel is open.
+            if observed
+                .window(main_thread)
+                .is_some_and(|window| window.isKindOfClass(NSPanel::class()))
+            {
+                return event.as_ptr();
+            }
             let event_type = observed.r#type();
             let pressed = match event_type {
                 NSEventType::KeyDown => true,
