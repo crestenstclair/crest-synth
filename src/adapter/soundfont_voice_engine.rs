@@ -65,6 +65,7 @@ impl PreparedSoundFontBank {
         playable_source_ordinals
             .try_reserve_exact(sound_font.get_presets().len())
             .map_err(|_| PreparedSoundFontBankError::SampleStorage)?;
+        let mut expanded_regions = 0usize;
         for (source_ordinal, preset) in sound_font.get_presets().iter().enumerate() {
             let mut regions = Vec::new();
             for preset_region in preset.get_regions() {
@@ -75,6 +76,10 @@ impl PreparedSoundFontBank {
                         source_ordinal,
                     })?;
                 for instrument_region in instrument.get_regions() {
+                    expanded_regions += 1;
+                    if expanded_regions > 262_144 || regions.len() >= 4_096 {
+                        return Err(PreparedSoundFontBankError::InvalidRegion { source_ordinal });
+                    }
                     let key_start = preset_region
                         .get_key_range_start()
                         .max(instrument_region.get_key_range_start());

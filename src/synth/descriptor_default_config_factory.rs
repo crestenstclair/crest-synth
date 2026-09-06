@@ -32,6 +32,18 @@ impl DescriptorDefaultConfigFactory {
         &self.registry
     }
 
+    pub fn use_asset_descriptors(
+        &mut self,
+        registry: &CapabilityRegistry,
+    ) -> Result<(), CapabilityError> {
+        let mut updated = CapabilityRegistry::new(self.registry.descriptors().to_vec())?;
+        for descriptor in registry.asset_descriptors() {
+            updated = updated.with_asset_descriptor(descriptor.clone())?;
+        }
+        self.registry = updated;
+        Ok(())
+    }
+
     /// Creates one exact descriptor-default config without capability-specific
     /// branching or substitution.
     pub fn create(
@@ -61,6 +73,7 @@ impl DescriptorDefaultConfigFactory {
         }
 
         let config = provider.create_config(&values, &assets)?;
+        descriptor.create_config(config.values(), config.asset_references())?;
         self.registry.validate_config(&config)?;
         if config.capability_id() != capability_id {
             return Err(CapabilityError::ProviderRegistryMismatch(
@@ -81,7 +94,7 @@ impl DescriptorDefaultConfigFactory {
         self.registry.validate_config(source)?;
         let descriptor = self
             .registry
-            .descriptor(source.capability_id())
+            .descriptor_for_config(source)
             .ok_or_else(|| CapabilityError::UnknownCapability(source.capability_id().clone()))?;
         let spec = descriptor
             .parameter(parameter_id)
@@ -105,8 +118,16 @@ impl DescriptorDefaultConfigFactory {
             parameter_id.clone(),
             ParameterValue::Choice(choice_id.to_owned()),
         );
-        let provider = self.provider_for(source.capability_id(), descriptor)?;
-        let candidate = provider.create_config(&values, source.asset_references())?;
+        let installed = self
+            .registry
+            .descriptor(source.capability_id())
+            .ok_or_else(|| CapabilityError::UnknownCapability(source.capability_id().clone()))?;
+        let provider = self.provider_for(source.capability_id(), installed)?;
+        let candidate = if installed == descriptor {
+            provider.create_config(&values, source.asset_references())?
+        } else {
+            descriptor.create_config(&values, source.asset_references())?
+        };
         self.registry.validate_config(&candidate)?;
         if candidate.capability_id() != source.capability_id()
             || candidate.asset_references() != source.asset_references()
@@ -135,44 +156,12 @@ impl DescriptorDefaultConfigFactory {
         parameter_id: &ParameterId,
         reference: AssetReference,
     ) -> Result<InstrumentConfig, CapabilityError> {
-        self.registry.validate_config(source)?;
-        let descriptor = self
+        let installed = self
             .registry
             .descriptor(source.capability_id())
             .ok_or_else(|| CapabilityError::UnknownCapability(source.capability_id().clone()))?;
-        let spec = descriptor
-            .parameter(parameter_id)
-            .filter(|spec| {
-                spec.kind() == ParameterKind::Asset && spec.update() == ParameterUpdate::Structural
-            })
-            .ok_or_else(|| CapabilityError::StructuralParameter(parameter_id.clone()))?;
-        debug_assert_eq!(spec.id(), parameter_id);
-        let mut assets = source.asset_references().to_vec();
-        let assignment = assets
-            .iter_mut()
-            .find(|assignment| assignment.parameter_id() == parameter_id)
-            .ok_or_else(|| CapabilityError::MissingAsset(parameter_id.clone()))?;
-        *assignment = AssetAssignment::new(parameter_id.clone(), reference);
-        let provider = self.provider_for(source.capability_id(), descriptor)?;
-        let candidate = provider.create_config(source.values(), &assets)?;
-        self.registry.validate_config(&candidate)?;
-        if candidate.capability_id() != source.capability_id()
-            || candidate.values() != source.values()
-            || candidate.asset_references().len() != source.asset_references().len()
-            || candidate
-                .asset_references()
-                .iter()
-                .zip(source.asset_references())
-                .any(|(next, prior)| {
-                    next.parameter_id() != prior.parameter_id()
-                        || (next.parameter_id() != parameter_id && next != prior)
-                })
-        {
-            return Err(CapabilityError::ProviderRegistryMismatch(
-                source.capability_id().clone(),
-            ));
-        }
-        Ok(candidate)
+        self.provider_for(source.capability_id(), installed)?;
+        self.registry.replace_asset(source, parameter_id, reference)
     }
 
     fn provider_for<'a>(

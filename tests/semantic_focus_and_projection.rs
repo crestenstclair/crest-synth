@@ -399,7 +399,7 @@ fn detail_subjects_origins_and_empty_slot_admission_are_canonical() {
     assert!(empty.interaction().detail_subject().is_none());
 }
 
-/// The production keyboard adapter emits semantic OpenRelated/Return actions;
+/// The production keyboard adapter emits semantic page actions;
 /// only `AppState::apply` changes the subordinate session and focus.
 #[test]
 fn physical_shift_entry_and_close_restore_every_detail_origin() {
@@ -420,8 +420,12 @@ fn physical_shift_entry_and_close_restore_every_detail_origin() {
         let enter = translator
             .translate(WindowInput::key_down(WindowKey::W))
             .expect("Shift+Up maps to one semantic action");
-        assert_eq!(enter, SemanticAction::OpenRelated);
+        assert_eq!(enter, SemanticAction::NavigatePage(Direction::Up));
         state.apply_semantic_action(enter).unwrap();
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::W)),
+            None
+        );
         assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
         assert_eq!(
             StateProjector::new()
@@ -439,8 +443,12 @@ fn physical_shift_entry_and_close_restore_every_detail_origin() {
         let close = translator
             .translate(WindowInput::key_down(WindowKey::S))
             .expect("Shift+Down maps to one semantic action");
-        assert_eq!(close, SemanticAction::Return);
+        assert_eq!(close, SemanticAction::NavigatePage(Direction::Down));
         state.apply_semantic_action(close).unwrap();
+        assert_eq!(
+            translator.translate(WindowInput::key_up(WindowKey::S)),
+            None
+        );
         assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
         assert_eq!(state.interaction().focus_path(), &origin);
         assert_eq!(

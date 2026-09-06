@@ -696,7 +696,7 @@ impl LiveDemoScene {
             });
             let descriptor = state
                 .capabilities
-                .descriptor(patch.instrument.capability_id())
+                .descriptor_for_config(&patch.instrument)
                 .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
             let targets = resolve_patch_editable_targets(descriptor, &patch.instrument)
                 .map_err(|_| LiveDemoSceneError::InvalidInstrumentConfig)?;
@@ -2254,7 +2254,7 @@ pub(crate) fn selected_parameter_value(
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
             let descriptor = state
                 .capabilities
-                .descriptor(patch.instrument.capability_id())
+                .descriptor_for_config(&patch.instrument)
                 .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
             patch_target_value(patch, descriptor, target)
         }
@@ -2395,7 +2395,7 @@ pub(crate) fn projected_parameter_values(
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
             let descriptor = state
                 .capabilities
-                .descriptor(patch.instrument.capability_id())
+                .descriptor_for_config(&patch.instrument)
                 .ok_or(LiveDemoSceneError::InvalidInstrumentConfig)?;
             let state_value = patch_target_value(patch, descriptor, target)?;
             let projected_value = match target {

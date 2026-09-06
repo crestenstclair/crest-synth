@@ -339,6 +339,7 @@ impl GraphPreparationRequest {
             active_patches[selected_index].instrument_config(),
             &candidate_config,
             correlation.intent(),
+            registry,
         )?;
 
         let audition = matches!(
@@ -813,6 +814,7 @@ fn validate_candidate_delta(
     source: &InstrumentConfig,
     candidate: &InstrumentConfig,
     intent: &StructuralEditIntent,
+    registry: &CapabilityRegistry,
 ) -> Result<(), GraphPreparationRequestError> {
     match intent {
         StructuralEditIntent::ReplaceCapability {
@@ -855,19 +857,10 @@ fn validate_candidate_delta(
             reference,
         } => {
             if source.capability_id() != capability_id
-                || candidate.capability_id() != capability_id
-                || source.values() != candidate.values()
-                || source.asset_references().len() != candidate.asset_references().len()
                 || source.asset_reference(parameter_id) == Some(reference)
-                || candidate.asset_reference(parameter_id) != Some(reference)
-                || candidate
-                    .asset_references()
-                    .iter()
-                    .zip(source.asset_references())
-                    .any(|(next, prior)| {
-                        next.parameter_id() != prior.parameter_id()
-                            || (next.parameter_id() != parameter_id && next != prior)
-                    })
+                || !registry
+                    .replace_asset(source, parameter_id, reference.clone())
+                    .is_ok_and(|expected| expected == *candidate)
             {
                 return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
             }
@@ -915,6 +908,40 @@ pub(crate) fn prepare_graph_request_with_effects(
     request: GraphPreparationRequest,
 ) -> GraphPreparationResult {
     let correlation = request.correlation.clone();
+    let mut resolved = registry.clone();
+    for patch in request.candidate_patches() {
+        let Some(preparer) = preparers
+            .iter()
+            .find(|p| p.capability_id() == patch.instrument_config().capability_id())
+        else {
+            continue;
+        };
+        match preparer.asset_descriptor(patch.instrument_config()) {
+            Ok(Some(descriptor)) => match resolved.clone().with_asset_descriptor(descriptor) {
+                Ok(next) => resolved = next,
+                Err(_) => {
+                    return GraphPreparationResult::Failed {
+                        correlation,
+                        failure: EngineSelectionFailure::InvalidDefaultConfig,
+                    }
+                }
+            },
+            Ok(None) => {}
+            Err(error) => {
+                return GraphPreparationResult::Failed {
+                    correlation,
+                    failure: match error {
+                        crate::synth::InstrumentPreparationError::AssetLoadFailed => {
+                            EngineSelectionFailure::AssetUnavailable
+                        }
+                        _ => EngineSelectionFailure::InvalidAsset,
+                    },
+                }
+            }
+        }
+    }
+    let registry = &resolved;
+
     if let Err(failure) = request.validate_for_worker(registry, effects, audio_config) {
         return GraphPreparationResult::Failed {
             correlation,
@@ -1134,6 +1161,7 @@ fn map_sample_asset_failure(error: crate::synth::SampleAssetError) -> EngineSele
         | SampleAssetError::InvalidRelativeId
         | SampleAssetError::NonFinitePcm
         | SampleAssetError::MalformedPcm
+        | SampleAssetError::MalformedSoundFont
         | SampleAssetError::MalformedWave
         | SampleAssetError::MalformedCatalog
         | SampleAssetError::PathEscape

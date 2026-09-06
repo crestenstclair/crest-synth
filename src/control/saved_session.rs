@@ -161,7 +161,7 @@ impl SavedSession {
                     .into_iter()
                     .map(|patch| {
                         let descriptor = capabilities
-                            .descriptor(patch.instrument.capability_id())
+                            .descriptor_for_config(&patch.instrument)
                             .ok_or(SavedSessionError::InvalidCapability)?;
                         Ok(SavedPatch {
                             id: patch.id,
@@ -205,6 +205,22 @@ impl SavedSession {
         sample_rate: f32,
         max_frames: usize,
     ) -> Result<PreparedSavedSession, SavedSessionRestoreError> {
+        self.validate_shape()?;
+        let mut capabilities = capabilities;
+        for patch in &self.patches {
+            let preparer = instrument_preparers
+                .iter()
+                .find(|preparer| preparer.capability_id() == patch.instrument.capability_id())
+                .ok_or(SavedSessionError::InvalidCapability)?;
+            if let Some(descriptor) = preparer
+                .asset_descriptor(&patch.instrument)
+                .map_err(SavedSessionRestoreError::AssetMetadata)?
+            {
+                capabilities = capabilities
+                    .with_asset_descriptor(descriptor)
+                    .map_err(|_| SavedSessionError::InvalidCapability)?;
+            }
+        }
         let state = self.restore_candidate(capabilities, effects, graph_revision)?;
         let parameters = StateProjector::for_graph(graph_revision)
             .project(&state)
@@ -234,9 +250,7 @@ impl SavedSession {
         effects: EffectCapabilityRegistry,
         graph_revision: GraphRevision,
     ) -> Result<AppState, SavedSessionError> {
-        if self.version != SAVED_SESSION_VERSION || self.returns.len() != BusId::COUNT {
-            return Err(SavedSessionError::InvalidShape);
-        }
+        self.validate_shape()?;
         let mut patches = Vec::with_capacity(self.patches.len());
         for saved in &self.patches {
             if saved
@@ -254,7 +268,7 @@ impl SavedSession {
                 .validate_config(&saved.instrument)
                 .map_err(|_| SavedSessionError::InvalidCapability)?;
             let descriptor = capabilities
-                .descriptor(saved.instrument.capability_id())
+                .descriptor_for_config(&saved.instrument)
                 .ok_or(SavedSessionError::InvalidCapability)?;
             if saved.voice_limit == 0
                 || saved.voice_limit > VoiceLimit::seeded_from(descriptor.voice_policy()).value()
@@ -326,6 +340,17 @@ impl SavedSession {
             .map_err(|_| SavedSessionError::InvalidVoiceLimit)?;
         Ok(state)
     }
+
+    /// Bound asset resolution before any preparer can read a saved bank.
+    fn validate_shape(&self) -> Result<(), SavedSessionError> {
+        if self.version != SAVED_SESSION_VERSION || self.returns.len() != BusId::COUNT {
+            return Err(SavedSessionError::InvalidShape);
+        }
+        if self.patches.len() > crate::kernel::MAX_ACTIVE_PATCHES {
+            return Err(SavedSessionError::InvalidPatch);
+        }
+        Ok(())
+    }
 }
 
 /// One completely validated persistence replacement. The state and graph are
@@ -371,6 +396,8 @@ impl PreparedSavedSession {
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum SavedSessionRestoreError {
+    #[error("saved instrument asset could not be resolved: {0}")]
+    AssetMetadata(crate::synth::InstrumentPreparationError),
     #[error("saved session validation failed: {0}")]
     Session(#[from] SavedSessionError),
     #[error("saved session projection failed: {0}")]
@@ -443,6 +470,27 @@ mod tests {
         let mut state = AppState::new(registry, GlobalParameters::new(-3.0).unwrap());
         state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
         state
+    }
+
+    #[test]
+    fn oversized_restore_is_rejected_before_asset_resolution() {
+        let active = state();
+        let mut saved = SavedSession::capture(&active);
+        saved.patches = vec![saved.patches[0].clone(); crate::kernel::MAX_ACTIVE_PATCHES + 1];
+        assert!(matches!(
+            saved.prepare_restore(
+                active.capabilities().clone(),
+                active.effects().clone(),
+                &[],
+                &[],
+                GraphRevision::INITIAL,
+                48_000.0,
+                64,
+            ),
+            Err(SavedSessionRestoreError::Session(
+                SavedSessionError::InvalidPatch
+            ))
+        ));
     }
 
     #[test]

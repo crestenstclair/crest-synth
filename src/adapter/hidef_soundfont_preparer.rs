@@ -16,16 +16,17 @@ use std::sync::Arc;
 
 const SOUNDFONT_ENGINE_VOICE_SLOTS: usize = HIDEF_POLYPHONY_CEILING as usize;
 
-/// Control/worker-side HiDef SoundFont preparer.
+/// Control/worker-side SoundFont preparer with a compatible bundled default.
 ///
-/// Construction opens and parses the fixed bank exactly once. All prepared
-/// Patch instruments share that immutable bank while owning independent voices,
-/// MIDI state, and bounded render scratch.
+/// Construction receives the bundled bank's immutable projections. A configured
+/// library resolves other selected banks off-thread. Patches sharing an active
+/// bank reuse numeric ownership with independent voices, MIDI state, and scratch.
 pub struct HiDefSoundFontPreparer {
     capability_id: CapabilityId,
     catalog: Arc<crate::synth::SoundFontPresetCatalog>,
     prepared_bank: Arc<PreparedSoundFontBank>,
     parsed_bank_count: usize,
+    library: Option<Arc<super::filesystem_soundfont_catalog::FilesystemSoundFontCatalog>>,
 }
 
 impl HiDefSoundFontPreparer {
@@ -38,10 +39,51 @@ impl HiDefSoundFontPreparer {
             catalog: asset.catalog(),
             prepared_bank: asset.prepared_bank(),
             parsed_bank_count: asset.parse_count(),
+            library: None,
         })
     }
 
-    /// Returns the number of banks parsed by this preparer instance.
+    pub fn with_library(
+        mut self,
+        library: Arc<super::filesystem_soundfont_catalog::FilesystemSoundFontCatalog>,
+    ) -> Self {
+        self.library = Some(library);
+        self
+    }
+
+    fn asset_for(
+        &self,
+        config: &crate::synth::InstrumentConfig,
+    ) -> Result<HiDefSoundFontAsset, InstrumentPreparationError> {
+        let reference = config
+            .asset_reference(
+                &ParameterId::new(SOUNDFONT_FILE_PARAMETER_ID)
+                    .map_err(|_| InstrumentPreparationError::AssetParseFailed)?,
+            )
+            .ok_or(InstrumentPreparationError::AssetParseFailed)?;
+        if reference.kind() != AssetKind::SoundFont {
+            return Err(InstrumentPreparationError::AssetParseFailed);
+        }
+        if reference.locator() == HIDEF_SOUNDFONT_PATH {
+            return Ok(HiDefSoundFontAsset::from_projections(
+                self.catalog.clone(),
+                self.prepared_bank.clone(),
+            ));
+        }
+        self.library
+            .as_ref()
+            .ok_or(InstrumentPreparationError::AssetLoadFailed)?
+            .load(reference)
+            .map_err(|error| match error {
+                crate::synth::SampleAssetError::Unavailable
+                | crate::synth::SampleAssetError::DownloadRequired => {
+                    InstrumentPreparationError::AssetLoadFailed
+                }
+                _ => InstrumentPreparationError::AssetParseFailed,
+            })
+    }
+
+    /// Returns the bundled asset's parse count, excluding later library loads.
     pub const fn parsed_bank_count(&self) -> usize {
         self.parsed_bank_count
     }
@@ -57,14 +99,38 @@ impl HiDefSoundFontPreparer {
             return Err(InstrumentPreparationError::InvalidFrameCapacity);
         }
 
-        let prepared = PreparedPatch::try_from_patch(patch, &self.catalog)?;
-        if !self.prepared_bank.has_preset(prepared.preset_id) {
+        if patch.instrument_config().capability_id() != &self.capability_id {
+            return Err(InstrumentPreparationError::UnsupportedCapability {
+                patch_id: patch.id(),
+            });
+        }
+        let config = patch.instrument_config();
+        let file = config.asset_reference(&ParameterId::new(SOUNDFONT_FILE_PARAMETER_ID).map_err(
+            |_| InstrumentPreparationError::InvalidConfiguration {
+                patch_id: patch.id(),
+            },
+        )?);
+        if config.values().len() != 1
+            || config.asset_references().len() != 1
+            || file.is_none_or(|reference| {
+                reference.kind() != AssetKind::SoundFont
+                    || (self.library.is_none() && reference.locator() != HIDEF_SOUNDFONT_PATH)
+            })
+        {
+            return Err(InstrumentPreparationError::InvalidConfiguration {
+                patch_id: patch.id(),
+            });
+        }
+        let asset = self.asset_for(patch.instrument_config())?;
+        let bank = asset.prepared_bank();
+        let prepared = PreparedPatch::try_from_patch(patch, &asset.catalog())?;
+        if !bank.has_preset(prepared.preset_id) {
             return Err(InstrumentPreparationError::PresetUnavailable {
                 patch_id: patch.id(),
             });
         }
         let engine = SoundFontVoiceEngine::<SOUNDFONT_ENGINE_VOICE_SLOTS>::new(
-            Arc::clone(&self.prepared_bank),
+            bank,
             sample_rate as f32,
             max_frames,
             prepared.preset_id,
@@ -84,6 +150,26 @@ impl HiDefSoundFontPreparer {
 impl InstrumentPreparer for HiDefSoundFontPreparer {
     fn capability_id(&self) -> &CapabilityId {
         &self.capability_id
+    }
+
+    fn asset_descriptor(
+        &self,
+        config: &crate::synth::InstrumentConfig,
+    ) -> Result<Option<crate::synth::CapabilityDescriptor>, InstrumentPreparationError> {
+        use crate::synth::InstrumentCapabilityProvider;
+        let asset = self.asset_for(config)?;
+        let reference = config
+            .asset_references()
+            .first()
+            .ok_or(InstrumentPreparationError::AssetParseFailed)?
+            .reference()
+            .clone();
+        super::hidef_soundfont_capability::HiDefSoundFontCapability::for_asset(
+            asset.catalog(),
+            reference,
+        )
+        .map(|provider| Some(provider.descriptor()))
+        .map_err(|_| InstrumentPreparationError::AssetParseFailed)
     }
 
     fn prepared_shared_asset_count(&self) -> usize {
@@ -191,7 +277,6 @@ impl PreparedPatch {
             });
         }
         if file.kind() != AssetKind::SoundFont
-            || file.locator() != HIDEF_SOUNDFONT_PATH
             || config.values().len() != 1
             || config.asset_references().len() != 1
         {

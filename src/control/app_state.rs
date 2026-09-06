@@ -627,7 +627,7 @@ impl AppState {
                     .find(|patch| patch.id() == *patch_id)
                     .and_then(|patch| {
                         self.capabilities
-                            .descriptor(patch.instrument_config().capability_id())
+                            .descriptor_for_config(patch.instrument_config())
                     })
                     .is_none_or(|descriptor| {
                         *value == 0
@@ -1006,7 +1006,7 @@ impl AppState {
             .ok_or(EventRejection::NoPatchesInstalled)?;
         let descriptor = self
             .capabilities
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         patch
             .editable_targets(descriptor)
@@ -1086,6 +1086,7 @@ impl AppState {
             &event,
             AppEvent::SelectContext(_)
                 | AppEvent::SelectPatch(_)
+                | AppEvent::NavigatePage(_)
                 | AppEvent::Navigate(_)
                 | AppEvent::Adjust(_)
                 | AppEvent::SetInteractionMode(_)
@@ -1110,6 +1111,7 @@ impl AppState {
                 self.select_patch(direction)?;
                 Ok(ReducerEffects::default())
             }
+            AppEvent::NavigatePage(direction) => self.navigate_page(direction),
             AppEvent::Navigate(direction) => {
                 let audio_command = if self.interaction.active_surface() == SurfaceId::FileBrowser {
                     self.preview_stop_command()
@@ -1144,13 +1146,7 @@ impl AppState {
                 self.open_related_surface()?;
                 Ok(ReducerEffects::default())
             }
-            AppEvent::OpenMidiSettings => {
-                self.open_midi_settings()?;
-                Ok(ReducerEffects {
-                    midi_device_effects: self.start_midi_input_scan()?,
-                    ..ReducerEffects::default()
-                })
-            }
+            AppEvent::OpenMidiSettings => self.open_midi_settings_with_scan(),
             AppEvent::Activate => self.activate_focused_subordinate(),
             AppEvent::AssetImported(selection) => self.complete_asset_import(selection),
             AppEvent::ToggleTestMidi => {
@@ -1183,30 +1179,7 @@ impl AppState {
                     .map_err(|_| EventRejection::ActionUnavailableInContext)?;
                 Ok(ReducerEffects::default())
             }
-            AppEvent::Return => {
-                if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
-                    self.interaction
-                        .return_from_midi_settings()
-                        .map_err(|_| EventRejection::ActionUnavailableInContext)?;
-                    return Ok(ReducerEffects::default());
-                }
-                let audio_command = if self.interaction.active_surface() == SurfaceId::FileBrowser {
-                    self.preview_stop_command()
-                } else {
-                    None
-                };
-                if self.interaction.active_surface() == SurfaceId::FileBrowser {
-                    self.file_browser.cancelled();
-                }
-                self.interaction
-                    .return_to_origin()
-                    .map_err(|_| EventRejection::ActionUnavailableInContext)?;
-                Ok(ReducerEffects {
-                    audio_command,
-                    engine_selection_effect: None,
-                    midi_device_effects: Vec::new(),
-                })
-            }
+            AppEvent::Return => self.return_from_surface(),
             AppEvent::InstallPatches(patches) => {
                 self.install_patches(patches)?;
                 Ok(ReducerEffects::default())
@@ -1271,12 +1244,17 @@ impl AppState {
                 }
                 Ok(ReducerEffects::default())
             }
-            AppEvent::SampleCatalogRefreshed { folder, listing } => {
+            AppEvent::FileCatalogRefreshed {
+                asset_kind,
+                folder,
+                listing,
+            } => {
                 let initial_listing =
                     self.file_browser.lifecycle() == crate::control::SampleAssetLifecycle::Loading;
                 let refreshing_visible = self.interaction.active_surface()
                     == SurfaceId::FileBrowser
-                    && self.file_browser.folder() == &folder;
+                    && self.file_browser.folder() == &folder
+                    && self.file_browser.asset_kind() == asset_kind;
                 let (held, old_order, audio_command) = if refreshing_visible {
                     (
                         Some(self.interaction.focus_path().clone()),
@@ -1286,7 +1264,9 @@ impl AppState {
                 } else {
                     (None, None, None)
                 };
-                let reloaded = self.file_browser.refresh_listing(folder, listing);
+                let reloaded = self
+                    .file_browser
+                    .refresh_listing(asset_kind, folder, listing);
                 if reloaded {
                     let held = held.ok_or(EventRejection::InvalidSelection)?;
                     let old_order = old_order.ok_or(EventRejection::InvalidSelection)?;
@@ -1496,6 +1476,82 @@ impl AppState {
                 ..ReducerEffects::default()
             }),
         }
+    }
+
+    /// Dispatch from the source surface once; subordinate returns never cascade
+    /// through the root page underneath them.
+    fn navigate_page(&mut self, direction: Direction) -> Result<ReducerEffects, EventRejection> {
+        let surface = self.interaction.active_surface();
+        if matches!(
+            surface,
+            SurfaceId::PatchChoice | SurfaceId::FileBrowser | SurfaceId::MidiDeviceSettings
+        ) {
+            return if direction == Direction::Down
+                || (surface == SurfaceId::MidiDeviceSettings && direction == Direction::Right)
+            {
+                self.return_from_surface()
+            } else {
+                Err(EventRejection::ActionUnavailableInContext)
+            };
+        }
+        if self.interaction.mode() != crate::control::InteractionMode::Navigate
+            || self.file_browser.preview_is_held()
+        {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
+        match (surface, direction) {
+            (SurfaceId::PatchMain, Direction::Left) => self.open_midi_settings_with_scan(),
+            (SurfaceId::PatchMain, Direction::Down) => {
+                self.select_context(TopLevelContext::Mixer)?;
+                Ok(ReducerEffects::default())
+            }
+            (SurfaceId::MixerMain | SurfaceId::MixerInspector, Direction::Up) => {
+                self.select_context(TopLevelContext::Patch)?;
+                Ok(ReducerEffects::default())
+            }
+            (_, Direction::Up) => {
+                self.open_related_surface()?;
+                Ok(ReducerEffects::default())
+            }
+            (_, Direction::Down) => self.return_from_surface(),
+            (_, Direction::Left | Direction::Right) => {
+                self.select_patch(direction)?;
+                Ok(ReducerEffects::default())
+            }
+        }
+    }
+
+    fn open_midi_settings_with_scan(&mut self) -> Result<ReducerEffects, EventRejection> {
+        self.open_midi_settings()?;
+        Ok(ReducerEffects {
+            midi_device_effects: self.start_midi_input_scan()?,
+            ..ReducerEffects::default()
+        })
+    }
+
+    fn return_from_surface(&mut self) -> Result<ReducerEffects, EventRejection> {
+        if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
+            self.interaction
+                .return_from_midi_settings()
+                .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+            return Ok(ReducerEffects::default());
+        }
+        let audio_command = if self.interaction.active_surface() == SurfaceId::FileBrowser {
+            self.preview_stop_command()
+        } else {
+            None
+        };
+        if self.interaction.active_surface() == SurfaceId::FileBrowser {
+            self.file_browser.cancelled();
+        }
+        self.interaction
+            .return_to_origin()
+            .map_err(|_| EventRejection::ActionUnavailableInContext)?;
+        Ok(ReducerEffects {
+            audio_command,
+            engine_selection_effect: None,
+            midi_device_effects: Vec::new(),
+        })
     }
 
     fn open_midi_settings(&mut self) -> Result<(), EventRejection> {
@@ -2054,7 +2110,7 @@ impl AppState {
         for patch in &mut patches {
             let policy = self
                 .capabilities
-                .descriptor(patch.instrument_config().capability_id())
+                .descriptor_for_config(patch.instrument_config())
                 .ok_or(EventRejection::InvalidInstrumentConfig)?
                 .voice_policy();
             patch.seed_voice_limit(policy);
@@ -2086,6 +2142,13 @@ impl AppState {
         &mut self,
         replacement: crate::control::SessionReplacementPayload,
     ) -> Result<(), EventRejection> {
+        let mut capabilities = CapabilityRegistry::new(self.capabilities.descriptors().to_vec())
+            .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        for descriptor in replacement.asset_descriptors() {
+            capabilities = capabilities
+                .with_asset_descriptor(descriptor.clone())
+                .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+        }
         let (patches, mixer, global, returns, target_graph_revision, sample_visualizations) =
             replacement.into_parts();
         if patches.is_empty() {
@@ -2101,11 +2164,10 @@ impl AppState {
             {
                 return Err(EventRejection::InvalidSelection);
             }
-            let descriptor = self
-                .capabilities
-                .descriptor(patch.instrument_config().capability_id())
+            let descriptor = capabilities
+                .descriptor_for_config(patch.instrument_config())
                 .ok_or(EventRejection::InvalidInstrumentConfig)?;
-            self.capabilities
+            capabilities
                 .validate_config(patch.instrument_config())
                 .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
             if patch.voice_limit().value()
@@ -2124,6 +2186,7 @@ impl AppState {
             }
         }
 
+        self.capabilities = std::sync::Arc::new(capabilities);
         self.patches = patches;
         self.mixer = mixer;
         self.global = global;
@@ -2220,7 +2283,7 @@ impl AppState {
             .ok_or(EventRejection::NoPatchesInstalled)?;
         let descriptor = self
             .capabilities
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let spec = descriptor
             .parameter(&parameter_id)
@@ -2229,11 +2292,12 @@ impl AppState {
         let reference = patch
             .instrument_config()
             .asset_reference(spec.id())
-            .filter(|reference| reference.kind() == AssetKind::Sample)
+            .filter(|reference| {
+                matches!(reference.kind(), AssetKind::Sample | AssetKind::SoundFont)
+            })
             .ok_or(EventRejection::ActionUnavailableInContext)?;
-        let _ = AssetFileId::new(reference.locator())
-            .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
-        self.file_browser.begin(patch_id, parameter_id.clone());
+        self.file_browser
+            .begin(patch_id, parameter_id.clone(), reference.kind());
         let row = self
             .file_browser
             .rows()
@@ -2275,7 +2339,7 @@ impl AppState {
             .map_err(|_| EventRejection::ActionUnavailableInContext)
     }
 
-    fn sample_asset_origin(
+    fn browser_asset_origin(
         &self,
         origin: &FocusPath,
     ) -> Result<(PatchId, ParameterId), EventRejection> {
@@ -2297,7 +2361,7 @@ impl AppState {
         if !patch
             .instrument_config()
             .asset_reference(parameter)
-            .is_some_and(|asset| asset.kind() == AssetKind::Sample)
+            .is_some_and(|asset| matches!(asset.kind(), AssetKind::Sample | AssetKind::SoundFont))
         {
             return Err(EventRejection::ActionUnavailableInContext);
         }
@@ -2318,7 +2382,39 @@ impl AppState {
                 .finish_file_import(&Err(crate::synth::SampleAssetError::Cancelled));
             return Ok(ReducerEffects::default());
         }
-        let (patch_id, parameter) = self.sample_asset_origin(&selection.request.origin)?;
+        let (patch_id, parameter) = self.browser_asset_origin(&selection.request.origin)?;
+        if let Some(descriptor) = selection.descriptor {
+            let asset = selection
+                .result
+                .as_ref()
+                .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
+            let patch = self
+                .patches
+                .iter()
+                .find(|patch| patch.id() == patch_id)
+                .ok_or(EventRejection::UnknownPatch)?;
+            let expected = AssetReference::new(selection.request.asset_kind, asset.as_str())
+                .map_err(|_| EventRejection::InvalidParameterValue)?;
+            if descriptor.id() != patch.instrument_config().capability_id()
+                || descriptor.default_assets()
+                    != [crate::synth::AssetAssignment::new(
+                        parameter.clone(),
+                        expected,
+                    )]
+            {
+                return Err(EventRejection::InvalidInstrumentConfig);
+            }
+            let mut capabilities = self.capabilities.as_ref().clone();
+            capabilities
+                .retain_asset_descriptors(self.patches.iter().map(Patch::instrument_config));
+            self.capabilities = std::sync::Arc::new(
+                capabilities
+                    .with_asset_descriptor(descriptor)
+                    .map_err(|_| EventRejection::InvalidInstrumentConfig)?,
+            );
+        } else if selection.result.is_ok() && selection.request.asset_kind == AssetKind::SoundFont {
+            return Err(EventRejection::InvalidInstrumentConfig);
+        }
         self.file_browser.finish_file_import(&selection.result);
         let Ok(asset) = selection.result else {
             return Ok(ReducerEffects::default());
@@ -2502,7 +2598,7 @@ impl AppState {
                 PatchControlId::Capability(parameter_id) => {
                     let descriptor = self
                         .capabilities
-                        .descriptor(candidate.instrument_config().capability_id())
+                        .descriptor_for_config(candidate.instrument_config())
                         .ok_or(EventRejection::InvalidInstrumentConfig)?;
                     let spec = descriptor
                         .parameter(&parameter_id)
@@ -2602,7 +2698,7 @@ impl AppState {
                     .ok_or(EventRejection::NoPatchesInstalled)?;
                 let descriptor = self
                     .capabilities
-                    .descriptor(patch.instrument_config().capability_id())
+                    .descriptor_for_config(patch.instrument_config())
                     .ok_or(EventRejection::InvalidInstrumentConfig)?;
                 let update = descriptor
                     .parameter(&parameter_id)
@@ -2665,7 +2761,8 @@ impl AppState {
                 })
             }
             FileBrowserRowKind::File(asset_id) => {
-                if asset_id.is_external() {
+                if asset_id.is_external() || self.file_browser.asset_kind() == AssetKind::SoundFont
+                {
                     if self.engine_selection.is_in_flight()
                         || self.file_browser.import_request().is_some()
                     {
@@ -2677,9 +2774,10 @@ impl AppState {
                         .ok_or(EventRejection::InvalidSelection)?
                         .origin()
                         .clone();
-                    let (patch_id, parameter) = self.sample_asset_origin(&origin)?;
+                    let (patch_id, parameter) = self.browser_asset_origin(&origin)?;
                     let request = crate::control::AssetImportRequest {
                         generation: self.generation,
+                        asset_kind: self.file_browser.asset_kind(),
                         asset_id,
                         origin,
                         graph_revision: self.engine_selection.active_graph_revision(),
@@ -2769,7 +2867,7 @@ impl AppState {
         let capability_id = patch.instrument_config().capability_id().clone();
         let descriptor = self
             .capabilities
-            .descriptor(&capability_id)
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let spec = descriptor
             .parameter(&parameter_id)
@@ -2778,8 +2876,15 @@ impl AppState {
                     && spec.update() == crate::synth::ParameterUpdate::Structural
             })
             .ok_or(EventRejection::InvalidSelection)?;
-        let reference = AssetReference::new(AssetKind::Sample, asset_id.as_str())
-            .map_err(|_| EventRejection::InvalidParameterValue)?;
+        let reference = AssetReference::new(
+            patch
+                .instrument_config()
+                .asset_reference(&parameter_id)
+                .ok_or(EventRejection::InvalidSelection)?
+                .kind(),
+            asset_id.as_str(),
+        )
+        .map_err(|_| EventRejection::InvalidParameterValue)?;
         if patch.instrument_config().asset_reference(spec.id()) == Some(&reference) {
             return Err(EventRejection::ParameterAtBoundary);
         }
@@ -3102,7 +3207,12 @@ impl AppState {
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::MismatchedEngineSelection)?;
         if patch.instrument_config().capability_id() != &source_capability_id
-            || !candidate_matches_intent(patch.instrument_config(), &candidate_config, &intent)
+            || !candidate_matches_intent(
+                &self.capabilities,
+                patch.instrument_config(),
+                &candidate_config,
+                &intent,
+            )
         {
             return Err(EventRejection::MismatchedEngineSelection);
         }
@@ -3250,7 +3360,7 @@ impl AppState {
             let old_mixer_order = SemanticResolver::new(self).mixer_main_paths()?;
             let target_policy = self
                 .capabilities
-                .descriptor(candidate.capability_id())
+                .descriptor_for_config(&candidate)
                 .ok_or(EventRejection::MismatchedEngineSelection)?
                 .voice_policy();
             let patch = self
@@ -3573,6 +3683,7 @@ impl AppState {
                 correlation.source_capability_id()
                     == Some(patch.instrument_config().capability_id())
                     && candidate_matches_intent(
+                        &self.capabilities,
                         patch.instrument_config(),
                         candidate,
                         correlation.intent(),
@@ -4045,7 +4156,7 @@ impl AppState {
                 let config = candidate.instrument_config();
                 let descriptor = self
                     .capabilities
-                    .descriptor(config.capability_id())
+                    .descriptor_for_config(config)
                     .ok_or(EventRejection::InvalidInstrumentConfig)?;
                 let spec = descriptor
                     .parameter(&parameter_id)
@@ -4075,6 +4186,9 @@ impl AppState {
     }
 
     fn preview_start(&mut self) -> Result<EngineSelectionEffect, EventRejection> {
+        if self.file_browser.asset_kind() != AssetKind::Sample {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
         if self.interaction.active_surface() != SurfaceId::FileBrowser
             || !matches!(self.file_browser.preview(), SamplePreviewState::Idle)
             || self.engine_selection.is_in_flight()
@@ -4110,7 +4224,7 @@ impl AppState {
         let capability_id = patch.instrument_config().capability_id().clone();
         let descriptor = self
             .capabilities
-            .descriptor(&capability_id)
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         descriptor
             .parameter(&parameter_id)
@@ -4294,7 +4408,7 @@ impl AppState {
         let config = self.patches[patch_index].instrument_config();
         let descriptor = self
             .capabilities
-            .descriptor(config.capability_id())
+            .descriptor_for_config(config)
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let spec = descriptor
             .parameter(parameter_id)
@@ -4520,7 +4634,7 @@ impl AppState {
         let config = self.patches[patch_index].instrument_config();
         let descriptor = self
             .capabilities
-            .descriptor(config.capability_id())
+            .descriptor_for_config(config)
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let spec = descriptor
             .parameter(parameter_id)
@@ -4563,7 +4677,7 @@ impl AppState {
         let source_capability_id = patch.instrument_config().capability_id().clone();
         let descriptor = self
             .capabilities
-            .descriptor(&source_capability_id)
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let spec = descriptor
             .parameter(&parameter_id)
@@ -4640,7 +4754,7 @@ impl AppState {
         let source_capability_id = patch.instrument_config().capability_id().clone();
         let descriptor = self
             .capabilities
-            .descriptor(&source_capability_id)
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let spec = descriptor
             .parameter(&parameter_id)
@@ -5326,6 +5440,7 @@ fn adjusted_value(
 }
 
 fn candidate_matches_intent(
+    registry: &CapabilityRegistry,
     source: &crate::synth::InstrumentConfig,
     candidate: &crate::synth::InstrumentConfig,
     intent: &StructuralEditIntent,
@@ -5372,19 +5487,10 @@ fn candidate_matches_intent(
             reference,
         } => {
             source.capability_id() == capability_id
-                && candidate.capability_id() == capability_id
-                && source.values() == candidate.values()
-                && source.asset_references().len() == candidate.asset_references().len()
                 && source.asset_reference(parameter_id) != Some(reference)
-                && candidate.asset_reference(parameter_id) == Some(reference)
-                && candidate
-                    .asset_references()
-                    .iter()
-                    .zip(source.asset_references())
-                    .all(|(next, prior)| {
-                        next.parameter_id() == prior.parameter_id()
-                            && (next.parameter_id() == parameter_id || next == prior)
-                    })
+                && registry
+                    .replace_asset(source, parameter_id, reference.clone())
+                    .is_ok_and(|expected| expected == *candidate)
         }
         StructuralEditIntent::PrepareAudition {
             capability_id,
@@ -6240,7 +6346,7 @@ mod tests {
     }
 
     #[test]
-    fn keyboard_shift_horizontal_reaches_empty_creates_and_returns_by_stable_identity() {
+    fn keyboard_shift_right_reaches_empty_creates_and_q_returns_by_stable_identity() {
         let mut state = production_empty_state();
         state.apply(AppEvent::SelectPatch(Direction::Left)).unwrap();
         let prior_id = state.interaction().patch_focus().unwrap();
@@ -6307,7 +6413,7 @@ mod tests {
             .unwrap();
         let left = keyboard
             .translate(crate::shell::WindowInput::key_down(
-                crate::shell::WindowKey::A,
+                crate::shell::WindowKey::Q,
             ))
             .unwrap();
         state.apply_semantic_action(left).unwrap();
@@ -8670,6 +8776,10 @@ mod tests {
                 Err(EventRejection::ActionUnavailableInContext)
             );
             assert_eq!(
+                state.apply_semantic_action(SemanticAction::NavigatePage(Direction::Left)),
+                Err(EventRejection::ActionUnavailableInContext)
+            );
+            assert_eq!(
                 state, &before,
                 "generation, focus, return state, and pending effects must remain unchanged"
             );
@@ -8687,6 +8797,9 @@ mod tests {
         assert_rejected_unchanged(&mut modal);
 
         let mut held_preview = installed_state();
+        held_preview
+            .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+            .unwrap();
         held_preview.file_browser.preview_requested(
             AssetFileId::new("test/held-preview.wav").unwrap(),
             EngineSelectionRequestId::FIRST,

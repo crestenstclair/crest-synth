@@ -1935,7 +1935,7 @@
   }
 
   // The option surface's exact active/requested structural truth stays
-  // anchored to the Patch Main control named by its projected subject. It is
+  // anchored to the origin surface control named by its projected subject. It is
   // a readout, never a second focus target. Ready, in-flight, unavailable,
   // and failed all use the same fields and differ through explicit text,
   // data state, and keyline treatment rather than color alone.
@@ -2068,6 +2068,7 @@
       }
       var browserVisualizations = "";
       var modalVisualizations = modal.visualizations || [];
+      var previewAvailable = hasWaveform(modal);
       for (var visualizationIndex = 0; visualizationIndex < modalVisualizations.length; visualizationIndex += 1) {
         browserVisualizations += detailVisualizationHtml(modalVisualizations[visualizationIndex]);
       }
@@ -2087,10 +2088,10 @@
         '<span class="type-hint">' +
         escapeHtml(String(summary.lifecycle || UNAVAILABLE).toUpperCase()) +
         "</span>" +
-        '<span class="type-hint adjust">PREVIEW ' +
+        (previewAvailable ? '<span class="type-hint adjust">PREVIEW ' +
         escapeHtml(previewText) +
         "</span>" +
-        '<span class="type-hint muted">ORIGIN PATCH ROUTING / MUTE / SOLO / SENDS APPLY</span>' +
+        '<span class="type-hint muted">ORIGIN PATCH ROUTING / MUTE / SOLO / SENDS APPLY</span>' : "") +
         "</div>";
       return (
         '<div class="modal-shell sample-browser" id="modal-shell">' +
@@ -2100,7 +2101,7 @@
         escapeHtml(String(modal.label || "FILE BROWSER")) +
         "</span></div>" +
         browserStatus +
-        '<div class="browser-visualizations" data-role="browser-visualizations">' +
+        (previewAvailable ? '<div class="browser-visualizations" data-role="browser-visualizations">' +
         (browserVisualizations || markUnavailableRowHtml("WAVEFORM")) +
         "</div>" +
         '<div class="preview-region" data-role="preview-region" data-preview-state="' +
@@ -2112,7 +2113,7 @@
         '<span class="preview-playhead-shape" aria-hidden="true"><span class="preview-playhead-marker"></span></span>' +
         '<span class="type-hint" data-role="preview-playhead">PLAYHEAD — / ' +
         escapeHtml(String(preview.kind || "idle").toUpperCase()) +
-        "</span></div>" +
+        "</span></div>" : "") +
         '<div class="modal-options" data-role="modal-options">' +
         browserRows +
         "</div></div>"
@@ -2122,8 +2123,9 @@
     var summary = modal.summary || {};
     var subject = summary.subject || {};
     var subjectControl = serializedControlId(subject.controlId);
-    var patchMain = surfaceById(model, "patchMain");
-    var origin = controlById(patchMain, subjectControl);
+    var originPath = model.returnPath && model.returnPath.origin;
+    var originSurface = surfaceById(model, originPath && originPath.surface);
+    var origin = controlById(originSurface, subjectControl);
     var returnControl = serializedControlId(
       model.returnPath && model.returnPath.origin
         ? model.returnPath.origin.controlId
@@ -2152,7 +2154,7 @@
           : "Opened from Patch / " +
             String((origin && origin.label) || "selector");
     if (returnControl && returnControl !== subjectControl) {
-      var returnOrigin = controlById(patchMain, returnControl);
+      var returnOrigin = controlById(originSurface, returnControl);
       sourceAnnotation +=
         " · RETURN REPAIRED TO " +
         String((returnOrigin && returnOrigin.label) || UNAVAILABLE_MARK).toUpperCase();

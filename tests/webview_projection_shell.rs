@@ -218,6 +218,9 @@ const PAINTED_ACK_IDENTITY_FIELDS: [&str; 6] = [
 const DETAIL_WITNESS_ENV: &str = "CREST_WEBVIEW_DETAIL_WITNESS";
 const OPTION_WITNESS_ENV: &str = "CREST_WEBVIEW_OPTION_WITNESS";
 const EMPTY_PATCH_WITNESS_ENV: &str = "CREST_WEBVIEW_EMPTY_PATCH_WITNESS";
+#[cfg(target_os = "macos")]
+#[path = "support/page_navigation_native.rs"]
+mod page_navigation_native;
 
 fn main() {
     // libtest-style arguments (`--nocapture`, filters) are accepted and
@@ -228,6 +231,8 @@ fn main() {
     // the environment variable alone. Nothing downstream may turn a live
     // failure into a skip.
     let live = std::env::var("CREST_WEBVIEW_TESTS").as_deref() == Ok("1");
+    let page_witness =
+        live && std::env::var("CREST_WEBVIEW_PAGE_NAVIGATION_WITNESS").as_deref() == Ok("1");
     let detail_witness = live && std::env::var(DETAIL_WITNESS_ENV).as_deref() == Ok("1");
     let option_witness = live && std::env::var(OPTION_WITNESS_ENV).as_deref() == Ok("1");
     let empty_patch_witness = live && std::env::var(EMPTY_PATCH_WITNESS_ENV).as_deref() == Ok("1");
@@ -255,7 +260,7 @@ fn main() {
             "T026 live layer (real-window shutdown parity, NFR-001 projection-to-paint, NFR-002 meter soak)",
             "T013 forced double-close failure (a shipped-binary subprocess with every close forced to fail: with no prior error recorded the typed WindowClose itself surfaces carrying the forced cause verbatim, ending the process nonzero rather than hanging)",
         ]
-    } else if detail_witness || option_witness || empty_patch_witness {
+    } else if detail_witness || option_witness || empty_patch_witness || page_witness {
         vec![
             "T011 painted fader/position geometry (outside the scoped native witness)",
             "T012 forced render failures (outside the scoped native witness)",
@@ -272,6 +277,7 @@ fn main() {
             detail_witness,
             option_witness,
             empty_patch_witness,
+            page_witness,
         );
     } else {
         for skip in &skips {
@@ -4097,6 +4103,7 @@ fn run_live_sections(
     detail_witness: bool,
     option_witness: bool,
     empty_patch_witness: bool,
+    page_witness: bool,
 ) {
     use tauri::{Listener, Manager};
 
@@ -4173,6 +4180,28 @@ fn run_live_sections(
     request_authored_desktop(&window)
         .unwrap_or_else(|error| panic!("the live harness seats its witness viewport: {error}"));
 
+    let (key_sender, key_receiver) = mpsc::channel::<crest_synth::control::SemanticAction>();
+    #[cfg(target_os = "macos")]
+    let _page_input_monitor = page_witness.then(|| {
+        let mut keyboard = KeyboardInputTranslator::new();
+        crest_synth::shell::webview::input_capture::install(move |raw| {
+            let input = if raw.pressed() {
+                WindowInput::key_down(raw.key())
+            } else {
+                WindowInput::key_up(raw.key())
+            };
+            if let Some(action) = keyboard.translate(input) {
+                let _ = key_sender.send(action);
+            }
+        })
+        .expect("page witness requires production native capture")
+    });
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = key_sender;
+        assert!(!page_witness, "native page input witness requires macOS");
+    }
+
     let handle = app.handle().clone();
     // Match the shipped window's idle cadence. The native event loop waits
     // when idle; this bounded waker gives WebKit regular presentation turns
@@ -4200,6 +4229,15 @@ fn run_live_sections(
     let driver_outcome = Arc::clone(&outcome);
     let driver = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            #[cfg(target_os = "macos")]
+            if page_witness {
+                return page_navigation_native::drive(
+                    &handle,
+                    &harness_receiver,
+                    &ready_receiver,
+                    &key_receiver,
+                );
+            }
             drive_live_window(
                 &handle,
                 &harness_receiver,
@@ -4245,7 +4283,9 @@ fn run_live_sections(
         "T026 harness window owned shutdown: PASS (run_return = 0 through the owned close path)"
     );
 
-    if detail_witness {
+    if page_witness {
+        println!("CREST_WEBVIEW_PAGE_NAVIGATION_WITNESS authored edges passed, including Shift+Right Settings return; owned window closed.");
+    } else if detail_witness {
         println!(
             "CREST_WEBVIEW_DETAIL_WITNESS complete: real Detail/Mixer window closed; \
              unrelated soak and forced-failure subprocesses skipped"
@@ -4543,9 +4583,13 @@ fn keyboard_close_options(
         state,
         translator,
         WindowInput::key_down(WindowKey::S),
-        crest_synth::control::SemanticAction::Return,
+        crest_synth::control::SemanticAction::NavigatePage(Direction::Down),
         true,
         &format!("{label} Shift+Down"),
+    );
+    assert_eq!(
+        translator.translate(WindowInput::key_up(WindowKey::S)),
+        None
     );
     assert_eq!(
         translator.translate(WindowInput::key_up(WindowKey::Shift)),
@@ -4611,6 +4655,7 @@ fn apply_shift_keyboard_gesture(
         true,
         label,
     );
+    assert_eq!(translator.translate(WindowInput::key_up(key)), None);
     assert_eq!(
         translator.translate(WindowInput::key_up(WindowKey::Shift)),
         None,
@@ -4647,7 +4692,7 @@ fn prove_native_empty_patch_input_journey(
         &mut state,
         &mut keyboard,
         WindowKey::D,
-        SemanticAction::SelectPatch(Direction::Right),
+        SemanticAction::NavigatePage(Direction::Right),
         "native empty journey Shift+Right",
     );
     assert_eq!(
@@ -4673,7 +4718,7 @@ fn prove_native_empty_patch_input_journey(
         &mut state,
         &mut keyboard,
         WindowKey::W,
-        SemanticAction::OpenRelated,
+        SemanticAction::NavigatePage(Direction::Up),
         "native empty journey non-creating Shift+Up inspection",
     );
     assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
@@ -4691,7 +4736,7 @@ fn prove_native_empty_patch_input_journey(
         &mut state,
         &mut keyboard,
         WindowKey::S,
-        SemanticAction::Return,
+        SemanticAction::NavigatePage(Direction::Down),
         "native empty journey inspection Shift+Down return",
     );
     assert_eq!(state.interaction().focus_path(), &empty_origin);
@@ -4859,7 +4904,7 @@ fn prove_native_empty_patch_input_journey(
         &mut state,
         &mut keyboard,
         WindowKey::S,
-        SemanticAction::Return,
+        SemanticAction::NavigatePage(Direction::Down),
         "native created journey exact Shift+Down return",
     );
     assert_eq!(state.interaction().active_surface(), SurfaceId::PatchMain);
@@ -4878,9 +4923,9 @@ fn prove_native_empty_patch_input_journey(
     apply_shift_keyboard_gesture(
         &mut state,
         &mut keyboard,
-        WindowKey::A,
+        WindowKey::Q,
         SemanticAction::SelectPatch(Direction::Left),
-        "native created journey Shift+Left",
+        "native created journey Q previous Patch",
     );
     assert_eq!(state.interaction().patch_focus(), Some(final_created_id));
     observe_native_patch_state(
@@ -4895,7 +4940,7 @@ fn prove_native_empty_patch_input_journey(
         "T024 native empty Patch input journey: PASS (production keyboard normalization → \
          AppState::apply → projection/native paint covered Shift+Right, non-creating Detail \
          inspection, first edit, visible preparation failure, fresh retry, acknowledged stable \
-         identity, exact return, and Shift+Left)"
+         identity, exact return, and Q)"
     );
     Ok(())
 }
@@ -6289,14 +6334,18 @@ fn assert_patch_modal_composition(
             "{label}: option source annotation is present"
         );
 
-        let main = document
+        let origin_surface_id = document
+            .pointer("/returnPath/origin/surface")
+            .and_then(Value::as_str)
+            .expect("Choice carries its origin surface");
+        let origin_surface = document
             .get("surfaces")
             .and_then(Value::as_array)
             .into_iter()
             .flatten()
-            .find(|surface| surface.get("id").and_then(Value::as_str) == Some("patchMain"))
-            .unwrap_or_else(|| panic!("{label}: Choice document carries Patch Main"));
-        let origin = main
+            .find(|surface| surface.get("id").and_then(Value::as_str) == Some(origin_surface_id))
+            .unwrap_or_else(|| panic!("{label}: Choice document carries its origin surface"));
+        let origin = origin_surface
             .get("controls")
             .and_then(Value::as_array)
             .into_iter()
@@ -6307,14 +6356,15 @@ fn assert_patch_modal_composition(
                     .and_then(Value::as_str)
                     == Some(subject_control)
             })
-            .unwrap_or_else(|| panic!("{label}: Patch Main carries the Choice origin control"));
+            .unwrap_or_else(|| panic!("{label}: origin surface carries the Choice origin control"));
         let status = modal
             .get("optionStatus")
             .filter(|status| !status.is_null())
             .unwrap_or_else(|| panic!("{label}: option origin status is painted"));
         let active = origin
-            .pointer("/value/value")
+            .get("selectedLabel")
             .and_then(Value::as_str)
+            .or_else(|| origin.pointer("/value/value").and_then(Value::as_str))
             .unwrap_or_default();
         let expected_active = format!("ACTIVE {active}");
         assert_eq!(
@@ -6323,8 +6373,13 @@ fn assert_patch_modal_composition(
             "{label}: acknowledged active reading stays origin-anchored"
         );
         let requested = origin
-            .pointer("/requestedValue/value")
+            .get("requestedLabel")
             .and_then(Value::as_str)
+            .or_else(|| {
+                origin
+                    .pointer("/requestedValue/value")
+                    .and_then(Value::as_str)
+            })
             .unwrap_or("--");
         let expected_requested = format!("REQUESTED {requested}");
         assert_eq!(
@@ -6598,16 +6653,29 @@ fn assert_patch_modal_composition(
 
     if browser {
         assert_eq!(modal.get("browser").and_then(Value::as_bool), Some(true));
+        let preview_available = modal_surface
+            .get("visualizations")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .any(|visualization| {
+                visualization.pointer("/data/kind").and_then(Value::as_str) == Some("waveform")
+            });
         assert_eq!(
             modal.get("previewState").and_then(Value::as_str),
-            modal_surface
-                .pointer("/summary/preview/kind")
-                .and_then(Value::as_str)
+            preview_available
+                .then(|| modal_surface
+                    .pointer("/summary/preview/kind")
+                    .and_then(Value::as_str))
+                .flatten()
         );
-        assert!(modal
-            .get("previewText")
-            .and_then(Value::as_str)
-            .is_some_and(|text| text.contains("PLAYHEAD")));
+        assert_eq!(
+            modal
+                .get("previewText")
+                .and_then(Value::as_str)
+                .is_some_and(|text| text.contains("PLAYHEAD")),
+            preview_available
+        );
     }
 }
 
@@ -7656,6 +7724,30 @@ fn drive_live_window(
                 return Err("the harness channel disconnected".to_owned());
             }
         }
+    }
+
+    if let Some(root) = std::env::var_os("CREST_SOUNDFONT_EVIDENCE_DIR") {
+        let root = std::path::PathBuf::from(root);
+        for name in [
+            "file-page",
+            "loading",
+            "activating",
+            "loaded-detail",
+            "preset-page",
+            "failed-detail",
+        ] {
+            let bytes = std::fs::read_to_string(root.join(format!("{name}.json")))
+                .map_err(|error| format!("SoundFont evidence {name}: {error}"))?;
+            let document: Value =
+                serde_json::from_str(&bytes).map_err(|error| error.to_string())?;
+            let first = observe_render(&window, receiver, &bytes, &format!("soundfont-{name}-1"))?;
+            let second = observe_render(&window, receiver, &bytes, &format!("soundfont-{name}-2"))?;
+            assert_eq!(first, second, "SoundFont {name}: deterministic paint");
+            assert_patch_observation_structure(&first, &document, desktop_side, name);
+            sample_detail_native::capture(&window, &root.join(format!("{name}.png")))?;
+        }
+        println!("SoundFont native file/detail/preset/failure paint: PASS (six production documents, exact focus/values, repeated paint)");
+        return Ok(());
     }
 
     // Page-side meter arrival counter (harness JS, not page code): counts

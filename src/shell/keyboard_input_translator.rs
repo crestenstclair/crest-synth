@@ -3,6 +3,14 @@ use crate::control::top_level_context::TopLevelContext;
 use crate::control::{InteractionMode, SemanticAction};
 use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum KeyHold {
+    #[default]
+    Released,
+    Held,
+    Page,
+}
+
 /// Translates normalized window input into the closed semantic-action vocabulary.
 ///
 /// The translator owns only transient modifier/hold state. It never
@@ -10,6 +18,7 @@ use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 /// audio state.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct KeyboardInputTranslator {
+    page_keys_held: [KeyHold; 6],
     k_held: bool,
     shift_held: bool,
     start_held: bool,
@@ -20,6 +29,7 @@ impl KeyboardInputTranslator {
     /// Creates a translator with no modifier held.
     pub const fn new() -> Self {
         Self {
+            page_keys_held: [KeyHold::Released; 6],
             k_held: false,
             shift_held: false,
             start_held: false,
@@ -29,8 +39,32 @@ impl KeyboardInputTranslator {
 
     /// Translates one normalized window input into at most one semantic action.
     pub fn translate(&mut self, event: WindowInput) -> Option<SemanticAction> {
+        if let Some(index) = Self::page_key_index(event.key()) {
+            match event.kind() {
+                WindowInputKind::KeyUp => self.page_keys_held[index] = KeyHold::Released,
+                WindowInputKind::KeyDown => {
+                    let page =
+                        self.shift_held || matches!(event.key(), WindowKey::Q | WindowKey::E);
+                    let hold = &mut self.page_keys_held[index];
+                    let prior = *hold;
+                    // Once a hold participates in a page chord, releasing
+                    // Shift cannot turn its repeat into a focus move or edit.
+                    if page {
+                        *hold = KeyHold::Page;
+                    }
+                    if prior == KeyHold::Page || (prior == KeyHold::Held && page) {
+                        return None;
+                    }
+                    if !page {
+                        *hold = KeyHold::Held;
+                    }
+                }
+                WindowInputKind::FocusLost => {}
+            }
+        }
         match event.kind() {
             WindowInputKind::FocusLost => {
+                self.page_keys_held = [KeyHold::Released; 6];
                 self.k_held = false;
                 self.shift_held = false;
                 self.start_held = false;
@@ -63,6 +97,18 @@ impl KeyboardInputTranslator {
         }
     }
 
+    fn page_key_index(key: WindowKey) -> Option<usize> {
+        match key {
+            WindowKey::W => Some(0),
+            WindowKey::S => Some(1),
+            WindowKey::A => Some(2),
+            WindowKey::D => Some(3),
+            WindowKey::Q => Some(4),
+            WindowKey::E => Some(5),
+            _ => None,
+        }
+    }
+
     fn translate_key_down(&mut self, key: WindowKey) -> Option<SemanticAction> {
         match key {
             WindowKey::Digit1 => {
@@ -71,9 +117,7 @@ impl KeyboardInputTranslator {
             WindowKey::Digit2 => {
                 return Some(SemanticAction::SelectContext(TopLevelContext::Patch))
             }
-            // Q/E remain direct compatibility bindings for Patch stepping;
-            // the authored Shift+Left/Right gesture below reaches the same
-            // semantic action. Holding K must not turn either into an edit.
+            // Q/E select Patches independently of the page-direction modifier.
             WindowKey::Q => return Some(SemanticAction::SelectPatch(Direction::Left)),
             WindowKey::E => return Some(SemanticAction::SelectPatch(Direction::Right)),
             _ => {}
@@ -139,12 +183,7 @@ impl KeyboardInputTranslator {
         };
 
         if self.shift_held {
-            return match direction {
-                Direction::Up => Some(SemanticAction::OpenRelated),
-                Direction::Down => Some(SemanticAction::Return),
-                Direction::Left => Some(SemanticAction::SelectPatch(Direction::Left)),
-                Direction::Right => Some(SemanticAction::SelectPatch(Direction::Right)),
-            };
+            return Some(SemanticAction::NavigatePage(direction));
         }
 
         Some(if self.k_held {
@@ -187,6 +226,50 @@ mod tests {
         WindowKey::BracketLeft,
         WindowKey::BracketRight,
     ];
+
+    #[test]
+    fn page_activation_requires_release_and_modifier_order_cannot_create_an_extra_edge() {
+        let mut keyboard = KeyboardInputTranslator::new();
+        keyboard.translate(WindowInput::key_down(WindowKey::Shift));
+        for (key, direction) in DIRECTION_CASES {
+            assert_eq!(
+                keyboard.translate(WindowInput::key_down(key)),
+                Some(SemanticAction::NavigatePage(direction))
+            );
+            assert_eq!(keyboard.translate(WindowInput::key_down(key)), None);
+            keyboard.translate(WindowInput::key_up(WindowKey::Shift));
+            assert_eq!(keyboard.translate(WindowInput::key_down(key)), None);
+            keyboard.translate(WindowInput::key_down(WindowKey::Shift));
+            assert_eq!(keyboard.translate(WindowInput::key_down(key)), None);
+            keyboard.translate(WindowInput::key_up(key));
+        }
+        keyboard.translate(WindowInput::focus_lost());
+        assert_eq!(
+            keyboard.translate(WindowInput::key_down(WindowKey::W)),
+            Some(SemanticAction::Navigate(Direction::Up))
+        );
+        keyboard.translate(WindowInput::key_down(WindowKey::Shift));
+        assert_eq!(
+            keyboard.translate(WindowInput::key_down(WindowKey::W)),
+            None
+        );
+        keyboard.translate(WindowInput::key_up(WindowKey::W));
+        assert_eq!(
+            keyboard.translate(WindowInput::key_down(WindowKey::W)),
+            Some(SemanticAction::NavigatePage(Direction::Up))
+        );
+        for (key, direction) in [
+            (WindowKey::Q, Direction::Left),
+            (WindowKey::E, Direction::Right),
+        ] {
+            assert_eq!(
+                keyboard.translate(WindowInput::key_down(key)),
+                Some(SemanticAction::SelectPatch(direction))
+            );
+            assert_eq!(keyboard.translate(WindowInput::key_down(key)), None);
+            keyboard.translate(WindowInput::key_up(key));
+        }
+    }
 
     #[test]
     fn keyboard_input_translator_maps_direct_context_keys_independent_of_modifier() {
@@ -380,16 +463,17 @@ mod tests {
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::W)),
-            Some(SemanticAction::OpenRelated)
+            Some(SemanticAction::NavigatePage(Direction::Up))
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::S)),
-            Some(SemanticAction::Return)
+            Some(SemanticAction::NavigatePage(Direction::Down))
         );
         assert_eq!(
             translator.translate(WindowInput::key_up(WindowKey::Shift)),
             None
         );
+        translator.translate(WindowInput::key_up(WindowKey::W));
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::W)),
             Some(SemanticAction::Navigate(Direction::Up))
@@ -405,11 +489,11 @@ mod tests {
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::D)),
-            Some(SemanticAction::SelectPatch(Direction::Right))
+            Some(SemanticAction::NavigatePage(Direction::Right))
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::A)),
-            Some(SemanticAction::SelectPatch(Direction::Left))
+            Some(SemanticAction::NavigatePage(Direction::Left))
         );
         assert_eq!(
             translator.translate(WindowInput::key_up(WindowKey::Shift)),
@@ -448,14 +532,15 @@ mod tests {
             Some(SemanticAction::Activate),
             "Edit/Return chooses through the existing Activate action"
         );
+        translator.translate(WindowInput::key_up(WindowKey::S));
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::Shift)),
             None
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::S)),
-            Some(SemanticAction::Return),
-            "Shift+Down closes through the existing Return action"
+            Some(SemanticAction::NavigatePage(Direction::Down)),
+            "Shift+Down requests the source-specific page return"
         );
     }
 
@@ -512,7 +597,7 @@ mod tests {
         );
         assert_eq!(
             translator.translate(WindowInput::key_down(WindowKey::S)),
-            Some(SemanticAction::Return)
+            Some(SemanticAction::NavigatePage(Direction::Down))
         );
         assert_eq!(
             translator.translate(WindowInput::key_up(WindowKey::Shift)),

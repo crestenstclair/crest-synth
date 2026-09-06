@@ -132,6 +132,9 @@ impl SessionCandidateFailure {
             ) => SessionCandidateFailureKind::Capability,
             Self::Saved(SavedSessionError::Encode) => SessionCandidateFailureKind::Validation,
             Self::Restore(SavedSessionRestoreError::Session(error)) => Self::Saved(*error).kind(),
+            Self::Restore(SavedSessionRestoreError::AssetMetadata(_)) => {
+                SessionCandidateFailureKind::Asset
+            }
             Self::Restore(SavedSessionRestoreError::Projection(_)) => {
                 SessionCandidateFailureKind::Projection
             }

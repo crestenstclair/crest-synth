@@ -3,7 +3,7 @@ use crate::adapter::soundfont_voice_engine::{PreparedSoundFontBank, PreparedSoun
 use crate::synth::{SoundFontPresetCatalog, SoundFontPresetCatalogError, SoundFontPresetSource};
 use core::fmt;
 use rustysynth::SoundFont;
-use std::fs::File;
+use std::io::Cursor;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -21,12 +21,22 @@ impl HiDefSoundFontAsset {
         Self::load_from_path(Path::new(HIDEF_SOUNDFONT_PATH))
     }
 
-    fn load_from_path(path: &Path) -> Result<Self, HiDefSoundFontAssetError> {
-        if path != Path::new(HIDEF_SOUNDFONT_PATH) {
-            return Err(HiDefSoundFontAssetError::UnexpectedPath);
+    pub fn load_from_path(path: &Path) -> Result<Self, HiDefSoundFontAssetError> {
+        let bytes = crate::adapter::filesystem_sample_catalog::read_sample_path(path)
+            .map_err(HiDefSoundFontAssetError::File)?;
+        Self::from_bytes(&bytes)
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, HiDefSoundFontAssetError> {
+        if bytes.len() as u64 > crate::synth::MAX_SAMPLE_SOURCE_BYTES {
+            return Err(HiDefSoundFontAssetError::File(
+                crate::synth::SampleAssetError::SourceTooLarge,
+            ));
         }
-        let mut file = File::open(path).map_err(|_| HiDefSoundFontAssetError::FileOpen)?;
-        let sound_font = SoundFont::new(&mut file).map_err(|_| HiDefSoundFontAssetError::Parse)?;
+        validate_riff(bytes)?;
+        let sound_font = std::panic::catch_unwind(|| SoundFont::new(&mut Cursor::new(bytes)))
+            .map_err(|_| HiDefSoundFontAssetError::Parse)?
+            .map_err(|_| HiDefSoundFontAssetError::Parse)?;
         let (prepared_bank, playable_source_ordinals) =
             PreparedSoundFontBank::from_sound_font(&sound_font)
                 .map_err(HiDefSoundFontAssetError::from_prepared_bank)?;
@@ -72,6 +82,17 @@ impl HiDefSoundFontAsset {
         Arc::clone(&self.prepared_bank)
     }
 
+    pub(crate) fn from_projections(
+        catalog: Arc<SoundFontPresetCatalog>,
+        prepared_bank: Arc<PreparedSoundFontBank>,
+    ) -> Self {
+        Self {
+            catalog,
+            prepared_bank,
+            parse_count: 0,
+        }
+    }
+
     pub const fn parse_count(&self) -> usize {
         self.parse_count
     }
@@ -89,8 +110,48 @@ impl HiDefSoundFontAsset {
     }
 }
 
+// Validate chunk lengths before the parser uses untrusted sizes for allocation or seeking.
+fn validate_riff(bytes: &[u8]) -> Result<(), HiDefSoundFontAssetError> {
+    let invalid = HiDefSoundFontAssetError::Parse;
+    if bytes.len() < 12 || &bytes[..4] != b"RIFF" || &bytes[8..12] != b"sfbk" {
+        return Err(invalid);
+    }
+    let size = u32::from_le_bytes(bytes[4..8].try_into().map_err(|_| invalid.clone())?) as usize;
+    if size.checked_add(8) != Some(bytes.len()) {
+        return Err(invalid);
+    }
+    let mut pending = vec![(12usize, bytes.len(), 0usize)];
+    while let Some((mut offset, end, depth)) = pending.pop() {
+        while offset < end {
+            let header = bytes
+                .get(offset..offset.checked_add(8).ok_or_else(|| invalid.clone())?)
+                .filter(|_| offset + 8 <= end)
+                .ok_or_else(|| invalid.clone())?;
+            let length =
+                u32::from_le_bytes(header[4..8].try_into().map_err(|_| invalid.clone())?) as usize;
+            let finish = offset
+                .checked_add(8)
+                .and_then(|n| n.checked_add(length))
+                .filter(|n| *n <= end)
+                .ok_or_else(|| invalid.clone())?;
+            if &header[..4] == b"LIST" {
+                if depth >= 2 || length < 4 {
+                    return Err(invalid);
+                }
+                pending.push((offset + 12, finish, depth + 1));
+            }
+            offset = finish
+                .checked_add(length % 2)
+                .filter(|n| *n <= end)
+                .ok_or_else(|| invalid.clone())?;
+        }
+    }
+    Ok(())
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum HiDefSoundFontAssetError {
+    File(crate::synth::SampleAssetError),
     UnexpectedPath,
     FileOpen,
     Parse,
@@ -126,32 +187,33 @@ impl HiDefSoundFontAssetError {
 impl fmt::Display for HiDefSoundFontAssetError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::File(error) => error.fmt(formatter),
             Self::UnexpectedPath => formatter.write_str("HiDef asset path is not the fixed asset"),
-            Self::FileOpen => formatter.write_str("failed to open the fixed HiDef SoundFont"),
-            Self::Parse => formatter.write_str("failed to parse the fixed HiDef SoundFont"),
-            Self::Metadata => formatter.write_str("HiDef SoundFont metadata is inconsistent"),
+            Self::FileOpen => formatter.write_str("failed to open the SoundFont"),
+            Self::Parse => formatter.write_str("failed to parse the SoundFont"),
+            Self::Metadata => formatter.write_str("SoundFont metadata is inconsistent"),
             Self::SampleStorage => {
-                formatter.write_str("failed to allocate numeric HiDef sample storage")
+                formatter.write_str("failed to allocate numeric SoundFont sample storage")
             }
             Self::InvalidPresetAddress { source_ordinal } => write!(
                 formatter,
-                "HiDef preset {source_ordinal} has an invalid numeric address"
+                "SoundFont preset {source_ordinal} has an invalid numeric address"
             ),
             Self::InvalidInstrumentReference { source_ordinal } => write!(
                 formatter,
-                "HiDef preset {source_ordinal} references an invalid instrument"
+                "SoundFont preset {source_ordinal} references an invalid instrument"
             ),
             Self::InvalidSampleReference { source_ordinal } => write!(
                 formatter,
-                "HiDef preset {source_ordinal} references an invalid sample"
+                "SoundFont preset {source_ordinal} references an invalid sample"
             ),
             Self::InvalidRegion { source_ordinal } => {
                 write!(
                     formatter,
-                    "HiDef preset {source_ordinal} has an invalid region"
+                    "SoundFont preset {source_ordinal} has an invalid region"
                 )
             }
-            Self::Catalog(error) => write!(formatter, "invalid HiDef preset catalog: {error}"),
+            Self::Catalog(error) => write!(formatter, "invalid SoundFont preset catalog: {error}"),
         }
     }
 }

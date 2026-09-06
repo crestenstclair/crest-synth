@@ -38,7 +38,7 @@ impl CapabilityAvailability {
 }
 
 /// The semantic kind of a stable asset reference.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialOrd, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum AssetKind {
     SoundFont,
@@ -806,6 +806,8 @@ pub struct CapabilityDescriptor {
     asset_requirements: Vec<AssetRequirement>,
     voice_policy: VoicePolicy,
     supported_midi_kinds: Vec<MidiMessageKind>,
+    #[serde(default)]
+    asset_scoped_choices: bool,
 }
 
 impl CapabilityDescriptor {
@@ -831,6 +833,7 @@ impl CapabilityDescriptor {
             asset_requirements,
             voice_policy,
             supported_midi_kinds,
+            asset_scoped_choices: false,
         };
         descriptor.validate()?;
         Ok(descriptor)
@@ -888,6 +891,12 @@ impl CapabilityDescriptor {
         &self.supported_midi_kinds
     }
 
+    /// Structural choices must be resolved against this config's exact asset set.
+    pub fn with_asset_scoped_choices(mut self) -> Self {
+        self.asset_scoped_choices = true;
+        self
+    }
+
     pub fn parameter(&self, id: &ParameterId) -> Option<&ParameterSpec> {
         self.sections
             .iter()
@@ -897,6 +906,18 @@ impl CapabilityDescriptor {
 
     pub fn parameters(&self) -> impl Iterator<Item = &ParameterSpec> {
         self.sections.iter().flat_map(CapabilitySection::parameters)
+    }
+
+    pub fn default_assets(&self) -> Vec<AssetAssignment> {
+        self.parameters()
+            .filter_map(|parameter| match parameter.default_value() {
+                ParameterDefault::Asset(reference) => Some(AssetAssignment::new(
+                    parameter.id().clone(),
+                    reference.clone(),
+                )),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Returns live Scalar parameters exactly once in immutable descriptor order.
@@ -1305,6 +1326,8 @@ impl InstrumentConfig {
 #[serde(rename_all = "camelCase")]
 pub struct CapabilityRegistry {
     descriptors: Vec<CapabilityDescriptor>,
+    #[serde(default)]
+    asset_descriptors: Vec<CapabilityDescriptor>,
 }
 
 impl CapabilityRegistry {
@@ -1323,7 +1346,10 @@ impl CapabilityRegistry {
                 ));
             }
         }
-        Ok(Self { descriptors })
+        Ok(Self {
+            descriptors,
+            asset_descriptors: Vec::new(),
+        })
     }
 
     pub fn descriptors(&self) -> &[CapabilityDescriptor] {
@@ -1338,7 +1364,7 @@ impl CapabilityRegistry {
 
     pub fn validate_config(&self, config: &InstrumentConfig) -> Result<(), CapabilityError> {
         let descriptor = self
-            .descriptor(config.capability_id())
+            .descriptor_for_config(config)
             .ok_or_else(|| CapabilityError::UnknownCapability(config.capability_id().clone()))?;
         let canonical = descriptor.create_config(config.values(), config.asset_references())?;
         if canonical != *config {
@@ -1347,6 +1373,137 @@ impl CapabilityRegistry {
             ));
         }
         Ok(())
+    }
+
+    /// Asset catalogs refine structural choices without replacing the installed engine schema.
+    pub fn with_asset_descriptor(
+        mut self,
+        descriptor: CapabilityDescriptor,
+    ) -> Result<Self, CapabilityError> {
+        descriptor.validate()?;
+        let installed = self
+            .descriptor(descriptor.id())
+            .ok_or_else(|| CapabilityError::UnknownCapability(descriptor.id().clone()))?;
+        let mut normalized = descriptor.clone();
+        for parameter in normalized
+            .sections
+            .iter_mut()
+            .flat_map(|section| &mut section.parameters)
+        {
+            let base = installed.parameter(parameter.id()).ok_or_else(|| {
+                CapabilityError::ProviderRegistryMismatch(descriptor.id().clone())
+            })?;
+            if parameter.kind() == ParameterKind::Asset
+                || (parameter.kind() == ParameterKind::Choice
+                    && parameter.update() == ParameterUpdate::Structural)
+            {
+                parameter.default_value = base.default_value.clone();
+                parameter.choices = base.choices.clone();
+            }
+        }
+        if normalized != *installed
+            || !installed.asset_scoped_choices
+            || !descriptor
+                .parameters()
+                .any(|p| p.kind() == ParameterKind::Asset)
+        {
+            return Err(CapabilityError::ProviderRegistryMismatch(
+                descriptor.id().clone(),
+            ));
+        }
+        let assets = descriptor.default_assets();
+        if descriptor == *installed {
+            return Ok(self);
+        }
+        self.asset_descriptors
+            .retain(|prior| prior.id() != descriptor.id() || prior.default_assets() != assets);
+        self.asset_descriptors.push(descriptor);
+        Ok(self)
+    }
+
+    pub fn asset_descriptors(&self) -> &[CapabilityDescriptor] {
+        &self.asset_descriptors
+    }
+
+    pub fn retain_asset_descriptors<'a>(
+        &mut self,
+        configs: impl IntoIterator<Item = &'a InstrumentConfig>,
+    ) {
+        let configs = configs.into_iter().collect::<Vec<_>>();
+        self.asset_descriptors.retain(|descriptor| {
+            configs.iter().any(|config| {
+                descriptor.id() == config.capability_id()
+                    && descriptor.default_assets() == config.asset_references()
+            })
+        });
+    }
+
+    pub fn descriptor_for_assets(
+        &self,
+        id: &CapabilityId,
+        assets: &[AssetAssignment],
+    ) -> Option<&CapabilityDescriptor> {
+        self.asset_descriptors
+            .iter()
+            .find(|descriptor| descriptor.id() == id && descriptor.default_assets() == assets)
+            .or_else(|| {
+                self.descriptor(id).filter(|descriptor| {
+                    !descriptor.asset_scoped_choices || descriptor.default_assets() == assets
+                })
+            })
+    }
+
+    pub fn descriptor_for_config(
+        &self,
+        config: &InstrumentConfig,
+    ) -> Option<&CapabilityDescriptor> {
+        self.descriptor_for_assets(config.capability_id(), config.asset_references())
+    }
+
+    /// A new asset catalog resets its structural choices to authored defaults; scalar values remain exact.
+    pub fn replace_asset(
+        &self,
+        source: &InstrumentConfig,
+        id: &ParameterId,
+        reference: AssetReference,
+    ) -> Result<InstrumentConfig, CapabilityError> {
+        self.validate_config(source)?;
+        let mut assets = source.asset_references().to_vec();
+        let assignment = assets
+            .iter_mut()
+            .find(|asset| asset.parameter_id() == id)
+            .ok_or_else(|| CapabilityError::MissingAsset(id.clone()))?;
+        *assignment = AssetAssignment::new(id.clone(), reference);
+        let descriptor = self
+            .descriptor_for_assets(source.capability_id(), &assets)
+            .ok_or_else(|| CapabilityError::UnknownCapability(source.capability_id().clone()))?;
+        let spec = descriptor
+            .parameter(id)
+            .ok_or_else(|| CapabilityError::UndeclaredAsset(id.clone()))?;
+        if spec.kind() != ParameterKind::Asset || spec.update() != ParameterUpdate::Structural {
+            return Err(CapabilityError::StructuralParameter(id.clone()));
+        }
+        let scoped = descriptor.asset_scoped_choices;
+        let values = source
+            .values()
+            .iter()
+            .map(|assignment| {
+                if scoped && source.asset_references() != assets {
+                    if let Some(spec) =
+                        descriptor.parameter(assignment.parameter_id()).filter(|p| {
+                            p.kind() == ParameterKind::Choice
+                                && p.update() == ParameterUpdate::Structural
+                        })
+                    {
+                        if let ParameterDefault::Value(value) = spec.default_value() {
+                            return ParameterAssignment::new(spec.id().clone(), value.clone());
+                        }
+                    }
+                }
+                assignment.clone()
+            })
+            .collect::<Vec<_>>();
+        descriptor.create_config(&values, &assets)
     }
 }
 

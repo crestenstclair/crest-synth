@@ -930,7 +930,7 @@ where
         let descriptor = self
             .app_loop
             .capabilities()
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .ok_or_else(|| ExhaustiveGuiDemoError::EngineCheckpoint {
                 step: step.to_owned(),
                 reason: "preset capability descriptor is absent".to_owned(),
@@ -1603,6 +1603,10 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                 observed.insert("event.selectPatch".to_owned());
                 observed.insert(format!("direction.{}", direction_identifier(*direction)));
             }
+            EventInput::NavigatePage { direction } => {
+                observed.insert("event.navigatePage".to_owned());
+                observed.insert(format!("direction.{}", direction_identifier(*direction)));
+            }
             EventInput::Navigate { direction } => {
                 observed.insert("event.navigate".to_owned());
                 observed.insert(format!("direction.{}", direction_identifier(*direction)));
@@ -1655,7 +1659,7 @@ fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
                 observed.insert("event.enginePrepared".to_owned());
             }
             EventInput::SampleAssetLifecycleAdvanced { .. } => {}
-            EventInput::SampleCatalogRefreshed { .. } => {}
+            EventInput::FileCatalogRefreshed { .. } => {}
             EventInput::EnginePreparationFailed { .. } => {
                 observed.insert("event.enginePreparationFailed".to_owned());
             }

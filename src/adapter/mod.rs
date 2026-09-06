@@ -11,6 +11,7 @@ pub mod delay_preparer;
 pub mod filesystem_file_browser;
 pub mod filesystem_midi_input_preference;
 pub mod filesystem_sample_catalog;
+pub mod filesystem_soundfont_catalog;
 pub mod fixed_midi_event_source;
 pub mod hidef_soundfont_asset;
 pub mod hidef_soundfont_capability;

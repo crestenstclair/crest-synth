@@ -282,6 +282,9 @@ pub enum EventInput {
     SelectPatch {
         direction: EventDirection,
     },
+    NavigatePage {
+        direction: EventDirection,
+    },
     Navigate {
         direction: EventDirection,
     },
@@ -353,7 +356,9 @@ pub enum EventInput {
         request_id: EngineSelectionRequestId,
         lifecycle: crate::control::SampleAssetLifecycle,
     },
-    SampleCatalogRefreshed {
+    FileCatalogRefreshed {
+        #[serde(rename = "assetKind")]
+        asset_kind: crate::synth::AssetKind,
         folder: crate::synth::FileBrowserFolderId,
         listing: Option<crate::synth::FileBrowserListing>,
         failure: Option<crate::synth::SampleAssetError>,
@@ -469,6 +474,9 @@ impl From<&AppEvent> for EventInput {
             AppEvent::SelectPatch(direction) => Self::SelectPatch {
                 direction: (*direction).into(),
             },
+            AppEvent::NavigatePage(direction) => Self::NavigatePage {
+                direction: (*direction).into(),
+            },
             AppEvent::Navigate(direction) => Self::Navigate {
                 direction: (*direction).into(),
             },
@@ -547,12 +555,17 @@ impl From<&AppEvent> for EventInput {
                 request_id: *request_id,
                 lifecycle: *lifecycle,
             },
-            AppEvent::SampleCatalogRefreshed { folder, listing } => {
+            AppEvent::FileCatalogRefreshed {
+                asset_kind,
+                folder,
+                listing,
+            } => {
                 let (listing, failure) = match listing {
                     Ok(listing) => (Some(listing.clone()), None),
                     Err(failure) => (None, Some(*failure)),
                 };
-                Self::SampleCatalogRefreshed {
+                Self::FileCatalogRefreshed {
+                    asset_kind: *asset_kind,
                     folder: folder.clone(),
                     listing,
                     failure,
@@ -706,6 +719,8 @@ impl EventInput {
         !matches!(
             self,
             Self::SelectContext { .. }
+                | Self::SelectPatch { .. }
+                | Self::NavigatePage { .. }
                 | Self::Navigate { .. }
                 | Self::SetInteractionMode { .. }
                 | Self::OpenRelated
@@ -716,7 +731,7 @@ impl EventInput {
                 | Self::SetPatchOverviewOriginEnabled { .. }
                 | Self::EngineSelectionLifecycleAdvanced { .. }
                 | Self::SampleAssetLifecycleAdvanced { .. }
-                | Self::SampleCatalogRefreshed { .. }
+                | Self::FileCatalogRefreshed { .. }
                 | Self::EnterSurface { .. }
                 | Self::Return
                 | Self::MidiInputPreferenceRestored { .. }
@@ -912,6 +927,7 @@ impl EventRecord {
         "emittedEvents[].kind",
         "generationAfter",
         "generationBefore",
+        "input.assetKind",
         "input.candidateConfig.assetReferences[].parameterId",
         "input.candidateConfig.assetReferences[].reference.kind",
         "input.candidateConfig.assetReferences[].reference.locator",
@@ -995,6 +1011,53 @@ impl EventRecord {
         "input.preparedVisualization.waveform[].rightMin",
         "input.requestId",
         "input.retiredGraphRevision",
+        "input.selection.descriptor",
+        "input.selection.descriptor.assetRequirements[].parameterId",
+        "input.selection.descriptor.assetRequirements[].required",
+        "input.selection.descriptor.assetScopedChoices",
+        "input.selection.descriptor.availability.kind",
+        "input.selection.descriptor.id",
+        "input.selection.descriptor.label",
+        "input.selection.descriptor.sections[].id",
+        "input.selection.descriptor.sections[].label",
+        "input.selection.descriptor.sections[].parameters[].choices[].id",
+        "input.selection.descriptor.sections[].parameters[].choices[].label",
+        "input.selection.descriptor.sections[].parameters[].coarseStep",
+        "input.selection.descriptor.sections[].parameters[].defaultValue.kind",
+        "input.selection.descriptor.sections[].parameters[].defaultValue.value.kind",
+        "input.selection.descriptor.sections[].parameters[].defaultValue.value.locator",
+        "input.selection.descriptor.sections[].parameters[].defaultValue.value.value",
+        "input.selection.descriptor.sections[].parameters[].enabledWhen",
+        "input.selection.descriptor.sections[].parameters[].fineStep",
+        "input.selection.descriptor.sections[].parameters[].formatter",
+        "input.selection.descriptor.sections[].parameters[].id",
+        "input.selection.descriptor.sections[].parameters[].kind",
+        "input.selection.descriptor.sections[].parameters[].label",
+        "input.selection.descriptor.sections[].parameters[].patchInteraction",
+        "input.selection.descriptor.sections[].parameters[].range",
+        "input.selection.descriptor.sections[].parameters[].unit",
+        "input.selection.descriptor.sections[].parameters[].update",
+        "input.selection.descriptor.sections[].parameters[].visibleWhen",
+        "input.selection.descriptor.semanticAccent",
+        "input.selection.descriptor.supportedMidiKinds[]",
+        "input.selection.descriptor.visualizations[].id",
+        "input.selection.descriptor.visualizations[].kind",
+        "input.selection.descriptor.visualizations[].label",
+        "input.selection.descriptor.voicePolicy.kind",
+        "input.selection.request.assetId",
+        "input.selection.request.assetKind",
+        "input.selection.request.generation",
+        "input.selection.request.graphRevision",
+        "input.selection.request.origin.capabilityId.id",
+        "input.selection.request.origin.capabilityId.kind",
+        "input.selection.request.origin.context",
+        "input.selection.request.origin.controlId.id",
+        "input.selection.request.origin.controlId.kind",
+        "input.selection.request.origin.modalId",
+        "input.selection.request.origin.patchId",
+        "input.selection.request.origin.surface",
+        "input.selection.result.Err",
+        "input.selection.result.Ok",
         "input.sourceCapabilityId",
         "input.sourceGraphRevision",
         "input.surface",
@@ -1272,6 +1335,7 @@ mod tests {
     use crate::synth::patch::Patch;
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::voice_envelope::VoiceEnvelope;
+    use crate::synth::InstrumentCapabilityProvider;
     use crate::synth::{
         AssetFileId, FileBrowserFolderId, FileBrowserListing, FileBrowserRow, FileBrowserRowKind,
         ParameterId, ParameterValue, PreparedSampleLandmarks, PreparedSamplePcm,
@@ -1486,7 +1550,7 @@ mod tests {
         )
         .unwrap();
 
-        vec![
+        let mut records = vec![
             schema_record(
                 EventSource::Keyboard,
                 EventInput::SelectContext {
@@ -1666,6 +1730,33 @@ mod tests {
             ),
             schema_record(
                 EventSource::Worker,
+                EventInput::AssetImported {
+                    selection: crate::control::AssetImportResult {
+                        request: crate::control::AssetImportRequest {
+                            generation: 7,
+                            asset_kind: crate::synth::AssetKind::SoundFont,
+                            asset_id: AssetFileId::new("Imported/bank.sf2").unwrap(),
+                            origin: crate::control::FocusPath::patch_detail(
+                                crate::kernel::PatchId::new(7).unwrap(),
+                                crate::control::FocusCapabilityId::Instrument(
+                                    provider.descriptor().id().clone(),
+                                ),
+                                crate::control::PatchControlId::Capability(
+                                    crate::synth::ParameterId::new("soundfont.file").unwrap(),
+                                ),
+                            ),
+                            graph_revision: GraphRevision::INITIAL,
+                        },
+                        descriptor: Some(provider.descriptor()),
+                        result: Ok(AssetFileId::new("Imported/bank.sf2").unwrap()),
+                    },
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ),
+            schema_record(
+                EventSource::Worker,
                 EventInput::SampleAssetLifecycleAdvanced {
                     request_id,
                     lifecycle: crate::control::SampleAssetLifecycle::Validating,
@@ -1676,7 +1767,8 @@ mod tests {
             ),
             schema_record(
                 EventSource::Worker,
-                EventInput::SampleCatalogRefreshed {
+                EventInput::FileCatalogRefreshed {
+                    asset_kind: crate::synth::AssetKind::Sample,
                     folder: catalog_folder,
                     listing: Some(catalog_listing),
                     failure: None,
@@ -1687,7 +1779,8 @@ mod tests {
             ),
             schema_record(
                 EventSource::Worker,
-                EventInput::SampleCatalogRefreshed {
+                EventInput::FileCatalogRefreshed {
+                    asset_kind: crate::synth::AssetKind::Sample,
                     folder: FileBrowserFolderId::default(),
                     listing: None,
                     failure: Some(SampleAssetError::Unavailable),
@@ -1696,7 +1789,24 @@ mod tests {
                 Vec::new(),
                 None,
             ),
-        ]
+        ];
+        let mut failed = records
+            .iter()
+            .find_map(|record| match &record.input {
+                EventInput::AssetImported { selection } => Some(selection.clone()),
+                _ => None,
+            })
+            .unwrap();
+        failed.descriptor = None;
+        failed.result = Err(SampleAssetError::MalformedSoundFont);
+        records.push(schema_record(
+            EventSource::Worker,
+            EventInput::AssetImported { selection: failed },
+            EventOutcome::Accepted,
+            Vec::new(),
+            None,
+        ));
+        records
     }
 
     fn collect_leaf_paths(value: &Value, prefix: &str, paths: &mut BTreeSet<String>) {

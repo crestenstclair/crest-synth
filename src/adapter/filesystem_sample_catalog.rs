@@ -4,7 +4,7 @@ use crate::synth::{
     SampleAssetCatalogPort, SampleAssetError, SampleDecoderPort, MAX_SAMPLE_SOURCE_BYTES,
 };
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 /// Library-relative Sample assets, using the shared in-app file browser.
@@ -32,54 +32,7 @@ impl FilesystemSampleCatalog {
         let candidate = AssetFileId::new(name)?;
         let bytes = read_sample_path(&source)?;
         WavSampleDecoder.decode(&candidate, &bytes)?;
-        if let Ok(relative) = source.strip_prefix(&self.root) {
-            return AssetFileId::new(
-                relative
-                    .to_str()
-                    .ok_or(SampleAssetError::InvalidRelativeId)?
-                    .replace('\\', "/"),
-            );
-        }
-        let import_root = self.root.join("Imported");
-        std::fs::create_dir_all(&import_root).map_err(|_| SampleAssetError::Unavailable)?;
-        self.resolve("Imported")?;
-        let stem = source
-            .file_stem()
-            .and_then(|stem| stem.to_str())
-            .ok_or(SampleAssetError::InvalidRelativeId)?;
-        for suffix in 0..10_000 {
-            let name = if suffix == 0 {
-                name.to_owned()
-            } else {
-                format!("{stem}-{suffix}.wav")
-            };
-            let id = AssetFileId::new(format!("Imported/{name}"))?;
-            let path = import_root.join(name);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&path)
-            {
-                Ok(mut file) => {
-                    if file
-                        .write_all(&bytes)
-                        .and_then(|_| file.sync_all())
-                        .is_err()
-                    {
-                        let _ = std::fs::remove_file(path);
-                        return Err(SampleAssetError::Unavailable);
-                    }
-                    return Ok(id);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                    if self.read(&id).is_ok_and(|existing| existing == bytes) {
-                        return Ok(id);
-                    }
-                }
-                Err(_) => return Err(SampleAssetError::Unavailable),
-            }
-        }
-        Err(SampleAssetError::Unavailable)
+        self.browser.store_validated_file(&source, &bytes, "wav")
     }
 
     pub fn new(root: impl AsRef<Path>) -> Result<Self, SampleAssetError> {
@@ -137,7 +90,7 @@ impl SampleAssetCatalogPort for FilesystemSampleCatalog {
     }
 }
 
-fn read_sample_path(path: &Path) -> Result<Vec<u8>, SampleAssetError> {
+pub(crate) fn read_sample_path(path: &Path) -> Result<Vec<u8>, SampleAssetError> {
     if !path.is_file() {
         return Err(SampleAssetError::Unavailable);
     }

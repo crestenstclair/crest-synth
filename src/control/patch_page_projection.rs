@@ -1323,7 +1323,7 @@ impl PatchPageProjection {
         };
         let descriptor = state
             .capabilities()
-            .descriptor(source.instrument_config().capability_id())
+            .descriptor_for_config(source.instrument_config())
             .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
         state
             .capabilities()
@@ -1763,10 +1763,10 @@ fn project_detail(
         None => PatchControlId::Capability(id.clone()),
     };
     let (label, sections) = match subject {
-        PatchDetailSubject::Instrument { capability_id } => {
+        PatchDetailSubject::Instrument { capability_id: _ } => {
             let descriptor = state
                 .capabilities()
-                .descriptor(capability_id)
+                .descriptor_for_config(patch.instrument_config())
                 .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
             let config = patch.instrument_config();
             (
@@ -2131,7 +2131,7 @@ mod tests {
         let patch = &state.patches()[0];
         let descriptor = state
             .capabilities()
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .unwrap();
         assert_eq!(page.patch().id(), Some(patch.id()));
         assert_eq!(page.patch().name(), patch.name());

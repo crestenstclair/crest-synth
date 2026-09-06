@@ -1282,6 +1282,15 @@ where
             return;
         };
 
+        if runtime
+            .factory
+            .use_asset_descriptors(self.state.capabilities())
+            .is_err()
+        {
+            self.deferred_engine_failure =
+                Some(failure_event(EngineSelectionFailure::ProviderMismatch));
+            return;
+        }
         if let StructuralEditIntent::AppendPatch { patch_id } = effect.intent() {
             let candidate = match self.state.pending_patch_creation() {
                 Some(candidate) if candidate.id() == *patch_id => candidate.clone(),
@@ -2094,6 +2103,11 @@ where
     /// Returns the immutable capability metadata installed in canonical state.
     pub fn capabilities(&self) -> &CapabilityRegistry {
         self.state.capabilities()
+    }
+
+    /// Immutable file-work correlation used by asset adapters and observers.
+    pub const fn file_browser(&self) -> &crate::control::FileBrowserState {
+        self.state.file_browser()
     }
 
     pub fn effects(&self) -> &crate::synth::EffectCapabilityRegistry {

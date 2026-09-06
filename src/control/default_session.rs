@@ -390,7 +390,7 @@ mod tests {
             VoiceLimit::seeded_from(
                 state
                     .capabilities()
-                    .descriptor(patch.instrument_config().capability_id())
+                    .descriptor_for_config(patch.instrument_config())
                     .unwrap()
                     .voice_policy()
             )

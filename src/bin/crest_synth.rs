@@ -634,7 +634,7 @@ struct DemoSceneObservation {
 impl DemoSceneObservation {
     fn from_report(report: &DemoSceneReport, two_run_trace_equal: bool) -> Self {
         let records = report.event_log().records();
-        let mut event_variants = [false; 21];
+        let mut event_variants = [false; 22];
         let mut top_level_contexts = Vec::new();
         let mut navigate_directions = Vec::new();
         let mut adjust_directions = Vec::new();
@@ -653,6 +653,7 @@ impl DemoSceneObservation {
                     event_variants[15] = true;
                     push_unique(&mut navigate_directions, *direction);
                 }
+                EventInput::NavigatePage { .. } => event_variants[21] = true,
                 EventInput::Navigate { direction } => {
                     event_variants[2] = true;
                     push_unique(&mut navigate_directions, *direction);
@@ -678,7 +679,7 @@ impl DemoSceneObservation {
                 EventInput::EngineSelectionLifecycleAdvanced { .. } => {}
                 EventInput::EnginePrepared { .. } => event_variants[8] = true,
                 EventInput::SampleAssetLifecycleAdvanced { .. } => {}
-                EventInput::SampleCatalogRefreshed { .. } => {}
+                EventInput::FileCatalogRefreshed { .. } => {}
                 EventInput::EnginePreparationFailed { .. } => event_variants[9] = true,
                 EventInput::EngineActivationAcknowledged { .. } => event_variants[10] = true,
                 EventInput::SetSlotOccupancy { .. } => event_variants[11] = true,

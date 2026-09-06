@@ -64,6 +64,8 @@ pub enum SemanticAction {
     /// path as any other edit, never by a UI-local selection or a backstage
     /// lookup.
     SelectPatch(Direction),
+    /// Resolves one directional page edge from the active surface.
+    NavigatePage(Direction),
     Navigate(Direction),
     Adjust(Direction),
     SetInteractionMode(InteractionMode),
@@ -97,6 +99,7 @@ pub enum SemanticAction {
 pub enum SemanticActionKind {
     SelectContext,
     SelectPatch,
+    NavigatePage,
     Navigate,
     Adjust,
     SetInteractionMode,
@@ -113,9 +116,10 @@ pub enum SemanticActionKind {
 }
 
 impl SemanticActionKind {
-    pub const ALL: [Self; 15] = [
+    pub const ALL: [Self; 16] = [
         Self::SelectContext,
         Self::SelectPatch,
+        Self::NavigatePage,
         Self::Navigate,
         Self::Adjust,
         Self::SetInteractionMode,
@@ -136,13 +140,17 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 24] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 28] = [
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
     // Only the horizontal pair: moving along the installed Patch order is an
     // adjacent choice, exactly like every other adjacent-choice surface.
     SemanticAction::SelectPatch(Direction::Left),
     SemanticAction::SelectPatch(Direction::Right),
+    SemanticAction::NavigatePage(Direction::Up),
+    SemanticAction::NavigatePage(Direction::Down),
+    SemanticAction::NavigatePage(Direction::Left),
+    SemanticAction::NavigatePage(Direction::Right),
     SemanticAction::Navigate(Direction::Up),
     SemanticAction::Navigate(Direction::Down),
     SemanticAction::Navigate(Direction::Left),
@@ -198,6 +206,7 @@ impl SemanticAction {
         match self {
             Self::SelectContext(_) => SemanticActionKind::SelectContext,
             Self::SelectPatch(_) => SemanticActionKind::SelectPatch,
+            Self::NavigatePage(_) => SemanticActionKind::NavigatePage,
             Self::Navigate(_) => SemanticActionKind::Navigate,
             Self::Adjust(_) => SemanticActionKind::Adjust,
             Self::SetInteractionMode(_) => SemanticActionKind::SetInteractionMode,
@@ -276,7 +285,7 @@ mod tests {
 
     #[test]
     fn semantic_action_descriptors_are_closed_unique_and_phase_two_safe() {
-        assert_eq!(SemanticActionKind::surface_descriptor().len(), 15);
+        assert_eq!(SemanticActionKind::surface_descriptor().len(), 16);
         assert_eq!(InteractionMode::surface_descriptor().len(), 4);
         assert_eq!(InteractionMode::PHASE_TWO.len(), 2);
         assert_eq!(InteractionMode::PHASE_SEVEN.len(), 3);
@@ -305,7 +314,7 @@ mod tests {
                 "{surface:?}: the descriptor lists exactly the admitted surfaces"
             );
         }
-        assert_eq!(SemanticAction::surface_descriptor().len(), 24);
+        assert_eq!(SemanticAction::surface_descriptor().len(), 28);
     }
 
     #[test]

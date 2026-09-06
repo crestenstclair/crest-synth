@@ -817,6 +817,58 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             .unwrap()
             .4,
     );
+    // Asset-scoped metadata has the same typed surface as installed metadata.
+    // Exercise its optional fields through valid registry/state projections.
+    for availability in [
+        CapabilityAvailability::Available,
+        CapabilityAvailability::Unavailable {
+            reason: "schema asset unavailable".into(),
+        },
+    ] {
+        let base = sample
+            .descriptor()
+            .with_asset_scoped_choices()
+            .with_availability(availability);
+        let mut scoped = serde_json::to_value(&base).unwrap();
+        for section in scoped["sections"].as_array_mut().unwrap() {
+            for parameter in section["parameters"].as_array_mut().unwrap() {
+                if parameter["kind"] == "asset" {
+                    parameter["defaultValue"]["value"]["locator"] =
+                        Value::String("Scoped.wav".into());
+                }
+            }
+        }
+        let scoped = serde_json::from_value(scoped).unwrap();
+        let registry = CapabilityRegistry::new(vec![base])
+            .unwrap()
+            .with_asset_descriptor(scoped)
+            .unwrap();
+        let config = registry
+            .replace_asset(
+                &sample.default_config().unwrap(),
+                &crest_synth::synth::ParameterId::new(
+                    crest_synth::adapter::sample_capability::SAMPLE_ASSET_PARAMETER_ID,
+                )
+                .unwrap(),
+                crest_synth::synth::AssetReference::new(
+                    crest_synth::synth::AssetKind::Sample,
+                    "Scoped.wav",
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let mut state = AppState::new(registry, support::globals());
+        state
+            .apply(AppEvent::InstallPatches(vec![Patch::new(
+                PatchId::new(92).unwrap(),
+                "Asset schema fixture".into(),
+                config,
+                MidiChannel::new(0).unwrap(),
+                PatchOutput::default(),
+            )]))
+            .unwrap();
+        trees.push(StateProjector::new().project_with_tree(&state).unwrap().4);
+    }
     let mut discovered = BTreeSet::new();
     for tree in trees {
         discover_leaves(
@@ -859,7 +911,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // physical MIDI lifecycle facts while excluding handles and observations.
     // Version 20 adds the explicit tagged trailing-empty Patch shape and its
     // prospective/capacity ownership facts without inventing a Patch ID.
-    assert_eq!(StateTree::SCHEMA_VERSION, 23);
+    assert_eq!(StateTree::SCHEMA_VERSION, 25);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

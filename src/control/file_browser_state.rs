@@ -12,15 +12,18 @@ use std::collections::BTreeMap;
 #[serde(rename_all = "camelCase")]
 pub struct AssetImportRequest {
     pub(crate) generation: u64,
+    pub(crate) asset_kind: crate::synth::AssetKind,
     pub(crate) asset_id: AssetFileId,
     pub(crate) origin: crate::control::FocusPath,
     pub(crate) graph_revision: crate::real_time::GraphRevision,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AssetImportResult {
     pub request: AssetImportRequest,
+    #[serde(default)]
+    pub descriptor: Option<crate::synth::CapabilityDescriptor>,
     pub result: Result<AssetFileId, SampleAssetError>,
 }
 
@@ -86,7 +89,11 @@ pub enum SamplePreviewState {
 pub struct FileBrowserState {
     import_request: Option<AssetImportRequest>,
     file_selection_failure: Option<SampleAssetError>,
-    catalog: BTreeMap<FileBrowserFolderId, Result<FileBrowserListing, SampleAssetError>>,
+    asset_kind: crate::synth::AssetKind,
+    catalog: BTreeMap<
+        (crate::synth::AssetKind, FileBrowserFolderId),
+        Result<FileBrowserListing, SampleAssetError>,
+    >,
     patch_id: Option<PatchId>,
     asset_parameter_id: Option<ParameterId>,
     folder: FileBrowserFolderId,
@@ -104,6 +111,7 @@ impl Default for FileBrowserState {
             import_request: None,
             file_selection_failure: None,
             catalog: BTreeMap::new(),
+            asset_kind: crate::synth::AssetKind::Sample,
             patch_id: None,
             asset_parameter_id: None,
             folder: FileBrowserFolderId::default(),
@@ -132,7 +140,7 @@ impl FileBrowserState {
         patch_id: PatchId,
         parameter: ParameterId,
     ) {
-        self.begin(patch_id, parameter);
+        self.begin(patch_id, parameter, request.asset_kind);
         self.import_request = Some(request);
         self.lifecycle = SampleAssetLifecycle::Loading;
     }
@@ -166,8 +174,15 @@ impl FileBrowserState {
             ),
         >,
     ) -> Self {
-        self.catalog = listings.into_iter().collect();
+        self.catalog = listings
+            .into_iter()
+            .map(|(folder, listing)| ((crate::synth::AssetKind::Sample, folder), listing))
+            .collect();
         self
+    }
+
+    pub const fn asset_kind(&self) -> crate::synth::AssetKind {
+        self.asset_kind
     }
 
     pub const fn patch_id(&self) -> Option<PatchId> {
@@ -219,8 +234,14 @@ impl FileBrowserState {
         self.rows.iter().find(|row| row.id() == id)
     }
 
-    pub(crate) fn begin(&mut self, patch_id: PatchId, asset_parameter_id: ParameterId) {
+    pub(crate) fn begin(
+        &mut self,
+        patch_id: PatchId,
+        asset_parameter_id: ParameterId,
+        kind: crate::synth::AssetKind,
+    ) {
         self.file_selection_failure = None;
+        self.asset_kind = kind;
         self.patch_id = Some(patch_id);
         self.asset_parameter_id = Some(asset_parameter_id);
         self.requested_asset = None;
@@ -234,7 +255,7 @@ impl FileBrowserState {
         self.preview = SamplePreviewState::Idle;
         self.preview_request_id = None;
         self.folder = folder.clone();
-        match self.catalog.get(&folder) {
+        match self.catalog.get(&(self.asset_kind, folder.clone())) {
             Some(Ok(listing)) if listing.folder() == &folder => {
                 self.rows = listing.rows().to_vec();
                 self.lifecycle = SampleAssetLifecycle::Ready;
@@ -267,11 +288,13 @@ impl FileBrowserState {
     /// AppState responsibility because only the reducer owns FocusPath.
     pub(crate) fn refresh_listing(
         &mut self,
+        asset_kind: crate::synth::AssetKind,
         folder: FileBrowserFolderId,
         listing: Result<FileBrowserListing, SampleAssetError>,
     ) -> bool {
-        let reload = self.patch_id.is_some() && self.folder == folder;
-        self.catalog.insert(folder.clone(), listing);
+        let reload =
+            self.patch_id.is_some() && self.asset_kind == asset_kind && self.folder == folder;
+        self.catalog.insert((asset_kind, folder.clone()), listing);
         if reload {
             self.load_folder(folder);
         }

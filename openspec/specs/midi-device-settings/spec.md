@@ -18,7 +18,7 @@ The product SHALL present `SETTINGS / MIDI DEVICES` as a temporary configuration
 - **THEN** MIDI Devices Settings SHALL open while retaining the exact MIXER track/control focus as its suspended origin
 
 #### Scenario: Return from Settings
-- **WHEN** the user invokes Shift+Down or the equivalent projected Return action from Settings
+- **WHEN** the user invokes Shift+Right (or its Shift+D keyboard equivalent) from Settings through the projected semantic page action
 - **THEN** the reducer SHALL close Settings and restore the exact suspended PATCH or MIXER semantic origin if it remains valid, or its existing deterministic nearest-enabled repair if it does not
 
 #### Scenario: No third context
@@ -26,15 +26,15 @@ The product SHALL present `SETTINGS / MIDI DEVICES` as a temporary configuration
 - **THEN** the top-level performance-context domain SHALL still contain exactly PATCH and MIXER and context switching SHALL remember the same PATCH and MIXER roots as before
 
 ### Requirement: Settings entry has one explicit controller decision
-Because Figma node `116:2` defines Shift+Down return but no entry gesture, the first version SHALL map Shift+Start to one host-neutral Open MIDI Settings action from any non-modal PATCH or MIXER surface where no momentary preview is held. The action MUST be omitted or rejected while a modal choice, adjustment, or held preview makes entry unsafe.
+Figma Page Layout frame `153:184` SHALL govern primary page entry: Shift+Left from Patch Overview SHALL request temporary MIDI Settings through one host-neutral semantic page action. Existing Shift+Start entry from admitted non-modal PATCH or MIXER surfaces MAY remain as a compatibility shortcut, using the same Settings suspension behavior and requiring that no momentary preview is held. The return SHALL use Shift+Right as authored at `155:208` and `157:200`, restoring the suspended page and focus or existing repair described at `155:205`. The entry action MUST be omitted or rejected while a modal choice, adjustment, or held preview makes entry unsafe.
 
 #### Scenario: Controller entry
-- **WHEN** Shift+Start is pressed from an admitted PATCH or MIXER origin
-- **THEN** the input adapter SHALL emit one non-repeating Open MIDI Settings semantic action and the Settings surface SHALL open through the reducer
+- **WHEN** Shift+Left is pressed from an admitted Patch Overview origin
+- **THEN** the input adapter SHALL emit one non-repeating semantic Settings-entry action and the Settings surface SHALL open through the reducer
 
 #### Scenario: Unsafe entry is unavailable
 - **WHEN** a modal choice, adjustment session, or held preview is active
-- **THEN** Open MIDI Settings SHALL not appear in valid actions and Shift+Start SHALL not partially enter Settings or discard the active interaction
+- **THEN** Open MIDI Settings SHALL not appear in valid actions and neither the page-entry chord nor a retained compatibility shortcut SHALL partially enter Settings or discard the active interaction
 
 ### Requirement: Discovery is automatic, truthful, and stably ordered
 The system SHALL scan once at startup, immediately when Settings opens, and no less often than once per second while the application is running, with at most one scan in flight. It SHALL expose the last successful scan time and Watching, Scanning, or typed Failed scan state. Repeated scans MUST normalize unchanged device membership into a stable row order independent of backend enumeration order.
@@ -267,7 +267,7 @@ Application shutdown SHALL first disable physical ingress, invalidate the active
 - **THEN** the result SHALL be cancelled or retired off callback without activation
 
 ### Requirement: Settings is controller-first and accessible
-The device list SHALL own exactly one stable semantic focus. Unmodified D-pad/arrows SHALL move through focusable device identities, Edit SHALL perform only the focused row's projected Connect or Disconnect action, and Shift+Down SHALL return. The footer SHALL be the sole visible valid-action guide. Every interactive target MUST retain at least 48 px on its active axes, and every important focus/status/activity condition MUST be understandable without color.
+The device list SHALL own exactly one stable semantic focus. Unmodified D-pad/arrows SHALL move through focusable device identities, Edit SHALL perform only the focused row's projected Connect or Disconnect action, and Shift+Right SHALL restore the suspended performance identity. The footer SHALL advertise that authored return and MAY retain Shift+Down as a compatibility escape. The footer SHALL be the sole visible valid-action guide. Every interactive target MUST retain at least 48 px on its active axes, and every important focus/status/activity condition MUST be understandable without color.
 
 #### Scenario: Focus survives refresh
 - **WHEN** discovery, connection lifecycle, observation, reprojection, or density changes while a device row is focused

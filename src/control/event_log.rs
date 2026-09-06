@@ -159,7 +159,9 @@ impl EventLog {
     ///
     /// Version 6 records the bounded prepared Sample visualization carried by
     /// `EnginePrepared`, making Phase 7 replay lossless without logging PCM.
-    pub const SCHEMA_VERSION: u32 = 6;
+    /// Version 7 adds file-kind correlation and imported asset descriptors.
+    /// Version 8 adds source-specific `NavigatePage` input records.
+    pub const SCHEMA_VERSION: u32 = 8;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "totalObserved",

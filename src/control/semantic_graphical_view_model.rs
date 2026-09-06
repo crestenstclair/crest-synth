@@ -1557,6 +1557,36 @@ fn project_control_intent(
             let (requested_value, requested_label) = project_requested_value(state, &control.path)?;
             control.requested_value = requested_value;
             control.requested_label = requested_label;
+            if control.kind == SemanticControlKind::Asset
+                && control.path.patch_id() == state.file_browser().patch_id()
+                && matches!(control.path.control_id(), SemanticControlId::Patch(PatchControlId::Capability(id)) if Some(id) == state.file_browser().asset_parameter_id())
+            {
+                let lifecycle = state.file_browser().lifecycle();
+                let kind = match lifecycle {
+                    SampleAssetLifecycle::Loading => EngineSelectionStatusKind::Loading,
+                    SampleAssetLifecycle::Validating => EngineSelectionStatusKind::Validating,
+                    SampleAssetLifecycle::Preparing => EngineSelectionStatusKind::Preparing,
+                    SampleAssetLifecycle::Activating => EngineSelectionStatusKind::Activating,
+                    SampleAssetLifecycle::Unavailable => EngineSelectionStatusKind::Unavailable,
+                    SampleAssetLifecycle::Invalid | SampleAssetLifecycle::Failed(_) => {
+                        EngineSelectionStatusKind::Failed
+                    }
+                    SampleAssetLifecycle::Ready | SampleAssetLifecycle::Cancelled => {
+                        EngineSelectionStatusKind::Ready
+                    }
+                };
+                control.status = Some(SemanticLifecycleStatus {
+                    kind,
+                    label: lifecycle.label().to_owned(),
+                    request_id: state.file_browser().request_id(),
+                    graph_revision: state.engine_selection().active_graph_revision(),
+                    target_graph_revision: state
+                        .engine_selection()
+                        .correlation()
+                        .and_then(|correlation| correlation.target_graph_revision()),
+                });
+            }
+
             control.valid_actions = if &control.path == focused_path {
                 focused_actions.clone()
             } else {
@@ -1719,8 +1749,17 @@ fn project_requested_value(
                 ..
             },
         ) => state
-            .capabilities()
-            .descriptor(capability_id)
+            .patches()
+            .iter()
+            .find(|patch| {
+                Some(patch.id()) == correlation.patch_id()
+                    && patch.instrument_config().capability_id() == capability_id
+            })
+            .and_then(|patch| {
+                state
+                    .capabilities()
+                    .descriptor_for_config(patch.instrument_config())
+            })
             .and_then(|descriptor| descriptor.parameter(parameter_id))
             .and_then(|spec| {
                 spec.choices()
@@ -1903,6 +1942,39 @@ fn project_errors(
     resolver: &SemanticResolver<'_>,
     _status: &SemanticLifecycleStatus,
 ) -> Result<Vec<SemanticError>, SemanticGraphicalViewModelError> {
+    if let (Some(cause), Some(patch_id), Some(parameter)) = (
+        state.file_browser().file_selection_failure(),
+        state.file_browser().patch_id(),
+        state.file_browser().asset_parameter_id(),
+    ) {
+        if let Some(patch) = state.patches().iter().find(|patch| {
+            patch.id() == patch_id
+                && patch
+                    .instrument_config()
+                    .asset_reference(parameter)
+                    .is_some_and(|asset| asset.kind() == state.file_browser().asset_kind())
+        }) {
+            let failure = match cause {
+                crate::synth::SampleAssetError::Unavailable
+                | crate::synth::SampleAssetError::DownloadRequired => {
+                    EngineSelectionFailure::AssetUnavailable
+                }
+                crate::synth::SampleAssetError::Cancelled => EngineSelectionFailure::Cancelled,
+                _ => EngineSelectionFailure::InvalidAsset,
+            };
+            return Ok(vec![SemanticError {
+                code: SemanticErrorCode::EngineSelection(failure),
+                label: cause.to_string(),
+                source_path: Some(FocusPath::patch_detail(
+                    patch_id,
+                    FocusCapabilityId::Instrument(
+                        patch.instrument_config().capability_id().clone(),
+                    ),
+                    PatchControlId::Capability(parameter.clone()),
+                )),
+            }]);
+        }
+    }
     let Some(failure) = state.engine_selection().failure() else {
         return Ok(Vec::new());
     };
@@ -2077,7 +2149,7 @@ fn project_patch_surfaces(
     };
     let descriptor = state
         .capabilities()
-        .descriptor(patch.instrument_config().capability_id())
+        .descriptor_for_config(patch.instrument_config())
         .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
     let focusable_paths = resolver
         .patch_main_paths_for_position(patch_position)
@@ -2422,10 +2494,10 @@ fn project_patch_surfaces(
         // explicit; those rows carry no valid actions and never enter focus.
         let capability_id = subject.focus_capability_id();
         let detail_paths = match subject {
-            PatchDetailSubject::Instrument { capability_id: id } => {
+            PatchDetailSubject::Instrument { capability_id: _ } => {
                 let descriptor = state
                     .capabilities()
-                    .descriptor(id)
+                    .descriptor_for_config(patch.instrument_config())
                     .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
                 let mut paths = descriptor
                     .parameters()
@@ -2493,12 +2565,12 @@ fn project_patch_surfaces(
         for path in detail_paths {
             let control = match (subject, path.control_id()) {
                 (
-                    PatchDetailSubject::Instrument { capability_id },
+                    PatchDetailSubject::Instrument { capability_id: _ },
                     crate::control::SemanticControlId::Patch(PatchControlId::Capability(id)),
                 ) => {
                     let subject_descriptor = state
                         .capabilities()
-                        .descriptor(capability_id)
+                        .descriptor_for_config(patch.instrument_config())
                         .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
                     let spec = subject_descriptor
                         .parameter(id)
@@ -2710,7 +2782,10 @@ fn project_patch_surfaces(
                     value: SemanticControlValue::Identity(row.id().to_owned()),
                     numeric_range: None,
                     unit: None,
-                    browser_metadata: project_browser_metadata(row),
+                    browser_metadata: project_browser_metadata(
+                        row,
+                        state.file_browser().asset_kind(),
+                    ),
                     availability_label: None,
                     enabled: true,
                     visible: true,
@@ -2728,7 +2803,7 @@ fn project_patch_surfaces(
             .collect();
         let descriptor = state
             .capabilities()
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
         let preview_asset = match state.file_browser().preview() {
             SamplePreviewState::Held { asset_id }
@@ -2791,7 +2866,10 @@ fn project_patch_surfaces(
     Ok(surfaces)
 }
 
-fn project_browser_metadata(row: &crate::synth::FileBrowserRow) -> Option<SemanticBrowserMetadata> {
+fn project_browser_metadata(
+    row: &crate::synth::FileBrowserRow,
+    kind: AssetKind,
+) -> Option<SemanticBrowserMetadata> {
     if !matches!(row.kind(), crate::synth::FileBrowserRowKind::File(_)) {
         return None;
     }
@@ -2844,10 +2922,26 @@ fn project_browser_metadata(row: &crate::synth::FileBrowserRow) -> Option<Semant
             cause: Some(*cause),
         },
         None => SemanticBrowserMetadata {
-            status: SemanticBrowserMetadataStatus::Pending,
+            status: if kind == AssetKind::SoundFont {
+                SemanticBrowserMetadataStatus::Ready
+            } else {
+                SemanticBrowserMetadataStatus::Pending
+            },
             text: row.source_bytes().map_or_else(
-                || "METADATA LOADING".to_owned(),
-                |bytes| format!("METADATA LOADING · {bytes} BYTES"),
+                || {
+                    if kind == AssetKind::SoundFont {
+                        "SF2 · VALIDATED ON SELECTION".to_owned()
+                    } else {
+                        "METADATA LOADING".to_owned()
+                    }
+                },
+                |bytes| {
+                    if kind == AssetKind::SoundFont {
+                        format!("SF2 · {bytes} BYTES · VALIDATED ON SELECTION")
+                    } else {
+                        format!("METADATA LOADING · {bytes} BYTES")
+                    }
+                },
             ),
             source_bytes: row.source_bytes(),
             sample_rate: None,
@@ -2897,10 +2991,10 @@ fn project_detail_structure(
         }
     };
     match subject {
-        PatchDetailSubject::Instrument { capability_id } => {
+        PatchDetailSubject::Instrument { capability_id: _ } => {
             let descriptor = state
                 .capabilities()
-                .descriptor(capability_id)
+                .descriptor_for_config(patch.instrument_config())
                 .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
             let mut sections = descriptor
                 .sections()

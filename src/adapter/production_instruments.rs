@@ -50,6 +50,8 @@ pub enum ProductionInstrumentCompositionError {
         "{SAMPLE_LIBRARY_ROOT_ENV} and {SAMPLE_DEFAULT_ASSET_ENV} must be configured together"
     )]
     IncompleteSampleConfiguration,
+    #[error("SoundFont library is unavailable: {0}")]
+    SoundFontLibrary(SampleAssetError),
 }
 
 /// Shared process-local asset used by test composition helpers. The standalone
@@ -155,6 +157,41 @@ pub fn production_sample_catalog(
     Ok(optional_production_sample()?.map(|sample| sample.catalog))
 }
 
+/// Shared worker-side SoundFont library used by import, graph preparation and Open.
+pub fn production_soundfont_catalog() -> Result<
+    Arc<super::filesystem_soundfont_catalog::FilesystemSoundFontCatalog>,
+    ProductionInstrumentCompositionError,
+> {
+    static LIBRARY: OnceLock<
+        Result<
+            Arc<super::filesystem_soundfont_catalog::FilesystemSoundFontCatalog>,
+            ProductionInstrumentCompositionError,
+        >,
+    > = OnceLock::new();
+    LIBRARY
+        .get_or_init(|| {
+            let home = std::env::var_os("HOME").ok_or(
+                ProductionInstrumentCompositionError::SoundFontLibrary(
+                    SampleAssetError::Unavailable,
+                ),
+            )?;
+            let root = std::path::PathBuf::from(home).join("Music/Crest Synth/SoundFonts");
+            std::fs::create_dir_all(&root).map_err(|_| {
+                ProductionInstrumentCompositionError::SoundFontLibrary(
+                    SampleAssetError::Unavailable,
+                )
+            })?;
+            let catalog = super::filesystem_soundfont_catalog::FilesystemSoundFontCatalog::new(
+                root,
+                production_soundfont_asset()?.clone(),
+            )
+            .map_err(ProductionInstrumentCompositionError::SoundFontLibrary)?
+            .with_user_locations();
+            Ok(Arc::new(catalog))
+        })
+        .clone()
+}
+
 /// Builds the production providers in stable fixture/discovery order.
 pub fn production_instrument_providers(
 ) -> Result<Vec<Box<dyn InstrumentCapabilityProvider>>, ProductionInstrumentCompositionError> {
@@ -189,7 +226,8 @@ pub fn production_instrument_preparers(
     let mut preparers: Vec<Box<dyn InstrumentPreparer>> = vec![
         Box::new(
             HiDefSoundFontPreparer::new(production_soundfont_asset()?)
-                .map_err(ProductionInstrumentCompositionError::Preparation)?,
+                .map_err(ProductionInstrumentCompositionError::Preparation)?
+                .with_library(production_soundfont_catalog()?),
         ),
         Box::new(BraidsPreparer::new().map_err(ProductionInstrumentCompositionError::Preparation)?),
     ];

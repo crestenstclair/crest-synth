@@ -708,7 +708,7 @@ impl ParameterSnapshot {
                     .validate_config(patch.instrument_config())
                     .map_err(|_| ParameterSnapshotError::InvalidInstrumentConfig { index })?;
                 let descriptor = registry
-                    .descriptor(patch.instrument_config().capability_id())
+                    .descriptor_for_config(patch.instrument_config())
                     .ok_or(ParameterSnapshotError::InvalidInstrumentConfig { index })?;
                 let values = descriptor
                     .scalar_parameters()
@@ -759,7 +759,7 @@ impl ParameterSnapshot {
                     .validate_config(patch.instrument_config())
                     .map_err(|_| ParameterSnapshotError::InvalidInstrumentConfig { index })?;
                 let descriptor = registry
-                    .descriptor(patch.instrument_config().capability_id())
+                    .descriptor_for_config(patch.instrument_config())
                     .ok_or(ParameterSnapshotError::InvalidInstrumentConfig { index })?;
                 let instrument_values = descriptor
                     .scalar_parameters()

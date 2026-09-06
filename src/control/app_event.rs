@@ -50,6 +50,7 @@ pub enum AppEventPayloadShape {
     PreparedSampleVisualization,
     SampleAssetLifecycle,
     FileBrowserFolderId,
+    AssetKind,
     FileBrowserListing,
     SampleAssetError,
     AssetImportResult,
@@ -85,6 +86,9 @@ pub enum AppEventSurfaceDescriptor {
         context: TopLevelContext,
     },
     SelectPatch {
+        direction: Direction,
+    },
+    NavigatePage {
         direction: Direction,
     },
     Navigate {
@@ -143,7 +147,8 @@ pub enum AppEventSurfaceDescriptor {
         request_id: AppEventPayloadShape,
         lifecycle: AppEventPayloadShape,
     },
-    SampleCatalogRefreshed {
+    FileCatalogRefreshed {
+        asset_kind: AppEventPayloadShape,
         folder: AppEventPayloadShape,
         listing: AppEventPayloadShape,
         failure: AppEventPayloadShape,
@@ -231,7 +236,7 @@ pub enum AppEventSurfaceDescriptor {
     MidiInputShutdownRequested,
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 51] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 55] = [
     AppEventSurfaceDescriptor::AssetImported {
         selection: AppEventPayloadShape::AssetImportResult,
     },
@@ -245,6 +250,18 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 51] = [
         direction: Direction::Left,
     },
     AppEventSurfaceDescriptor::SelectPatch {
+        direction: Direction::Right,
+    },
+    AppEventSurfaceDescriptor::NavigatePage {
+        direction: Direction::Up,
+    },
+    AppEventSurfaceDescriptor::NavigatePage {
+        direction: Direction::Down,
+    },
+    AppEventSurfaceDescriptor::NavigatePage {
+        direction: Direction::Left,
+    },
+    AppEventSurfaceDescriptor::NavigatePage {
         direction: Direction::Right,
     },
     AppEventSurfaceDescriptor::Navigate {
@@ -327,7 +344,8 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 51] = [
         request_id: AppEventPayloadShape::EngineSelectionRequestId,
         lifecycle: AppEventPayloadShape::SampleAssetLifecycle,
     },
-    AppEventSurfaceDescriptor::SampleCatalogRefreshed {
+    AppEventSurfaceDescriptor::FileCatalogRefreshed {
+        asset_kind: AppEventPayloadShape::AssetKind,
         folder: AppEventPayloadShape::FileBrowserFolderId,
         listing: AppEventPayloadShape::FileBrowserListing,
         failure: AppEventPayloadShape::SampleAssetError,
@@ -429,6 +447,8 @@ pub enum AppEvent {
     /// end of the installed order it is a typed unchanged rejection rather
     /// than a clamp or a wrap, exactly like every other adjacent choice.
     SelectPatch(Direction),
+    /// Resolve one page connection from the active surface.
+    NavigatePage(Direction),
     /// Move the current selection without changing a synth parameter.
     Navigate(Direction),
     /// Adjust exactly the currently selected bounded parameter.
@@ -496,7 +516,8 @@ pub enum AppEvent {
     /// Replaces one folder's correlated catalog result through the reducer.
     /// Stable row focus is retained when the identity remains present and is
     /// repaired deterministically when it does not.
-    SampleCatalogRefreshed {
+    FileCatalogRefreshed {
+        asset_kind: crate::synth::AssetKind,
         folder: FileBrowserFolderId,
         listing: Result<FileBrowserListing, SampleAssetError>,
     },
@@ -615,6 +636,7 @@ impl AppEvent {
         match action {
             SemanticAction::SelectContext(context) => Self::SelectContext(context),
             SemanticAction::SelectPatch(direction) => Self::SelectPatch(direction),
+            SemanticAction::NavigatePage(direction) => Self::NavigatePage(direction),
             SemanticAction::Navigate(direction) => Self::Navigate(direction),
             SemanticAction::Adjust(direction) => Self::Adjust(direction),
             SemanticAction::SetInteractionMode(mode) => Self::SetInteractionMode(mode),
@@ -651,6 +673,8 @@ impl AppEvent {
         !matches!(
             self,
             Self::SelectContext(_)
+                | Self::SelectPatch(_)
+                | Self::NavigatePage(_)
                 | Self::Navigate(_)
                 | Self::SetInteractionMode(_)
                 | Self::OpenRelated
@@ -661,7 +685,7 @@ impl AppEvent {
                 | Self::SetPatchOverviewOriginEnabled { .. }
                 | Self::EngineSelectionLifecycleAdvanced { .. }
                 | Self::SampleAssetLifecycleAdvanced { .. }
-                | Self::SampleCatalogRefreshed { .. }
+                | Self::FileCatalogRefreshed { .. }
                 | Self::EnterSurface(_)
                 | Self::Return
                 | Self::MidiInputPreferenceRestored { .. }
@@ -694,6 +718,9 @@ impl AppEvent {
                 AppEventSurfaceDescriptor::SelectContext { context: *context }
             }
             Self::SelectPatch(direction) => AppEventSurfaceDescriptor::SelectPatch {
+                direction: *direction,
+            },
+            Self::NavigatePage(direction) => AppEventSurfaceDescriptor::NavigatePage {
                 direction: *direction,
             },
             Self::Navigate(direction) => AppEventSurfaceDescriptor::Navigate {
@@ -760,13 +787,12 @@ impl AppEvent {
                     lifecycle: AppEventPayloadShape::SampleAssetLifecycle,
                 }
             }
-            Self::SampleCatalogRefreshed { .. } => {
-                AppEventSurfaceDescriptor::SampleCatalogRefreshed {
-                    folder: AppEventPayloadShape::FileBrowserFolderId,
-                    listing: AppEventPayloadShape::FileBrowserListing,
-                    failure: AppEventPayloadShape::SampleAssetError,
-                }
-            }
+            Self::FileCatalogRefreshed { .. } => AppEventSurfaceDescriptor::FileCatalogRefreshed {
+                asset_kind: AppEventPayloadShape::AssetKind,
+                folder: AppEventPayloadShape::FileBrowserFolderId,
+                listing: AppEventPayloadShape::FileBrowserListing,
+                failure: AppEventPayloadShape::SampleAssetError,
+            },
             Self::EnginePreparationFailed { .. } => {
                 AppEventSurfaceDescriptor::EnginePreparationFailed {
                     request_id: AppEventPayloadShape::EngineSelectionRequestId,
@@ -923,7 +949,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 51);
+        assert_eq!(descriptor.len(), 55);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -1003,7 +1029,8 @@ mod tests {
             })
         );
         assert!(
-            descriptor.contains(&AppEventSurfaceDescriptor::SampleCatalogRefreshed {
+            descriptor.contains(&AppEventSurfaceDescriptor::FileCatalogRefreshed {
+                asset_kind: AppEventPayloadShape::AssetKind,
                 folder: AppEventPayloadShape::FileBrowserFolderId,
                 listing: AppEventPayloadShape::FileBrowserListing,
                 failure: AppEventPayloadShape::SampleAssetError,

@@ -129,7 +129,7 @@ mod witness {
     }
 
     /// The macOS virtual key code the production normalization maps to
-    /// `key` — exactly one exists (proven by the bijectivity unit tests).
+    /// `key`, choosing its ANSI alias before any equivalent arrow code.
     fn code_for(key: WindowKey) -> u16 {
         (0_u16..=127)
             .find(|code| window_key_from_macos_key_code(*code) == key)
@@ -188,7 +188,7 @@ mod witness {
         }
         // The authored Patch-position gesture uses the real AppKit Shift
         // FlagsChanged edge held across horizontal key events. Both directions
-        // must reach SelectPatch through the production translator.
+        // must reach source-aware page intent through the production translator.
         for key in [WindowKey::D, WindowKey::A] {
             steps.push(Step::Key {
                 code: code_for(WindowKey::Shift),

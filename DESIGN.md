@@ -232,6 +232,7 @@ The primary authored nodes are:
 - [Engine Options — 48:173](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=48-173)
 - [Post FX Options — 48:207](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=48-207)
 - [Interaction Map — 49:3](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=49-3)
+- [Page Layout — 153:184](https://www.figma.com/design/kdQMw8dYUZtv2UxJPo0sXU/Crest-Synth-%E2%80%94-Controller-First-UI-Redesign?node-id=153-184)
 
 The inspected Figma nodes contain no prototype reactions. Their annotations,
 screen states, component specimens, and interaction map remain valid design
@@ -260,7 +261,9 @@ The application currently provides:
 
 - PATCH and MIXER as the only top-level contexts;
 - sparse stable Patch identities with an active graph capacity of 16 Patches;
-- HiDef SoundFont and Braids instrument capabilities in the default registry;
+- SoundFont and Braids instrument capabilities in the default registry;
+  SoundFont retains the HiDef capability identity and bundled default while
+  accepting local SF2 banks through the shared file page;
 - Sample installed by default with `Test Tone.wav` in
   `~/Music/Crest Synth/Samples`; the bundled WAV seeds a new library without
   overwriting an existing asset. `CREST_SAMPLE_LIBRARY_ROOT` and
@@ -268,7 +271,7 @@ The application currently provides:
 - Chorus, Reverb, and Delay in one effect registry;
 - three ordered Patch post-effect slots and eight bus returns;
 - one fixed bank of sixteen persistent Mixer tracks, T00 through T0F;
-- descriptor-driven Patch Overview, Detail, generic Choice, Sample Browser,
+- descriptor-driven Patch Overview, Detail, generic Choice, shared File Browser,
   waveform/playhead projection, persistent Utility, and persistent Mixer
   Inspector surfaces;
 - channel-based MIDI subscriptions in which any number of installed Patches
@@ -551,6 +554,23 @@ SF2 names. Ordering is bank then program, with source ordinal only for malformed
 coordinate collisions. The application does not invent General MIDI names or
 choose a nearby preset.
 
+Each SoundFont Patch resolves immutable capability metadata against its own
+asset reference. The installed engine descriptor remains stable; asset-scoped
+descriptors supply that bank's authored preset choices. Selecting a new bank
+requests its first playable preset in numeric bank/program order. Subsequent
+preset edits keep the exact bank, and saved-session restore requires the exact
+saved preset. Reducer and graph-request validation reject additional config
+changes, including an unrequested preset during bank replacement. Worker-side
+preparers resolve file metadata independently before complete-graph validation.
+
+SF2 admission is capped at 256 MiB, checks RIFF/list chunk arithmetic before
+parser allocation, and bounds numeric expansion to 4,096 regions per preset
+and 262,144 region combinations per bank. Malformed and unavailable files
+produce explicit failures. Worker-owned caches share active numeric banks
+through weak references; unused banks are not retained indefinitely. Authored
+catalogs remain control-side, and callback objects retain only numeric banks
+and bounded voice state. The bundled `./sf2/HiDef.sf2` reference remains exact.
+
 The Sample adapter uses exact `hound = 3.5.1` (Apache-2.0, no optional
 features). It accepts uncompressed RIFF/WAVE only: mono/stereo signed
 PCM16/24/32 or IEEE float32 at 8,000–192,000 Hz. Limits are 256 MiB and 300
@@ -566,7 +586,7 @@ file-start, no-loop audio through the origin Patch's post-FX, trim, Mixer,
 sends, returns, and gates. Stop uses a prepared 5 ms de-click. Preview never
 commits an asset or mutates saved state.
 
-Return or Shift+W on Sample File opens the same in-app FileBrowser page.
+Return or Shift+W on Sample File or SoundFont File opens the same in-app FileBrowser page.
 The page uses the existing semantic navigation, confirm, back, and preview
 controls; no platform asset dialog is involved. W/S navigates rows, Return
 enters folders or selects a file, Shift+S returns unchanged, and holding Space
@@ -577,15 +597,23 @@ subordinate surface, never a new top-level context.
 Shared `AssetFileId`, `FileBrowserFolderId`, row, and listing types are defined
 in `synth::file_browser`. `FilesystemFileBrowser` owns directory navigation and
 WAV/SF2 filtering by `AssetKind`; engine adapters own decoding and metadata.
-This is the shared picker foundation for Sample and SoundFont. The current
-SoundFont engine still uses its fixed HiDef bank; arbitrary SF2 loading and
-asset-dependent preset catalogs are not claimed by this picker correction.
-The serialized projection schema is version 23 (`fileBrowser` surface identity,
-with unavailable metadata distinct from invalid audio).
+`FileLibraryRuntime` shares one capacity-one listing/import worker between
+Sample and SoundFont. Listings are correlated by Patch, asset kind, and folder;
+the reducer rejects stale imports by origin, generation, and graph revision.
+SoundFonts use `~/Music/Crest Synth/SoundFonts`; SF2 rows show source size and
+validation-on-selection. Hold-to-preview remains a Sample operation. SoundFont
+playback uses the active Patch's MIDI route after graph acknowledgement.
+The serialized projection schema is version 25, retaining the immutable
+`assetDescriptors` and `assetScopedChoices` added in version 24 and adding
+source-specific `NavigatePage` actions. Event-log schema version 8 adds the
+same page intent to version 7's asset-kind-correlated listings and imported
+descriptor payloads. Settings replaces the visible Patch page even when PATCH
+remains the suspended context: full and MIDI generation-only StateTree
+validation accept a missing Patch page only on a system surface in that context.
 
 The library root also offers Home and, on macOS, Volumes locations. External
 location identities are transient and cannot be restored as saved assets.
-Selecting an external Sample emits a reducer-owned import request correlated
+Selecting an external Sample or a SoundFont emits a reducer-owned import request correlated
 to its origin, generation, and graph revision. A capacity-one shell filesystem
 worker validates it and copies it into `Imported/` with content reuse and no
 overwrite. Only its resulting library-relative identity enters structural
@@ -594,6 +622,13 @@ asset. Browsing and importing never block the callback or window tick. Nested
 folder results select their first row initially, then preserve stable focus
 on refresh. The projected asset row shows `BROWSE`; it is not a scalar edit.
 The footer remains the sole keyboard-guide owner.
+
+Imported SoundFonts persist as library-relative references and exact preset
+identities in the existing version-2 saved session. Restore bounds the saved
+Patch count before asset work, resolves all bank descriptors off-thread, and
+prepares the complete candidate before acknowledgement can replace the active
+session. No catalogs, numeric banks, or external browser locations are saved.
+Removing the original external file does not affect its imported copy.
 
 On macOS, the filesystem adapter checks zero-byte files for Dropbox's legacy
 placeholder attribute before WAV parsing. These report `DownloadRequired` and
@@ -666,9 +701,10 @@ Patch order. `PatchPositionId::Created(PatchId) | TrailingEmpty` is the
 canonical interaction identity for focus, remembered roots, subordinate
 sessions, return paths, and focus suspended by MIDI Settings. `TrailingEmpty`
 is not a `Patch`, has no numeric ID, route, MIDI subscription, parameter entry,
-or graph slot, and never enters `SavedSession`. Shift+Right reaches it through
+or graph slot, and never enters `SavedSession`. E reaches it through
 the same non-wrapping semantic Patch-navigation action used between created
-Patches; Shift+Left returns to the final created Patch. Navigation and
+Patches; Q returns to the final created Patch. Shift+Right remains a next-Patch
+compatibility shortcut; Shift+Left on Overview now opens MIDI Settings. Navigation and
 prospective Overview/Detail/Choice/Utility inspection do not change saved
 capture, graph revision, or audio.
 
@@ -727,16 +763,38 @@ Physical bindings normalize to semantic actions before product logic:
 
 | Input | Meaning |
 | --- | --- |
-| unmodified arrows/D-pad | spatial semantic focus movement |
+| unmodified arrows/WASD/D-pad | spatial semantic focus movement |
 | Edit + Left/Right | fine decrement/increment or adjacent valid choice |
 | Edit + Up/Down | coarse increment/decrement; Up opens a choice for choice controls |
 | Edit | toggle/confirm |
-| Shift + Up | open related Detail/Browser; MIXER → PATCH |
-| Shift + Down | return/close; PATCH → MIXER |
-| Shift + Left/Right | previous/next created Patch or trailing empty endpoint |
-| Shift + Start | open temporary Settings · MIDI Devices (non-repeating) |
+| Q / E | previous/next created Patch or trailing empty endpoint, without wrapping |
+| Shift + Up / W | Overview opens highlighted Detail; Mixer restores Overview; eligible Detail file control opens Browser |
+| Shift + Down / S | Detail restores Overview; Overview restores Mixer; Choice/Browser cancels; existing Settings escape |
+| Shift + Left / A | Overview opens temporary Settings · MIDI Devices; previous-Patch compatibility only outside Overview where admitted |
+| Shift + Right / D | Settings restores the suspended page and focus; next-Patch compatibility elsewhere where admitted |
+| Shift + Start / Space | compatibility entry to temporary Settings · MIDI Devices (non-repeating) |
 | Select | multi-select only when reducer semantics exist; currently unavailable |
 | Start press/release | hold-to-preview in Sample Browser; reserved elsewhere |
+
+Keyboard and controller Shift directions emit one canonical
+`NavigatePage(Direction)` action/event. `AppState::apply` dispatches from the
+source surface through existing Detail, context-root, Settings, and cancellation
+helpers. A single accepted activation advances one generation and one edge:
+Detail return stops at Overview, and Mixer return does not also open Detail.
+Choice and file cancellation retain their exact origins and preview cleanup.
+Overview entry resolves Instrument or effect subject by Patch and slot identity;
+duplicate effect capabilities remain distinct, and empty effect slots reject
+Detail entry unchanged. Context movement restores each remembered valid root
+or exposes the existing deterministic focus repair.
+
+Q/E reuse canonical `SelectPatch` order and admission. Both Patch cycling and
+page navigation leave saved capture, dirty state, routes, subscriptions, and
+active graph ownership unchanged; neither publishes a scalar snapshot merely
+for navigation. Required browser-preview cancellation remains separate from
+performance audio. Settings entry retains its existing discovery effect and
+does not connect a device. Footer guidance comes from source-specific admitted
+semantic actions, including arrow/WASD equivalents, with no browser-owned page
+or return state.
 
 PATCH Main is the non-wrapping Overview order: Engine, then the three canonical
 effect-slot occupancy controls. Sibling order is every created Patch followed
@@ -751,7 +809,13 @@ stable semantic origin or the nearest enabled sibling after schema change.
 
 Settings · MIDI Devices is a system surface, not a top-level context. Entry
 suspends the exact performance focus, interaction mode, return path, and Patch
-subordinate session; Shift+Down restores that identity after schema repair.
+subordinate session. Shift+Right restores that identity after schema repair;
+Shift+Down remains a compatibility escape. The user selected Shift+Right on
+2026-09-06, now authored in Page Layout `153:184` at `155:208` and `157:200`,
+with suspended PATCH/MIXER page and exact valid focus or nearest-enabled repair
+specified at `155:205`. Surface-first dispatch prevents Settings return from
+also selecting the next Patch. The footer advertises Shift+Right / Shift+D as
+return to performance.
 The projected list is registry-driven and carries display name, opaque identity
 facts, Available/Connecting/Connected/Unavailable/Disconnected/Failed text,
 and a structural marker in addition to color. The inspector is pinned only to
@@ -769,13 +833,52 @@ non-repeatable and never queries key-repeat state from a modifier event; a UI
 input callback must not unwind through the Objective-C event boundary. The
 local monitor retains a bounded 128-signature window so WebKit's delayed
 unhandled-key redispatch cannot double-feed the translator after a full input
-burst. The strict native witness delivered 68 scripted transitions exactly
+burst. Native arrow keycodes normalize alongside WASD at this same boundary.
+Keyboard page holds remain consumed until direction release or focus loss,
+including when Shift is released first; Q/E also require release before another
+Patch step. Bare focus/edit repeats retain their existing behavior. Controller
+page gestures require release or disconnect before another activation.
+
+The earlier strict native witness delivered 68 scripted transitions exactly
 once and produced 20 byte-exact semantic actions, including repeated Shift
 flags, Shift held across D/A, and held-K focus-loss cleanup. Its paired
 real-window journey painted Shift+Right to empty, non-creating Detail
 inspection, first edit, visible preparation failure, fresh retry, acknowledged
-creation, exact return identity, and Shift+Left through production keyboard
-normalization, `AppState::apply`, projection, and native paint.
+creation, exact return identity, and the then-current Shift+Left previous-Patch
+binding through production keyboard normalization, `AppState::apply`, projection,
+and native paint. That historical run does not prove the new page bindings.
+
+Current page-navigation proof covers exact Instrument/duplicate-effect subjects,
+empty-slot rejection, sparse Patch IDs and endpoints, remembered roots,
+deterministic origin repair, source-specific admission/guidance, and Settings
+discovery while retaining performance identity. The production AppLoop and
+Braids/effects renderer journey preserves saved capture and audio values,
+publishes no navigation scalar snapshots, retains the active graph, and renders
+finite nonzero sustained audio, including MIDI while Settings is visible.
+Before the final Settings return addition, all 875 non-ignored library tests
+and 60 focused integration tests passed; two library tests remain ignored.
+The focused integrations include Choice,
+Sample preview cancellation, SoundFont file/preset workflows, shell dispatch,
+focus/projection, and bidirectional schema coverage. After adding the authored
+Shift+Right return, all 28 affected integrations passed, including 11
+page-navigation tests, 7 MIDI-device contracts, and 10 focus/projection tests.
+They cover suspended Detail, Mixer Main, and Inspector restoration, unchanged
+MIDI discovery/connection state, and exposed repair of an invalid suspended
+Overview origin. Warnings-denied all-target Clippy and formatting checks passed.
+
+`make test-webview-page-navigation-native` adds a bounded 17-activation AppKit
+journey with actual Q/E, Shift+arrows, repeats, and WASD delivery followed by
+production reducer projection and native paint observation. It checks exact
+page/focus/subject/return identity and footer guidance, rejects extra native
+actions, and closes its owned window. On 2026-09-06 the complete authored
+journey passed, including Shift+Left Settings entry, Shift+Right return to the
+same Patch/effect focus, exact Instrument/effect Detail origins, remembered
+PATCH/MIXER roots, and WASD equivalence. All 17 activations produced one accepted
+generation each with no extra native actions. Native paint agreed with the
+reducer and the owned close returned exit code 0. The same run passed serialized
+schema fidelity, token freshness, production protocol/CSP parity, late-ack
+identity, and typed startup-failure checks. This is bounded native input and
+render evidence; it does not claim physical gamepad or broad visual parity.
 
 MIXER Main uses one stable `(MixerTrackId, MixerTrackParameter)` path. Left/Right
 changes T00–T0F while preserving Level/Pan/Mute/Solo row; Up/Down changes row
@@ -1059,8 +1162,39 @@ Cancel with the same asset/focus, library WAV selection, and Home-based external
 WAV import returning to a READY Detail with an Imported-relative asset. The
 imported copy remained readable after removal of its original source. The
 final native renderer witness and owned close passed.
-Existing resize acceptance remains closed. Physical gamepad mapping and new
-SoundFont bank loading are separate integrations; neither is claimed here.
+Existing resize acceptance remains closed. Physical gamepad mapping remains a
+separate integration. SoundFont loading now extends this same browser; it does
+not add another navigation scheme or native asset dialog.
+
+The SoundFont loading checks use generated two-preset banks with different
+authored names and numeric audio. Four integration tests prove validated
+import, content reuse without overwrite, independent Patch catalogs and audio,
+rejection of an unrequested preset during bank replacement, keyboard selection,
+cancellation/stale failures, and graph-acknowledgement-only assignment. Exact
+version-2 restore renders finite nonzero audio after the external sources are
+deleted. Rendering and bank swaps record zero callback allocations and
+deallocations. The actual capacity-one filesystem worker has a separate unit
+test for SF2 filtering and imported metadata without premature assignment.
+
+Validation passed: 872 library tests (two measurement tests ignored), focused
+SoundFont/preset, Sample/Detail, session, production-runtime and callback tests,
+bidirectional schema checks, warnings-denied Clippy, JavaScript syntax, and
+strict OpenSpec validation. `make test-soundfont-loading` runs the focused
+SoundFont tests. `make test-webview-soundfont-native` renders six production
+documents from the keyboard/import/graph tests in WKWebView: file page,
+loading, activating, loaded Detail, preset options, and failed Detail. It checks
+focus, values and repeated paint, captures snapshots, and closes its owned
+window. This witness does not run a resize sweep or require pixel matching.
+The shared options page resolves status from its actual origin surface;
+SoundFont browsing omits unsupported waveform and preview panels.
+
+To try a bank, run `make run`. On Engine, hold K and press W to open options;
+use W/S and Return to select HiDef SoundFont. Return opens Detail. Move to
+SoundFont File with S and press Return. Browse Home, Volumes, or the SoundFont
+library with W/S and Return, then select a downloaded SF2. Shift+S cancels.
+On Preset, hold K and press W to open that bank's choices. The startup test
+pattern plays MIDI channel 1 and T toggles it; keep the test Patch routed to
+channel 1. SoundFont hold-to-preview and cloud downloading are not implemented.
 
 To use an existing library and its initial asset, configure both overrides
 before the process starts:

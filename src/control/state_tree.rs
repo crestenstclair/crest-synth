@@ -230,7 +230,10 @@ impl StateTree {
     ///
     /// Version 12: the six retired reverb/delay `global` leaves are gone —
     /// return-owned state travels as the indexed top-level `returns` section.
-    pub const SCHEMA_VERSION: u32 = 23;
+    /// Version 24: asset-scoped capability catalogs and file-kind-correlated browser events.
+    /// Version 25: source-specific `NavigatePage` actions and Settings-only
+    /// PATCH page absence in full and generation-only projections.
+    pub const SCHEMA_VERSION: u32 = 25;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -276,6 +279,7 @@ impl StateTree {
     const BASE_SERIALIZED_LEAF_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
+        "capabilities.descriptors[].assetScopedChoices",
         "capabilities.descriptors[].id",
         "capabilities.descriptors[].label",
         "capabilities.descriptors[].semanticAccent",
@@ -649,6 +653,21 @@ impl StateTree {
                         && !path.starts_with("patchPage.")
                 })
                 .collect::<Vec<_>>();
+            descriptor.extend(
+                Self::BASE_SERIALIZED_LEAF_DESCRIPTOR
+                    .iter()
+                    .filter(|path| path.starts_with("capabilities.descriptors[]"))
+                    .map(|path| {
+                        Box::leak(
+                            path.replacen(
+                                "capabilities.descriptors[]",
+                                "capabilities.assetDescriptors[]",
+                                1,
+                            )
+                            .into_boxed_str(),
+                        ) as &'static str
+                    }),
+            );
             descriptor.extend([
                 "interaction.activeFocus.capabilityId",
                 "interaction.activeFocus.capabilityId.id",
@@ -831,8 +850,13 @@ impl StateTree {
             .filter(|_| engine_targeted);
         match (interaction_context, patch_page) {
             (TopLevelContext::Mixer, None) => {}
+            // Settings replaces the visible PATCH page while retaining PATCH
+            // as the suspended performance context.
+            (TopLevelContext::Patch, None)
+                if state.interaction.active_focus.surface().is_system() => {}
             (TopLevelContext::Patch, Some(page))
-                if page.context() == TopLevelContext::Patch
+                if !state.interaction.active_focus.surface().is_system()
+                    && page.context() == TopLevelContext::Patch
                     && page.state_hash() == snapshot.hash()
                     && page.patch().id() == state.interaction.active_focus.patch_id()
                     && Some(page.focused_control_id())
@@ -931,6 +955,11 @@ impl StateTree {
         }
         match (self.context, self.patch_page_position, patch_page) {
             (TopLevelContext::Mixer, None, None) => {}
+            (TopLevelContext::Patch, None, None)
+                if graphical_shell
+                    .semantic_model()
+                    .active_surface()
+                    .is_system() => {}
             (TopLevelContext::Patch, Some(expected), Some(page))
                 if page.patch().id() == expected.patch_id()
                     && page.context() == TopLevelContext::Patch
@@ -1193,7 +1222,7 @@ fn validate_parameter_projection(
         }
         let descriptor = state
             .capabilities
-            .descriptor(state_patch.instrument.capability_id())
+            .descriptor_for_config(&state_patch.instrument)
             .ok_or(StateTreeError::PatchParametersMismatch { index })?;
         if parameter_patch.instrument().count() != descriptor.scalar_parameter_count()
             || descriptor

@@ -969,7 +969,7 @@ fn observe_capability_composition(
         .iter()
         .filter(|patch| {
             capabilities
-                .descriptor(patch.instrument_config().capability_id())
+                .descriptor_for_config(patch.instrument_config())
                 .is_some_and(|descriptor| descriptor.voice_policy() == VoicePolicy::EngineManaged)
         })
         .count();
@@ -977,7 +977,7 @@ fn observe_capability_composition(
         .iter()
         .filter(|patch| {
             capabilities
-                .descriptor(patch.instrument_config().capability_id())
+                .descriptor_for_config(patch.instrument_config())
                 .is_some_and(|descriptor| {
                     matches!(descriptor.voice_policy(), VoicePolicy::FixedPerPatch { .. })
                 })
@@ -1000,6 +1000,13 @@ struct SharedInstrumentPreparer(Arc<dyn InstrumentPreparer>);
 impl InstrumentPreparer for SharedInstrumentPreparer {
     fn capability_id(&self) -> &crate::synth::CapabilityId {
         self.0.capability_id()
+    }
+
+    fn asset_descriptor(
+        &self,
+        config: &crate::synth::InstrumentConfig,
+    ) -> Result<Option<crate::synth::CapabilityDescriptor>, InstrumentPreparationError> {
+        self.0.asset_descriptor(config)
     }
 
     fn prepared_shared_asset_count(&self) -> usize {
@@ -1411,9 +1418,13 @@ where
 
         let runtime = Rc::new(RefCell::new(ControlRuntime {
             test_midi: crate::shell::test_midi::TestMidiPattern::default(),
-            sample_library: crate::shell::sample_library::SampleLibraryRuntime::new(
+            file_library: crate::shell::file_library::FileLibraryRuntime::new(
                 crate::adapter::production_instruments::production_sample_catalog()
                     .map_err(ApplicationError::ProductionInstrumentComposition)?,
+                Some(
+                    crate::adapter::production_instruments::production_soundfont_catalog()
+                        .map_err(ApplicationError::ProductionInstrumentComposition)?,
+                ),
             ),
             app_loop,
             lifecycle,
@@ -1446,7 +1457,7 @@ where
         drop(audio_stream);
         let (lifecycle_shutdown_result, midi_shutdown_result, graph_shutdown_result) = {
             let mut runtime = runtime.borrow_mut();
-            runtime.sample_library.shutdown();
+            runtime.file_library.shutdown();
             let lifecycle = runtime.lifecycle.shutdown_on_control();
             let midi = runtime.app_loop.shutdown_midi_devices_on_control();
             let graph = runtime.app_loop.shutdown_engine_selection_on_control();
@@ -2371,7 +2382,7 @@ where
     Boundary: ControlAudioBoundary,
 {
     test_midi: crate::shell::test_midi::TestMidiPattern,
-    sample_library: crate::shell::sample_library::SampleLibraryRuntime,
+    file_library: crate::shell::file_library::FileLibraryRuntime,
     app_loop: AppLoop<Boundary>,
     lifecycle: SessionLifecycleCoordinator,
     device_status: AudioDeviceStatusReader,
@@ -2516,13 +2527,13 @@ where
             app_loop,
             lifecycle,
             device_status: _,
-            sample_library,
+            file_library,
             test_midi,
             midi_clock_micros,
             close_requested,
             error,
         } = &mut *runtime;
-        if let Err(failure) = sample_library.advance(app_loop) {
+        if let Err(failure) = file_library.advance(app_loop) {
             *error = Some(failure.into());
             return false;
         }

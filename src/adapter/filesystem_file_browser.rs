@@ -2,6 +2,7 @@ use crate::synth::{
     AssetFileId, AssetKind, FileBrowserFolderId, FileBrowserListing, FileBrowserRow,
     FileBrowserRowKind, SampleAssetError,
 };
+use std::io::Write;
 use std::path::{Path, PathBuf};
 
 /// Shared directory navigation and file filtering. Engine adapters own decoding
@@ -25,6 +26,67 @@ impl FilesystemFileBrowser {
             library,
             locations: Vec::new(),
         })
+    }
+
+    /// Stores bytes already validated by the owning engine adapter. Never overwrites an asset.
+    pub(crate) fn store_validated_file(
+        &self,
+        source: &Path,
+        bytes: &[u8],
+        extension: &str,
+    ) -> Result<AssetFileId, SampleAssetError> {
+        let name = source
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or(SampleAssetError::InvalidRelativeId)?;
+        if let Ok(relative) = source.strip_prefix(&self.library) {
+            return AssetFileId::new(
+                relative
+                    .to_str()
+                    .ok_or(SampleAssetError::InvalidRelativeId)?
+                    .replace('\\', "/"),
+            );
+        }
+        let import_root = self.library.join("Imported");
+        std::fs::create_dir_all(&import_root).map_err(|_| SampleAssetError::Unavailable)?;
+        self.resolve("Imported")?;
+        let stem = source
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .ok_or(SampleAssetError::InvalidRelativeId)?;
+        for suffix in 0..10_000 {
+            let name = if suffix == 0 {
+                name.to_owned()
+            } else {
+                format!("{stem}-{suffix}.{extension}")
+            };
+            let id = AssetFileId::new(format!("Imported/{name}"))?;
+            let path = import_root.join(name);
+            match std::fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+            {
+                Ok(mut file) => {
+                    if file.write_all(bytes).and_then(|_| file.sync_all()).is_err() {
+                        let _ = std::fs::remove_file(path);
+                        return Err(SampleAssetError::Unavailable);
+                    }
+                    return Ok(id);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    if self
+                        .resolve(id.as_str())
+                        .and_then(|path| super::filesystem_sample_catalog::read_sample_path(&path))
+                        .is_ok_and(|existing| existing == bytes)
+                    {
+                        return Ok(id);
+                    }
+                }
+                Err(_) => return Err(SampleAssetError::Unavailable),
+            }
+        }
+        Err(SampleAssetError::Unavailable)
     }
 
     pub fn with_user_locations(mut self) -> Self {

@@ -392,6 +392,8 @@ pub enum SampleAssetError {
     MalformedPcm,
     #[error("RIFF/WAVE structure is malformed")]
     MalformedWave,
+    #[error("SoundFont bank is malformed or contains no supported playable presets")]
+    MalformedSoundFont,
     #[error("catalog listing is malformed")]
     MalformedCatalog,
     #[error("asset is unavailable")]

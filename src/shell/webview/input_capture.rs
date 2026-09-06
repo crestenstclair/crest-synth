@@ -122,10 +122,10 @@ pub const fn window_key_from_macos_key_code(key_code: u16) -> WindowKey {
         30 => WindowKey::BracketRight,
         12 => WindowKey::Q,
         14 => WindowKey::E,
-        13 => WindowKey::W,
-        1 => WindowKey::S,
-        0 => WindowKey::A,
-        2 => WindowKey::D,
+        13 | 126 => WindowKey::W,
+        1 | 125 => WindowKey::S,
+        0 | 123 => WindowKey::A,
+        2 | 124 => WindowKey::D,
         40 => WindowKey::K,
         56 => WindowKey::Shift,
         36 => WindowKey::Return,
@@ -310,10 +310,10 @@ mod tests {
     use crate::shell::window_input::{WindowKey, ALL_WINDOW_KEYS};
 
     /// Every key in the normalized window vocabulary except `Other` is
-    /// reachable from exactly one macOS virtual key code, so the capture path
+    /// reachable from its exact macOS virtual key codes, so the capture path
     /// covers the full MIXER vocabulary the translator consumes.
     #[test]
-    fn every_normalized_key_is_reachable_from_one_macos_key_code() {
+    fn every_normalized_key_has_exactly_its_declared_macos_aliases() {
         for key in ALL_WINDOW_KEYS {
             if key == WindowKey::Other {
                 continue;
@@ -321,7 +321,18 @@ mod tests {
             let codes = (0_u16..=127)
                 .filter(|code| window_key_from_macos_key_code(*code) == key)
                 .count();
-            assert_eq!(codes, 1, "{key:?} must map from exactly one key code");
+            let expected = if matches!(
+                key,
+                WindowKey::W | WindowKey::S | WindowKey::A | WindowKey::D
+            ) {
+                2
+            } else {
+                1
+            };
+            assert_eq!(
+                codes, expected,
+                "{key:?} must have its exact physical aliases"
+            );
         }
     }
 
@@ -330,6 +341,34 @@ mod tests {
         // kVK_ANSI_G (5) and right Shift (60) are outside the vocabulary.
         assert_eq!(window_key_from_macos_key_code(5), WindowKey::Other);
         assert_eq!(window_key_from_macos_key_code(60), WindowKey::Other);
+    }
+
+    #[test]
+    fn actual_arrows_and_wasd_have_identical_page_and_focus_meanings() {
+        use crate::control::{Direction, SemanticAction};
+        use crate::shell::{KeyboardInputTranslator, WindowInput};
+        for (arrow, wasd, direction) in [
+            (126, 13, Direction::Up),
+            (125, 1, Direction::Down),
+            (123, 0, Direction::Left),
+            (124, 2, Direction::Right),
+        ] {
+            for code in [arrow, wasd] {
+                let key = window_key_from_macos_key_code(code);
+                let mut translator = KeyboardInputTranslator::new();
+                assert_eq!(
+                    translator.translate(WindowInput::key_down(key)),
+                    Some(SemanticAction::Navigate(direction))
+                );
+                translator.translate(WindowInput::key_up(key));
+                translator.translate(WindowInput::key_down(WindowKey::Shift));
+                assert_eq!(
+                    translator.translate(WindowInput::key_down(key)),
+                    Some(SemanticAction::NavigatePage(direction))
+                );
+                assert_eq!(translator.translate(WindowInput::key_down(key)), None);
+            }
+        }
     }
 
     #[test]

@@ -10,11 +10,11 @@ Defines the trailing empty Patch interaction and the atomic implicit-creation wo
 PATCH SHALL expose exactly one semantic empty position immediately after the final created Patch. The empty position SHALL be interaction state rather than a Patch, SHALL have no `PatchId`, MIDI subscription, route, voice, effect instance, parameter-snapshot entry, or prepared-graph slot, and SHALL be identified visibly as empty rather than active or persisted.
 
 #### Scenario: Navigate beyond the final Patch
-- **WHEN** Shift+Right or the equivalent semantic Patch-navigation action is accepted on the final created Patch
+- **WHEN** E or the equivalent semantic next-Patch action is accepted on the final created Patch
 - **THEN** PATCH SHALL move to the one trailing empty position with exactly one stable semantic focus and SHALL identify the position as empty
 
 #### Scenario: Return to the final created Patch
-- **WHEN** Shift+Left or the equivalent semantic Patch-navigation action is accepted on the trailing empty position
+- **WHEN** Q or the equivalent semantic previous-Patch action is accepted on the trailing empty position
 - **THEN** PATCH SHALL return to the final created Patch while retaining the nearest valid semantic control identity
 
 #### Scenario: Empty position is the non-wrapping endpoint
@@ -148,7 +148,7 @@ The empty position SHALL use stable semantic control and surface identities inde
 The active and persisted Patch collection SHALL remain bounded to the prepared graph capacity of 16 in this phase. The trailing empty position SHALL remain reachable when 16 Patches exist, but it SHALL show an explicit capacity-reached status, omit Patch-creating actions from its valid actions, and reject a stale or direct creation command without mutation. The system MUST NOT create an audio-inactive Patch, evict another Patch, page the active set, raise the callback bound implicitly, or serialize a seventeenth Patch.
 
 #### Scenario: Navigate to empty at capacity
-- **WHEN** Shift+Right is accepted on the sixteenth created Patch
+- **WHEN** E or the equivalent semantic next-Patch action is accepted on the sixteenth created Patch
 - **THEN** the trailing empty position SHALL open and visibly state that the 16-Patch active-audio capacity has been reached
 
 #### Scenario: Creation is refused at capacity

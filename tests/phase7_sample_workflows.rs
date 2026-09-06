@@ -304,7 +304,8 @@ fn catalog_refresh_preserves_stable_row_focus_and_reprojects_typed_metadata() {
     )
     .unwrap();
     state
-        .apply(AppEvent::SampleCatalogRefreshed {
+        .apply(AppEvent::FileCatalogRefreshed {
+            asset_kind: crest_synth::synth::AssetKind::Sample,
             folder: folder.clone(),
             listing: Ok(refreshed),
         })
@@ -325,7 +326,8 @@ fn catalog_refresh_preserves_stable_row_focus_and_reprojects_typed_metadata() {
     assert!(metadata.text().contains("MONO"));
 
     state
-        .apply(AppEvent::SampleCatalogRefreshed {
+        .apply(AppEvent::FileCatalogRefreshed {
+            asset_kind: crest_synth::synth::AssetKind::Sample,
             folder,
             listing: Err(crest_synth::synth::SampleAssetError::Unavailable),
         })
@@ -501,7 +503,9 @@ fn active_preview_stops_exactly_once_on_navigation_assignment_and_browser_cancel
     let (mut state, provider, patch_id) = fixture();
     let origin = open_browser(&mut state);
     let preview = activate_preview(&mut state, &provider, patch_id);
-    let cancelled = state.apply_semantic_action(SemanticAction::Return).unwrap();
+    let cancelled = state
+        .apply_semantic_action(SemanticAction::NavigatePage(Direction::Down))
+        .unwrap();
     assert_eq!(
         cancelled.audio_command(),
         Some(&AudioCommand::preview_stop(
@@ -978,7 +982,8 @@ fn in_app_file_import_failure_selection_and_stale_completion_are_correlated() {
             .unwrap();
         assert_eq!(state.interaction().active_surface(), SurfaceId::FileBrowser);
         state
-            .apply(AppEvent::SampleCatalogRefreshed {
+            .apply(AppEvent::FileCatalogRefreshed {
+                asset_kind: crest_synth::synth::AssetKind::Sample,
                 folder: FileBrowserFolderId::default(),
                 listing: Ok(external_file_listing()),
             })
@@ -991,6 +996,7 @@ fn in_app_file_import_failure_selection_and_stale_completion_are_correlated() {
             .apply_semantic_action(SemanticAction::Activate)
             .is_err());
         let selection = AssetImportResult {
+            descriptor: None,
             request,
             result: result.clone(),
         };
@@ -1058,7 +1064,8 @@ fn cloud_file_metadata_names_download_action_and_refresh_recovers_without_moving
     ] {
         let folder = FileBrowserFolderId::default();
         state
-            .apply(AppEvent::SampleCatalogRefreshed {
+            .apply(AppEvent::FileCatalogRefreshed {
+                asset_kind: crest_synth::synth::AssetKind::Sample,
                 folder: folder.clone(),
                 listing: Ok(FileBrowserListing::new(folder, rows).unwrap()),
             })
@@ -1141,7 +1148,8 @@ fn saved_sample_restore_recovers_waveform_and_edited_landmarks() {
         .apply_semantic_action(SemanticAction::Activate)
         .unwrap();
     state
-        .apply(AppEvent::SampleCatalogRefreshed {
+        .apply(AppEvent::FileCatalogRefreshed {
+            asset_kind: crest_synth::synth::AssetKind::Sample,
             folder: FileBrowserFolderId::default(),
             listing: Ok(external_file_listing()),
         })
@@ -1156,6 +1164,7 @@ fn saved_sample_restore_recovers_waveform_and_edited_landmarks() {
     assert!(state
         .apply(AppEvent::AssetImported(
             crest_synth::control::AssetImportResult {
+                descriptor: None,
                 request: obsolete_import,
                 result: Ok(AssetFileId::new("Alternate.wav").unwrap()),
             }

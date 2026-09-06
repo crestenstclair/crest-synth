@@ -529,7 +529,7 @@ impl DemoPresetFixture {
             crate::adapter::hidef_soundfont_capability::SOUNDFONT_PRESET_PARAMETER_ID,
         )
         .ok()?;
-        let descriptor = capabilities.descriptor(patch.instrument_config().capability_id())?;
+        let descriptor = capabilities.descriptor_for_config(patch.instrument_config())?;
         let spec = descriptor.parameter(&parameter_id)?;
         let source_choice_id = match patch.instrument_config().value(&parameter_id)? {
             ParameterValue::Choice(choice_id) => choice_id,
@@ -677,6 +677,11 @@ fn build_steps(
         &mut steps,
         DemoCheckpoint::new("surface.detail.openRelatedReturned"),
     );
+    for direction in [Direction::Down, Direction::Up] {
+        steps.push(DemoSceneStep::PassiveAction(SemanticAction::NavigatePage(
+            direction,
+        )));
+    }
     // The subordinate detail surface, entered and left through the same passive
     // semantic action boundary as the two persistent sides. Return restores the
     // exact origin, so the pair leaves the scene's focus where it found it and
@@ -708,7 +713,7 @@ fn build_steps(
 
     for patch in patches {
         let descriptor = capabilities
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .expect("validated MIDI Patch capability is installed");
         for message in midi_messages(patch.channel(), descriptor.supported_midi_kinds()) {
             steps.push(DemoSceneStep::MidiProbe(MidiProbe::accepted(
@@ -769,7 +774,7 @@ fn push_preset_selection_steps(
         SurfaceId::PatchDetail,
     )));
     let descriptor = capabilities
-        .descriptor(patch.instrument_config().capability_id())
+        .descriptor_for_config(patch.instrument_config())
         .expect("validated preset Patch capability is installed");
     let preset_index = descriptor
         .parameters()
@@ -1074,7 +1079,7 @@ fn push_patch_adsr_control_steps(
         SurfaceId::PatchDetail,
     )));
     let instrument = capabilities
-        .descriptor(patch.instrument_config().capability_id())
+        .descriptor_for_config(patch.instrument_config())
         .expect("validated envelope Patch capability is installed");
     for _ in instrument
         .parameters()
@@ -2398,6 +2403,10 @@ fn build_expected_coverage(
                 expected.push("event.selectPatch".to_owned());
                 expected.push(format!("direction.{}", direction_identifier(*direction)));
             }
+            crate::control::app_event::AppEventSurfaceDescriptor::NavigatePage { direction } => {
+                expected.push("event.navigatePage".to_owned());
+                expected.push(format!("direction.{}", direction_identifier(*direction)));
+            }
             crate::control::app_event::AppEventSurfaceDescriptor::Navigate { direction } => {
                 expected.push("event.navigate".to_owned());
                 expected.push(format!("direction.{}", direction_identifier(*direction)));
@@ -2463,7 +2472,7 @@ fn build_expected_coverage(
             crate::control::app_event::AppEventSurfaceDescriptor::SampleAssetLifecycleAdvanced {
                 ..
             } => {}
-            crate::control::app_event::AppEventSurfaceDescriptor::SampleCatalogRefreshed {
+            crate::control::app_event::AppEventSurfaceDescriptor::FileCatalogRefreshed {
                 ..
             } => {}
             crate::control::app_event::AppEventSurfaceDescriptor::EnginePreparationFailed {
@@ -2558,7 +2567,7 @@ fn build_expected_coverage(
 
     if let Some(patch) = patches.first() {
         let descriptor = capabilities
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .expect("validated coverage Patch capability is installed");
         expected.extend(
             PatchControlId::resolve(
@@ -2579,7 +2588,7 @@ fn build_expected_coverage(
 
     if let Some(patch) = patches.first() {
         let descriptor = capabilities
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .expect("validated MIDI coverage capability is installed");
         expected.extend(
             midi_messages(patch.channel(), descriptor.supported_midi_kinds())
@@ -2590,7 +2599,7 @@ fn build_expected_coverage(
 
     if let Some(patch) = patches.first() {
         let descriptor = capabilities
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .expect("validated coverage Patch capability is installed");
         let targets = patch
             .editable_targets(descriptor)
@@ -3135,7 +3144,7 @@ mod tests {
                 .map(|probe| probe.message().kind())
                 .collect::<Vec<_>>();
             let descriptor = registry()
-                .descriptor(patch.instrument_config().capability_id())
+                .descriptor_for_config(patch.instrument_config())
                 .expect("fixture capability is installed")
                 .clone();
             let expected = descriptor.supported_midi_kinds();
@@ -3164,7 +3173,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 49);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            51
+            55
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

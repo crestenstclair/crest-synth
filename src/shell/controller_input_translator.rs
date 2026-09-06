@@ -63,10 +63,11 @@ impl ControllerInput {
 
 /// Converts normalized controller edges to the closed semantic vocabulary.
 ///
-/// Only the Start hold edge needs transient adapter state. Canonical focus,
+/// Page gestures and Start holds retain only transient edge state. Canonical focus,
 /// mode, parameters, and preview state remain reducer-owned.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ControllerInputTranslator {
+    page_held: [bool; 4],
     start_held: bool,
     shift_start_held: bool,
 }
@@ -74,6 +75,7 @@ pub struct ControllerInputTranslator {
 impl ControllerInputTranslator {
     pub const fn new() -> Self {
         Self {
+            page_held: [false; 4],
             start_held: false,
             shift_start_held: false,
         }
@@ -82,6 +84,7 @@ impl ControllerInputTranslator {
     pub fn translate(&mut self, input: ControllerInput) -> Option<SemanticAction> {
         match input.kind() {
             ControllerInputKind::Disconnected => {
+                self.page_held = [false; 4];
                 self.shift_start_held = false;
                 self.start_held.then(|| {
                     self.start_held = false;
@@ -89,6 +92,9 @@ impl ControllerInputTranslator {
                 })
             }
             ControllerInputKind::Released => {
+                if let ControllerGesture::ShiftDirection(direction) = input.gesture() {
+                    self.page_held[direction as usize] = false;
+                }
                 if input.gesture() == ControllerGesture::Start && self.start_held {
                     self.start_held = false;
                     Some(SemanticAction::PreviewStop)
@@ -107,15 +113,9 @@ impl ControllerInputTranslator {
                 ControllerGesture::EditDirection(direction) => {
                     Some(SemanticAction::Adjust(direction))
                 }
-                ControllerGesture::ShiftDirection(Direction::Up) => {
-                    Some(SemanticAction::OpenRelated)
-                }
-                ControllerGesture::ShiftDirection(Direction::Down) => Some(SemanticAction::Return),
-                ControllerGesture::ShiftDirection(Direction::Left) => {
-                    Some(SemanticAction::SelectPatch(Direction::Left))
-                }
-                ControllerGesture::ShiftDirection(Direction::Right) => {
-                    Some(SemanticAction::SelectPatch(Direction::Right))
+                ControllerGesture::ShiftDirection(direction) => {
+                    (!core::mem::replace(&mut self.page_held[direction as usize], true))
+                        .then_some(SemanticAction::NavigatePage(direction))
                 }
                 ControllerGesture::Edit => Some(SemanticAction::Activate),
                 // Multi-select is reserved until its canonical action exists.
@@ -140,6 +140,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn each_page_gesture_requires_release_or_disconnect_before_another_edge() {
+        let mut translator = ControllerInputTranslator::new();
+        for direction in Direction::ALL {
+            let gesture = ControllerGesture::ShiftDirection(direction);
+            let press = ControllerInput::pressed(gesture);
+            assert_eq!(
+                translator.translate(press),
+                Some(SemanticAction::NavigatePage(direction))
+            );
+            assert_eq!(translator.translate(press), None);
+            assert_eq!(
+                translator.translate(ControllerInput::released(gesture)),
+                None
+            );
+            assert_eq!(
+                translator.translate(press),
+                Some(SemanticAction::NavigatePage(direction))
+            );
+            translator.translate(ControllerInput::disconnected());
+            assert_eq!(
+                translator.translate(press),
+                Some(SemanticAction::NavigatePage(direction))
+            );
+            translator.translate(ControllerInput::released(gesture));
+        }
+    }
+
+    #[test]
     fn controller_gestures_emit_the_same_semantic_vocabulary_as_keyboard_chords() {
         let mut translator = ControllerInputTranslator::new();
         for direction in Direction::ALL {
@@ -160,13 +188,13 @@ mod tests {
             translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
                 Direction::Up
             ))),
-            Some(SemanticAction::OpenRelated)
+            Some(SemanticAction::NavigatePage(Direction::Up))
         );
         assert_eq!(
             translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
                 Direction::Down
             ))),
-            Some(SemanticAction::Return)
+            Some(SemanticAction::NavigatePage(Direction::Down))
         );
         assert_eq!(
             translator.translate(ControllerInput::pressed(ControllerGesture::Edit)),
@@ -199,7 +227,7 @@ mod tests {
             translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
                 Direction::Down
             ))),
-            Some(SemanticAction::Return)
+            Some(SemanticAction::NavigatePage(Direction::Down))
         );
     }
 
@@ -247,7 +275,7 @@ mod tests {
             translator.translate(ControllerInput::pressed(ControllerGesture::ShiftDirection(
                 Direction::Down
             ))),
-            Some(SemanticAction::Return)
+            Some(SemanticAction::NavigatePage(Direction::Down))
         );
         assert_eq!(
             translator.translate(ControllerInput::pressed(ControllerGesture::Start)),

@@ -135,3 +135,20 @@ webview-tokens: cache-guard ## Regenerate webview-page/tokens.css from the autho
 
 clean: ## Remove Cargo build output
 	cargo clean
+
+.PHONY: test-soundfont-loading test-webview-soundfont-native
+
+test-soundfont-loading: cache-guard ## Prove SoundFont import, independent presets/audio, and exact session restore
+	cargo test --test soundfont_file_loading --test soundfont_preset_selection
+
+test-webview-soundfont-native: cache-guard ## Prove SoundFont file, preset, loading and failure pages in WKWebView
+	CREST_SOUNDFONT_EVIDENCE_DIR=/tmp/crest-soundfont-evidence cargo test --test soundfont_file_loading
+	CREST_SOUNDFONT_EVIDENCE_DIR=/tmp/crest-soundfont-evidence CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_DETAIL_WITNESS=1 cargo test --test webview_projection_shell -- --nocapture
+
+.PHONY: test-page-navigation test-webview-page-navigation-native
+test-page-navigation: cache-guard ## Run focused page-routing, identity, input, and audio checks
+	cargo test --test page_navigation
+	cargo test --lib page_
+
+test-webview-page-navigation-native: cache-guard ## Drive bounded Q/E and Shift-arrow navigation through AppKit and native paint
+	CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_PAGE_NAVIGATION_WITNESS=1 cargo test --test webview_projection_shell -- --nocapture

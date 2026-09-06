@@ -21,6 +21,14 @@ pub trait InstrumentPreparer: Send + Sync {
         0
     }
 
+    /// Resolves asset-dependent metadata on worker ownership before candidate validation.
+    fn asset_descriptor(
+        &self,
+        _config: &InstrumentConfig,
+    ) -> Result<Option<crate::synth::CapabilityDescriptor>, InstrumentPreparationError> {
+        Ok(None)
+    }
+
     /// Completely prepares one Patch for the declared device limits.
     fn prepare(
         &self,

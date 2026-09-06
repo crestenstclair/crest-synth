@@ -252,7 +252,7 @@ impl<'a> SemanticResolver<'a> {
                 let descriptor = self
                     .state
                     .capabilities()
-                    .descriptor(patch.instrument_config().capability_id())
+                    .descriptor_for_config(patch.instrument_config())
                     .ok_or(EventRejection::InvalidInstrumentConfig)?;
                 let spec = descriptor
                     .parameter(parameter_id)
@@ -396,7 +396,7 @@ impl<'a> SemanticResolver<'a> {
             .ok_or(EventRejection::NoPatchesInstalled)?;
         self.state
             .capabilities()
-            .descriptor(patch.instrument_config().capability_id())
+            .descriptor_for_config(patch.instrument_config())
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
         let mut paths = Vec::with_capacity(1 + crate::synth::effect_slot_id::MAX_EFFECT_SLOTS);
         if self
@@ -604,12 +604,12 @@ impl<'a> SemanticResolver<'a> {
         };
         let capability_id = subject.focus_capability_id();
         let paths = match subject {
-            PatchDetailSubject::Instrument { capability_id: id } => {
+            PatchDetailSubject::Instrument { capability_id: _ } => {
                 let config = patch.instrument_config();
                 let descriptor = self
                     .state
                     .capabilities()
-                    .descriptor(id)
+                    .descriptor_for_config(config)
                     .ok_or(EventRejection::InvalidInstrumentConfig)?;
                 let mut paths = descriptor
                     .parameters()
@@ -881,7 +881,7 @@ impl<'a> SemanticResolver<'a> {
                     {
                         ("Browse files", Some("Return"))
                     }
-                    _ => action_presentation(&action),
+                    _ => action_presentation(&action, self.state.interaction().active_surface()),
                 };
                 ValidAction::new(action, label, hint)
             })
@@ -994,7 +994,10 @@ fn ensure_unique(paths: &[FocusPath]) -> Result<(), EventRejection> {
     }
 }
 
-fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'static str>) {
+fn action_presentation(
+    action: &SemanticAction,
+    surface: SurfaceId,
+) -> (&'static str, Option<&'static str>) {
     use crate::control::{Direction, InteractionMode, TopLevelContext};
     match action {
         SemanticAction::SelectContext(TopLevelContext::Mixer) => ("Open MIXER", Some("1")),
@@ -1003,6 +1006,30 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         SemanticAction::SelectPatch(Direction::Right) => ("Next patch", Some("E")),
         SemanticAction::SelectPatch(Direction::Up)
         | SemanticAction::SelectPatch(Direction::Down) => ("Unavailable patch step", None),
+        SemanticAction::NavigatePage(direction) => {
+            let label = match (surface, direction) {
+                (SurfaceId::PatchMain, Direction::Up) => "Open highlighted Detail",
+                (SurfaceId::PatchMain, Direction::Down) => "Open MIXER",
+                (SurfaceId::PatchMain, Direction::Left) => "Open MIDI Settings",
+                (SurfaceId::MixerMain | SurfaceId::MixerInspector, Direction::Up)
+                | (SurfaceId::PatchDetail, Direction::Down) => "Return to Overview",
+                (SurfaceId::PatchDetail, Direction::Up) => "Browse files",
+                (SurfaceId::MidiDeviceSettings, Direction::Right | Direction::Down) => {
+                    "Return to performance"
+                }
+                (_, Direction::Down) => "Return / cancel",
+                (_, Direction::Left) => "Previous patch",
+                (_, Direction::Right) => "Next patch",
+                _ => "Open related",
+            };
+            let hint = match direction {
+                Direction::Up => "Shift+Up / Shift+W",
+                Direction::Down => "Shift+Down / Shift+S",
+                Direction::Left => "Shift+Left / Shift+A",
+                Direction::Right => "Shift+Right / Shift+D",
+            };
+            (label, Some(hint))
+        }
         SemanticAction::Navigate(Direction::Up) => ("Move up", Some("W")),
         SemanticAction::Navigate(Direction::Down) => ("Move down", Some("S")),
         SemanticAction::Navigate(Direction::Left) => ("Move left", Some("A")),
@@ -1021,8 +1048,10 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         | SemanticAction::SetInteractionMode(InteractionMode::MultiSelect) => {
             ("Unavailable mode", None)
         }
-        SemanticAction::OpenRelated => ("Open related", Some("Shift+W")),
-        SemanticAction::OpenMidiSettings => ("Open MIDI Devices", Some("Shift+Start")),
+        SemanticAction::OpenRelated => ("Open related", None),
+        SemanticAction::OpenMidiSettings => {
+            ("Open MIDI Devices", Some("Shift+Space / Shift+Start"))
+        }
         SemanticAction::Activate => ("Choose", Some("Return")),
         SemanticAction::PreviewStart => ("Preview", Some("hold Space")),
         SemanticAction::ToggleTestMidi => ("Toggle test MIDI", Some("T")),
@@ -1039,7 +1068,7 @@ fn action_presentation(action: &SemanticAction) -> (&'static str, Option<&'stati
         | SemanticAction::EnterSurface(SurfaceId::MidiDeviceSettings) => {
             ("Unavailable surface", None)
         }
-        SemanticAction::Return => ("Return", Some("Shift+S")),
+        SemanticAction::Return => ("Return", None),
     }
 }
 

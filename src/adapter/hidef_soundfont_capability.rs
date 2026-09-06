@@ -31,6 +31,21 @@ pub struct HiDefSoundFontCapability {
 
 impl HiDefSoundFontCapability {
     pub fn new(catalog: Arc<SoundFontPresetCatalog>) -> Result<Self, CapabilityError> {
+        Self::for_asset(
+            catalog,
+            AssetReference::new(AssetKind::SoundFont, HIDEF_SOUNDFONT_PATH)?,
+        )
+    }
+
+    pub fn for_asset(
+        catalog: Arc<SoundFontPresetCatalog>,
+        reference: AssetReference,
+    ) -> Result<Self, CapabilityError> {
+        if reference.kind() != AssetKind::SoundFont {
+            return Err(CapabilityError::WrongAssetKind(parameter_id(
+                SOUNDFONT_FILE_PARAMETER_ID,
+            )?));
+        }
         let preset_id = parameter_id(SOUNDFONT_PRESET_PARAMETER_ID)?;
         let choices = catalog
             .entries()
@@ -54,15 +69,13 @@ impl HiDefSoundFontCapability {
             None,
         )?;
         let file_id = parameter_id(SOUNDFONT_FILE_PARAMETER_ID)?;
-        let file = ParameterSpec::new(
+        let file = ParameterSpec::new_with_patch_interaction(
             file_id.clone(),
             "SoundFont File",
             ParameterKind::Asset,
             ParameterUpdate::Structural,
-            ParameterDefault::Asset(AssetReference::new(
-                AssetKind::SoundFont,
-                HIDEF_SOUNDFONT_PATH,
-            )?),
+            PatchInteraction::ReadOnly,
+            ParameterDefault::Asset(reference),
             None,
             Vec::new(),
             None,
@@ -87,7 +100,9 @@ impl HiDefSoundFontCapability {
             VoicePolicy::EngineManaged,
             HIDEF_SUPPORTED_MIDI_KINDS.to_vec(),
         )?;
-        Ok(Self { descriptor })
+        Ok(Self {
+            descriptor: descriptor.with_asset_scoped_choices(),
+        })
     }
 
     pub fn registry(&self) -> Result<CapabilityRegistry, CapabilityError> {

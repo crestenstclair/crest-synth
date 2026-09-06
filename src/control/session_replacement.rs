@@ -13,6 +13,7 @@ use crate::synth::Patch;
 #[derive(Clone, Debug, PartialEq)]
 pub struct SessionReplacementPayload {
     patches: Vec<Patch>,
+    asset_descriptors: Vec<crate::synth::CapabilityDescriptor>,
     mixer: MixerState,
     global: GlobalParameters,
     returns: BusReturnBank,
@@ -32,6 +33,7 @@ impl SessionReplacementPayload {
     ) -> Self {
         Self {
             patches: state.patches().to_vec(),
+            asset_descriptors: state.capabilities().asset_descriptors().to_vec(),
             mixer: *state.mixer(),
             global: *state.global(),
             returns: state.bus_returns().clone(),
@@ -58,6 +60,10 @@ impl SessionReplacementPayload {
             self.target_graph_revision,
             self.sample_visualizations,
         )
+    }
+
+    pub(crate) fn asset_descriptors(&self) -> &[crate::synth::CapabilityDescriptor] {
+        &self.asset_descriptors
     }
 
     pub const fn target_graph_revision(&self) -> GraphRevision {

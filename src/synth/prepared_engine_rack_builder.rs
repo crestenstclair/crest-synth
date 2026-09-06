@@ -76,7 +76,7 @@ impl PreparedEngineRackBuilder {
         for (index, patch) in patches.iter().enumerate() {
             let capability_id = patch.instrument_config().capability_id();
             let scalar_count = registry
-                .descriptor(capability_id)
+                .descriptor_for_config(patch.instrument_config())
                 .expect("validated Patch capability is installed")
                 .scalar_parameter_count();
             let Some(preparer) = preparers
