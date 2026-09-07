@@ -503,7 +503,7 @@ where
         }
         let record = event_log
             .records()
-            .last()
+            .back()
             .ok_or(LiveDemoError::MissingEventRecord)?
             .clone();
         verify_record(&step, &expected, &record)?;
@@ -2383,7 +2383,7 @@ where
             }
             let record = log
                 .records()
-                .last()
+                .back()
                 .ok_or(LiveDemoError::MissingEventRecord)?;
             if record.source() != EventSource::DemoScene
                 || record.outcome() != EventOutcome::Rejected
@@ -2489,7 +2489,7 @@ where
     }
     let record = log
         .records()
-        .last()
+        .back()
         .ok_or(LiveDemoError::MissingEventRecord)?;
     if record.source() != EventSource::DemoScene
         || record.outcome() != EventOutcome::Accepted

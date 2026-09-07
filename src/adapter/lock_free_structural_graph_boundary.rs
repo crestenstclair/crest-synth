@@ -6,7 +6,7 @@ use crate::real_time::structural_graph_boundary::{
     StructuralBoundaryFull, StructuralGraphBoundary,
 };
 use core::fmt;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicU64, Ordering};
 use rtrb::{Consumer, Producer, PushError, RingBuffer};
 use std::sync::Arc;
 
@@ -152,7 +152,13 @@ impl AtomicGraphHandoffStatus {
     }
 
     fn publish(&self, status: GraphHandoffStatus) {
-        self.version.fetch_add(1, Ordering::AcqRel);
+        // The unique audio handle is the only writer. A release fence before
+        // the payload pairs with the reader's acquire fence if it sees any
+        // field from this publication, forcing its version check to retry.
+        let version = self.version.load(Ordering::Relaxed);
+        self.version
+            .store(version.wrapping_add(1), Ordering::Relaxed);
+        fence(Ordering::Release);
         self.active_revision
             .store(raw_revision(status.active_revision()), Ordering::Relaxed);
         self.retired_revision
@@ -163,7 +169,8 @@ impl AtomicGraphHandoffStatus {
             .store(status.retirement_retries(), Ordering::Relaxed);
         self.incompatible_snapshots
             .store(status.incompatible_snapshots(), Ordering::Relaxed);
-        self.version.fetch_add(1, Ordering::Release);
+        self.version
+            .store(version.wrapping_add(2), Ordering::Release);
     }
 
     fn read(&self) -> GraphHandoffStatus {
@@ -181,7 +188,10 @@ impl AtomicGraphHandoffStatus {
                 self.retirement_retries.load(Ordering::Relaxed),
                 self.incompatible_snapshots.load(Ordering::Relaxed),
             );
-            let after = self.version.load(Ordering::Acquire);
+            // An acquire load alone does not order the preceding payload
+            // loads before this final version check on weakly ordered CPUs.
+            fence(Ordering::Acquire);
+            let after = self.version.load(Ordering::Relaxed);
             if before == after {
                 return status;
             }

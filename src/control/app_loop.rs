@@ -368,6 +368,9 @@ where
     current_text: TextProjection,
     current_graphical_shell: GraphicalShellProjection,
     current_parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
+    // During activation this can target the candidate while current_parameters
+    // still describes the source. MIDI changes only its generation, not values.
+    last_published_parameters: ParameterSnapshot,
     current_state_tree: StateTree,
     event_log: EventLog,
     engine_selection_runtime: Option<EngineSelectionRuntime>,
@@ -428,6 +431,7 @@ where
             current_text,
             current_graphical_shell,
             current_parameters: parameters,
+            last_published_parameters: parameters,
             current_state_tree,
             event_log,
             engine_selection_runtime: None,
@@ -1213,7 +1217,10 @@ where
         let engine_selection_effect = outcome.engine_selection_effect().cloned();
         let midi_device_effects = outcome.midi_device_effects().to_vec();
         let record_sequence = self.event_log.next_sequence();
-        let published_parameters = if parameters_published
+        let published_parameters = if midi_generation_only {
+            self.last_published_parameters
+                .with_generation(self.state.generation())
+        } else if parameters_published
             && self.state.engine_selection().kind() == EngineSelectionStatusKind::Activating
         {
             self.latest_pending_candidate_parameters()
@@ -1240,6 +1247,7 @@ where
 
         if parameters_published {
             self.boundary.publish_parameters(published_parameters);
+            self.last_published_parameters = published_parameters;
         }
         let boundary_full =
             audio_command.and_then(|command| self.boundary.push_command(command).err());
@@ -2116,7 +2124,7 @@ where
 
     /// Returns the immutable accepted Patch set used to prepare audio graphs.
     /// Returns the canonical eight-return bank owned by accepted state.
-    pub const fn bus_returns(&self) -> &crate::mixer::bus_return::BusReturnBank {
+    pub fn bus_returns(&self) -> &crate::mixer::bus_return::BusReturnBank {
         self.state.bus_returns()
     }
 
@@ -3136,7 +3144,7 @@ mod tests {
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
-        let ready_edit = app_loop.event_log_ref().records().last().unwrap();
+        let ready_edit = app_loop.event_log_ref().records().back().unwrap();
         assert_eq!(
             ready_edit.emitted_events(),
             &[
@@ -3233,7 +3241,7 @@ mod tests {
         app_loop
             .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
-        let failed_edit = app_loop.event_log_ref().records().last().unwrap();
+        let failed_edit = app_loop.event_log_ref().records().back().unwrap();
         assert!(failed_edit
             .emitted_events()
             .iter()
@@ -3293,31 +3301,73 @@ mod tests {
     }
 
     #[test]
-    fn one_way_control_loop_publishes_parameters_before_midi_command() {
+    fn midi_preserves_order_and_projection_generation_reusing_scalar_values() {
         let (mut app_loop, observations) = loop_with_observations();
-        let message = MidiMessage::try_new(
-            MidiChannel::new(0).unwrap(),
-            MidiMessageKind::NoteOn,
-            60,
-            100,
-        )
-        .unwrap();
-        let command = AudioCommand::patch_midi(PatchId::new(1).unwrap(), message);
-
-        let result = app_loop
-            .dispatch(AppEvent::Midi {
-                patch_id: PatchId::new(1).unwrap(),
-                message,
-            })
+        app_loop
+            .dispatch(AppEvent::Adjust(Direction::Right))
             .unwrap();
+        let before = observations.lock().unwrap().clone();
+        let generation = app_loop.current_parameters().generation();
+        let mut commands = Vec::new();
+        for (index, kind) in [
+            MidiMessageKind::NoteOn,
+            MidiMessageKind::PitchBend,
+            MidiMessageKind::NoteOff,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let message =
+                MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, 60, 100).unwrap();
+            commands.push(AudioCommand::patch_midi(PatchId::new(1).unwrap(), message));
+            let result = app_loop
+                .dispatch(AppEvent::Midi {
+                    patch_id: PatchId::new(1).unwrap(),
+                    message,
+                })
+                .unwrap();
+            let expected = generation + index as u64 + 1;
+            assert_eq!(result.accepted().generation(), expected);
+            assert_eq!(app_loop.current_parameters().generation(), expected);
+            assert_eq!(app_loop.current_graphical_shell().generation(), expected);
+            assert_eq!(app_loop.current_state_tree().generation(), expected);
+            assert!(result.audio_effects_published());
+            assert!(app_loop
+                .event_log_ref()
+                .records()
+                .back()
+                .unwrap()
+                .emitted_events()
+                .iter()
+                .any(|event| matches!(event, EmittedEvent::ParameterSnapshotPublished { .. })));
+        }
         let observations = observations.lock().unwrap();
-
+        assert_eq!(observations.parameters.len(), before.parameters.len() + 3);
+        for (index, parameters) in observations.parameters[before.parameters.len()..]
+            .iter()
+            .enumerate()
+        {
+            assert_eq!(
+                *parameters,
+                before
+                    .parameters
+                    .last()
+                    .unwrap()
+                    .with_generation(generation + index as u64 + 1)
+            );
+        }
         assert_eq!(
-            &observations.order[observations.order.len() - 2..],
-            &["parameters", "command"]
+            &observations.order[before.order.len()..],
+            &[
+                "parameters",
+                "command",
+                "parameters",
+                "command",
+                "parameters",
+                "command"
+            ]
         );
-        assert_eq!(observations.commands.last(), Some(&command));
-        assert!(result.audio_effects_published());
+        assert_eq!(&observations.commands[before.commands.len()..], commands);
     }
 
     #[test]
@@ -3708,7 +3758,7 @@ mod tests {
         assert!(app_loop
             .event_log_ref()
             .records()
-            .last()
+            .back()
             .unwrap()
             .emitted_events()
             .iter()
@@ -3725,6 +3775,26 @@ mod tests {
         );
 
         output.fill(0.0);
+        // A MIDI burst after scalar edits and navigation must preserve the
+        // exact candidate values and revision while advancing each generation.
+        for _ in 0..8 {
+            app_loop
+                .dispatch(AppEvent::Midi {
+                    patch_id,
+                    message: MidiMessage::try_new(
+                        MidiChannel::new(0).unwrap(),
+                        MidiMessageKind::PitchBend,
+                        0,
+                        64,
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
+            assert_eq!(
+                app_loop.last_published_parameters,
+                app_loop.latest_pending_candidate_parameters().unwrap()
+            );
+        }
         renderer.render(&mut output);
         assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
         assert_eq!(

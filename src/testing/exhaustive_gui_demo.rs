@@ -449,7 +449,7 @@ where
                 dropped: source_log.dropped_records(),
             });
         }
-        observe_records(source_log.records(), &mut run.observed);
+        observe_records(source_log.records().iter(), &mut run.observed);
         let probe_patch = self
             .app_loop
             .state()
@@ -1131,7 +1131,7 @@ where
                     record.emitted_events()[1],
                     EmittedEvent::ParameterSnapshotPublished { .. }
                 )
-                && records[index + 1..].iter().all(|record| {
+                && records.iter().skip(index + 1).all(|record| {
                     record.outcome() == EventOutcome::Accepted
                         && matches!(record.input(), EventInput::SetInteractionMode { .. })
                         && record.emitted_events().iter().all(|effect| {
@@ -1592,7 +1592,10 @@ fn coverage_group(identifier: &str) -> Option<DemoCoverageGroup> {
     }
 }
 
-fn observe_records(records: &[EventRecord], observed: &mut BTreeSet<String>) {
+fn observe_records<'a>(
+    records: impl Iterator<Item = &'a EventRecord>,
+    observed: &mut BTreeSet<String>,
+) {
     for record in records {
         match record.input() {
             EventInput::SelectContext { context } => {

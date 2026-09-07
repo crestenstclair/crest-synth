@@ -67,13 +67,13 @@ fmt-check: ## Verify Rust formatting without changing files
 	cargo fmt --all -- --check
 
 run: cache-guard ## Launch crest-synth with the clean canonical INIT session
-	cargo run --bin crest-synth
+	cargo run --release --bin crest-synth
 
 play: cache-guard ## Launch the user-playable canonical INIT session
-	cargo run --bin crest-synth
+	cargo run --release --bin crest-synth
 
 ui: cache-guard ## Launch the synth graphical window
-	cargo run --bin crest-synth
+	cargo run --release --bin crest-synth
 
 smoke: cache-guard ## Run the complete headless synth path
 	cargo run --bin crest-synth -- --smoke
@@ -152,3 +152,25 @@ test-page-navigation: cache-guard ## Run focused page-routing, identity, input, 
 
 test-webview-page-navigation-native: cache-guard ## Drive bounded Q/E and Shift-arrow navigation through AppKit and native paint
 	CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_PAGE_NAVIGATION_WITNESS=1 cargo test --test webview_projection_shell -- --nocapture
+
+.PHONY: test-braids-controls test-performance test-performance-native test-performance-physical performance-report performance-tools test-performance-runner
+test-braids-controls: cache-guard ## Prove keyboard editing of every Braids control through the live graph
+	cargo test --test braids_controls
+
+performance-tools: ## Install the pinned Samply profiler under target/performance/tools
+	python3 scripts/performance_suite.py install-profiler
+
+test-performance: cache-guard ## Run repeated headless scenes, stress gates, resource measurements, and Samply profiles
+	python3 scripts/performance_suite.py run $(PERFORMANCE_ARGS)
+
+performance-report: ## Rank bottlenecks from the latest performance run
+	python3 scripts/report_performance.py $(PERFORMANCE_REPORT_ARGS)
+
+test-performance-native: cache-guard ## Profile native WKWebView paint and meter witnesses (unlocked interactive session)
+	python3 scripts/performance_suite.py run --group native $(PERFORMANCE_ARGS)
+
+test-performance-physical: cache-guard ## Profile existing live scenes with a real window and audio device
+	python3 scripts/performance_suite.py run --group physical $(PERFORMANCE_ARGS)
+
+test-performance-runner: ## Prove suite failures, watchdogs, profile validation, and regression comparisons
+	python3 -m unittest discover -s scripts -p 'test_performance_suite.py' -v

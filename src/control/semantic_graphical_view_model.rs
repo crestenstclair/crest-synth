@@ -787,8 +787,6 @@ impl SemanticSurfaceViewModel {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SemanticGraphicalData {
-    generation: u64,
-    state_hash: String,
     context: TopLevelContext,
     active_surface: SurfaceId,
     focus_path: FocusPath,
@@ -839,6 +837,8 @@ impl std::error::Error for SemanticGraphicalViewModelError {}
 /// Immutable layout-neutral graphical contract shared by every host.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticGraphicalViewModel {
+    generation: u64,
+    state_hash: String,
     data: Arc<SemanticGraphicalData>,
 }
 
@@ -847,7 +847,20 @@ impl Serialize for SemanticGraphicalViewModel {
     where
         S: Serializer,
     {
-        self.data.as_ref().serialize(serializer)
+        #[derive(Serialize)]
+        #[serde(rename_all = "camelCase")]
+        struct Document<'a> {
+            generation: u64,
+            state_hash: &'a str,
+            #[serde(flatten)]
+            content: &'a SemanticGraphicalData,
+        }
+        Document {
+            generation: self.generation,
+            state_hash: &self.state_hash,
+            content: &self.data,
+        }
+        .serialize(serializer)
     }
 }
 
@@ -1155,11 +1168,11 @@ impl SemanticGraphicalViewModel {
     }
 
     pub fn generation(&self) -> u64 {
-        self.data.generation
+        self.generation
     }
 
     pub fn state_hash(&self) -> &str {
-        &self.data.state_hash
+        &self.state_hash
     }
 
     pub fn context(&self) -> TopLevelContext {
@@ -1232,11 +1245,10 @@ impl SemanticGraphicalViewModel {
     }
 
     pub(crate) fn with_generation(&self, generation: u64, state_hash: String) -> Self {
-        let mut data = self.data.as_ref().clone();
-        data.generation = generation;
-        data.state_hash = state_hash;
         Self {
-            data: Arc::new(data),
+            generation,
+            state_hash,
+            data: Arc::clone(&self.data),
         }
     }
 
@@ -1336,8 +1348,6 @@ impl SemanticGraphicalViewModel {
         };
         let surfaces = fixture_surfaces(context, &focus_path, main_path, side_path);
         let data = SemanticGraphicalData {
-            generation,
-            state_hash,
             context,
             active_surface: focus_path.surface(),
             focus_path,
@@ -1357,6 +1367,8 @@ impl SemanticGraphicalViewModel {
         };
         debug_assert!(validate_data(&data).is_ok());
         Self {
+            generation,
+            state_hash,
             data: Arc::new(data),
         }
     }
@@ -1387,8 +1399,6 @@ impl SemanticGraphicalViewModel {
         project_control_intent(state, &resolver, &mut surfaces)?;
         let valid_actions = resolver.valid_actions();
         let data = SemanticGraphicalData {
-            generation: state.generation(),
-            state_hash: state_hash.to_owned(),
             context: state.context(),
             active_surface: state.interaction().active_surface(),
             focus_path,
@@ -1402,6 +1412,8 @@ impl SemanticGraphicalViewModel {
         };
         validate_data(&data)?;
         Ok(Self {
+            generation: state.generation(),
+            state_hash: state_hash.to_owned(),
             data: Arc::new(data),
         })
     }

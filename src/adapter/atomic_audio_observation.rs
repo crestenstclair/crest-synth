@@ -4,7 +4,7 @@ use crate::real_time::audio_observation::{
     AudioObservation, CallbackAudioObservation, ControlAudioObservation,
 };
 use crate::real_time::audio_observation_snapshot::AudioObservationSnapshot;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{fence, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// Prepared coherent latest-value storage for callback audio observations.
@@ -174,7 +174,13 @@ impl AtomicObservationFields {
     }
 
     fn publish(&self, snapshot: AudioObservationSnapshot) {
-        self.version.fetch_add(1, Ordering::AcqRel);
+        // Only the unique callback handle publishes. Pair this release fence
+        // with the reader's acquire fence so partially observed publications
+        // cannot pass the version check, including on weakly ordered CPUs.
+        let version = self.version.load(Ordering::Relaxed);
+        self.version
+            .store(version.wrapping_add(1), Ordering::Relaxed);
+        fence(Ordering::Release);
         self.sequence.store(snapshot.sequence(), Ordering::Relaxed);
         self.rendered_blocks
             .store(snapshot.rendered_blocks(), Ordering::Relaxed);
@@ -265,7 +271,8 @@ impl AtomicObservationFields {
             .store(snapshot.non_finite_samples(), Ordering::Relaxed);
         self.clipped_samples
             .store(snapshot.clipped_samples(), Ordering::Relaxed);
-        self.version.fetch_add(1, Ordering::Release);
+        self.version
+            .store(version.wrapping_add(2), Ordering::Release);
     }
 
     fn read(&self) -> AudioObservationSnapshot {
@@ -339,7 +346,8 @@ impl AtomicObservationFields {
                         f32::from_bits(self.preview_playhead.load(Ordering::Relaxed)),
                     ),
                 );
-            let after = self.version.load(Ordering::Acquire);
+            fence(Ordering::Acquire);
+            let after = self.version.load(Ordering::Relaxed);
             if before == after {
                 return snapshot;
             }

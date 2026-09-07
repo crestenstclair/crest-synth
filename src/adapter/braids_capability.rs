@@ -3,7 +3,7 @@ use crate::synth::capability_id::CapabilityId;
 use crate::synth::instrument_capability::{
     AssetAssignment, CapabilityDescriptor, CapabilityError, CapabilitySection, InstrumentConfig,
     ParameterAssignment, ParameterChoice, ParameterDefault, ParameterKind, ParameterRange,
-    ParameterSpec, ParameterUpdate, ParameterValue, VoicePolicy,
+    ParameterSpec, ParameterUpdate, ParameterValue, PatchInteraction, VoicePolicy,
 };
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::parameter_id::ParameterId;
@@ -229,11 +229,12 @@ pub struct BraidsCapability {
 
 impl BraidsCapability {
     pub fn new() -> Result<Self, CapabilityError> {
-        let model = ParameterSpec::new(
+        let model = ParameterSpec::new_with_patch_interaction(
             parameter_id(BRAIDS_MODEL_PARAMETER_ID)?,
             "Model",
             ParameterKind::Choice,
             ParameterUpdate::Scalar,
+            PatchInteraction::ScalarEdit,
             ParameterDefault::Value(ParameterValue::Choice(BRAIDS_MODELS[0].id.to_owned())),
             None,
             BRAIDS_MODELS
@@ -309,11 +310,12 @@ fn continuous_parameter(
     label: &str,
     default: f64,
 ) -> Result<ParameterSpec, CapabilityError> {
-    ParameterSpec::new(
+    ParameterSpec::new_with_patch_interaction(
         parameter_id(id)?,
         label,
         ParameterKind::Continuous,
         ParameterUpdate::Scalar,
+        PatchInteraction::ScalarEdit,
         ParameterDefault::Value(ParameterValue::continuous(default)?),
         Some(ParameterRange::new(0.0, 1.0)?),
         Vec::new(),
@@ -369,6 +371,9 @@ mod tests {
         assert!(parameters
             .iter()
             .all(|parameter| parameter.update() == ParameterUpdate::Scalar));
+        assert!(parameters
+            .iter()
+            .all(|parameter| parameter.patch_interaction() == PatchInteraction::ScalarEdit));
         assert!(parameters[1..].iter().all(|parameter| {
             parameter.kind() == ParameterKind::Continuous
                 && parameter.range() == Some(ParameterRange::new(0.0, 1.0).unwrap())

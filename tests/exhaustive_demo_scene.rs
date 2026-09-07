@@ -99,7 +99,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
     );
     // The eleven WP-era reducer events, the five WP06 occupancy lifecycle and
     // topology outcomes, SelectPatch, and Phase 7's OpenRelated, MIDI Settings,
-    // Activate, PreviewStart, and PreviewStop — every current
+    // Activate, PreviewStart, PreviewStop, and NavigatePage — every current
     // player/worker-reachable event kind declared by the exhaustive scene.
     assert_eq!(
         report
@@ -107,7 +107,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .group(DemoCoverageGroup::Events)
             .exercised()
             .len(),
-        22
+        23
     );
     assert_eq!(
         report
@@ -322,8 +322,11 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
     for (index, record) in report.event_log().records().iter().enumerate() {
         if record.rejection() == Some(EventRejection::ParameterAtBoundary) {
             assert!(
-                report.event_log().records()[index + 1..]
+                report
+                    .event_log()
+                    .records()
                     .iter()
+                    .skip(index + 1)
                     .any(|later| {
                         later.outcome() == EventOutcome::Accepted
                             && matches!(

@@ -461,45 +461,27 @@ impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
             let increment = region.sample_rate / f64::from(self.sample_rate)
                 * 2.0_f64.powf(pitch_change / 12.0);
             let voice_gain = voice.velocity * region.amplitude * expression;
-            for frame in 0..frame_count {
-                let looping = match region.loop_mode {
-                    PreparedLoopMode::NoLoop => false,
-                    PreparedLoopMode::Continuous => true,
-                    PreparedLoopMode::UntilNoteOff => !voice.envelope.is_releasing(),
-                };
-                if looping && voice.position >= region.loop_end as f64 {
-                    let loop_length = (region.loop_end - region.loop_start) as f64;
-                    voice.position = region.loop_start as f64
-                        + (voice.position - region.loop_start as f64).rem_euclid(loop_length);
-                }
-                let index = voice.position.floor() as usize;
-                if index >= region.sample_end {
-                    voice.clear();
-                    break;
-                }
-                let next = if looping && index + 1 >= region.loop_end {
-                    region.loop_start
-                } else {
-                    index + 1
-                };
-                let (Some(first), Some(second)) = (wave_data.get(index), wave_data.get(next))
-                else {
-                    voice.clear();
-                    break;
-                };
-                let fraction = (voice.position - index as f64) as f32;
-                let sample = (f32::from(*first)
-                    + (f32::from(*second) - f32::from(*first)) * fraction)
-                    / 32_768.0;
-                let envelope_gain = voice.envelope.next_gain(self.sample_rate);
-                let sample = bounded_sample(sample * voice_gain * envelope_gain);
-                output[frame * 2] += sample * region.left_gain;
-                output[frame * 2 + 1] += sample * region.right_gain;
-                voice.position += increment;
-                if voice.envelope.is_idle() {
-                    voice.clear();
-                    break;
-                }
+            let output = &mut output[..frame_count * 2];
+            if voice.envelope.stage() == crate::synth::VoiceEnvelopeStage::Sustain {
+                render_voice::<true>(
+                    voice,
+                    region,
+                    wave_data,
+                    output,
+                    self.sample_rate,
+                    increment,
+                    voice_gain,
+                );
+            } else {
+                render_voice::<false>(
+                    voice,
+                    region,
+                    wave_data,
+                    output,
+                    self.sample_rate,
+                    increment,
+                    voice_gain,
+                );
             }
         }
     }
@@ -532,6 +514,62 @@ impl<const VOICES: usize> SoundFontVoiceEngine<VOICES> {
     }
 }
 
+// Sustain is constant until a discrete note-off is dispatched. Specializing
+// that case removes envelope stage transitions from the sample loop while the
+// general path retains exact Attack/Decay/Release behavior.
+fn render_voice<const SUSTAIN: bool>(
+    voice: &mut SoundFontSampleVoice,
+    region: PreparedSampleRegion,
+    wave_data: &[i16],
+    output: &mut [f32],
+    sample_rate: f32,
+    increment: f64,
+    voice_gain: f32,
+) {
+    let looping = match region.loop_mode {
+        PreparedLoopMode::NoLoop => false,
+        PreparedLoopMode::Continuous => true,
+        PreparedLoopMode::UntilNoteOff => !voice.envelope.is_releasing(),
+    };
+    for frame in output.chunks_exact_mut(2) {
+        if looping && voice.position >= region.loop_end as f64 {
+            let loop_length = (region.loop_end - region.loop_start) as f64;
+            voice.position = region.loop_start as f64
+                + (voice.position - region.loop_start as f64).rem_euclid(loop_length);
+        }
+        let index = voice.position.floor() as usize;
+        if index >= region.sample_end {
+            voice.clear();
+            break;
+        }
+        let next = if looping && index + 1 >= region.loop_end {
+            region.loop_start
+        } else {
+            index + 1
+        };
+        let (Some(first), Some(second)) = (wave_data.get(index), wave_data.get(next)) else {
+            voice.clear();
+            break;
+        };
+        let fraction = (voice.position - index as f64) as f32;
+        let sample =
+            (f32::from(*first) + (f32::from(*second) - f32::from(*first)) * fraction) / 32_768.0;
+        let envelope_gain = if SUSTAIN {
+            voice.envelope.level()
+        } else {
+            voice.envelope.next_gain(sample_rate)
+        };
+        let sample = bounded_sample(sample * voice_gain * envelope_gain);
+        frame[0] += sample * region.left_gain;
+        frame[1] += sample * region.right_gain;
+        voice.position += increment;
+        if !SUSTAIN && voice.envelope.is_idle() {
+            voice.clear();
+            break;
+        }
+    }
+}
+
 impl<const VOICES: usize> Drop for SoundFontVoiceEngine<VOICES> {
     fn drop(&mut self) {
         ENGINES_DESTROYED.fetch_add(1, Ordering::Relaxed);
@@ -544,5 +582,81 @@ fn bounded_sample(sample: f32) -> f32 {
         sample.clamp(-1.0, 1.0)
     } else {
         0.0
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sustain_render_matches_general_envelope_path_at_fractional_loop_and_end_boundaries() {
+        let wave_data = [0, 8_000, 16_000, -4_000, -12_000, 4_000, 20_000, 0];
+        for loop_mode in [
+            PreparedLoopMode::NoLoop,
+            PreparedLoopMode::Continuous,
+            PreparedLoopMode::UntilNoteOff,
+        ] {
+            let region = PreparedSampleRegion {
+                key_start: 0,
+                key_end: 127,
+                velocity_start: 0,
+                velocity_end: 127,
+                sample_start: 0,
+                sample_end: 8,
+                loop_start: 2,
+                loop_end: 6,
+                loop_mode,
+                sample_rate: 48_000.0,
+                root_key: 60.0,
+                coarse_tune: 0,
+                fine_tune: 0,
+                scale_tuning: 100,
+                exclusive_class: 0,
+                amplitude: 1.0,
+                left_gain: 0.75,
+                right_gain: 0.5,
+            };
+            for gain in [0.0, 0.5, 1.0] {
+                for increment in [0.5, 1.0, 2.75] {
+                    for position in [0.0, 5.5, 7.0] {
+                        let mut specialized = SoundFontSampleVoice {
+                            note: Some(60),
+                            region: Some(region),
+                            position,
+                            velocity: 0.9,
+                            age: 1,
+                            envelope: VoiceEnvelopeState::IDLE,
+                        };
+                        specialized
+                            .envelope
+                            .note_on(VoiceEnvelope::new(0.0, 0.0, gain, 5.0).unwrap(), 48_000.0);
+                        let mut general = specialized;
+                        let mut actual = [0.125; 128];
+                        let mut expected = actual;
+                        render_voice::<true>(
+                            &mut specialized,
+                            region,
+                            &wave_data,
+                            &mut actual,
+                            48_000.0,
+                            increment,
+                            0.9,
+                        );
+                        render_voice::<false>(
+                            &mut general,
+                            region,
+                            &wave_data,
+                            &mut expected,
+                            48_000.0,
+                            increment,
+                            0.9,
+                        );
+                        assert_eq!(actual, expected);
+                        assert_eq!(specialized, general);
+                    }
+                }
+            }
+        }
     }
 }

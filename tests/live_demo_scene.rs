@@ -628,7 +628,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         report
             .event_log()
             .records()
-            .last()
+            .back()
             .unwrap()
             .generation_after()
     );

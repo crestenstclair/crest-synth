@@ -501,13 +501,13 @@ fn navigation_journey_preserves_saved_content_parameters_graph_and_sustained_aud
         let log = app.event_log();
         assert!(!log
             .records()
-            .last()
+            .back()
             .unwrap()
             .input()
             .publishes_parameters_on_acceptance());
         assert!(!log
             .records()
-            .last()
+            .back()
             .unwrap()
             .emitted_events()
             .iter()

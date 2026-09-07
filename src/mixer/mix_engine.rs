@@ -160,6 +160,7 @@ impl MixEngine {
         }
 
         // Patch trim and many-to-one destination accumulation.
+        let mut occupied_tracks = [false; MixerTrackId::COUNT];
         for (index, patch) in parameters.patches().iter().enumerate() {
             let Some(patch_id) = patch.patch_id() else {
                 output.fill(0.0);
@@ -171,6 +172,7 @@ impl MixEngine {
             };
             let audio = stem.samples();
             let patch_output = patch.output();
+            occupied_tracks[patch_output.track_id().index()] = true;
             let trim = db_to_linear(patch_output.trim_gain_db());
             let track = &mut self.track_scratch[patch_output.track_id().index()];
             for sample_index in 0..sample_count {
@@ -188,6 +190,11 @@ impl MixEngine {
         // diagnosable), then the mute/solo gate, and only for audible tracks
         // the dry sum and the eight indexed sends.
         for track_id in MixerTrackId::ALL {
+            // No Patch stem can feed this track. Its scratch and meter are
+            // already zero; return tails are still processed below.
+            if !occupied_tracks[track_id.index()] {
+                continue;
+            }
             let track_parameters = *parameters.mixer_track(track_id);
             let gain = db_to_linear(track_parameters.level_db());
             let (left_pan, right_pan) = pan_gains(track_parameters.pan());
@@ -220,15 +227,25 @@ impl MixEngine {
                 if audible {
                     output[left] += mixed_left;
                     output[right] += mixed_right;
-                    for (bus_input, send) in self.bus_inputs.iter_mut().zip(sends) {
-                        bus_input[left] += mixed_left * send;
-                        bus_input[right] += mixed_right * send;
-                    }
                 }
             }
             track_meters[track_id.index()] =
                 TrackMeter::new(left_peak, right_peak, rms(energy, sample_count))
                     .unwrap_or_default();
+            if audible {
+                // Iterate each nonzero send once per block. Sample and track
+                // accumulation order stay identical to the interleaved loop.
+                for (bus_input, send) in self.bus_inputs.iter_mut().zip(sends) {
+                    if send != 0.0 {
+                        for (destination, sample) in bus_input[..sample_count]
+                            .iter_mut()
+                            .zip(&track[..sample_count])
+                        {
+                            *destination += sample * send;
+                        }
+                    }
+                }
+            }
         }
 
         self.dry_output[..sample_count].copy_from_slice(&output[..sample_count]);

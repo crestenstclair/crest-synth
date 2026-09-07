@@ -1464,8 +1464,8 @@ impl LiveEventLogSummary {
     pub const SCHEMA_VERSION: u32 = 3;
 
     fn from_event_log(event_log: &EventLog, active_graph_revision: GraphRevision) -> Self {
-        let first = event_log.records().first();
-        let last = event_log.records().last();
+        let first = event_log.records().front();
+        let last = event_log.records().back();
         Self {
             schema_version: Self::SCHEMA_VERSION,
             event_log_schema_version: event_log.schema_version(),
@@ -1510,7 +1510,7 @@ impl LiveDemoReport {
         }
         let endpoint = event_log
             .records()
-            .last()
+            .back()
             .ok_or(LiveDemoReportError::EmptyEventLog)?;
         if endpoint.generation_after() != state_tree.generation()
             || endpoint.parameter_generation() != state_tree.generation()

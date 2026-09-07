@@ -582,14 +582,26 @@ impl ParameterSpec {
         if self.unit.as_ref().is_some_and(String::is_empty) {
             return Err(CapabilityError::EmptyUnit);
         }
-        for (index, choice) in self.choices.iter().enumerate() {
-            if self.choices[..index]
+        if self.choices.len() > 1 {
+            // Large asset catalogs must not make every config validation
+            // quadratic. Keep declaration ordinals so the first repeated
+            // choice still determines the same typed error as the schema walk.
+            let mut choice_ids = self
+                .choices
                 .iter()
-                .any(|prior| prior.id == choice.id)
+                .enumerate()
+                .map(|(index, choice)| (choice.id.as_str(), index))
+                .collect::<Vec<_>>();
+            choice_ids.sort_unstable();
+            if let Some((choice_id, _)) = choice_ids
+                .windows(2)
+                .filter(|pair| pair[0].0 == pair[1].0)
+                .map(|pair| pair[1])
+                .min_by_key(|(_, index)| *index)
             {
                 return Err(CapabilityError::DuplicateChoice {
                     parameter_id: self.id.clone(),
-                    choice_id: choice.id.clone(),
+                    choice_id: choice_id.to_owned(),
                 });
             }
         }
@@ -2015,6 +2027,33 @@ mod tests {
             ),
             Err(CapabilityError::MissingAssetRequirement(_))
         ));
+    }
+
+    #[test]
+    fn catalog_validation_preserves_declaration_order_and_first_duplicate_error() {
+        let mut spec = scalar_parameter(
+            "test.catalog",
+            ParameterKind::Choice,
+            ParameterValue::Choice("choice.one".into()),
+        );
+        spec.choices.extend((0..1024).rev().map(|index| {
+            ParameterChoice::new(format!("preset.{index}"), format!("Preset {index}")).unwrap()
+        }));
+        let declared = spec.choices.clone();
+        spec.validate_shape().unwrap();
+        assert_eq!(spec.choices, declared);
+        // The earliest duplicate is not the lexicographically first ID.
+        spec.choices
+            .push(ParameterChoice::new("preset.8", "Duplicate 8").unwrap());
+        spec.choices
+            .push(ParameterChoice::new("choice.one", "Duplicate one").unwrap());
+        assert_eq!(
+            spec.validate_shape(),
+            Err(CapabilityError::DuplicateChoice {
+                parameter_id: id("test.catalog"),
+                choice_id: "preset.8".into(),
+            })
+        );
     }
 
     #[test]

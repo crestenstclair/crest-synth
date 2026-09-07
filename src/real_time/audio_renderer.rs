@@ -11,6 +11,12 @@ use crate::real_time::prepared_engine_rack::RackDispatchError;
 use crate::real_time::prepared_graph::PreparedGraph;
 use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
 use crate::real_time::PatchEffectObservation;
+
+/// Default ordered-command budget per audio block. A producer can
+/// refill an SPSC queue while it is drained, so queue capacity alone does not
+/// bound callback work. Excess commands remain queued in order, including
+/// note-offs and the reserved all-notes-off recovery command.
+const DEFAULT_AUDIO_COMMANDS_PER_BLOCK: usize = 1024;
 /// Hard-real-time owner of one active complete prepared graph.
 ///
 /// Construction receives every engine, effect, stem, route, and scratch owner
@@ -27,6 +33,7 @@ pub struct AudioRenderer<Boundary, Structural, Observation = DiscardAudioObserva
     active_notes: ActiveNoteObservation,
     rendered_blocks: u64,
     rendered_frames: u64,
+    max_commands_per_block: usize,
     commands_consumed: u64,
     routing_failures: u64,
     voice_limit_refusals: u64,
@@ -80,11 +87,20 @@ where
             active_notes: ActiveNoteObservation::new(),
             rendered_blocks: 0,
             rendered_frames: 0,
+            max_commands_per_block: DEFAULT_AUDIO_COMMANDS_PER_BLOCK,
             commands_consumed: 0,
             routing_failures: 0,
             voice_limit_refusals: 0,
             last_unknown_patch_id: None,
         }
+    }
+
+    /// Sets the per-block event budget on the control side before device start.
+    /// Tune against measured block deadlines; excess events stay queued in order.
+    #[must_use]
+    pub fn with_command_budget(mut self, commands: core::num::NonZeroUsize) -> Self {
+        self.max_commands_per_block = commands.get();
+        self
     }
 
     /// Applies structural ownership only at block start, drains ready commands,
@@ -122,7 +138,10 @@ where
         }
         self.structural.publish_status_on_audio(self.handoff_status);
 
-        while let Some(command) = self.boundary.pop_command() {
+        for _ in 0..self.max_commands_per_block {
+            let Some(command) = self.boundary.pop_command() else {
+                break;
+            };
             self.commands_consumed = self.commands_consumed.saturating_add(1);
             match command {
                 AudioCommand::PatchMidi { patch_id, message } => {
@@ -618,6 +637,66 @@ mod tests {
         next_command: usize,
         latest: ParameterSnapshot,
         parameter_reads: usize,
+    }
+
+    #[test]
+    fn command_flood_is_bounded_and_keeps_ordered_recovery_for_the_next_block() {
+        use super::DEFAULT_AUDIO_COMMANDS_PER_BLOCK;
+        struct Flood {
+            popped: usize,
+            budget: usize,
+            parameters: ParameterSnapshot,
+        }
+        impl AudioThreadBoundary for Flood {
+            fn pop_command(&mut self) -> Option<AudioCommand> {
+                let command = if self.popped < self.budget * 2 {
+                    AudioCommand::patch_midi(
+                        PatchId::new(1).unwrap(),
+                        MidiMessage::try_new(
+                            MidiChannel::new(0).unwrap(),
+                            MidiMessageKind::ControlChange,
+                            11,
+                            100,
+                        )
+                        .unwrap(),
+                    )
+                } else if self.popped == self.budget * 2 {
+                    AudioCommand::all_notes_off()
+                } else {
+                    return None;
+                };
+                self.popped += 1;
+                Some(command)
+            }
+            fn read_latest_parameters(&mut self) -> ParameterSnapshot {
+                self.parameters
+            }
+        }
+        for budget in [7, DEFAULT_AUDIO_COMMANDS_PER_BLOCK] {
+            let fixture = Fixture::new();
+            let graph = fixture.graph(1, 1);
+            let boundary = Flood {
+                popped: 0,
+                budget,
+                parameters: fixture.parameters(1, 1),
+            };
+            let mut renderer = AudioRenderer::new(boundary, TestStructural::new(), graph)
+                .with_command_budget(core::num::NonZeroUsize::new(budget).unwrap());
+            let mut output = [0.0; 8];
+            for block in 1..=2 {
+                begin_memory_count();
+                renderer.render(&mut output);
+                let memory = finish_memory_count();
+                assert_eq!(memory, (0, 0));
+                assert_eq!(renderer.commands_consumed, (budget * block) as u64);
+                assert!(output.iter().any(|sample| *sample != 0.0));
+            }
+            renderer.render(&mut output);
+            assert_eq!(renderer.commands_consumed, (budget * 2 + 1) as u64);
+            assert_eq!(fixture.first_dispatches.load(Ordering::Relaxed), 0);
+            renderer.render(&mut output);
+            assert_eq!(renderer.commands_consumed, (budget * 2 + 1) as u64);
+        }
     }
 
     impl AudioThreadBoundary for TestBoundary {

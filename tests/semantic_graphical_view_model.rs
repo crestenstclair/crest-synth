@@ -439,7 +439,7 @@ fn production_semantic_graphical_view_model_is_exact_passive_and_audio_neutral()
         publications_before
     );
     assert!(evidence.lock().unwrap().commands.is_empty());
-    let record = app_loop.event_log_ref().records().last().unwrap();
+    let record = app_loop.event_log_ref().records().back().unwrap();
     assert_eq!(record.source(), EventSource::Keyboard);
     assert!(matches!(record.input(), EventInput::Navigate { .. }));
     assert!(record

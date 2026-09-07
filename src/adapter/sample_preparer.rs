@@ -610,35 +610,27 @@ impl PreparedInstrument for PreparedSampleInstrument {
                 voice.clear();
                 continue;
             }
-            for output_frame in 0..frame_count {
-                if voice.position >= config.landmarks.end as f64 {
-                    if config.landmarks.loop_mode == SampleLoopMode::Forward {
-                        voice.position = wrapped_position(voice.position, config.landmarks);
-                    } else {
-                        voice.clear();
-                        break;
-                    }
-                }
-                if config.landmarks.loop_mode == SampleLoopMode::Forward
-                    && voice.position >= config.landmarks.loop_end as f64
-                {
-                    voice.position = wrapped_position(voice.position, config.landmarks);
-                }
-                let (left, right) =
-                    interpolated_stereo(&self.pcm, voice.position, config.landmarks);
-                let gain = voice.envelope.next_gain(self.sample_rate)
-                    * voice.velocity
-                    * self.expression
-                    * self.pressure;
-                let index = output_frame * 2;
-                interleaved_stereo[index] = bounded_sample(interleaved_stereo[index] + left * gain);
-                interleaved_stereo[index + 1] =
-                    bounded_sample(interleaved_stereo[index + 1] + right * gain);
-                if voice.envelope.is_idle() {
-                    voice.clear();
-                    break;
-                }
-                voice.position += ratio;
+            let output = &mut interleaved_stereo[..frame_count * 2];
+            if voice.envelope.stage() == crate::synth::VoiceEnvelopeStage::Sustain {
+                render_sample_voice::<true>(
+                    voice,
+                    &self.pcm,
+                    output,
+                    config,
+                    ratio,
+                    self.sample_rate,
+                    (self.expression, self.pressure),
+                );
+            } else {
+                render_sample_voice::<false>(
+                    voice,
+                    &self.pcm,
+                    output,
+                    config,
+                    ratio,
+                    self.sample_rate,
+                    (self.expression, self.pressure),
+                );
             }
         }
     }
@@ -653,6 +645,49 @@ impl PreparedInstrument for PreparedSampleInstrument {
 
     fn prepared_sample_visualization(&self) -> Option<&PreparedSampleVisualization> {
         Some(&self.visualization)
+    }
+}
+
+// MIDI is dispatched before each render block, so a sustaining voice has one
+// constant envelope gain throughout this call. Dynamic stages keep advancing
+// sample by sample through the same PCM/loop path.
+fn render_sample_voice<const SUSTAIN: bool>(
+    voice: &mut SampleVoice,
+    pcm: &PreparedSamplePcm,
+    output: &mut [f32],
+    config: SampleRtConfig,
+    ratio: f64,
+    sample_rate: f32,
+    expression: (f32, f32),
+) {
+    for frame in output.chunks_exact_mut(2) {
+        if voice.position >= config.landmarks.end as f64 {
+            if config.landmarks.loop_mode == SampleLoopMode::Forward {
+                voice.position = wrapped_position(voice.position, config.landmarks);
+            } else {
+                voice.clear();
+                break;
+            }
+        }
+        if config.landmarks.loop_mode == SampleLoopMode::Forward
+            && voice.position >= config.landmarks.loop_end as f64
+        {
+            voice.position = wrapped_position(voice.position, config.landmarks);
+        }
+        let (left, right) = interpolated_stereo(pcm, voice.position, config.landmarks);
+        let envelope_gain = if SUSTAIN {
+            voice.envelope.level()
+        } else {
+            voice.envelope.next_gain(sample_rate)
+        };
+        let gain = envelope_gain * voice.velocity * expression.0 * expression.1;
+        frame[0] = bounded_sample(frame[0] + left * gain);
+        frame[1] = bounded_sample(frame[1] + right * gain);
+        if !SUSTAIN && voice.envelope.is_idle() {
+            voice.clear();
+            break;
+        }
+        voice.position += ratio;
     }
 }
 
@@ -909,6 +944,69 @@ mod tests {
             .unwrap();
         stereo.render(&mut output, 2, &parameters);
         assert_eq!(&output[..4], &[0.0, 1.0, 0.25, 0.75]);
+    }
+
+    #[test]
+    fn sustain_render_matches_general_envelope_path_for_mono_stereo_and_crossfades() {
+        for channels in [1, 2] {
+            let samples = (0..32 * channels)
+                .map(|index| (f32::from(index % 7) - 3.0) / 4.0)
+                .collect();
+            let pcm = prepare_sample_pcm(fixture(channels, samples).decoded, 48_000).unwrap();
+            for loop_mode in [SampleLoopMode::Off, SampleLoopMode::Forward] {
+                for crossfade_frames in [0, 4, 8] {
+                    let config = SampleRtConfig {
+                        root_note: 60.0,
+                        landmarks: PreparedSampleLandmarks {
+                            start: 2,
+                            end: 28,
+                            loop_start: 4,
+                            loop_end: 20,
+                            crossfade_frames,
+                            loop_mode,
+                        },
+                    };
+                    for gain in [0.0, 0.5, 1.0] {
+                        for ratio in [0.5, 1.0, 2.75] {
+                            let mut specialized = SampleVoice {
+                                note: Some(60),
+                                position: 2.5,
+                                velocity: 0.8,
+                                age: 1,
+                                envelope: VoiceEnvelopeState::IDLE,
+                            };
+                            specialized.envelope.note_on(
+                                VoiceEnvelope::new(0.0, 0.0, gain, 5.0).unwrap(),
+                                48_000.0,
+                            );
+                            let mut general = specialized;
+                            let mut actual = [0.125; 128];
+                            let mut expected = actual;
+                            render_sample_voice::<true>(
+                                &mut specialized,
+                                &pcm,
+                                &mut actual,
+                                config,
+                                ratio,
+                                48_000.0,
+                                (0.9, 0.75),
+                            );
+                            render_sample_voice::<false>(
+                                &mut general,
+                                &pcm,
+                                &mut expected,
+                                config,
+                                ratio,
+                                48_000.0,
+                                (0.9, 0.75),
+                            );
+                            assert_eq!(actual, expected);
+                            assert_eq!(specialized, general);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

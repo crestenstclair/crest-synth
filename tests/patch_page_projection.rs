@@ -697,7 +697,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     }
     {
         let app_loop = shared.borrow();
-        let record = app_loop.event_log_ref().records().last().unwrap();
+        let record = app_loop.event_log_ref().records().back().unwrap();
         assert_eq!(record.outcome(), EventOutcome::Accepted);
         assert!(matches!(
             record.input(),
@@ -763,7 +763,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             let page = app_loop.current_patch_page().unwrap();
             let text = app_loop.current_text();
             let tree: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
-            let record = app_loop.event_log_ref().records().last().unwrap();
+            let record = app_loop.event_log_ref().records().back().unwrap();
             assert_eq!(
                 page.focused_control_id(),
                 PatchControlId::Envelope(parameter)
@@ -886,7 +886,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                 tree["parameters"]["patches"][0]["envelope"][parameter.name()],
                 expected
             );
-            let record = app_loop.event_log_ref().records().last().unwrap();
+            let record = app_loop.event_log_ref().records().back().unwrap();
             assert_eq!(record.outcome(), EventOutcome::Accepted);
             assert!(record
                 .emitted_events()
@@ -977,7 +977,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             *app_loop.current_parameters()
         ));
         assert!(matches!(
-            app_loop.event_log_ref().records().last().unwrap().input(),
+            app_loop.event_log_ref().records().back().unwrap().input(),
             EventInput::SelectContext {
                 context: TopLevelContext::Mixer
             }

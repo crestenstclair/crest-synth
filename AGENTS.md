@@ -1,6 +1,6 @@
 # Working in Crest Synth
 
-Read `DESIGN.md` before changing product behavior or architecture. The linked
+Read the relevant sections of `DESIGN.md` before changing product behavior or architecture. The linked
 Figma file is the normative product, visual, and interaction source of truth.
 `DESIGN.md` is the master as-built architecture, invariant, and implementation
 status reference; it records how the current production system realizes the
@@ -38,11 +38,21 @@ Figma example engines, effects, patches, files, values, and counts are design
 fixtures, not an exhaustive feature list. Installed registries determine
 production content.
 
-OpenSpec may be used for scoped change proposals, acceptance criteria, design
-reasoning, and implementation tasks. OpenSpec artifacts complement Figma and
-`DESIGN.md`; they must not redefine the product, create a competing source of
-truth, or be cited as proof of as-built behavior. Put durable as-built
-architecture and implementation decisions in `DESIGN.md`; use OpenSpec, issues,
-and commits for temporary plans, sequencing, acceptance notes, and handoffs.
-Do not reintroduce the retired CUE DSL, roadmap, planning kit, or another master
-design document.
+Target modern desktop hardware. Do not impose arbitrary product caps on
+instruments, effects, Patches, tracks, parameters, or voices. Resource budgets
+must be configurable for the hardware; preallocation and bounded callback
+work do not require fixed product counts. Existing hard-coded capacities are
+implementation debt, never requirements to preserve or reintroduce.
+
+Keep documentation small: Figma owns product intent; `DESIGN.md` owns current
+architecture, durable decisions, and known gaps; source and tests own exact
+implementation details and evidence. Update existing sections instead of
+appending historical reports or copying constants, tokens, and test counts.
+Do not reload retired plans, archived specs, or Git history as routine context.
+Consult history only for a specific historical question.
+
+Use OpenSpec only when explicitly requested. Keep its artifacts scoped and
+temporary; remove completed artifacts after incorporating durable decisions
+into `DESIGN.md`. Do not maintain a parallel product specification, phase
+roadmap, planning kit, or another master design document. Requested research
+reports are decision inputs, not product authorities or automatic context.

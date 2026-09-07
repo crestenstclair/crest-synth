@@ -589,7 +589,7 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
             fine_coarse_adjustment_exact &=
                 canonical == expected && projected == expected && page_value == expected;
 
-            let record = app_loop.event_log_ref().records().last().unwrap();
+            let record = app_loop.event_log_ref().records().back().unwrap();
             scalar_only_publication &= record.emitted_events().len() == 2
                 && matches!(
                     record.emitted_events()[0],

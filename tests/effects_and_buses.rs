@@ -9,6 +9,8 @@
 //! observed block on the activated graph, with an activation-sequence gap
 //! of exactly 1 in this block-per-tick deterministic drive).
 
+#[path = "support/performance_evidence.rs"]
+mod performance_evidence;
 #[allow(dead_code)]
 mod support;
 
@@ -305,6 +307,7 @@ fn effects_and_buses_scene_completes_with_measured_topology_and_responsiveness()
     let report = runner
         .completed_report()
         .expect("bounded cumulative live scene completes");
+    performance_evidence::retain(report);
     assert!(
         report.complete(),
         "cumulative scene incomplete: {}",

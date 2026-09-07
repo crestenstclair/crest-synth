@@ -634,6 +634,9 @@ fn run_phase7_headless(defeat_preview: bool) -> crest_synth::testing::LiveDemoRe
 #[test]
 fn phase7_headless_scene_correlates_worker_renderer_projection_and_lossless_report() {
     let report = run_phase7_headless(false);
+    #[path = "support/performance_evidence.rs"]
+    mod performance_evidence;
+    performance_evidence::retain(&report);
     let evidence = report
         .detail_and_assets()
         .expect("the Phase 7 report carries typed detail/assets evidence");

@@ -7,12 +7,22 @@ use std::sync::Arc;
 /// Formatting and selection are calculated by the state projector. This value
 /// keeps the rendered body, its selected line, and the originating snapshot
 /// hash together so view adapters cannot observe mismatched projection parts.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq)]
 pub struct TextProjection {
     context: TopLevelContext,
     body: Arc<str>,
     selected_line: usize,
     state_hash: Arc<str>,
+}
+
+impl PartialEq for TextProjection {
+    fn eq(&self, other: &Self) -> bool {
+        self.context == other.context
+            && self.selected_line == other.selected_line
+            && (Arc::ptr_eq(&self.state_hash, &other.state_hash)
+                || self.state_hash == other.state_hash)
+            && (Arc::ptr_eq(&self.body, &other.body) || self.body == other.body)
+    }
 }
 
 impl Serialize for TextProjection {
@@ -139,6 +149,35 @@ mod tests {
         );
 
         assert_eq!(projection.clone(), projection);
+    }
+
+    #[test]
+    fn equality_checks_content_and_identity_for_shared_and_independent_bodies() {
+        let projection = TextProjection::new("body".into(), 0, "generation-1".into());
+        let independent = TextProjection::new("body".into(), 0, "generation-1".into());
+        assert_eq!(projection, independent);
+        assert_eq!(projection, projection.clone());
+        assert_ne!(
+            projection,
+            projection.with_state_hash("generation-2".into())
+        );
+        assert_ne!(
+            projection,
+            TextProjection::new("other".into(), 0, "generation-1".into())
+        );
+        assert_ne!(
+            projection,
+            TextProjection::new("body".into(), 1, "generation-1".into())
+        );
+        assert_ne!(
+            projection,
+            TextProjection::for_context(
+                TopLevelContext::Patch,
+                "body".into(),
+                0,
+                "generation-1".into()
+            )
+        );
     }
 
     #[test]

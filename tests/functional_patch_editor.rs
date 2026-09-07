@@ -2833,11 +2833,16 @@ fn check_utility_resolves_five_typed_rows_and_its_hint_line() {
     // leave action's label said. The painted line reads
     // `D:utility A / Return:return`, and only the trailing pair comes from the
     // action this claim is about.
-    let entered = page_side_hint_line(&document(&entered_utility()), "patchUtility");
-    assert!(
-        entered.ends_with(":return") || entered.contains(":return "),
-        "the panel's own rows must project the action that leaves it: {entered}"
-    );
+    // Utility returns through unmodified Left under the page-navigation
+    // contract. The retired side-panel legend's Return token is not the
+    // production footer or the reducer's current admission rule.
+    let mut entered = entered_utility();
+    let projected = semantic(&entered);
+    assert!(projected.valid_actions().iter().any(|action| {
+        action.action() == &crest_synth::control::SemanticAction::Navigate(Direction::Left)
+    }));
+    entered.apply(AppEvent::Navigate(Direction::Left)).unwrap();
+    assert_eq!(entered.interaction().active_surface(), SurfaceId::PatchMain);
 }
 
 fn entered_utility() -> AppState {
@@ -3672,8 +3677,8 @@ fn check_return_lands_on_the_exact_origin() {
 /// are scalar-editable beside capability-owned read-only rows, so the two facts
 /// must agree row by row rather than being inferred from a whole surface.
 fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
-    // Braids declares every capability row read-only; the canonical Patch
-    // envelope remains scalar-editable on the shared instrument-detail shell.
+    // Braids engine parameters and the canonical Patch envelope are all
+    // scalar-editable on the shared instrument-detail shell.
     let mut braids = fixture_state();
     braids
         .apply(AppEvent::SelectPatch(Direction::Right))
@@ -3690,8 +3695,8 @@ fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
         .collect::<BTreeSet<_>>();
     assert_eq!(
         interactions,
-        BTreeSet::from(["readOnly", "scalarEdit"]),
-        "Braids detail must distinguish descriptor rows from the shared envelope"
+        BTreeSet::from(["scalarEdit"]),
+        "Braids engine parameters and the shared envelope must permit scalar editing"
     );
     assert!(rows.iter().all(
         |row| match row.get("patchInteraction").and_then(Value::as_str) {

@@ -885,7 +885,7 @@ impl DemoSceneReport {
         }
         let endpoint = event_log
             .records()
-            .last()
+            .back()
             .ok_or(DemoSceneReportError::EmptyEventLog)?;
         if checkpoints.is_empty() {
             return Err(DemoSceneReportError::EmptyCheckpoints);

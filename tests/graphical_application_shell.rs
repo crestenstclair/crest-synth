@@ -488,7 +488,12 @@ fn production_update_renders_both_contexts_at_both_reference_viewports() {
             assert_eq!(projection.generation(), tree.generation());
             assert_eq!(projection.state_hash(), tree.state_hash());
             if key.is_some() {
-                let records = app_loop.event_log_ref().records().to_vec();
+                let records = app_loop
+                    .event_log_ref()
+                    .records()
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let record = records.last().expect("the accepted key left a record");
                 assert_eq!(record.outcome(), EventOutcome::Accepted);
                 assert_eq!(record.generation_after(), tree.generation());

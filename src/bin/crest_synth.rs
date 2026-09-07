@@ -711,13 +711,17 @@ impl DemoSceneObservation {
             .iter()
             .filter(|record| record.outcome() == EventOutcome::Rejected)
             .count();
-        let post_rejection_event_accepted = records.windows(2).any(|pair| {
-            pair[0].outcome() == EventOutcome::Rejected
-                && pair[1].outcome() == EventOutcome::Accepted
-        });
+        let post_rejection_event_accepted =
+            records
+                .iter()
+                .zip(records.iter().skip(1))
+                .any(|(previous, next)| {
+                    previous.outcome() == EventOutcome::Rejected
+                        && next.outcome() == EventOutcome::Accepted
+                });
         let generation_chain_valid = generation_chain_valid(records);
         let state_hash_chain_valid = state_hash_chain_valid(records);
-        let final_state_tree_matches = records.last().is_some_and(|record| {
+        let final_state_tree_matches = records.back().is_some_and(|record| {
             let tree = report.final_state_tree();
             record.generation_after() == tree.generation()
                 && record.parameter_generation() == tree.generation()
@@ -1196,7 +1200,9 @@ fn final_tree_values_are_exact(tree: &Value) -> bool {
     patches_exact && mixer_exact && globals_exact && returns_exact
 }
 
-fn event_records_are_exact(records: &[crest_synth::control::event_record::EventRecord]) -> bool {
+fn event_records_are_exact(
+    records: &std::collections::VecDeque<crest_synth::control::event_record::EventRecord>,
+) -> bool {
     let mut expected_graph_revision = GraphRevision::INITIAL;
     for (index, record) in records.iter().enumerate() {
         if record.outcome() == EventOutcome::Accepted {
@@ -1282,7 +1288,9 @@ fn prefixed_expected_are_exercised(
     found
 }
 
-fn generation_chain_valid(records: &[crest_synth::control::event_record::EventRecord]) -> bool {
+fn generation_chain_valid(
+    records: &std::collections::VecDeque<crest_synth::control::event_record::EventRecord>,
+) -> bool {
     let individual = records.iter().all(|record| match record.outcome() {
         EventOutcome::Accepted => {
             record.generation_before().checked_add(1) == Some(record.generation_after())
@@ -1291,19 +1299,23 @@ fn generation_chain_valid(records: &[crest_synth::control::event_record::EventRe
     });
     individual
         && records
-            .windows(2)
-            .all(|pair| pair[0].generation_after() == pair[1].generation_before())
+            .iter()
+            .zip(records.iter().skip(1))
+            .all(|(previous, next)| previous.generation_after() == next.generation_before())
 }
 
-fn state_hash_chain_valid(records: &[crest_synth::control::event_record::EventRecord]) -> bool {
+fn state_hash_chain_valid(
+    records: &std::collections::VecDeque<crest_synth::control::event_record::EventRecord>,
+) -> bool {
     let individual = records.iter().all(|record| match record.outcome() {
         EventOutcome::Accepted => record.state_hash_before() != record.state_hash_after(),
         EventOutcome::Rejected => record.state_hash_before() == record.state_hash_after(),
     });
     individual
         && records
-            .windows(2)
-            .all(|pair| pair[0].state_hash_after() == pair[1].state_hash_before())
+            .iter()
+            .zip(records.iter().skip(1))
+            .all(|(previous, next)| previous.state_hash_after() == next.state_hash_before())
 }
 
 fn parameter_projection_matches_state(tree: &Value) -> bool {

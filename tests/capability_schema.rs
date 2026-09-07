@@ -355,9 +355,17 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
         Vec::new(),
     );
     assert!(matches!(
-        registry.validate_config(&missing_asset),
+        descriptor.create_config(missing_asset.values(), missing_asset.asset_references()),
         Err(CapabilityError::MissingAsset(_))
     ));
+    // Asset-scoped SoundFont catalog resolution rejects the missing bank
+    // before its descriptor can validate individual assignments.
+    assert_eq!(
+        registry.validate_config(&missing_asset),
+        Err(CapabilityError::UnknownCapability(
+            lead.capability_id().clone()
+        ))
+    );
     let unknown = InstrumentConfig::from_parts(
         CapabilityId::new("instrument.unknown").unwrap(),
         Vec::new(),

@@ -1,6 +1,7 @@
 use crate::control::event_record::EventRecord;
 use core::fmt;
 use serde::Serialize;
+use std::collections::VecDeque;
 
 /// Named coverage identifiers carried alongside the recorded event history.
 ///
@@ -148,7 +149,7 @@ pub struct EventLog {
     schema_version: u32,
     coverage: EventCoverage,
     dropped_records: u64,
-    records: Vec<EventRecord>,
+    records: VecDeque<EventRecord>,
     total_observed: u64,
     #[serde(skip)]
     capacity: usize,
@@ -193,7 +194,7 @@ impl EventLog {
             schema_version: Self::SCHEMA_VERSION,
             coverage,
             dropped_records: 0,
-            records: Vec::with_capacity(capacity),
+            records: VecDeque::with_capacity(capacity),
             total_observed: 0,
             capacity,
         })
@@ -218,7 +219,7 @@ impl EventLog {
             });
         }
 
-        if let Some(previous) = self.records.last() {
+        if let Some(previous) = self.records.back() {
             if record.generation_before() != previous.generation_after() {
                 return Err(EventLogError::GenerationChainMismatch {
                     expected: previous.generation_after(),
@@ -234,10 +235,10 @@ impl EventLog {
         }
 
         if self.records.len() == self.capacity {
-            self.records.remove(0);
+            self.records.pop_front();
             self.dropped_records += 1;
         }
-        self.records.push(record);
+        self.records.push_back(record);
         self.total_observed = next_total;
         Ok(())
     }
@@ -274,7 +275,7 @@ impl EventLog {
     }
 
     /// Returns retained records in chronological order.
-    pub fn records(&self) -> &[EventRecord] {
+    pub fn records(&self) -> &VecDeque<EventRecord> {
         &self.records
     }
 
@@ -341,16 +342,19 @@ mod tests {
     fn bounded_control_thread_journal_reports_every_eviction() {
         let mut log = EventLog::new(2).unwrap();
 
-        log.append(rejected_record(0, "stable")).unwrap();
-        log.append(rejected_record(1, "stable")).unwrap();
-        log.append(rejected_record(2, "stable")).unwrap();
+        for sequence in 0..9 {
+            log.append(rejected_record(sequence, "stable")).unwrap();
+        }
 
-        assert_eq!(log.total_observed(), 3);
-        assert_eq!(log.dropped_records(), 1);
+        assert_eq!(log.total_observed(), 9);
+        assert_eq!(log.dropped_records(), 7);
         assert_eq!(log.len(), 2);
-        assert_eq!(log.records()[0].sequence(), 1);
-        assert_eq!(log.records()[1].sequence(), 2);
-        assert_eq!(log.next_sequence(), 3);
+        assert_eq!(log.records()[0].sequence(), 7);
+        assert_eq!(log.records()[1].sequence(), 8);
+        assert_eq!(log.next_sequence(), 9);
+        let json: serde_json::Value = serde_json::from_str(&log.to_json().unwrap()).unwrap();
+        assert_eq!(json["records"][0]["sequence"], 7);
+        assert_eq!(json["records"][1]["sequence"], 8);
     }
 
     #[test]

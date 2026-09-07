@@ -43,6 +43,7 @@ use crate::synth::{
     VoiceEnvelopeParameter,
 };
 use core::fmt;
+use std::sync::Arc;
 
 /// Validates one Patch's per-position effect chain against the registry.
 ///
@@ -441,10 +442,10 @@ pub(crate) fn exercise_reducer_table_rejections(
         capabilities: std::sync::Arc::new(capabilities.clone()),
         effects: std::sync::Arc::new(EffectCapabilityRegistry::default()),
         patch_creation_blueprint: None,
-        patches: vec![probe_patch(1, 0, instrument_config)],
+        patches: Arc::new(vec![probe_patch(1, 0, instrument_config)]),
         mixer: MixerState::default(),
         global,
-        returns: BusReturnBank::default(),
+        returns: Arc::new(BusReturnBank::default()),
         interaction: {
             let mut interaction = InteractionState::new();
             interaction
@@ -543,10 +544,10 @@ pub struct AppState {
     capabilities: std::sync::Arc<CapabilityRegistry>,
     effects: std::sync::Arc<EffectCapabilityRegistry>,
     patch_creation_blueprint: Option<crate::control::PatchCreationBlueprint>,
-    patches: Vec<Patch>,
+    patches: Arc<Vec<Patch>>,
     mixer: MixerState,
     global: GlobalParameters,
-    returns: BusReturnBank,
+    returns: Arc<BusReturnBank>,
     interaction: InteractionState,
     disabled_patch_overview_origins: std::collections::BTreeSet<(PatchId, PatchControlId)>,
     focus_repair_status: Option<FocusRepairStatus>,
@@ -638,7 +639,7 @@ impl AppState {
             return Err(EventRejection::InvalidInstrumentConfig);
         }
         for (patch_id, value) in limits {
-            self.patches
+            Arc::make_mut(&mut self.patches)
                 .iter_mut()
                 .find(|patch| patch.id() == *patch_id)
                 .ok_or(EventRejection::UnknownPatch)?
@@ -687,10 +688,10 @@ impl AppState {
             capabilities: std::sync::Arc::new(capabilities),
             effects: std::sync::Arc::new(effects),
             patch_creation_blueprint: None,
-            patches: Vec::new(),
+            patches: Arc::new(Vec::new()),
             mixer: MixerState::default(),
             global,
-            returns: BusReturnBank::default(),
+            returns: Arc::new(BusReturnBank::default()),
             interaction: InteractionState::new(),
             disabled_patch_overview_origins: std::collections::BTreeSet::new(),
             focus_repair_status: None,
@@ -718,7 +719,7 @@ impl AppState {
     /// composition root. Occupancy is composition, not identity: the reducer
     /// itself installs nothing by default.
     pub fn with_initial_returns(mut self, returns: BusReturnBank) -> Self {
-        self.returns = returns;
+        self.returns = Arc::new(returns);
         self
     }
 
@@ -784,7 +785,7 @@ impl AppState {
     }
 
     /// Returns the canonical eight-return bank in ascending `BusId` order.
-    pub const fn bus_returns(&self) -> &BusReturnBank {
+    pub fn bus_returns(&self) -> &BusReturnBank {
         &self.returns
     }
 
@@ -2116,7 +2117,7 @@ impl AppState {
             patch.seed_voice_limit(policy);
         }
 
-        self.patches = patches;
+        self.patches = Arc::new(patches);
         let resolver = SemanticResolver::new(self);
         let mixer_focus = resolver
             .mixer_main_paths()?
@@ -2187,10 +2188,10 @@ impl AppState {
         }
 
         self.capabilities = std::sync::Arc::new(capabilities);
-        self.patches = patches;
+        self.patches = Arc::new(patches);
         self.mixer = mixer;
         self.global = global;
-        self.returns = returns;
+        self.returns = Arc::new(returns);
         self.interaction = InteractionState::new();
         self.disabled_patch_overview_origins.clear();
         self.focus_repair_status = None;
@@ -2682,8 +2683,7 @@ impl AppState {
                     .into_iter()
                     .find(|track| track.to_string() == option_id)
                     .ok_or(EventRejection::InvalidParameterValue)?;
-                let patch = self
-                    .patches
+                let patch = Arc::make_mut(&mut self.patches)
                     .iter_mut()
                     .find(|patch| patch.id() == patch_id)
                     .ok_or(EventRejection::NoPatchesInstalled)?;
@@ -3363,8 +3363,7 @@ impl AppState {
                 .descriptor_for_config(&candidate)
                 .ok_or(EventRejection::MismatchedEngineSelection)?
                 .voice_policy();
-            let patch = self
-                .patches
+            let patch = Arc::make_mut(&mut self.patches)
                 .iter_mut()
                 .find(|patch| patch.id() == patch_id)
                 .ok_or(EventRejection::MismatchedEngineSelection)?;
@@ -3399,7 +3398,7 @@ impl AppState {
                         .map_err(|_| EventRejection::MismatchedEngineSelection)?,
                 ),
             };
-            self.patches
+            Arc::make_mut(&mut self.patches)
                 .iter_mut()
                 .find(|patch| patch.id() == *patch_id)
                 .ok_or(EventRejection::MismatchedEngineSelection)?
@@ -3408,7 +3407,7 @@ impl AppState {
             self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
         } else if let StructuralEditIntent::SetReturnOccupancy { bus, entry } = intent {
             let old_inspector_order = self.mixer_inspector_order();
-            self.returns
+            Arc::make_mut(&mut self.returns)
                 .set_return_occupancy(&self.effects, *bus, entry.as_ref())
                 .map_err(|_| EventRejection::MismatchedEngineSelection)?;
             self.repair_inspector_focus(old_inspector_order.as_deref())?;
@@ -3428,7 +3427,7 @@ impl AppState {
                 .map_err(|_| EventRejection::MismatchedEngineSelection)?;
             validate_effect_slots(&self.effects, candidate.effect_slots())
                 .map_err(|_| EventRejection::MismatchedEngineSelection)?;
-            self.patches.push(candidate);
+            Arc::make_mut(&mut self.patches).push(candidate);
             if let Some((pending_request, visualization)) = self.pending_sample_visualization.take()
             {
                 if pending_request == request_id {
@@ -3505,7 +3504,7 @@ impl AppState {
                     if self.effects.descriptor(entry_id).is_none() {
                         return Err(EventRejection::InvalidEffectConfig);
                     }
-                    let mut probe = self.returns.clone();
+                    let mut probe = (*self.returns).clone();
                     probe
                         .set_return_occupancy(&self.effects, *bus, Some(entry_id))
                         .map_err(|_| EventRejection::InvalidEffectConfig)?;
@@ -4297,8 +4296,7 @@ impl AppState {
             .interaction
             .patch_focus()
             .ok_or(EventRejection::NoPatchesInstalled)?;
-        let patch = self
-            .patches
+        let patch = Arc::make_mut(&mut self.patches)
             .iter_mut()
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::NoPatchesInstalled)?;
@@ -4349,10 +4347,21 @@ impl AppState {
         };
         match control {
             crate::control::PatchControlId::Capability(parameter_id) => {
-                if SemanticResolver::new(self)
-                    .choice_subject(self.interaction.focus_path())
-                    .is_some()
-                {
+                let patch_id = self
+                    .interaction
+                    .patch_focus()
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                let patch = self
+                    .patches
+                    .iter()
+                    .find(|patch| patch.id() == patch_id)
+                    .ok_or(EventRejection::NoPatchesInstalled)?;
+                let spec = self
+                    .capabilities
+                    .descriptor_for_config(patch.instrument_config())
+                    .and_then(|descriptor| descriptor.parameter(&parameter_id))
+                    .ok_or(EventRejection::InvalidInstrumentConfig)?;
+                if spec.update() == crate::synth::ParameterUpdate::Structural {
                     let engine_selection_effect =
                         self.request_parameter_choice(parameter_id, direction)?;
                     Ok(ReducerEffects {
@@ -4415,19 +4424,25 @@ impl AppState {
             .filter(|spec| {
                 spec.patch_interaction() == PatchInteraction::ScalarEdit
                     && spec.update() == crate::synth::ParameterUpdate::Scalar
-                    && spec.kind() != ParameterKind::Choice
             })
             .ok_or(EventRejection::InvalidSelection)?;
         let current = config
             .value(parameter_id)
             .ok_or(EventRejection::InvalidInstrumentConfig)?;
+        // Up opens the generic option page before this method is reached.
+        // Choices use adjacent Left/Right edits; Down has no scalar meaning.
+        if spec.kind() == ParameterKind::Choice
+            && matches!(direction, Direction::Up | Direction::Down)
+        {
+            return Err(EventRejection::ActionUnavailableInContext);
+        }
         let value = spec
             .adjusted_scalar_value(current, parameter_adjustment(direction))
             .map_err(map_scalar_adjustment_error)?;
         let candidate = config
             .with_scalar_value(descriptor, parameter_id, value)
             .map_err(map_scalar_adjustment_error)?;
-        self.patches[patch_index].set_instrument_config(candidate);
+        Arc::make_mut(&mut self.patches)[patch_index].set_instrument_config(candidate);
         Ok(())
     }
 
@@ -4462,7 +4477,7 @@ impl AppState {
         }
         .ok_or(EventRejection::ParameterAtBoundary)?;
         let channel = MidiChannel::new(channel).map_err(|_| EventRejection::ParameterAtBoundary)?;
-        self.patches
+        Arc::make_mut(&mut self.patches)
             .iter_mut()
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::NoPatchesInstalled)?
@@ -4483,8 +4498,7 @@ impl AppState {
             .interaction
             .patch_focus()
             .ok_or(EventRejection::NoPatchesInstalled)?;
-        let patch = self
-            .patches
+        let patch = Arc::make_mut(&mut self.patches)
             .iter_mut()
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::NoPatchesInstalled)?;
@@ -4565,7 +4579,7 @@ impl AppState {
         // Replacing an occupant's configuration at its own validated position
         // keeps the identity and every other position untouched; the identity
         // duplicate check cannot fire because the slot id already lives here.
-        self.patches[patch_index]
+        Arc::make_mut(&mut self.patches)[patch_index]
             .set_slot_occupancy(slot_index, Some(candidate))
             .map_err(|_| EventRejection::InvalidEffectConfig)?;
         Ok(())
@@ -4615,7 +4629,7 @@ impl AppState {
         let candidate = config
             .with_scalar_value(descriptor, parameter_id, ParameterValue::Choice(choice_id))
             .map_err(|_| EventRejection::InvalidEffectConfig)?;
-        self.patches[patch_index]
+        Arc::make_mut(&mut self.patches)[patch_index]
             .set_slot_occupancy(slot_index, Some(candidate))
             .map_err(|_| EventRejection::InvalidEffectConfig)
     }
@@ -4650,7 +4664,7 @@ impl AppState {
         let candidate = config
             .with_scalar_value(descriptor, parameter_id, ParameterValue::Choice(choice_id))
             .map_err(map_scalar_adjustment_error)?;
-        self.patches[patch_index].set_instrument_config(candidate);
+        Arc::make_mut(&mut self.patches)[patch_index].set_instrument_config(candidate);
         Ok(())
     }
 
@@ -4935,7 +4949,7 @@ impl AppState {
             RETURN_LEVEL_DESCRIPTOR.fine_step(),
             RETURN_LEVEL_DESCRIPTOR.coarse_step(),
         )?;
-        self.returns
+        Arc::make_mut(&mut self.returns)
             .set_return_level(bus, value)
             .map_err(|_| EventRejection::InvalidParameterValue)
     }
@@ -4979,7 +4993,7 @@ impl AppState {
                 }
                 _ => EventRejection::InvalidEffectConfig,
             })?;
-        self.returns
+        Arc::make_mut(&mut self.returns)
             .replace_occupant_values(bus, candidate)
             .map_err(|_| EventRejection::InvalidParameterValue)
     }
@@ -5119,8 +5133,7 @@ impl AppState {
         direction: Direction,
     ) -> Result<(), EventRejection> {
         let descriptor = parameter.descriptor();
-        let patch = self
-            .patches
+        let patch = Arc::make_mut(&mut self.patches)
             .get_mut(patch_index)
             .ok_or(EventRejection::NoPatchesInstalled)?;
         let envelope = *patch.envelope();
@@ -6790,7 +6803,7 @@ mod tests {
                 Direction::Up,
             ] {
                 let mut state = installed_state();
-                state.patches[0].set_envelope(middle);
+                Arc::make_mut(&mut state.patches)[0].set_envelope(middle);
                 let comparison = state.patches()[1].clone();
                 state
                     .apply(AppEvent::SelectContext(TopLevelContext::Patch))
@@ -6835,7 +6848,7 @@ mod tests {
                 for direction in directions {
                     let mut state = installed_state();
                     let envelope = middle.with_value(descriptor.parameter(), boundary).unwrap();
-                    state.patches[0].set_envelope(envelope);
+                    Arc::make_mut(&mut state.patches)[0].set_envelope(envelope);
                     state
                         .apply(AppEvent::SelectContext(TopLevelContext::Patch))
                         .unwrap();
@@ -6870,7 +6883,7 @@ mod tests {
 
         for descriptor in crate::synth::VoiceEnvelope::surface_descriptor() {
             let mut mixer = installed_state();
-            mixer.patches[0].set_envelope(middle);
+            Arc::make_mut(&mut mixer.patches)[0].set_envelope(middle);
             let patches_before = mixer.patches().to_vec();
             mixer.apply(AppEvent::Adjust(Direction::Left)).unwrap();
             assert_eq!(mixer.patches(), patches_before);
@@ -6880,7 +6893,7 @@ mod tests {
             );
 
             let mut patch = installed_state();
-            patch.patches[0].set_envelope(middle);
+            Arc::make_mut(&mut patch.patches)[0].set_envelope(middle);
             let mixer_before = *patch.mixer();
             let unrelated_before = patch.patches()[1].clone();
             patch
@@ -6990,7 +7003,7 @@ mod tests {
         let boundary_envelope = (*state.patches[0].envelope())
             .with_value(VoiceEnvelopeParameter::AttackMilliseconds, 0.0)
             .unwrap();
-        state.patches[0].set_envelope(boundary_envelope);
+        Arc::make_mut(&mut state.patches)[0].set_envelope(boundary_envelope);
         let boundary = state.clone();
         assert_eq!(
             state.apply(AppEvent::Adjust(Direction::Left)),
@@ -8592,7 +8605,9 @@ mod tests {
         // Set after installation: installation seeds every limit from its own
         // engine's ceiling, so a distinguishing value has to be written on top
         // of that seed rather than before it.
-        state.patches[1].set_voice_limit(21).unwrap();
+        Arc::make_mut(&mut state.patches)[1]
+            .set_voice_limit(21)
+            .unwrap();
         state
             .apply(AppEvent::SelectContext(TopLevelContext::Patch))
             .unwrap();

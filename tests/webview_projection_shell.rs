@@ -218,6 +218,7 @@ const PAINTED_ACK_IDENTITY_FIELDS: [&str; 6] = [
 const DETAIL_WITNESS_ENV: &str = "CREST_WEBVIEW_DETAIL_WITNESS";
 const OPTION_WITNESS_ENV: &str = "CREST_WEBVIEW_OPTION_WITNESS";
 const EMPTY_PATCH_WITNESS_ENV: &str = "CREST_WEBVIEW_EMPTY_PATCH_WITNESS";
+const PERFORMANCE_WITNESS_ENV: &str = "CREST_WEBVIEW_PERFORMANCE_WITNESS";
 #[cfg(target_os = "macos")]
 #[path = "support/page_navigation_native.rs"]
 mod page_navigation_native;
@@ -236,6 +237,7 @@ fn main() {
     let detail_witness = live && std::env::var(DETAIL_WITNESS_ENV).as_deref() == Ok("1");
     let option_witness = live && std::env::var(OPTION_WITNESS_ENV).as_deref() == Ok("1");
     let empty_patch_witness = live && std::env::var(EMPTY_PATCH_WITNESS_ENV).as_deref() == Ok("1");
+    let performance_witness = live && std::env::var(PERFORMANCE_WITNESS_ENV).as_deref() == Ok("1");
     println!(
         "webview_projection_shell acceptance: {} run",
         if live {
@@ -249,7 +251,9 @@ fn main() {
     prove_token_table_freshness();
     prove_protocol_policy_parity();
     prove_superseded_late_ack_identity();
-    prove_typed_startup_failure();
+    if !performance_witness {
+        prove_typed_startup_failure();
+    }
 
     let skips: Vec<&str> = if !live {
         vec![
@@ -267,6 +271,8 @@ fn main() {
             "T026 NFR latency/meter soak and shipped-binary shutdown parity (outside the scoped native witness)",
             "T013 forced double-close failure (outside the scoped native witness; deliberately presents an uncloseable window for roughly 65 seconds)",
         ]
+    } else if performance_witness {
+        vec!["T012/T013/T025 forced faults and shipped-binary shutdown subprocesses (outside the native performance witness)"]
     } else {
         Vec::new()
     };
@@ -278,6 +284,7 @@ fn main() {
             option_witness,
             empty_patch_witness,
             page_witness,
+            performance_witness,
         );
     } else {
         for skip in &skips {
@@ -4096,6 +4103,7 @@ struct ScopedWitness {
     detail: bool,
     option: bool,
     empty_patch: bool,
+    performance: bool,
 }
 
 fn run_live_sections(
@@ -4104,6 +4112,7 @@ fn run_live_sections(
     option_witness: bool,
     empty_patch_witness: bool,
     page_witness: bool,
+    performance_witness: bool,
 ) {
     use tauri::{Listener, Manager};
 
@@ -4224,6 +4233,7 @@ fn run_live_sections(
         detail: detail_witness,
         option: option_witness,
         empty_patch: empty_patch_witness,
+        performance: performance_witness,
     };
     let outcome: Arc<Mutex<Option<Result<(), String>>>> = Arc::new(Mutex::new(None));
     let driver_outcome = Arc::clone(&outcome);
@@ -4302,6 +4312,8 @@ fn run_live_sections(
              newly-created PATCH scenes closed cleanly across every representative viewport; \
              unrelated soak and forced-failure subprocesses skipped"
         );
+    } else if performance_witness {
+        println!("CREST_WEBVIEW_PERFORMANCE_WITNESS projection-to-paint and meter soak passed; owned window closed; forced-fault subprocesses skipped.");
     } else {
         prove_forced_render_throw_on_the_shipped_binary();
         prove_shutdown_parity_on_real_runs();
@@ -7662,13 +7674,22 @@ fn drive_live_window(
         .map_err(|error| format!("focusing the live harness window failed: {error}"))?;
     window
         .eval(format!(
+            "window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ \
+             phase: 'presentation-state', visibility: document.visibilityState, \
+             focused: document.hasFocus(), width: window.innerWidth, height: window.innerHeight }});"
+        ))
+        .map_err(|error| format!("presentation-state probe failed: {error}"))?;
+    let presentation = receive_phase(receiver, "presentation-state", Duration::from_secs(10))?;
+    window
+        .eval(format!(
             "window.requestAnimationFrame(function () {{ \
              window.__TAURI__.event.emit('{HARNESS_EVENT}', {{ \
              phase: 'animation-frame-ready', visibility: document.visibilityState, \
              focused: document.hasFocus() }}); }});"
         ))
         .map_err(|error| format!("animation-frame readiness probe failed: {error}"))?;
-    let frame_ready = receive_phase(receiver, "animation-frame-ready", Duration::from_secs(10))?;
+    let frame_ready = receive_phase(receiver, "animation-frame-ready", Duration::from_secs(10))
+        .map_err(|error| format!("{error}; page transport ready; presentation={presentation}"))?;
     println!(
         "T026 animation-frame readiness: PASS (visibility={}, focused={})",
         frame_ready
@@ -8713,6 +8734,9 @@ fn drive_live_window(
     // Deliberately last: every healthy section above must have produced zero
     // render-errors AND zero ack rejections before the page is deliberately
     // broken.
+    if scoped_witness.performance {
+        return Ok(());
+    }
     force_page_failures(
         &window,
         handle,
@@ -9792,12 +9816,13 @@ fn prove_forced_double_close_failure_on_the_shipped_binary() {
     // CARGO_BIN_EXE_* resolves to the same profile this test was built with.
     // In a release build the seam does not exist, so this section cannot
     // prove anything — it must say so loudly rather than pass quietly.
-    #[cfg(not(debug_assertions))]
-    panic!(
-        "T013 needs the debug-only {CLOSE_FAILURE_SEAM_ENV} seam, which a release build \
-         compiles out of the shipped binary: this section cannot run here and must not \
-         report a pass"
-    );
+    if !cfg!(debug_assertions) {
+        panic!(
+            "T013 needs the debug-only {CLOSE_FAILURE_SEAM_ENV} seam, which a release build \
+             compiles out of the shipped binary: this section cannot run here and must not \
+             report a pass"
+        );
+    }
 
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let (render_failed_prefix, window_close_prefix) = typed_shell_error_prefixes();

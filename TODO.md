@@ -1,3 +1,0 @@
-- [x] Keep the `2:patch 1:mixer E:next patch W:up S:down...` action guidance only in the persistent footer.
-- [x] Replace the misaligned Patch envelope preview with a parameterized ADSR SVG whose real millisecond values use a stable logarithmically compressed display scale.
-- [x] Replace arbitrary three-decimal numeric readouts with compact values in canonical `ms`, `dB`, semitone, integer, or percentage units.

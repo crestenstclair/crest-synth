@@ -411,7 +411,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
         let page = app_loop
             .current_patch_page()
             .expect("Digit2 produces the canonical PATCH page");
-        let record = app_loop.event_log().records().last().cloned().unwrap();
+        let record = app_loop.event_log().records().back().cloned().unwrap();
 
         assert_eq!(patch_text.context(), TopLevelContext::Patch);
         assert!(patch_text.body().starts_with("PATCH | 1 MIXER | 2 PATCH"));
@@ -767,7 +767,7 @@ fn webview_frames_dispatch_into_app_loop_and_render_the_accepted_projection() {
     ));
     let last = records
         .records()
-        .last()
+        .back()
         .expect("the MIXER return has an EventRecord");
     assert_eq!(last.source(), EventSource::Keyboard);
     assert_eq!(last.outcome(), EventOutcome::Accepted);

@@ -1,220 +1,85 @@
-# Crest Synth — Master Design and As-Built Reference
+# Crest Synth — Architecture and Current Status
 
-The linked Figma file is the normative product, visual, and interaction source
-of truth. This document is the repository's detailed as-built architecture,
-invariant, and implementation-status authority. It records the system that
-exists, the constraints that must survive changes, the available evidence, and
-the known mismatch with the authored interface. `AGENTS.md` is the short
-working contract and invariant summary; it does not replace this reference.
-This file is not a roadmap, a phase plan, or a claim that the product is
-finished.
-
-Snapshot date: 2026-08-28. The implementation reviewed for this reset began at
-commit `d2d257f`.
+Figma is the product, visual, and interaction authority. This document records
+current architecture, durable decisions, and known implementation gaps.
+`AGENTS.md` is the short working contract; source and tests provide exact
+implementation details and evidence.
 
 ## Authority and maintenance
 
-Read this file before changing product behavior or architecture.
+- Read only the sections relevant to the task. Do not reload historical plans,
+  archived specs, or Git history as routine context.
+- Follow current user direction. Figma fixtures and existing implementation
+  constants do not establish product limits.
+- Update the relevant section when behavior changes. Do not append running
+  test reports, copied constants/tokens, completed checklists, or phase plans.
+- Use source, production-path tests, and measured output to establish what
+  works. A planning document or an old passing run is not current proof.
+- OpenSpec is available only when explicitly requested. Its change artifacts
+  are temporary; incorporate durable decisions here and remove completed
+  artifacts. Do not maintain a second collection of product specifications.
+- Requested research reports are scoped decision inputs. They do not become
+  product authorities or context that every task must read.
 
-The user's functionality-first direction governs visual acceptance: Figma
-guides hierarchy and interaction, while readable controls, usable workflows,
-truthful state, and stable focus determine completion. Exact typography,
-spacing, and pixel correspondence are not completion gates. Previously accepted
-resize behavior does not require another manual handoff unless a new change
-or observed regression affects it.
+## Capacity and technology policy
 
-- OpenSpec change artifacts may complement Figma with scoped intent,
-  acceptance criteria, design reasoning, and implementation tasks. They are
-  temporary planning material, not a normative product definition or proof of
-  as-built behavior.
-- Keep OpenSpec changes aligned with the live Figma contract and the
-  architecture and invariants recorded here. If they conflict, Figma governs
-  product, visual, and interaction intent, while this document governs the
-  constraints and status of the production implementation until deliberately
-  updated with evidence.
-- Do not introduce a roadmap, CUE DSL, planning kit, parallel master design, or
-  another competing source of truth into this repository.
-- Use source code and production-path tests to describe current behavior. Use
-  this file for durable architecture, product invariants, and explicit gaps.
-- Use OpenSpec, issues, and commit messages for temporary intent, sequencing,
-  acceptance notes, and handoffs.
-- A narrow implementation slice must not redefine the product.
-- Figma examples of engines, effects, patches, files, values, and option counts
-  are fixtures. They demonstrate composition and interaction; installed
-  capability registries determine production content.
-- If durable behavior or architecture changes, update this file in the same
-  commit and add falsifiable proof through the production reducer and render
-  path.
+Target modern desktop hardware. Instruments, effects, Patches, tracks,
+parameters, and voices have no arbitrary product count caps. Resource budgets
+must be configurable for the hardware. Prepare resources off the callback;
+keep each callback's admitted work bounded by its prepared configuration.
+Real-time safety does not require fixed compile-time product counts.
+
+The runtime still contains fixed-size collections and admission checks. Those
+are implementation debt, not product requirements. This documentation cleanup
+does not remove them from code or prove configurable capacity has shipped.
+Do not copy their values into new specs, use them to reject otherwise suitable
+engines, or preserve them as architectural invariants.
+
+Source synthesizer and effect DSP from existing Rust, C++, and C projects.
+Crest may provide wrappers, capability integration, preparation, and control
+projection; it should not develop new custom synthesizers or effects.
+Select self-contained instruments and effects with coherent native controls
+that suit controller editing; imported preset-library instruments may focus
+on browsing and performance. Embedding and redistribution license suitability,
+including dependencies, is a selection gate rather than a deferred concern.
+Prefer coherent upstream DSP collections and preserve musical coverage when
+selecting simpler replacements.
+Existing Crest-owned Sample, SoundFont voice playback, Reverb, and Delay DSP
+are legacy implementations to evaluate against upstream replacements.
 
 ## Current alignment status
 
-The current interface is a functional webview projection/blockout. It is **not
-a faithful implementation of the Figma design**, and presence of a component,
-surface, DOM witness, or passing reducer test must not be presented as visual
-or workflow parity.
+The production UI is a functional webview projection. Readable controls,
+usable workflows, truthful state, and stable focus govern completion. Exact
+pixel matching is not a completion gate; claim Figma fidelity only after a
+relevant native comparison. Previously accepted resizing needs another handoff
+only when a change or regression affects it.
 
-The authored screens contain substantially more composition, hierarchy,
-spacing, typography, state treatment, and workflow detail than the current UI.
-The Figma responsive contract defines fluid, content-driven Wide, Standard,
-and Compact compositions; its large frames are visual references, not fixed
-canvases. Layout uses bounded tracks, intrinsic sizing, wrapping, and ordered
-stacking while semantic focus and projection remain unchanged. The current
-native responsive witness has measured Patch Overview and Instrument/FX Detail
-at 1920×1080, 1440×900, 1280×800, 900×800, and 1280×800 with 1.25 text scale
-through the shipped WKWebView. Those observations passed structural-mode,
-48 px target-floor, document and required-content overflow/overlap,
-scroll-endpoint reachability, singular focus identity/treatment,
-paint-acknowledgement, resize-neutral projection, and repeat-render checks.
-Readable native screenshots were captured and the enlarged-text Detail image
-was inspected directly. This is native structural/render evidence, not broad
-visual or workflow parity with Figma. The physical keyboard/controller handoff
-for the Detail slice passed on 2026-08-26 through the production native app,
-including entry, navigation, representative fine/coarse edits, exact
-Engine/effect-slot return, resize invariance, and repeated Shift use; the app
-then exited cleanly. Mixer multi-select has a type/state name but no defined
-product semantics and is truthfully reported as not implemented.
+Overview, Instrument/FX Detail, registry choices, Sample Detail/Browser,
+SoundFont loading, session lifecycle, physical MIDI, and page navigation have
+production-path witnesses. Their presence does not prove complete visual or
+workflow parity. Native Settings comparison, shared visual polish, production
+physical-gamepad integration, and packaged cross-platform acceptance remain
+separate gaps. Multi-select remains unavailable and is not required for
+current feature completeness; the reserved Select button defines no behavior.
 
-The Instrument/FX Detail slice now uses one `detailShellHtml` composition for
-both reducer-owned `PatchDetailSubject` variants. It reads Patch and subject
-identity, exact return origin, canonical FX position, authored labels, ordered
-sections and controls, scalar bounds/position, units, declared interaction,
-valid actions, lifecycle/error/requested fields, and optional non-focusable
-visualizations from the serialized semantic model. The only generic projection
-addition is `focusRepair`, which names a removed Overview return origin and the
-enabled sibling chosen by reducer-owned path repair. The shared header, section
-hierarchy, flat indexed rows, state keylines/text, independently scrolling
-Detail body, and bounded persistent Utility track were compared with the live
-Instrument Detail `37:7`, FX Detail `38:60`, Responsive `98:2`, and Interaction
-Map `49:3` hierarchy. This is a structural implementation comparison, not
-visual parity.
+Instrument/FX Detail uses one `detailShellHtml` composition over reducer-owned
+subjects and descriptor-ordered sections. Choice uses one option composition:
+registry identity/order, independent CURRENT/focus markers, enabled admission,
+visible unavailability, exact origin, and correlated lifecycle. A current-value
+selection closes as an accepted no-op. File Browser retains its own file and
+Sample-preview composition.
 
-Projected action guidance now has one visual owner: the persistent shell
-footer. Per-control `validActions` remain in the immutable semantic document
-for reducer admission and falsifiable correspondence, but the renderer no
-longer repeats the same key legend in Overview rows, Detail rows, workspace
-caption/mode bands, Utility/Inspector, or option rows. The non-focusable
-Envelope visualization is a parameterized SVG whose horizontal display
-coordinate is a stable `log1p` transform of milliseconds. Attack, decay, and
-release retain their projected physical durations and canonical 10,000 ms
-maximum, but each timed phase contributes `log1p(value) / log1p(10_000)` of one
-equal graphical phase span. Sustain contributes one equal, explicitly
-non-temporal preview span because it has level but no duration parameter. This
-gives short and medium musical times readable space without normalizing against
-the current envelope: 100 ms occupies about 12.5% and 5 s about 23.1% of the
-complete four-span plot. Changing one phase therefore never rescales another,
-zero-duration stages remain vertical, and the painted readout labels A/D/R in
-`ms` and sustain as a percentage. The straight SVG segments match the
-production envelope's linear sample-domain increments. The semantic
-visualization projects each timed phase's maximum from its canonical envelope
-descriptor; the page does not duplicate those physical bounds.
+Requested structural values stay separate from acknowledged active values
+through Loading, Validating, Preparing, Activating, Ready, and typed failure.
+Only graph activation acknowledgement commits the replacement. Compatible
+scalar snapshots target the prepared revision while the source graph ignores
+incompatible revisions. Nothing silently substitutes a capability or asset.
 
-Numeric row presentation follows projected semantics rather than a fixed
-three-decimal template. The renderer uses each control's `numericRange`,
-`fineStep`, and authored unit to remove meaningless trailing zeroes while
-preserving meaningful precision. Unitless normalized (`0..1`) and bipolar
-(`-1..1`) controls render as percentages, millisecond controls remain in `ms`,
-and gain controls render in `dB`. The global Master Volume descriptor owns its
-`dB` unit so PATCH Utility and MIXER Inspector receive the same canonical unit.
-Active values, requested values, and range endpoints share this formatter.
-
-Deterministic evidence covers differently shaped instrument and effect
-descriptors, every occupied FX position, duplicate effect capabilities, an
-empty slot, long content, visible dependency-disabled controls, and distinct
-Loading, Validating, Preparing, Activating, Unavailable, and Failed states
-across 29 reducer/projector/serialization documents. Production keyboard
-normalization proves Shift+Up entry and Shift+Down close with exact Engine/slot
-return. Focused Rust witnesses prove descriptor order, exactly one visible
-focus while arrows traverse every projected Detail section and switch between
-Detail and Utility, fine/coarse editing, action admission, resize-neutral
-semantic identity, visible return-origin repair, and AppKit `FlagsChanged`
-safety. The headless webview path passes exact serialization, token, CSP, and
-typed-startup checks. After the host restart, the real WKWebView witness passed
-all Detail fixtures at Wide, Standard, Intermediate, Compact, and scaled-text
-conditions, including deterministic repeated observations, exact focus and
-state treatment, 48 px rows, complete independent scrolling, zero document or
-required-content overlap, and six resize-only observations over one unchanged
-serialized projection. That run also retained all sixteen Mixer tracks,
-Inspector correlation, focus identity, and reachability. Visual inspection of
-the first enlarged-text capture exposed a flex-shrink overlap that box-only
-measurement missed; the Detail scroll-column blocks now retain natural wrapped
-height, and the witness measures descendant-painted overlap to prevent its
-return. A scoped `make test-webview-detail-native` target runs this real-window
-Detail/Mixer proof and closes automatically, while honestly skipping unrelated
-soak and deliberately uncloseable fault-injection scenes. Live physical
-keyboard/controller operation for any later slice is not inferred from the
-native render witness.
-
-Engine selection now exposes the reducer-owned sequence Loading → Validating →
-Preparing → Activating → Ready, with Unavailable and Failed as distinct typed
-outcomes. The acknowledged source capability, configuration, and Overview/
-Detail readings remain canonical during Activating; the complete prepared
-candidate stays separate until graph activation acknowledgement. Compatible
-scalar snapshots target the prepared revision during that interval, while the
-source renderer ignores them by revision. No capability, asset, or value is
-silently substituted.
-
-Engine and Post FX option selection now use the existing reducer-owned generic
-Choice session and one shared option DOM composition. Installed instrument and
-effect descriptors provide stable row identity, authored label, registry order,
-and generic enabled/unavailable metadata; the canonical Empty effect choice is
-prepended independently for every slot. Visible membership includes unavailable
-rows for truthful explanation, while focus membership and activation include
-only enabled rows. Opening focuses the current enabled identity or the first
-enabled row, `CURRENT` remains independent of focus, and choosing the current
-row is an accepted no-op close. A changed choice emits exactly one correlated
-Engine or slot request through `AppState::apply`; Shift+Down closes unchanged,
-and return uses the exact Overview origin or the stable-order repair path.
-
-The only new generic serialized presentation fact is the optional
-`availabilityLabel` on an existing semantic control; state-tree schema version
-18 covers that addition. The option projection otherwise reuses canonical
-Choice subject/origin, stable controls, valid actions, active/requested
-lifecycle, typed failure, revision, and focus-repair facts. The renderer reads
-only that projection. It publishes an identity header, exact Engine or slot
-source, ordered rows with independent structural focus/current markers,
-explicit availability, origin-anchored lifecycle, and projected action
-guidance. Sample Browser remains on its separate preview and file-navigation
-composition.
-
-The shared hierarchy and action grammar were compared directly with live Figma
-Engine Options `48:173`, Post FX Options `48:207`, Interaction Map `49:3`, Patch
-Overview `95:202`, and Responsive Contract `98:2`. The production renderer adds
-projected lifecycle/revision/cause and per-row action facts that the compact
-Figma fixtures do not enumerate, and its generic footer wording is denser than
-the authored D-pad/Edit/Shift legend. Those are recorded scoped discrepancies;
-the implementation is structural and responsive evidence, not a pixel-parity
-claim or evidence for Sample or Mixer visual composition.
-
-The real WKWebView option witness passed Wide, Standard, Intermediate, Compact,
-1280×800, and enlarged-text fixtures with maximum registry content, long
-labels, every option lifecycle, occupied and empty slots, and duplicate effect
-capabilities. It measured one focus, independent current state, 48 px target
-floors, reachable scroll endpoints and Utility, no required-content overlap or
-document horizontal overflow, deterministic repeated paint, resize-neutral
-semantic identity, normalized keyboard/controller journeys, exact and repaired
-return, and clean shutdown; Detail and all sixteen Mixer tracks remained in the
-same run as regressions. A bounded production-app physical handoff script exists,
-but no interactive operator and controller were available in this session, so
-physical option entry/navigation/choice/return and teardown remain unverified
-and are not inferred from translation tests or native input injection.
-
-Detail and Utility share one reducer-owned subordinate session. Unmodified
-Right moves from Detail to Utility, Left restores the exact stable Detail
-focus, and a subsequent Left returns to the exact Overview origin. If schema
-change removes that origin while Detail is open, the reducer repairs the
-return path to the nearest enabled stable Overview sibling and the projection
-publishes the explicit `focusRepair` notice. Remaining visual slices are
-Sample Detail/Browser, Mixer composition, and native polish. The Engine/Post FX
-option slice still has the physical handoff and the scoped visual refinements
-recorded above outstanding; neither its functional predecessor nor its new
-structural witness implies broad Figma parity.
-
-The old phase/spec system recorded 73 of 79 implementation tasks complete when
-it was retired. The six incomplete items were the two native viewport
-comparisons, native input/window/teardown proof, the aggregate deterministic
-webview/gate run, the physical live target run, and final completion evidence.
-Historical deterministic and physical-audio reports are evidence of functional
-and real-time behavior only; they are not evidence of Figma fidelity.
+The footer is the sole visual action-guide owner. Numeric presentation uses
+projected ranges, steps, and units rather than arbitrary decimal precision.
+The envelope SVG uses descriptor-linked durations with a stable `log1p` display
+scale; sustain has level, not duration. Reflow changes presentation only.
 
 ## Visual and interaction reference
 
@@ -260,7 +125,7 @@ Crest Synth is not a DAW, arranger, or general-purpose sequencer.
 The application currently provides:
 
 - PATCH and MIXER as the only top-level contexts;
-- sparse stable Patch identities with an active graph capacity of 16 Patches;
+- sparse stable Patch identities; current runtime capacity debt is described above;
 - SoundFont and Braids instrument capabilities in the default registry;
   SoundFont retains the HiDef capability identity and bundled default while
   accepting local SF2 banks through the shared file page;
@@ -269,8 +134,7 @@ The application currently provides:
   overwriting an existing asset. `CREST_SAMPLE_LIBRARY_ROOT` and
   `CREST_SAMPLE_DEFAULT_ASSET` remain paired, validated overrides;
 - Chorus, Reverb, and Delay in one effect registry;
-- three ordered Patch post-effect slots and eight bus returns;
-- one fixed bank of sixteen persistent Mixer tracks, T00 through T0F;
+- ordered Patch post-effect slots, bus returns, and persistent Mixer tracks;
 - descriptor-driven Patch Overview, Detail, generic Choice, shared File Browser,
   waveform/playhead projection, persistent Utility, and persistent Mixer
   Inspector surfaces;
@@ -293,8 +157,8 @@ The application currently provides:
 
 Normal `make run` resolves the composition-root-designated Sample capability
 exactly and constructs Patch 1 `INIT`: MIDI channel 1, T00 at 0 dB Patch trim,
-neutral envelope, capability-seeded voice limit, and three empty post-effect
-slots. It also installs the default sixteen-track Mixer, 0 dB master, and the
+neutral envelope, capability-seeded voice settings, and empty post-effect
+slots. It also installs the default Mixer, 0 dB master, and the
 production return bank. The captured versioned session and its complete graph
 are validated and prepared before audio or the window starts; a missing or
 invalid designated capability is a typed fatal startup error, never registry
@@ -365,6 +229,20 @@ There is one canonical public type per concept. Private transport values may
 exist inside adapters, but duplicate public `Patch`, `MidiEvent`, `Parameter`,
 focus, asset, or routing models are forbidden.
 
+Control-side `AppState` snapshots share the Patch collection and bus-return
+bank through copy-on-write `Arc` storage. Accepted reducer edits detach only
+the aggregate being changed; navigation and action-availability probes do not
+deep-copy unchanged configurations. No shared control aggregate enters the
+callback. MIDI-only semantic projections likewise replace generation and hash
+while sharing immutable surface content. Their serialized field order, values,
+and public projection contract remain unchanged. MIDI advances the last
+published scalar snapshot's generation without rebuilding unchanged values,
+including candidate values during graph activation.
+Text-projection coherence checks compare shared body identity before scanning
+text, while independently constructed projections retain full value equality.
+The bounded event journal uses `VecDeque` for constant-time FIFO eviction;
+chronological iteration and serialized records keep their existing contract.
+
 ## Canonical state and interaction invariants
 
 Canonical state is divided conceptually into session, interaction, and runtime
@@ -398,6 +276,9 @@ audio buffers.
 The installed capability registries own available choices and ordered schema.
 Reducers, projectors, racks, renderers, and demo orchestration must not switch
 on concrete capability names to define fields or availability.
+Catalog validation detects duplicate choice IDs with a sorted borrowed index,
+preserving declared option order and the first repeated-ID error without
+quadratic scans of large asset catalogs.
 
 ## Hard real-time invariants
 
@@ -417,23 +298,30 @@ Different real-time data has different transport semantics:
 | Data | Transport | Rule |
 | --- | --- | --- |
 | Notes, expression, preview, bounded commands | fixed-capacity SPSC event ring | ordered, block-relative offsets |
-| Scalar parameters | triple-buffered fixed `ParameterSnapshot` | latest compatible complete snapshot wins |
+| Scalar parameters | triple-buffered `ParameterSnapshot` | latest compatible complete snapshot wins |
 | Structural changes | ownership-transfer queue of prepared graphs/assets | swap at block boundary; retire off-thread |
 | Meters and RT health | atomics/latest `AudioObservationSnapshot` | decimated and polled by UI |
 | Physical MIDI activity | latest compatible control-side snapshot | exact active revision, decimated to at most 30 Hz |
+
+Graph-status and audio-observation snapshots have one callback writer. Their
+versioned atomic payloads use a release fence after marking a write in progress
+and an acquire fence before the reader's final version check. Readers retry on
+overlap; publication uses bounded stores without waiting for readers.
 
 Each asynchronous producer owns its SPSC queue or is merged on the control
 side. A single-producer queue is never shared casually among UI, MIDI, and
 workers. Queue pressure is explicit; note-off/all-notes-off has reserved
 recovery behavior, replaceable scalars may be coalesced, and silent loss is
 forbidden.
+The renderer admits a configurable command budget per block, leaving excess
+events queued in order so a concurrent producer cannot prolong the callback.
 
-Each physical MIDI candidate owns a separate 1,024-event `rtrb` SPSC ingress,
+Each physical MIDI candidate owns a separate preallocated `rtrb` SPSC ingress,
 immutable connection revision, atomic enable gate, and fixed diagnostic
 counters. The midir callback performs bounded status-byte classification and
 normalizes only supported channel messages through `midly`; it never owns or
 reads `AppState`, allocates, locks, logs, formats, blocks, or traverses a SysEx
-payload. Control drains at most 64 events per tick and rejects every event
+payload. Control uses a bounded per-tick drain and rejects every event
 whose revision is not the reducer-acknowledged active revision. Activity is a
 presentation-only latest snapshot (count, last message/timestamps, diagnostics,
 overflow epoch, revision); it never mutates or serializes into product state.
@@ -447,7 +335,8 @@ coalesced recovery command. Backend handles move to the device worker for
 consuming close/destruction, including shutdown-owned and stale prepared
 handles.
 
-`ParameterSnapshot` is fixed-size and destructor-free. A worker constructs and
+Scalar publication must remain allocation- and destruction-free in the
+callback. A worker constructs and
 warms a complete graph—engines, effects, sample PCM/zones, routing, delay
 memory, return topology, and scratch—before publication. The callback swaps at
 a block boundary and transfers old graphs to a bounded return queue for worker
@@ -464,37 +353,47 @@ status and are formatted/handled off callback.
 ## Audio/domain invariants
 
 - A Patch owns a stable `PatchId`, label/MIDI mapping, instrument config,
-  per-note `VoiceEnvelope`, up to three ordered post-effect slots, output
-  `MixerTrackId`, Patch-local trim, and voice limit.
+  per-note `VoiceEnvelope`, ordered post-effect slots, output
+  `MixerTrackId`, Patch-local trim, and voice settings.
 - A Patch MIDI channel is a subscription, never an exclusive owner. Multiple
   Patches may subscribe to the same channel; one incoming message fans out to
   every current subscriber in stable installation order. Changing a
   subscription is immediately effective control state and does not rebuild the
   structural graph. A channel with no subscribers emits no audio command.
-- Mixer state owns exactly sixteen persistent tracks independently of the
+- Mixer state owns persistent tracks independently of the
   Patch collection. Multiple Patches may share a track and empty tracks remain
   configurable.
 - Patch trim and route are not track controls. A Patch never owns track level,
   pan, mute, solo, send, or meter state.
 - Master gain has one canonical owner, projected in PATCH Utility and MIXER
   Inspector.
-- The maximum active prepared Patch count is 16. Each Patch has three effect
-  slots; each effect slot has at most eight scalar parameters; each instrument
-  has at most sixteen scalar parameters; there are eight bus returns.
+- Prepared storage, voice admission, and parameter layouts belong to the
+  resource configuration. Existing fixed layouts remain implementation debt;
+  they do not constrain the intended product or technology selection.
 - Effect slot order is render order. Topology edits prepare and exchange a
   complete graph; there is no silent bypass or render-time graph mutation.
-- Reverb occupies return 0 and Delay return 1 by default; returns 2–7 start
+- Reverb occupies return 0 and Delay return 1 by default; other returns start
   empty. Registry failure is typed rather than substituted.
-- A Patch voice limit is 1–64 and refuses a new note at capacity rather than
-  stealing an existing voice. Engine-native stealing rules still apply inside
-  the admitted limit.
+- Voice admission must honor the configured hardware budget and expose
+  resource exhaustion. Existing admission and engine-native stealing behavior
+  remain source-level behavior to account for when making that configurable.
 - Every engine applies the Patch-owned ADSR to independent native note voices;
   one post-stem envelope is nonconforming.
 - SoundFont uses one synthesizer per Patch with engine-managed polyphony.
-- Each Braids Patch owns exactly 16 voices and 47 named models; voice capacity
-  scales as `16 × active Braids Patch count` with no global Braids pool.
-- Each Sample Patch owns one asset and exactly 16 voices. Allocation order is
+- Each Braids Patch owns independent voices and exposes upstream model choices;
+  there is no global Braids voice pool.
+  Model, Timbre, and Color declare `ScalarEdit`. In Detail, K+A/D steps the
+  model without graph preparation; K+W opens the registry-backed Choice page.
+  Timbre and Color support fine and coarse scalar edits. Shared ADSR and Utility
+  controls retain their existing owners. Scalar Choice adjustment follows the
+  descriptor's update category, so Sample Loop uses the same adjacent-choice
+  path. Values still commit only through `AppState::apply` and reach the active
+  renderer through compatible snapshots.
+- Each Sample Patch owns one asset and independent voices. Allocation order is
   inactive, oldest releasing, then oldest active.
+- Sample and SoundFont select a constant-sustain render path once per voice
+  block. Attack, decay and release still advance sample by sample. Both paths
+  share the same PCM interpolation, loop boundaries, mixing and clipping rules.
 - Unsupported assets, engines, effects, devices, rates, and topology states
   produce typed visible errors. No engine/effect/asset silently substitutes or
   falls back.
@@ -510,15 +409,15 @@ ordered Patch post FX
   ↓
 Patch trim
   ↓
-route and sum into one of 16 tracks
+route and sum into a Mixer track
   ↓
 track level / pan
   ├──→ pre-gate meter
   ↓
 mute / solo gate
-  ├──→ post-gate sends[0..7] → returns[0..7] ─┐
+  ├──→ post-gate sends → returns            ─┐
   ↓                                           │
-16-track dry mix ←────────────────────────────┘
+track dry mix    ←────────────────────────────┘
   ↓
 master gain / safety limiter
   ↓
@@ -530,6 +429,14 @@ contribute dry signal or sends. Sends are post-fader and post-gate. Meters are
 post-level/pan but pre-gate so muted tracks remain diagnosable. Feedback may
 exist only inside bounded effect implementations, never as an arbitrary graph
 cycle.
+
+Mixer processing skips tracks with no routed Patch stems and accumulates only
+nonzero sends, once per bus per block. It retains the same sample and Patch
+accumulation order, pre-gate meters, mute/solo rules, and independently processed
+return tails. Audio command draining has a per-block work budget;
+queue capacity alone cannot bound a concurrently replenished
+producer. Excess commands, including note-offs and reserved recovery, remain
+queued in order for following blocks.
 
 ## Asset and persistence boundaries
 
@@ -563,25 +470,27 @@ saved preset. Reducer and graph-request validation reject additional config
 changes, including an unrequested preset during bank replacement. Worker-side
 preparers resolve file metadata independently before complete-graph validation.
 
-SF2 admission is capped at 256 MiB, checks RIFF/list chunk arithmetic before
-parser allocation, and bounds numeric expansion to 4,096 regions per preset
-and 262,144 region combinations per bank. Malformed and unavailable files
-produce explicit failures. Worker-owned caches share active numeric banks
+SF2 admission checks RIFF/list chunk arithmetic before parser allocation and
+bounds numeric region expansion against the admitted resource budget.
+Malformed and unavailable files produce explicit failures. Current numeric
+admission thresholds remain in source and are not product requirements.
+Worker-owned caches share active numeric banks
 through weak references; unused banks are not retained indefinitely. Authored
 catalogs remain control-side, and callback objects retain only numeric banks
 and bounded voice state. The bundled `./sf2/HiDef.sf2` reference remains exact.
 
 The Sample adapter uses exact `hound = 3.5.1` (Apache-2.0, no optional
 features). It accepts uncompressed RIFF/WAVE only: mono/stereo signed
-PCM16/24/32 or IEEE float32 at 8,000–192,000 Hz. Limits are 256 MiB and 300
-seconds per source, 28,800,000 scalar `f32` samples per prepared asset, 512 MiB
-of deduplicated Sample PCM per complete graph, and at most 2,048 waveform
-min/max pairs. RF64, RIFX, compression, non-WAV data, extra channels, malformed
-chunk arithmetic, non-finite samples, and over-limit assets are typed failures.
+PCM16/24/32 or IEEE float32 at supported rates. Source size, duration, prepared
+PCM, deduplicated graph memory, and waveform-summary budgets are validated
+before publication; their current thresholds live in source and must not
+become fixed product limits. RF64, RIFX, compression, non-WAV data, extra
+channels, malformed chunk arithmetic, non-finite samples, and assets exceeding
+the admitted resources are typed failures.
 
 Sample configuration stores a relative asset ID, root note 0–127 (default 60),
-normalized playback/loop landmarks, OFF/FORWARD loop mode, crossfade capped by
-200 ms or half the loop, and the shared envelope. Preview is original-pitch,
+normalized playback/loop landmarks, OFF/FORWARD loop mode, a validated
+crossfade within the loop window, and the shared envelope. Preview is original-pitch,
 file-start, no-loop audio through the origin Patch's post-FX, trim, Mixer,
 sends, returns, and gates. Stop uses a prepared 5 ms de-click. Preview never
 commits an asset or mutates saved state.
@@ -713,7 +622,7 @@ provider-authored Engine default used by both the initial-session factory and
 prospective creation. A first accepted Patch-owned edit reserves the greatest
 created `PatchId` plus one, derives `Patch {id}`, appended MIDI channel and
 Mixer track, 0 dB trim,
-neutral envelope, seeded voice limit, and three empty effect positions, then
+neutral envelope, seeded voice settings, and empty effect positions, then
 applies only the triggering edit. The pending candidate stays outside the
 created Patch vector. Loading, validation, preparation, failure, activation,
 and the final commit all pass through `AppState::apply`; only a matching graph
@@ -731,31 +640,11 @@ carried across the block-boundary swap where identities and layouts agree; the
 new engine starts silent. Failure leaves the prior session and graph usable,
 and prepared ownership retires off callback.
 
-`MAX_ACTIVE_PATCHES` is the single control, persistence, graph-layout, and RT
-array authority and remains 16. At capacity, the trailing empty interaction
-position is still reachable and projects `CAPACITY 16/16`, but creating actions
-are unavailable and direct stale attempts reject before worker submission. No
-audio-inactive, dormant, paged, or seventeenth Patch model exists. This is an
-explicit scoped mismatch with Figma's effectively unlimited Patch workflow,
-not a redefinition of that workflow or a weakening of callback bounds.
-
-Direct inspection of the live Figma file measured Patch Overview node `95:202`
-at 1920×1080 with 48/72/896/64 px shell bands, Engine plus three ordered Post
-FX positions, the persistent Utility rows, and `SHIFT+L/R:patch` guidance.
-Interaction Map node `49:3` measured 3000×2600 and explicitly sequences
-existing Patch → Shift+Right → virtual empty slot → modify parameter →
-initialized Patch, with no explicit New Patch command. The production
-projection follows that semantic sequence and reports the 16-Patch boundary;
-the current blockout has not established broad visual parity. The dedicated
-native empty-Patch witness passed on 2026-08-28. It painted empty, prospective
-Detail/Choice/Utility, all pending phases, failure, capacity, and created
-documents at requested Wide and Standard windows, then reused the exact empty
-projection at Intermediate, Compact, and enlarged-text conditions. The real
-scroll owners reached both endpoints and their first/last semantic targets;
-all interactive targets retained a 48 px floor, document horizontal overflow
-and required-content overlap measured zero, repeated paints were identical,
-and Compact Overview truthfully scrolled by 177 px. These measurements prove
-the scoped interaction blockout, not broad visual parity.
+The current fixed-capacity creation checks are part of the runtime debt
+identified in the capacity policy. They do not redefine Figma's effectively
+unlimited Patch workflow. Creation must retain transactional preparation,
+activation acknowledgement, exact focus identity, and typed failure when
+capacity becomes configurable.
 
 ## Controller and focus contract
 
@@ -796,7 +685,7 @@ does not connect a device. Footer guidance comes from source-specific admitted
 semantic actions, including arrow/WASD equivalents, with no browser-owned page
 or return state.
 
-PATCH Main is the non-wrapping Overview order: Engine, then the three canonical
+PATCH Main is the non-wrapping Overview order: Engine, then ordered
 effect-slot occupancy controls. Sibling order is every created Patch followed
 by exactly one trailing empty position. The visual reading order is the same
 single vertical sequence at every viewport width; wider compositions expand the row
@@ -839,49 +728,15 @@ including when Shift is released first; Q/E also require release before another
 Patch step. Bare focus/edit repeats retain their existing behavior. Controller
 page gestures require release or disconnect before another activation.
 
-The earlier strict native witness delivered 68 scripted transitions exactly
-once and produced 20 byte-exact semantic actions, including repeated Shift
-flags, Shift held across D/A, and held-K focus-loss cleanup. Its paired
-real-window journey painted Shift+Right to empty, non-creating Detail
-inspection, first edit, visible preparation failure, fresh retry, acknowledged
-creation, exact return identity, and the then-current Shift+Left previous-Patch
-binding through production keyboard normalization, `AppState::apply`, projection,
-and native paint. That historical run does not prove the new page bindings.
-
-Current page-navigation proof covers exact Instrument/duplicate-effect subjects,
-empty-slot rejection, sparse Patch IDs and endpoints, remembered roots,
-deterministic origin repair, source-specific admission/guidance, and Settings
-discovery while retaining performance identity. The production AppLoop and
-Braids/effects renderer journey preserves saved capture and audio values,
-publishes no navigation scalar snapshots, retains the active graph, and renders
-finite nonzero sustained audio, including MIDI while Settings is visible.
-Before the final Settings return addition, all 875 non-ignored library tests
-and 60 focused integration tests passed; two library tests remain ignored.
-The focused integrations include Choice,
-Sample preview cancellation, SoundFont file/preset workflows, shell dispatch,
-focus/projection, and bidirectional schema coverage. After adding the authored
-Shift+Right return, all 28 affected integrations passed, including 11
-page-navigation tests, 7 MIDI-device contracts, and 10 focus/projection tests.
-They cover suspended Detail, Mixer Main, and Inspector restoration, unchanged
-MIDI discovery/connection state, and exposed repair of an invalid suspended
-Overview origin. Warnings-denied all-target Clippy and formatting checks passed.
-
-`make test-webview-page-navigation-native` adds a bounded 17-activation AppKit
-journey with actual Q/E, Shift+arrows, repeats, and WASD delivery followed by
-production reducer projection and native paint observation. It checks exact
-page/focus/subject/return identity and footer guidance, rejects extra native
-actions, and closes its owned window. On 2026-09-06 the complete authored
-journey passed, including Shift+Left Settings entry, Shift+Right return to the
-same Patch/effect focus, exact Instrument/effect Detail origins, remembered
-PATCH/MIXER roots, and WASD equivalence. All 17 activations produced one accepted
-generation each with no extra native actions. Native paint agreed with the
-reducer and the owned close returned exit code 0. The same run passed serialized
-schema fidelity, token freshness, production protocol/CSP parity, late-ack
-identity, and typed startup-failure checks. This is bounded native input and
-render evidence; it does not claim physical gamepad or broad visual parity.
+`make test-webview-page-navigation-native` exercises actual AppKit Q/E,
+Shift+arrows, repeats, and WASD through the production reducer and native paint.
+Its accepted journey includes Settings entry/return, exact Instrument/effect
+Detail origins, remembered context roots, singular focus, footer guidance,
+and owned shutdown. It does not establish physical gamepad support or broad
+visual parity.
 
 MIXER Main uses one stable `(MixerTrackId, MixerTrackParameter)` path. Left/Right
-changes T00–T0F while preserving Level/Pan/Mute/Solo row; Up/Down changes row
+changes the selected track while preserving Level/Pan/Mute/Solo row; Up/Down changes row
 while preserving track. Inspector correlation is pinned to the selected track
 and control, and its send → return → global body may scroll without using
 scroll position as selection authority. The webview renders every visible
@@ -902,329 +757,102 @@ repeat its guidance.
 
 ## As-built visual vocabulary
 
-The current token source is `src/shell/tokens.rs`; `webview-page/tokens.css` is
-generated from it. The interface is dark-only and uses Azeret Mono.
+[`src/shell/tokens.rs`](src/shell/tokens.rs) owns visual tokens;
+`webview-page/tokens.css` is generated. Do not duplicate token values here.
+The current interface is dark-only and uses Azeret Mono. Vendor provenance
+retains font and upstream DSP licensing information.
 
-### Colors
-
-| Token | Value |
-| --- | --- |
-| canvas | `#0c1015` |
-| surface | `#121821` |
-| panel | `#17202a` |
-| elevated | `#1d2733` |
-| selected | `#2a3745` |
-| border-default | `#2a3745` |
-| border-strong | `#415166` |
-| text-primary | `#f2f6f8` |
-| text-secondary | `#b8c4d1` |
-| text-muted | `#6f8095` |
-| focus | `#65e5ff` |
-| adjust | `#ffb454` |
-| positive | `#58e887` |
-| warning | `#ff6868` |
-| instrument | `#b894ff` |
-| patch | `#ff6fbe` |
-| chorus | `#f6f178` |
-
-### Type and geometry
-
-| Style | Size / line | Weight | Tracking |
-| --- | --- | --- | --- |
-| Display/Screen | 32 / 40 | SemiBold | 0.4 |
-| Heading/Section | 18 / 24 | SemiBold | 1.4 |
-| Heading/Panel | 14 / 20 | Bold | 1.2 |
-| Body/Default | 15 / 22 | Regular | 0 |
-| Body/Compact | 13 / 18 | Regular | 0 |
-| Label/Control | 12 / 16 | Medium | 0.8 |
-| Code/Value | 14 / 20 | SemiBold | 0.2 |
-| Instruction/Hint | 11 / 16 | Medium | 0.8 |
-
-As-built geometry uses spacing 4/8/12/16/24/32 px, radii 0/4/8 px, a 48 px
-minimum target, a 1 px resting keyline, a 3 px cyan focus keyline with 8 px
-halo radius/1 px spread/0.28 opacity, and a 3 px amber adjustment keyline. The
-Mixer fader specimen is a 14 px track, 8 px fill, 3 px bottom shoulder, 34×6 px
-cap, and 2 px rounding.
-
-Shell geometry is a bounded responsive contract rather than a pair of fixed
-canvases. Rust owns the minimum, preferred, and maximum track/spacing tokens
-and the ordered Wide, Standard, and Compact thresholds; generated CSS exposes
-them to one Grid/Flex DOM. Wide and Standard use a flexible main track with a
-bounded persistent Utility/Inspector track. Compact stacks those same regions
-in document order. `minmax()`, `clamp()`, intrinsic sizing, wrapping, and
-scroll-to-focus keep required content reachable, and every interactive target
-retains the 48 px floor. The 1920×1080 and 1280×800 sizes are representative
-witness fixtures only and do not select product state or authorize fixed
-coordinates.
+One Grid/Flex composition uses content-aware Wide, Standard, and Compact
+layouts. Main and Utility/Inspector tracks retain their semantic identities;
+Compact stacks them. Intrinsic sizing, wrapping, independent scrolling,
+scroll-to-focus, and accessible target sizes keep every projected control
+reachable. Named viewport sizes are test fixtures, not fixed product canvases.
 
 ## Evidence retained in code
 
-The focused Mixer visibility and scroll-observation repair passed
-`make test-webview-detail-native`, including repeat-render and focus checks,
-the generated width sweep across all three layout modes, and owned shutdown.
-Workspace reachability now measures the modal's inner option list when one is
-present. Scroll probes check the absolute region endpoints separately from
-revealing the first and last controls, since non-focusable headings and
-visualizations can extend beyond those controls. This run excluded manual
-dragging, and native screen capture returned `could not create image from
-display`; the structural pass supplies no new screenshot or visual-fidelity
-evidence.
+Production tests, witness implementations, and generated reports are the
+reproducible evidence. Historical aggregate test counts and handoff narratives
+live in Git history, not this document. Validate the changed path and report
+what was actually run, including failures and environment skips.
 
-The repository's tests and live-scene report types are the surviving detailed
-evidence. At the documentation reset and the 2026-08-21 responsive Patch
-Overview slice:
-
-- formatting, Clippy with warnings denied, JavaScript syntax validation, and
-  `cargo test --all-targets` passed; the library aggregate reported 744 passed
-  and two measurement-only tests ignored, and every integration target
-  completed without a deterministic failure;
-- exact selector, no-name-enumeration, graph/callback, reducer/projection,
-  Sample, and headless webview witnesses existed in the production path;
-- the production webview witness measured Wide, Standard, Intermediate,
-  Compact, and scaled-text Patch Overview compositions with one serialized
-  projection, stable focus, all three slot controls, persistent Utility,
-  48 px target floors, bounded independent scrolling, no required-content
-  overlap, no document-level horizontal overflow, and deterministic repeated
-  rendering;
-- the same witness kept all sixteen Mixer tracks and Inspector reachable under
-  responsive composition and retained projection-to-paint identity and meter
-  correlation; the Mixer remains a functional blockout pending its own visual
-  composition slice;
-- the 2026-08-20 Patch-editor live report recorded 15 focused Patches, 105/105
-  editable parameters, all three engine transitions, nonzero isolated audio,
-  zero callback allocations/destructions, and clean note/stream/graph teardown;
-- the 2026-08-20 Mixer live report recorded all 64 track/row focus pairs,
-  32/32 send edits, exact level/pan/mute/solo edits, routing/isolation/meter
-  predicates, nonzero physical audio, zero callback allocations/destructions,
-  and clean teardown; it explicitly recorded multi-select as not implemented;
-- the detail/assets implementation has deterministic positive and controlled
-  negative tests, and its interactive audio path was manually heard and
-  verified; Instrument/FX Detail now also has the shared descriptor-driven DOM
-  composition, 29-state exact serialization matrix, and current native
-  responsive/render measurements described above; its production native
-  physical keyboard/controller handoff also passed as described above.
-- the 2026-08-26 Engine/Post FX option run passed the focused reducer,
-  registry, lifecycle, serialization, semantic-action, Sample regression,
-  formatting, warnings-denied lint, exact-validation self-test, no-name guard,
-  and broad deterministic suite; the library aggregate reported 750 passed and
-  two measurement-only tests ignored;
-- the scoped real-window option target passed the full viewport/text-scale
-  matrix, maximum-registry scroll and wrapping, repeated paint, resize-only
-  sequence, normalized input journeys, every occupied/empty/duplicate slot,
-  Detail/Mixer regressions, and clean shutdown described above; the separate
-  physical option handoff is still incomplete evidence.
-- the 2026-08-27 scoped real-window Detail/Mixer witness measured zero action
-  hints outside the footer across Overview, Detail, Utility/Inspector, Choice,
-  Sample Browser, and Mixer fixtures; it also reconciled the Envelope SVG's
-  four projected ADSR values, descriptor-owned timed-phase maxima, approved
-  100 ms/5 s display proportions, and six painted curve points; retained the
-  48 px target floor and complete scroll reachability, captured readable Wide,
-  Standard, Intermediate, Compact, and scaled-text screenshots, and closed
-  cleanly.
-- the 2026-08-27 shared-channel MIDI correction passed focused production
-  reducer, AppLoop, fixture-source, projection, and functional tests: duplicate
-  subscriptions install and edit successfully, one normalized channel message
-  emits ordered commands for both matching Patches, and an unsubscribed channel
-  leaves generation and command output unchanged. The production smoke run
-  reported automatic MIDI delivery with zero callback allocations and
-  destructions;
-- the 2026-08-27 physical MIDI implementation has focused deterministic proof
-  for canonical IDs/preferences, one reducer mutation path, ordered scans and
-  exact restart matching, bounded worker ownership, callback normalization and
-  a 1 MiB SysEx negative, zero callback allocations/deallocations, 64-event
-  control draining, shared-channel fan-out, reserved recovery, overflow
-  invalidation/fresh revision, worker-side shutdown retirement, exact
-  observation revision/30 Hz coalescing, Settings projection, schema version
-  19, and committed renderer structure. The 2026-08-27 macOS CoreMIDI host
-  seam enumerated three real ports under the `midir-v1` identity schema; the
-  seam also treats zero ports as truthful success or reports one typed
-  initialization failure.
-- on 2026-08-28, the operator completed the bounded physical MIDI handoff with
-  an attached device through the production CoreMIDI adapter and audio graph:
-  Shift+Start entry, device navigation, Connect/Disconnect/Retry, correlated
-  Receiving activity and audible supported messages, switching with the old
-  input rejected and no stuck note, hot unplug/Unavailable/exact-identity
-  return, Shift+Down focus restoration, and clean exit all passed. The native
-  Settings page was also confirmed readable. Combined with the controlled
-  malformed, unsupported, overflow, fresh-revision, and retirement tests above,
-  this closes the physical-path handoff without claiming those synthetic edge
-  packets were produced by the attached controller. Cross-platform native
-  builds, the continuous native Settings width sweep, and direct screenshot
-  comparison with Figma node `116:2` remain incomplete acceptance.
-- on 2026-08-28, the session-lifecycle implementation passed formatting,
-  Clippy with warnings denied, the exact-selector self-test, the static
-  no-name-enumeration guard, 41 focused session library tests, and
-  `cargo test --all-targets`. The library aggregate reported 834 passed and two
-  measurement-only tests ignored; every binary and integration target passed.
-  Production-seam evidence covered the exact `INIT` default, a fixture source
-  that panics if normal startup consults it, initial silence and physical-MIDI
-  playability, New/Open prepared replacement, Save/Save As exact round trips,
-  dirty guards, typed failure preservation, block-boundary graph activation,
-  off-callback candidate retirement, and zero measured callback allocations or
-  destructions. The adapter-level native lifecycle report completed all five
-  menu shortcuts, New cancellation, failed and successful Open, Save As, and
-  dirty Close Cancel/Save/Discard with clean worker/graph teardown. The broad
-  webview target passed its headless policy and serialization checks but
-  truthfully skipped its environment-gated real-window/DOM groups because
-  `CREST_WEBVIEW_TESTS=1` was absent. This lifecycle evidence does not establish
-  broad Figma parity, packaged cross-platform storage semantics, or a manual OS
-  dialog visual handoff.
-- on 2026-08-28, empty-Patch implicit creation passed formatting, Clippy with
-  warnings denied, exact-selector and no-name guards, focused reducer,
-  projector, worker, coordinator, renderer, persistence, and session-lifecycle
-  tests, and `cargo test --all-targets`. The library aggregate reported 860
-  passed and two measurement-only tests ignored; every binary and integration
-  target passed. The headless webview witness covered 40 serialized states,
-  including prospective Overview, Detail, Choice, Utility, every creation
-  phase, typed failure, 16/16 capacity, and acknowledged creation. Production
-  evidence covered all declared first-edit families converging on one append
-  correlation, exact graph preparation and preflight, prior live-audio carry,
-  a silent new engine, activation-only saved commit, failure/retry, Save and
-  fresh Open, exact 16-Patch restore, and zero measured callback allocations
-  or destructions. Direct live-Figma inspection measured Patch Overview
-  `95:202` and Interaction Map `49:3` as recorded above. The scoped native
-  empty-Patch target passed its Wide, Standard, Intermediate, Compact, and
-  enlarged-text matrix with singular focus, active scroll-endpoint
-  reachability, 48 px target floors, zero required overlap/horizontal
-  overflow, deterministic repaint, resize-neutral identity, and owned
-  teardown. The strict native key monitor delivered all 68 scripted AppKit
-  transitions exactly once into 20 byte-exact actions, and the real window
-  painted the complete normalized empty → inspection → failed first edit →
-  retry → created → exact return → Shift+Left sequence. This scoped evidence
-  does not establish broad Figma parity or physical gamepad integration.
-
-Instrument and FX Detail have completed their scoped native manual handoff.
-The native responsive DOM measurements and handoff do not claim full Figma
-parity. Sample Detail and Browser have the functional completion recorded in
-the Sample section; further pixel matching is not an acceptance gate. Remaining
-visual work includes Mixer composition, native scaling, and shared polish. Engine/Post FX
-options retain the physical-input and scoped visual gaps recorded above. Their
-existing functional surfaces are not evidence that those visual slices are
-complete.
-
-These measurements are historical observations, not a roadmap and not a
-waiver for missing Figma fidelity. A test that only constructs objects, prints
-a success token, uses a parallel reducer/render path, or produces silent output
-is not behavioral proof.
+Evidence must traverse the production reducer, projector, worker, graph, and
+render path. Construction-only tests, parallel fake behavior, success tokens,
+and silent audio do not prove the product works. Native rendering, physical
+input/audio, and offline timing establish different facts; do not substitute
+one for another or demand an unrelated repeat of already accepted work.
 
 ## Commands
 
-```sh
-make build
-make check
-make test
-make lint
-make fmt-check
-make test-engine-post-fx-options
-make test-midi-devices
-make test-midi-host
-make test-webview-options-native
-make test-webview-empty-patch-native
+`make run`, `make play`, and `make ui` use the optimized release profile for both
+Rust and native DSP. `cargo run --bin crest-synth` remains an explicit debug
+launch; unoptimized timing is not a supported real-time performance target.
 
-# Open Sample INIT with test MIDI playing. T stops/restarts; Return opens Detail.
-make run
+`make performance-tools` installs the pinned Samply profiler locally.
+`make test-performance` builds optimized code with line tables, then runs the
+existing headless scenes, navigation, asset and runtime tests alongside the
+production stress matrix. The matrix covers installed engines and Braids
+models, Patch/voice/block-size fixtures, effects, returns, MIDI churn, live
+edits, serialization and concurrent graph preparation/activation/retirement.
+Fixture sizes are not product limits. Each case has independent unprofiled
+timing trials and a separate Samply diagnostic execution. The existing audio,
+note-delivery, timing and Rust callback allocation/destruction gates remain
+authoritative; profiled matrix timings do not count as timing-budget proof.
 
-# Interactive attached-device Settings/audio handoff. The script traps
-# interruption for safe teardown and exits incomplete unless the operator
-# confirms every printed physical-path check.
-make midi-device-handoff
+Every run retains commands, build/host/source fingerprints, raw latency samples,
+per-child CPU/RSS/fault/context-switch measurements, scene observations, logs,
+Samply profiles and portable symbol sidecars under `target/performance/runs/`.
+The HTML/Markdown report links those artifacts; `make performance-report` reads
+the latest run. Sampled hot-function counts are not CPU percentages; use
+`python3 scripts/performance_suite.py open <profile.json.gz>` for interactive
+thread timelines, call trees and flame graphs. Rust allocation counters do not
+intercept native C/C++ allocation. Process timings include fixture startup and
+report serialization; operation timings surround the production calls.
 
-# Run the current cumulative bounded live witness.
-make demo-live
-make demo-live-detail-and-assets
+`python3 scripts/performance_suite.py list` lists the manifest's existing source
+targets. `PERFORMANCE_ARGS='--case stress.control'` selects a focused run;
+`--baseline <previous-run.json>` rejects incompatible build/host/workload
+metadata and fails material median regressions across repeated trials.
+`--timings-only` explicitly records incomplete profiling coverage. Failed
+workloads, zero-test filters, watchdog expiry and missing symbolized profiles
+cannot produce a complete suite pass. `make test-performance-runner` exercises
+these failure paths. Exact workloads and screening thresholds live in source.
 
-# Retained focused live witnesses.
-make demo-live-mixer
-make demo-live-effects-and-buses
-make demo-live-patch-editor
-make demo-live-sixteen-track-mixer-routing
-make demo-live-semantic-view-model
-make demo-live-graphical-shell
+`make test-performance-native` profiles the existing WKWebView paint and meter
+witnesses. `make test-performance-physical` profiles the retained live scenes
+with a real window and audio device. Both require an unlocked interactive
+session; a locked display is reported as blocked. Offline timings do not prove
+physical device scheduling or native paint latency.
 
-# Manual component browser.
-make demo-live-component-library
-```
+Common entry points are defined in [`Makefile`](Makefile):
 
-Sample works with plain `make run`. Return opens Detail from Engine, then
-Return on Sample File opens the in-app file page. Shift+W reaches the same page.
-W/S navigates, Return enters/assigns, Space held on a file auditions it, and
-Shift+S or the Cancel row returns unchanged. Hold K while using W/S/A/D to
-adjust editable controls; loop mode opens its canonical choice list. Cmd+S and
-Cmd+O retain the native session Save/Open dialogs.
+| Purpose | Command |
+| --- | --- |
+| Run the product | `make run` |
+| Build, functional checks, lint, formatting | `make build`, `make test`, `make lint`, `make fmt-check` |
+| SoundFont import and restore | `make test-soundfont-loading` |
+| Physical MIDI discovery | `make test-midi-host` |
+| Native Detail/Mixer | `make test-webview-detail-native` |
+| Native page navigation | `make test-webview-page-navigation-native` |
+| Native SoundFont workflows | `make test-webview-soundfont-native` |
+| Attached MIDI handoff | `make midi-device-handoff` |
 
-The 2026-09-05 picker correction replaces the rejected native asset dialog.
-Its focused checks cover common WAV/SF2 directory filtering, nested folders,
-canonical keyboard confirm/back, import failure and stale-result correlation,
-Sample audio/preview, and restored waveforms. The 868-test library run, 19
-Sample/Detail tests, serialized-schema test, and warnings-denied Clippy passed.
-Native production execution confirmed in-app entry, nested and Home navigation,
-Cancel with the same asset/focus, library WAV selection, and Home-based external
-WAV import returning to a READY Detail with an Imported-relative asset. The
-imported copy remained readable after removal of its original source. The
-final native renderer witness and owned close passed.
-Existing resize acceptance remains closed. Physical gamepad mapping remains a
-separate integration. SoundFont loading now extends this same browser; it does
-not add another navigation scheme or native asset dialog.
+Normal startup plays the bounded test pattern on MIDI channel 1; T toggles it.
+Return opens highlighted Detail. Return on Sample/SoundFont File opens the
+in-app browser. W/S navigates; Return enters or assigns; Shift+S cancels.
+Hold Space on a Sample file to preview; SoundFont preview is unavailable.
+K with W/S/A/D edits controls; K+W opens an eligible choice. Cmd+S/Cmd+O use
+native session Save/Open dialogs. Assets use the in-app file page.
 
-The SoundFont loading checks use generated two-preset banks with different
-authored names and numeric audio. Four integration tests prove validated
-import, content reuse without overwrite, independent Patch catalogs and audio,
-rejection of an unrequested preset during bank replacement, keyboard selection,
-cancellation/stale failures, and graph-acknowledgement-only assignment. Exact
-version-2 restore renders finite nonzero audio after the external sources are
-deleted. Rendering and bank swaps record zero callback allocations and
-deallocations. The actual capacity-one filesystem worker has a separate unit
-test for SF2 filtering and imported metadata without premature assignment.
+To choose an existing Sample library and initial asset, configure both
+`CREST_SAMPLE_LIBRARY_ROOT` (absolute root) and `CREST_SAMPLE_DEFAULT_ASSET`
+(relative asset) before startup. They are a validated pair.
 
-Validation passed: 872 library tests (two measurement tests ignored), focused
-SoundFont/preset, Sample/Detail, session, production-runtime and callback tests,
-bidirectional schema checks, warnings-denied Clippy, JavaScript syntax, and
-strict OpenSpec validation. `make test-soundfont-loading` runs the focused
-SoundFont tests. `make test-webview-soundfont-native` renders six production
-documents from the keyboard/import/graph tests in WKWebView: file page,
-loading, activating, loaded Detail, preset options, and failed Detail. It checks
-focus, values and repeated paint, captures snapshots, and closes its owned
-window. This witness does not run a resize sweep or require pixel matching.
-The shared options page resolves status from its actual origin surface;
-SoundFont browsing omits unsupported waveform and preview panels.
-
-To try a bank, run `make run`. On Engine, hold K and press W to open options;
-use W/S and Return to select HiDef SoundFont. Return opens Detail. Move to
-SoundFont File with S and press Return. Browse Home, Volumes, or the SoundFont
-library with W/S and Return, then select a downloaded SF2. Shift+S cancels.
-On Preset, hold K and press W to open that bank's choices. The startup test
-pattern plays MIDI channel 1 and T toggles it; keep the test Patch routed to
-channel 1. SoundFont hold-to-preview and cloud downloading are not implemented.
-
-To use an existing library and its initial asset, configure both overrides
-before the process starts:
-
-```sh
-CREST_SAMPLE_LIBRARY_ROOT=/absolute/path/to/library \
-CREST_SAMPLE_DEFAULT_ASSET=relative/path/to/sample.wav \
-make run
-```
-
-Useful validation entry points are
-`bash scripts/run_exact_test_validation.sh --self-test`,
-`bash scripts/run_exact_test_validation.sh <target> <exact-test> <marker>`,
-`scripts/check_no_name_enumerated_identity.sh`,
-`cargo test --test webview_projection_shell -- --nocapture`, and
-`make test-webview-detail-native` for the bounded real-window Detail/Mixer
-witness. `make test-webview-empty-patch-native` scopes the real-window
-empty/pending/capacity/newly-created Patch fixtures, the normalized
-failure/retry journey, and the strict production AppKit input-capture witness.
-It requires an interactive macOS session; an unavailable window, missing
-first animation-frame paint, non-exact native transition log, or missing
-focus-loss edge fails the target and remains incomplete evidence. The option handoff checklist is
-`scripts/run_engine_post_fx_option_handoff.sh`; the physical MIDI checklist is
-`scripts/run_midi_device_handoff.sh`. `make test-midi-host` is safe with no
-attached input: zero ports is truthful success and backend initialization is a
-typed report. Linux builds require ALSA development headers for midir's default
-backend; optional JACK needs an explicit packaging feature. Windows defaults
-to WinMM; optional WinRT likewise needs an explicit packaging feature. Native
-window, physical-input, and physical-audio sections require an interactive
-host; a typed environmental skip is incomplete evidence, not acceptance.
+Native window, physical-input, and physical-audio witnesses require an
+interactive host. An unavailable environment is incomplete evidence, not a
+pass. Linux MIDI builds require ALSA development headers; optional JACK is an
+explicit packaging choice. Windows defaults to WinMM; optional WinRT is also
+an explicit choice. Broader packaging remains unverified; maintain platform
+adapter boundaries without assuming a small-device target.
 
 ## Change checklist
 

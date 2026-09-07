@@ -92,3 +92,10 @@ debug = "line-tables-only"
 [profile.test]
 debug = "line-tables-only"
 incremental = false
+
+# Production optimization with Rust and native cc debug information retained
+# for sampling profiles. Instrumentation stays outside the audio callback.
+[profile.profiling]
+inherits = "release"
+debug = "line-tables-only"
+strip = "none"
