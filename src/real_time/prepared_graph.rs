@@ -214,14 +214,14 @@ pub struct PreparedGraphLayout {
     max_frames: usize,
     patch_count: usize,
     patch_ids: [Option<PatchId>; MAX_ACTIVE_PATCHES],
-    scalar_counts: [u8; MAX_ACTIVE_PATCHES],
+    scalar_counts: [usize; MAX_ACTIVE_PATCHES],
     engine_capability_identities: [Option<PositionCapabilityIdentity>; MAX_ACTIVE_PATCHES],
     effect_slot_ids: [[Option<EffectSlotId>; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
-    effect_scalar_counts: [[u8; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
+    effect_scalar_counts: [[usize; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
     effect_capability_identities:
         [[Option<PositionCapabilityIdentity>; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
     return_slot_ids: [Option<EffectSlotId>; MAX_BUS_RETURNS],
-    return_scalar_counts: [u8; MAX_BUS_RETURNS],
+    return_scalar_counts: [usize; MAX_BUS_RETURNS],
     return_capability_identities: [Option<PositionCapabilityIdentity>; MAX_BUS_RETURNS],
 }
 
@@ -263,6 +263,12 @@ impl PreparedGraph {
 
     pub const fn initial_parameters(&self) -> &ParameterSnapshot {
         &self.inner.initial_parameters
+    }
+
+    /// Transfers the prepared projection at activation. Superseded parameter
+    /// storage stays graph-owned and is destroyed off callback with the graph.
+    pub fn exchange_initial_parameters_on_audio(&mut self, active: &mut ParameterSnapshot) {
+        core::mem::swap(&mut self.inner.initial_parameters, active);
     }
 
     pub const fn engine_rack(&self) -> &PreparedEngineRack {
@@ -308,11 +314,11 @@ impl PreparedGraph {
         let mut index = 0;
         while index < self.inner.engine_rack.patch_count() {
             patch_ids[index] = self.inner.engine_rack.patch_id(index);
-            scalar_counts[index] =
-                self.inner
-                    .engine_rack
-                    .scalar_count(index)
-                    .expect("active rack slots have a Scalar count") as u8;
+            scalar_counts[index] = self
+                .inner
+                .engine_rack
+                .scalar_count(index)
+                .expect("active rack slots have a Scalar count");
             engine_capability_identities[index] = self.inner.engine_rack.capability_identity(index);
             let mut position = 0;
             while position < MAX_EFFECT_SLOTS {
@@ -322,7 +328,7 @@ impl PreparedGraph {
                     .inner
                     .effect_rack
                     .scalar_count_at(index, position)
-                    .unwrap_or(0) as u8;
+                    .unwrap_or(0);
                 effect_capability_identities[index][position] = self
                     .inner
                     .effect_rack
@@ -341,7 +347,7 @@ impl PreparedGraph {
                 .mixer
                 .bus_returns()
                 .scalar_count(bus)
-                .unwrap_or(0) as u8;
+                .unwrap_or(0);
             return_capability_identities[bus.index()] =
                 self.inner.mixer.bus_returns().capability_identity(bus);
         }
@@ -818,7 +824,7 @@ mod tests {
         format!("{PREFIX}{}", "a".repeat(bytes - PREFIX.len()))
     }
 
-    fn layout(scalar_counts: [u8; 2]) -> PreparedGraphLayout {
+    fn layout(scalar_counts: [usize; 2]) -> PreparedGraphLayout {
         let mut patch_ids = [None; MAX_ACTIVE_PATCHES];
         patch_ids[0] = PatchId::new(1).ok();
         patch_ids[1] = PatchId::new(2).ok();

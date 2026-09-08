@@ -4,7 +4,6 @@ use crate::adapter::braids_capability::{
 };
 use crate::adapter::braids_native::{
     BraidsNativeError, BraidsVoiceBank, BRAIDS_INTERNAL_CHUNK_FRAMES, BRAIDS_MODEL_COUNT,
-    BRAIDS_VOICE_COUNT,
 };
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
@@ -51,15 +50,14 @@ impl BraidsPreparer {
             return Err(InstrumentPreparationError::InvalidFrameCapacity);
         }
         PreparedBraidsConfig::try_from_patch(patch)?;
-        let bank = BraidsVoiceBank::new().map_err(|_| {
-            InstrumentPreparationError::VoiceCapacityExceeded {
+        let bank = BraidsVoiceBank::with_capacity(usize::from(patch.voice_limit().value()))
+            .map_err(|_| InstrumentPreparationError::VoiceCapacityExceeded {
                 patch_id: patch.id(),
-            }
-        })?;
+            })?;
         Ok(PreparedBraidsInstrument {
             patch_id: patch.id(),
             bank,
-            voices: [BraidsVoice::IDLE; BRAIDS_VOICE_COUNT],
+            voices: vec![BraidsVoice::IDLE; usize::from(patch.voice_limit().value())],
             expression: 1.0,
             pressure: 1.0,
             pitch_bend: 0,
@@ -146,7 +144,7 @@ impl BraidsVoice {
 struct PreparedBraidsInstrument {
     patch_id: PatchId,
     bank: BraidsVoiceBank,
-    voices: [BraidsVoice; BRAIDS_VOICE_COUNT],
+    voices: Vec<BraidsVoice>,
     expression: f32,
     pressure: f32,
     pitch_bend: i16,
@@ -168,13 +166,6 @@ impl PreparedBraidsInstrument {
             .voices
             .iter()
             .position(|voice| voice.envelope.is_idle())
-            .or_else(|| {
-                self.voices
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(index, voice)| (voice.age, *index))
-                    .map(|(index, _)| index)
-            })
             .ok_or(PreparedInstrumentError::DispatchRejected)?;
 
         self.bank
@@ -325,22 +316,24 @@ impl PreparedInstrument for PreparedBraidsInstrument {
         interleaved_stereo: &mut [f32],
         frame_count: usize,
         parameters: &RtPatchParameters,
-    ) {
-        let frame_count = frame_count
-            .min(self.max_frames)
-            .min(interleaved_stereo.len() / 2);
+    ) -> Result<(), crate::synth::PreparedInstrumentError> {
+        if frame_count > self.max_frames
+            || interleaved_stereo.len() != frame_count.saturating_mul(2)
+        {
+            return Err(PreparedInstrumentError::InvalidFrameCapacity);
+        }
         interleaved_stereo[..frame_count * 2].fill(0.0);
         let Some(scalars) = BraidsScalarParameters::from_rt(parameters) else {
-            return;
+            return Err(PreparedInstrumentError::ScalarLayoutMismatch);
         };
         if parameters.patch_id() != Some(self.patch_id) {
-            return;
+            return Err(PreparedInstrumentError::DispatchRejected);
         }
 
         let mut host_offset = 0;
         while host_offset < frame_count {
             let host_frames = (frame_count - host_offset).min(HOST_FRAMES_PER_NATIVE_CHUNK);
-            for voice_index in 0..BRAIDS_VOICE_COUNT {
+            for voice_index in 0..self.voices.len() {
                 if self
                     .render_voice_chunk(
                         voice_index,
@@ -351,11 +344,14 @@ impl PreparedInstrument for PreparedBraidsInstrument {
                     )
                     .is_err()
                 {
-                    self.voices[voice_index].clear();
+                    interleaved_stereo.fill(0.0);
+                    return Err(PreparedInstrumentError::RenderRejected);
                 }
             }
             host_offset += host_frames;
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {
@@ -515,7 +511,7 @@ mod tests {
             .dispatch(message(MidiMessageKind::NoteOn, 60, 127), &parameters)
             .unwrap();
         let mut output = [0.0_f32; 128];
-        prepared.render(&mut output, 64, &parameters);
+        prepared.render(&mut output, 64, &parameters).unwrap();
         assert!(output.iter().all(|sample| sample.is_finite()));
         assert!(output.iter().any(|sample| sample.abs() > 0.000_001));
         assert_eq!(
@@ -527,8 +523,8 @@ mod tests {
     }
 
     #[test]
-    fn idle_first_then_oldest_stealing_is_patch_local_and_all_notes_off_is_bounded() {
-        let patch = patch(1);
+    fn prepared_voice_capacity_refuses_exhaustion_without_stealing() {
+        let patch = patch(1).with_voice_limit(16).unwrap();
         let mut prepared = BraidsPreparer::new()
             .unwrap()
             .prepare_patch(&patch, BRAIDS_HOST_SAMPLE_RATE, 64)
@@ -542,12 +538,12 @@ mod tests {
         assert_eq!(prepared.active_voice_count(), 16);
         assert_eq!(prepared.voices[0].note, Some(48));
 
-        prepared
+        assert!(prepared
             .dispatch(message(MidiMessageKind::NoteOn, 80, 100), &parameters)
-            .unwrap();
+            .is_err());
         assert_eq!(prepared.active_voice_count(), 16);
-        assert_eq!(prepared.voices[0].note, Some(80));
-        assert!(prepared.voices.iter().all(|voice| voice.note != Some(48)));
+        assert_eq!(prepared.voices[0].note, Some(48));
+        assert!(prepared.voices.iter().all(|voice| voice.note != Some(80)));
 
         prepared
             .dispatch(message(MidiMessageKind::AllNotesOff, 0, 0), &parameters)
@@ -605,7 +601,7 @@ mod tests {
                 .dispatch(message(MidiMessageKind::NoteOn, 60, 127), &parameters)
                 .unwrap();
             let mut output = [0.0; 128];
-            prepared.render(&mut output, 64, &parameters);
+            prepared.render(&mut output, 64, &parameters).unwrap();
             output
         }
 

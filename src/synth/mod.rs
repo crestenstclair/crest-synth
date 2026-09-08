@@ -33,7 +33,7 @@ pub use capability_visualization::{
 pub use descriptor_default_config_factory::DescriptorDefaultConfigFactory;
 pub use effect_capability::{
     EffectCapabilityDescriptor, EffectCapabilityError, EffectCapabilityRegistry, PostEffectConfig,
-    MAX_EFFECT_SCALAR_PARAMETERS, MAX_POST_EFFECTS_PER_PATCH,
+    MAX_POST_EFFECTS_PER_PATCH,
 };
 pub use effect_capability_id::EffectCapabilityId;
 pub use effect_capability_provider::EffectCapabilityProvider;
@@ -45,7 +45,7 @@ pub use instrument_capability::{
     CapabilityDescriptor, CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig,
     ParameterAdjustment, ParameterAssignment, ParameterChoice, ParameterDefault, ParameterKind,
     ParameterPredicate, ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue,
-    PatchInteraction, VoicePolicy, MAX_INSTRUMENT_SCALAR_PARAMETERS,
+    PatchInteraction, VoicePolicy,
 };
 pub use instrument_capability_provider::InstrumentCapabilityProvider;
 pub use instrument_composition::{compose_instrument_registry, InstrumentCompositionError};

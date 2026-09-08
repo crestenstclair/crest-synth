@@ -29,6 +29,8 @@ pub struct AudioRenderer<Boundary, Structural, Observation = DiscardAudioObserva
     active_graph: PreparedGraph,
     pending_retirement: Option<PreparedGraph>,
     parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
+    candidate_parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
+    candidate_pending: bool,
     handoff_status: GraphHandoffStatus,
     active_notes: ActiveNoteObservation,
     rendered_blocks: u64,
@@ -73,7 +75,7 @@ where
         initial_graph: PreparedGraph,
         observation: Observation,
     ) -> Self {
-        let parameters = *initial_graph.initial_parameters();
+        let parameters = initial_graph.initial_parameters().clone();
         let handoff_status = GraphHandoffStatus::with_active(initial_graph.revision());
         structural.publish_status_on_audio(handoff_status);
         Self {
@@ -82,6 +84,8 @@ where
             observation,
             active_graph: initial_graph,
             pending_retirement: None,
+            candidate_parameters: parameters.clone(),
+            candidate_pending: false,
             parameters,
             handoff_status,
             active_notes: ActiveNoteObservation::new(),
@@ -123,17 +127,21 @@ where
 
         // Select the newest compatible complete projection before command
         // delivery so note-on/note-off latching observes this generation.
-        let latest = self.boundary.read_latest_parameters();
+        self.candidate_pending |= self
+            .boundary
+            .exchange_latest_parameters(&mut self.candidate_parameters);
+        let latest = &self.candidate_parameters;
         let compatible = latest.graph_revision() == self.active_graph.revision()
-            && self.active_graph.engine_rack().matches_parameters(&latest)
-            && self.active_graph.effect_rack().matches_parameters(&latest)
+            && self.active_graph.engine_rack().matches_parameters(latest)
+            && self.active_graph.effect_rack().matches_parameters(latest)
             && self
                 .active_graph
                 .bus_return_rack()
-                .matches_parameters(&latest);
-        if compatible {
-            self.parameters = latest;
-        } else {
+                .matches_parameters(latest);
+        if self.candidate_pending && compatible {
+            core::mem::swap(&mut self.parameters, &mut self.candidate_parameters);
+            self.candidate_pending = false;
+        } else if self.candidate_pending {
             self.handoff_status.record_incompatible_snapshot();
         }
         self.structural.publish_status_on_audio(self.handoff_status);
@@ -145,7 +153,7 @@ where
             self.commands_consumed = self.commands_consumed.saturating_add(1);
             match command {
                 AudioCommand::PatchMidi { patch_id, message } => {
-                    let matching_parameters = self.parameters.patch(patch_id).copied();
+                    let matching_parameters = self.parameters.patch(patch_id);
                     // Voice-limit enforcement, ahead of dispatch.
                     //
                     // One fixed integer comparison between the Patch's
@@ -175,7 +183,7 @@ where
                     }
                     let dispatch_result = matching_parameters.map(|parameters| {
                         let (rack, _, _) = self.active_graph.callback_parts_mut();
-                        rack.dispatch(patch_id, message, &parameters)
+                        rack.dispatch(patch_id, message, parameters)
                     });
                     match dispatch_result {
                         Some(Ok(())) => {
@@ -220,15 +228,16 @@ where
             return;
         }
 
-        let parameters = self.parameters;
+        let parameters = &self.parameters;
         let mut effect_observations = [PatchEffectObservation::EMPTY; MAX_ACTIVE_PATCHES];
         {
             let (rack, patch_audio, _) = self.active_graph.callback_parts_mut();
-            if patch_audio.begin_render(&parameters, frame_count).is_err() {
+            if patch_audio.begin_render(parameters, frame_count).is_err() {
                 return;
             }
-            if rack.render(patch_audio, &parameters).is_err() {
+            if rack.render(patch_audio, parameters).is_err() {
                 interleaved_stereo.fill(0.0);
+                self.publish_failed_block(frame_count);
                 return;
             }
         }
@@ -237,11 +246,11 @@ where
             let (_, effect_rack, patch_audio, mixer) =
                 self.active_graph.callback_parts_with_effects_mut();
             if effect_rack
-                .process(patch_audio, &parameters, &mut effect_observations)
+                .process(patch_audio, parameters, &mut effect_observations)
                 .is_err()
             {
                 interleaved_stereo.fill(0.0);
-                self.routing_failures = self.routing_failures.saturating_add(1);
+                self.publish_failed_block(frame_count);
                 return;
             }
             let primary = patch_audio.stems().first();
@@ -266,7 +275,7 @@ where
                 primary_patch_id,
                 primary_patch_rms,
                 patch_effect,
-                mixer.mix(patch_audio, &parameters, interleaved_stereo),
+                mixer.mix(patch_audio, parameters, interleaved_stereo),
             )
         };
 
@@ -293,6 +302,27 @@ where
             )
             .with_voice_limit_refusals(self.voice_limit_refusals)
             .with_preview_observation(preview_observation),
+        );
+    }
+
+    fn publish_failed_block(&mut self, frame_count: usize) {
+        self.routing_failures = self.routing_failures.saturating_add(1);
+        self.rendered_blocks = self.rendered_blocks.saturating_add(1);
+        self.rendered_frames = self.rendered_frames.saturating_add(frame_count as u64);
+        self.observation.publish_from_callback(
+            AudioObservationSnapshot::from_mix_with_graph_and_routing(
+                self.rendered_blocks,
+                self.rendered_blocks,
+                self.rendered_frames,
+                self.parameters.generation(),
+                self.active_graph.revision(),
+                self.commands_consumed,
+                self.active_notes.count(),
+                self.routing_failures,
+                self.last_unknown_patch_id,
+                crate::mixer::mix_observation::MixObservation::default(),
+            )
+            .with_voice_limit_refusals(self.voice_limit_refusals),
         );
     }
 
@@ -347,7 +377,7 @@ where
         };
 
         let replacement_revision = replacement.revision();
-        let replacement_parameters = *replacement.initial_parameters();
+        replacement.exchange_initial_parameters_on_audio(&mut self.parameters);
         // Voice carry-over: before the graphs exchange, move every
         // still-live prepared instance the declared delta leaves unchanged
         // from the active graph into the replacement — bounded pointer swaps,
@@ -357,7 +387,6 @@ where
         replacement.carry_live_state_from(&mut self.active_graph);
         let retired = core::mem::replace(&mut self.active_graph, replacement);
         let retired_revision = retired.revision();
-        self.parameters = replacement_parameters;
         match carry_over {
             // No declared delta: the full-reset swap semantics remain.
             None => self.active_notes.clear_all(),
@@ -566,7 +595,7 @@ mod tests {
     use core::alloc::{GlobalAlloc, Layout};
     use core::cell::Cell;
     use std::alloc::System;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::sync::Arc;
 
     thread_local! {
@@ -668,8 +697,12 @@ mod tests {
                 self.popped += 1;
                 Some(command)
             }
-            fn read_latest_parameters(&mut self) -> ParameterSnapshot {
-                self.parameters
+            fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool {
+                if self.parameters.generation() < previous.generation() {
+                    return false;
+                }
+                core::mem::swap(&mut self.parameters, previous);
+                true
             }
         }
         for budget in [7, DEFAULT_AUDIO_COMMANDS_PER_BLOCK] {
@@ -708,9 +741,13 @@ mod tests {
             command
         }
 
-        fn read_latest_parameters(&mut self) -> ParameterSnapshot {
+        fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool {
             self.parameter_reads += 1;
-            self.latest
+            if self.latest.generation() < previous.generation() {
+                return false;
+            }
+            core::mem::swap(&mut self.latest, previous);
+            true
         }
     }
 
@@ -789,6 +826,7 @@ mod tests {
     struct FixturePreparer {
         capability_id: CapabilityId,
         first_dispatches: Arc<AtomicUsize>,
+        render_failure: Arc<AtomicBool>,
         second_dispatches: Arc<AtomicUsize>,
         drops: Arc<AtomicUsize>,
     }
@@ -808,6 +846,7 @@ mod tests {
                 Ok(Box::new(FirstInstrument {
                     patch_id: patch.id(),
                     dispatches: Arc::clone(&self.first_dispatches),
+                    render_failure: Arc::clone(&self.render_failure),
                     drops: Arc::clone(&self.drops),
                 }))
             } else {
@@ -875,6 +914,7 @@ mod tests {
 
     struct FirstInstrument {
         patch_id: PatchId,
+        render_failure: Arc<AtomicBool>,
         dispatches: Arc<AtomicUsize>,
         drops: Arc<AtomicUsize>,
     }
@@ -898,8 +938,12 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(0.25);
+            if self.render_failure.load(Ordering::Relaxed) {
+                return Err(PreparedInstrumentError::RenderRejected);
+            }
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {
@@ -938,8 +982,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(0.5);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {
@@ -957,6 +1003,7 @@ mod tests {
         provider: HiDefSoundFontCapability,
         patches: [Patch; 2],
         first_dispatches: Arc<AtomicUsize>,
+        render_failure: Arc<AtomicBool>,
         second_dispatches: Arc<AtomicUsize>,
         drops: Arc<AtomicUsize>,
     }
@@ -982,6 +1029,7 @@ mod tests {
                 patches: [patch(1), patch(2)],
                 provider,
                 first_dispatches: Arc::new(AtomicUsize::new(0)),
+                render_failure: Arc::new(AtomicBool::new(false)),
                 second_dispatches: Arc::new(AtomicUsize::new(0)),
                 drops: Arc::new(AtomicUsize::new(0)),
             }
@@ -1006,6 +1054,7 @@ mod tests {
             let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer {
                 capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
                 first_dispatches: Arc::clone(&self.first_dispatches),
+                render_failure: Arc::clone(&self.render_failure),
                 second_dispatches: Arc::clone(&self.second_dispatches),
                 drops: Arc::clone(&self.drops),
             })];
@@ -1031,6 +1080,7 @@ mod tests {
             let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer {
                 capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
                 first_dispatches: Arc::clone(&self.first_dispatches),
+                render_failure: Arc::clone(&self.render_failure),
                 second_dispatches: Arc::clone(&self.second_dispatches),
                 drops: Arc::clone(&self.drops),
             })];
@@ -1103,6 +1153,47 @@ mod tests {
         assert_eq!(renderer.observation.latest.parameter_generation(), 9);
         assert_eq!(renderer.observation.latest.commands_consumed(), 2);
         assert_eq!(renderer.observation.latest.active_notes(), 1);
+    }
+
+    #[test]
+    fn failed_instrument_render_silences_partial_output_and_publishes_fresh_failure() {
+        let fixture = Fixture::new();
+        use crate::real_time::audio_boundary::{AudioBoundary, ControlAudioBoundary};
+        let (mut control, boundary) =
+            crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary::new(
+                4,
+                fixture.parameters(1, 1),
+            )
+            .into_handles();
+        control.publish_parameters(fixture.parameters(1, 9));
+        let mut renderer = AudioRenderer::with_observation(
+            boundary,
+            TestStructural::new(),
+            fixture.graph(1, 1),
+            TestObservation::default(),
+        );
+        let mut output = [0.0; 8];
+        renderer.render(&mut output);
+        assert!(output.iter().any(|sample| *sample != 0.0));
+        let before = renderer.observation.latest;
+        fixture.render_failure.store(true, Ordering::Relaxed);
+        begin_memory_count();
+        renderer.render(&mut output);
+        let memory = finish_memory_count();
+        assert_eq!(memory, (0, 0));
+        assert_eq!(output, [0.0; 8]);
+        let failed = renderer.observation.latest;
+        assert_eq!(failed.sequence(), before.sequence() + 1);
+        assert_eq!(failed.routing_failures(), before.routing_failures() + 1);
+        assert_eq!(failed.parameter_generation(), 9);
+        assert_eq!(failed.output_rms(), 0.0);
+        fixture.render_failure.store(false, Ordering::Relaxed);
+        renderer.render(&mut output);
+        assert!(output.iter().any(|sample| *sample != 0.0));
+        assert_eq!(
+            renderer.observation.latest.sequence(),
+            failed.sequence() + 1
+        );
     }
 
     #[test]
@@ -1319,7 +1410,7 @@ mod tests {
             .build(
                 target_revision,
                 std::slice::from_ref(&patch),
-                target_parameters,
+                target_parameters.clone(),
                 48_000.0,
                 512,
             )
@@ -1404,7 +1495,7 @@ mod tests {
 
         begin_memory_count();
         let dispatch = instrument.dispatch(message, &parameters);
-        instrument.render(&mut output, 512, &parameters);
+        instrument.render(&mut output, 512, &parameters).unwrap();
         instrument.all_notes_off();
         let (allocations, deallocations) = finish_memory_count();
 
@@ -1469,8 +1560,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(self.level);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {}
@@ -1778,6 +1871,7 @@ mod tests {
                 let preparers: Vec<Box<dyn InstrumentPreparer>> = vec![Box::new(FixturePreparer {
                     capability_id: CapabilityId::new(HIDEF_CAPABILITY_ID).unwrap(),
                     first_dispatches: Arc::clone(&self.dispatches),
+                    render_failure: Arc::new(AtomicBool::new(false)),
                     second_dispatches: Arc::clone(&self.unused_dispatches),
                     drops: Arc::clone(&self.drops),
                 })];
@@ -1817,7 +1911,7 @@ mod tests {
                 let mut boundary = Self {
                     commands: [None; 24],
                     next_command: 0,
-                    latest,
+                    latest: latest.clone(),
                 };
                 boundary.reload(latest, commands);
                 boundary
@@ -1843,8 +1937,12 @@ mod tests {
                 command
             }
 
-            fn read_latest_parameters(&mut self) -> ParameterSnapshot {
-                self.latest
+            fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool {
+                if self.latest.generation() < previous.generation() {
+                    return false;
+                }
+                core::mem::swap(&mut self.latest, previous);
+                true
             }
         }
 
@@ -2135,10 +2233,8 @@ mod tests {
             EffectCapabilityRegistry, EffectPreparer, EffectSlotId, PostEffectConfig,
         };
         use crate::testing::automatic_midi_test::create_soundfont_config;
-        use std::hint::black_box;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
-        use std::time::Instant;
 
         const SAMPLE_RATE: f32 = 48_000.0;
         const MAX_FRAMES: usize = 64;
@@ -2189,8 +2285,10 @@ mod tests {
                 output: &mut [f32],
                 _frame_count: usize,
                 _parameters: &crate::real_time::RtPatchParameters,
-            ) {
+            ) -> Result<(), crate::synth::PreparedInstrumentError> {
                 output.fill(0.05);
+
+                Ok(())
             }
 
             fn all_notes_off(&mut self) {}
@@ -2350,7 +2448,7 @@ mod tests {
                     .build(
                         GraphRevision::new(revision).unwrap(),
                         &self.patches,
-                        snapshot,
+                        snapshot.clone(),
                         SAMPLE_RATE,
                         MAX_FRAMES,
                     )
@@ -2455,64 +2553,27 @@ mod tests {
             assert!(output.iter().all(|sample| sample.is_finite()));
         }
 
-        /// C-RT-7: the publish cost of the widened snapshot through the
-        /// production triple-buffer transport is measured — not assumed — at
-        /// the complete fully occupied configuration, and the publish path is
-        /// allocation- and destruction-free.
+        /// Snapshot storage is prepared by the producer. The callback only
+        /// exchanges ownership; superseded allocations return to that producer.
         #[test]
-        fn snapshot_publish_cost_is_measured_and_bounded_at_full_occupancy() {
+        fn snapshot_exchange_is_allocation_and_destruction_free() {
             let fixture = FullOccupancyFixture::new();
             let snapshot = fixture.full_snapshot(1, 1);
             assert_fully_occupied(&snapshot);
-
-            let size = core::mem::size_of::<ParameterSnapshot>();
-            assert!(!core::mem::needs_drop::<ParameterSnapshot>());
-
-            let boundary = LockFreeAudioBoundary::new(4, snapshot);
+            let boundary = LockFreeAudioBoundary::new(4, snapshot.clone());
             let (mut control, mut audio) = boundary.into_handles();
-            const ITERATIONS: u32 = 10_000;
-
-            begin_memory_count();
-            let publish_start = Instant::now();
-            for _ in 0..ITERATIONS {
-                control.publish_parameters(snapshot);
+            let mut active = snapshot.clone();
+            for generation in 2..128 {
+                control.publish_parameters(snapshot.clone().with_generation(generation));
+                begin_memory_count();
+                let updated = audio.exchange_latest_parameters(&mut active);
+                let repeated = audio.exchange_latest_parameters(&mut active);
+                let (allocations, deallocations) = finish_memory_count();
+                assert!(updated);
+                assert!(!repeated);
+                assert_eq!(active.generation(), generation);
+                assert_eq!((allocations, deallocations), (0, 0));
             }
-            let publish_nanos = publish_start.elapsed().as_nanos() / u128::from(ITERATIONS);
-            let read_start = Instant::now();
-            let mut checksum = 0_u64;
-            for _ in 0..ITERATIONS {
-                checksum =
-                    checksum.wrapping_add(black_box(audio.read_latest_parameters()).generation());
-            }
-            let read_nanos = read_start.elapsed().as_nanos() / u128::from(ITERATIONS);
-            let (allocations, deallocations) = finish_memory_count();
-
-            assert_eq!(checksum, u64::from(ITERATIONS));
-            assert_eq!(allocations, 0, "publishing must not allocate");
-            assert_eq!(
-                deallocations, 0,
-                "publishing must not deallocate or destroy"
-            );
-
-            // The measured record (C-RT-7): visible with `--nocapture`, and
-            // bounded by generous ceilings that fail loudly on regression.
-            eprintln!(
-                "C-RT-7 publish cost at full occupancy: snapshot = {size} bytes, \
-                 publish mean = {publish_nanos} ns, read mean = {read_nanos} ns \
-                 over {ITERATIONS} iterations"
-            );
-            assert!(
-                size <= 16 * 1024,
-                "snapshot is {size} bytes; budget is 16 KiB"
-            );
-            assert!(
-                publish_nanos < 100_000,
-                "mean publish cost {publish_nanos} ns exceeded the 100 microsecond ceiling"
-            );
-            assert!(
-                read_nanos < 100_000,
-                "mean read cost {read_nanos} ns exceeded the 100 microsecond ceiling"
-            );
         }
     }
 }

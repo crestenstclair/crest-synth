@@ -35,10 +35,10 @@ pub use default_session::{
     PatchCreationError, ProspectivePatch,
 };
 pub use engine_selection::{
-    EngineSelectionCorrelation, EngineSelectionEffect, EngineSelectionEffectKind,
-    EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionRequestIdError,
-    EngineSelectionStatus, EngineSelectionStatusError, EngineSelectionStatusKind,
-    StructuralEditIntent,
+    EffectAssetTarget, EngineSelectionCorrelation, EngineSelectionEffect,
+    EngineSelectionEffectKind, EngineSelectionFailure, EngineSelectionRequestId,
+    EngineSelectionRequestIdError, EngineSelectionStatus, EngineSelectionStatusError,
+    EngineSelectionStatusKind, StructuralEditIntent,
 };
 pub use event_record::{
     AudioEffect, EmittedEvent, EventDirection, EventInput, EventOutcome, EventRecord,

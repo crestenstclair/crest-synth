@@ -277,7 +277,7 @@ fn fixture() -> Fixture {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -758,7 +758,9 @@ fn a_configured_chain_and_its_live_state_follow_the_patch_across_a_reroute() {
         fixture.complete_pending_change(&mut output);
     }
     let chain_before = fixture.app_loop.patches()[0].effect_slots().clone();
-    let projected_before = *fixture.app_loop.current_parameters().patches()[0].effects();
+    let projected_before = fixture.app_loop.current_parameters().patches()[0]
+        .effects()
+        .clone();
 
     // Excite the chain, then silence the instrument. The delayed signal is
     // not yet due: blocks stay silent while the tail rings inside the chain.

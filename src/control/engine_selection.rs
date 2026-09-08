@@ -69,6 +69,69 @@ impl fmt::Display for EngineSelectionRequestIdError {
 
 impl std::error::Error for EngineSelectionRequestIdError {}
 
+/// Exact owner of an effect resource, independent of the current UI context.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum EffectAssetTarget {
+    PatchSlot {
+        patch_id: PatchId,
+        slot: EffectSlotIndex,
+    },
+    BusReturn {
+        bus: BusId,
+    },
+}
+impl EffectAssetTarget {
+    pub const fn patch_id(self) -> Option<PatchId> {
+        match self {
+            Self::PatchSlot { patch_id, .. } => Some(patch_id),
+            Self::BusReturn { .. } => None,
+        }
+    }
+    pub(crate) fn config<'a>(
+        self,
+        patches: &'a [crate::synth::Patch],
+        returns: &'a crate::mixer::bus_return::BusReturnBank,
+    ) -> Option<&'a crate::synth::PostEffectConfig> {
+        match self {
+            Self::PatchSlot { patch_id, slot } => {
+                patches.iter().find(|p| p.id() == patch_id)?.effect_slots()[slot.index()].as_ref()
+            }
+            Self::BusReturn { bus } => returns.bus_return(bus).effect(),
+        }
+    }
+    pub(crate) fn assign(
+        self,
+        patches: &mut [crate::synth::Patch],
+        returns: &mut crate::mixer::bus_return::BusReturnBank,
+        effects: &crate::synth::EffectCapabilityRegistry,
+        parameter: &ParameterId,
+        reference: AssetReference,
+    ) -> Result<(), crate::control::EventRejection> {
+        let old = self
+            .config(patches, returns)
+            .ok_or(crate::control::EventRejection::InvalidEffectConfig)?;
+        let next = effects
+            .replace_asset(old, parameter, reference)
+            .map_err(|_| crate::control::EventRejection::InvalidEffectConfig)?;
+        match self {
+            Self::PatchSlot { patch_id, slot } => patches
+                .iter_mut()
+                .find(|p| p.id() == patch_id)
+                .ok_or(crate::control::EventRejection::UnknownPatch)?
+                .set_slot_occupancy(slot, Some(next))
+                .map_err(|_| crate::control::EventRejection::InvalidEffectConfig),
+            Self::BusReturn { bus } => returns
+                .replace_occupant_values(bus, next)
+                .map_err(|_| crate::control::EventRejection::InvalidEffectConfig),
+        }
+    }
+}
+
 /// Stable visible reasons an engine candidate could not be prepared.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -154,6 +217,15 @@ impl EngineSelectionFailure {
     rename_all_fields = "camelCase"
 )]
 pub enum StructuralEditIntent {
+    SetVoiceBudget {
+        patch_id: PatchId,
+        voices: u16,
+    },
+    ReplaceEffectAsset {
+        target: EffectAssetTarget,
+        parameter_id: ParameterId,
+        reference: AssetReference,
+    },
     ReplaceCapability {
         target_capability_id: CapabilityId,
     },
@@ -200,7 +272,9 @@ impl StructuralEditIntent {
             Self::ReplaceParameterChoice { capability_id, .. }
             | Self::ReplaceAsset { capability_id, .. }
             | Self::PrepareAudition { capability_id, .. } => Some(capability_id),
-            Self::SetSlotOccupancy { .. }
+            Self::SetVoiceBudget { .. }
+            | Self::ReplaceEffectAsset { .. }
+            | Self::SetSlotOccupancy { .. }
             | Self::SetReturnOccupancy { .. }
             | Self::AppendPatch { .. } => None,
         }
@@ -208,7 +282,8 @@ impl StructuralEditIntent {
 
     pub const fn parameter_id(&self) -> Option<&ParameterId> {
         match self {
-            Self::ReplaceParameterChoice { parameter_id, .. }
+            Self::ReplaceEffectAsset { parameter_id, .. }
+            | Self::ReplaceParameterChoice { parameter_id, .. }
             | Self::ReplaceAsset { parameter_id, .. }
             | Self::PrepareAudition { parameter_id, .. } => Some(parameter_id),
             _ => None,
@@ -226,7 +301,10 @@ impl StructuralEditIntent {
     pub const fn is_occupancy(&self) -> bool {
         matches!(
             self,
-            Self::SetSlotOccupancy { .. } | Self::SetReturnOccupancy { .. }
+            Self::SetVoiceBudget { .. }
+                | Self::ReplaceEffectAsset { .. }
+                | Self::SetSlotOccupancy { .. }
+                | Self::SetReturnOccupancy { .. }
         )
     }
 
@@ -249,6 +327,12 @@ impl StructuralEditIntent {
         target: Option<&CapabilityId>,
     ) -> bool {
         match self {
+            Self::SetVoiceBudget {
+                patch_id: owner, ..
+            } => patch_id == Some(*owner) && source.is_none() && target.is_none(),
+            Self::ReplaceEffectAsset { target: owner, .. } => {
+                patch_id == owner.patch_id() && source.is_none() && target.is_none()
+            }
             Self::ReplaceCapability {
                 target_capability_id,
             } => match (patch_id, source, target) {
@@ -552,6 +636,8 @@ impl EngineSelectionStatus {
         intent: StructuralEditIntent,
     ) -> Result<Self, EngineSelectionStatusError> {
         let patch_id = match &intent {
+            StructuralEditIntent::SetVoiceBudget { patch_id, .. } => Some(*patch_id),
+            StructuralEditIntent::ReplaceEffectAsset { target, .. } => target.patch_id(),
             StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => Some(*patch_id),
             StructuralEditIntent::SetReturnOccupancy { .. } => None,
             StructuralEditIntent::ReplaceCapability { .. }

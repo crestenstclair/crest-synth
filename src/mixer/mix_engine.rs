@@ -450,7 +450,7 @@ mod tests {
         snapshot: ParameterSnapshot,
         buses_and_levels: &[(BusId, f32)],
     ) -> ParameterSnapshot {
-        let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
         for (bus, level) in buses_and_levels {
             returns[bus.index()] =
                 RtBusReturnParameters::new(EffectSlotId::new(1).unwrap(), &[], *level).unwrap();
@@ -490,8 +490,9 @@ mod tests {
         ids_and_tracks: &[(u32, MixerTrackParameters)],
         global: GlobalParameters,
     ) -> ParameterSnapshot {
-        let mut patches =
-            [RtPatchParameters::new(PatchId::new(1).unwrap(), PatchOutput::default()); 16];
+        let mut patches = std::array::from_fn::<_, 16, _>(|_| {
+            RtPatchParameters::new(PatchId::new(1).unwrap(), PatchOutput::default())
+        });
         let mut mixer = MixerState::default();
         for (index, (slot, (id, track))) in patches.iter_mut().zip(ids_and_tracks).enumerate() {
             let track_id = MixerTrackId::new(index as u8).unwrap();

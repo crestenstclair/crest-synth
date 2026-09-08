@@ -185,8 +185,15 @@ impl PreparedInstrument for FirstInstrument {
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], _frame_count: usize, _parameters: &RtPatchParameters) {
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        _frame_count: usize,
+        _parameters: &RtPatchParameters,
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         output.fill(0.125);
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {
@@ -221,8 +228,15 @@ impl PreparedInstrument for SecondInstrument {
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], _frame_count: usize, _parameters: &RtPatchParameters) {
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        _frame_count: usize,
+        _parameters: &RtPatchParameters,
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         output.fill(0.375);
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {
@@ -533,7 +547,7 @@ fn prove_hidef_preparation(patch: &Patch) {
     instrument
         .dispatch(note_on(patch.channel()), &parameters)
         .expect("prepared HiDef MIDI dispatch succeeds");
-    instrument.render(&mut output, 512, &parameters);
+    instrument.render(&mut output, 512, &parameters).unwrap();
     instrument.all_notes_off();
     let (allocations, deallocations) = finish_memory_count();
 

@@ -975,7 +975,9 @@ impl LiveEngineCheckpoint {
             StructuralEditIntent::ReplaceAsset { parameter_id, .. } => {
                 PatchControlId::Capability(parameter_id.clone())
             }
-            StructuralEditIntent::SetSlotOccupancy { .. }
+            StructuralEditIntent::SetVoiceBudget { .. }
+            | StructuralEditIntent::ReplaceEffectAsset { .. }
+            | StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::PrepareAudition { .. }
             | StructuralEditIntent::AppendPatch { .. } => return false,
@@ -992,7 +994,9 @@ impl LiveEngineCheckpoint {
         let target_pending = self.staged_revision == Some(self.graph_revision)
             || self.in_flight_revision == Some(self.graph_revision);
         let capability_projection_exact = match &self.intent {
-            StructuralEditIntent::SetSlotOccupancy { .. }
+            StructuralEditIntent::SetVoiceBudget { .. }
+            | StructuralEditIntent::ReplaceEffectAsset { .. }
+            | StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => return false,
             StructuralEditIntent::ReplaceCapability {

@@ -13,9 +13,9 @@ struct NativeBraidsBank {
 }
 
 unsafe extern "C" {
-    fn crest_braids_bank_create() -> *mut NativeBraidsBank;
+    fn crest_braids_bank_create(voice_count: usize) -> *mut NativeBraidsBank;
     fn crest_braids_bank_destroy(bank: *mut NativeBraidsBank);
-    fn crest_braids_voice_count() -> usize;
+    fn crest_braids_voice_count(bank: *const NativeBraidsBank) -> usize;
     fn crest_braids_voice_reset(bank: *mut NativeBraidsBank, voice: usize) -> i32;
     fn crest_braids_voice_configure(
         bank: *mut NativeBraidsBank,
@@ -91,9 +91,10 @@ pub fn braids_lifecycle_counts() -> BraidsLifecycleCounts {
     }
 }
 
-/// Unique Rust owner of one native, initialized sixteen-oscillator bank.
+/// Unique Rust owner of one native, initialized oscillator bank with prepared capacity.
 pub(crate) struct BraidsVoiceBank {
     native: NonNull<NativeBraidsBank>,
+    capacity: usize,
 }
 
 // SAFETY: Ownership is unique, no native pointer escapes, and all access
@@ -102,17 +103,25 @@ pub(crate) struct BraidsVoiceBank {
 unsafe impl Send for BraidsVoiceBank {}
 
 impl BraidsVoiceBank {
+    #[cfg(test)]
     pub(crate) fn new() -> Result<Self, BraidsNativeError> {
+        Self::with_capacity(BRAIDS_VOICE_COUNT)
+    }
+
+    pub(crate) fn with_capacity(capacity: usize) -> Result<Self, BraidsNativeError> {
         // SAFETY: The wrapper returns either null or exclusive ownership of a
         // fully initialized bank.
-        let native = unsafe { crest_braids_bank_create() };
+        let native = unsafe { crest_braids_bank_create(capacity) };
         let native = NonNull::new(native).ok_or(BraidsNativeError::AllocationFailed)?;
-        debug_assert_eq!(native_voice_count(), BRAIDS_VOICE_COUNT);
-        Ok(Self { native })
+        debug_assert_eq!(
+            unsafe { crest_braids_voice_count(native.as_ptr()) },
+            capacity
+        );
+        Ok(Self { native, capacity })
     }
 
     pub(crate) fn reset(&mut self, voice: usize) -> Result<(), BraidsNativeError> {
-        validate_voice(voice)?;
+        validate_voice(voice, self.capacity)?;
         // SAFETY: `self` uniquely owns a live native bank and the index was
         // checked against the wrapper's fixed capacity.
         native_status(unsafe { crest_braids_voice_reset(self.native.as_ptr(), voice) })
@@ -126,7 +135,7 @@ impl BraidsVoiceBank {
         timbre: i16,
         color: i16,
     ) -> Result<(), BraidsNativeError> {
-        validate_voice(voice)?;
+        validate_voice(voice, self.capacity)?;
         if model >= BRAIDS_MODEL_COUNT {
             return Err(BraidsNativeError::InvalidModel { model });
         }
@@ -138,7 +147,7 @@ impl BraidsVoiceBank {
     }
 
     pub(crate) fn strike(&mut self, voice: usize) -> Result<(), BraidsNativeError> {
-        validate_voice(voice)?;
+        validate_voice(voice, self.capacity)?;
         // SAFETY: `self` uniquely owns a live bank and the index is valid.
         native_status(unsafe { crest_braids_voice_strike(self.native.as_ptr(), voice) })
     }
@@ -148,7 +157,7 @@ impl BraidsVoiceBank {
         voice: usize,
         output: &mut [i16],
     ) -> Result<(), BraidsNativeError> {
-        validate_voice(voice)?;
+        validate_voice(voice, self.capacity)?;
         if output.is_empty() || output.len() > BRAIDS_INTERNAL_CHUNK_FRAMES {
             return Err(BraidsNativeError::InvalidFrameCount {
                 frame_count: output.len(),
@@ -174,13 +183,8 @@ impl Drop for BraidsVoiceBank {
     }
 }
 
-fn native_voice_count() -> usize {
-    // SAFETY: The wrapper returns a compile-time constant.
-    unsafe { crest_braids_voice_count() }
-}
-
-fn validate_voice(voice: usize) -> Result<(), BraidsNativeError> {
-    if voice >= BRAIDS_VOICE_COUNT {
+fn validate_voice(voice: usize, capacity: usize) -> Result<(), BraidsNativeError> {
+    if voice >= capacity {
         Err(BraidsNativeError::InvalidVoice { voice })
     } else {
         Ok(())

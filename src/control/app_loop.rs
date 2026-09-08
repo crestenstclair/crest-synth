@@ -420,7 +420,7 @@ where
                 crate::control::StateTreeError::GraphRevisionMismatch,
             ));
         }
-        boundary.publish_parameters(parameters);
+        boundary.publish_parameters(parameters.clone());
 
         Ok(Self {
             state,
@@ -430,7 +430,7 @@ where
             current_patch_page,
             current_text,
             current_graphical_shell,
-            current_parameters: parameters,
+            current_parameters: parameters.clone(),
             last_published_parameters: parameters,
             current_state_tree,
             event_log,
@@ -1029,13 +1029,15 @@ where
                 _ => StructuralAdvanceError::SessionParameterMismatch,
             })?
             .2;
-        let prepared_at_candidate_generation =
-            (*graph.initial_parameters()).with_generation(projected.generation());
+        let prepared_at_candidate_generation = graph
+            .initial_parameters()
+            .clone()
+            .with_generation(projected.generation());
         if prepared_at_candidate_generation != projected {
             return Err(StructuralAdvanceError::SessionParameterMismatch);
         }
         graph
-            .refresh_initial_parameters(projected)
+            .refresh_initial_parameters(projected.clone())
             .map_err(StructuralAdvanceError::Refresh)?;
         graph.set_carry_over_scope(crate::real_time::GraphReplacementScope::WholeSession);
 
@@ -1202,7 +1204,7 @@ where
                             self.current_patch_page.as_ref(),
                             &self.current_text,
                             &self.current_graphical_shell,
-                            self.current_parameters,
+                            self.current_parameters.clone(),
                             &self.current_state_tree,
                         ),
                     )
@@ -1219,6 +1221,7 @@ where
         let record_sequence = self.event_log.next_sequence();
         let published_parameters = if midi_generation_only {
             self.last_published_parameters
+                .clone()
                 .with_generation(self.state.generation())
         } else if parameters_published
             && self.state.engine_selection().kind() == EngineSelectionStatusKind::Activating
@@ -1226,7 +1229,7 @@ where
             self.latest_pending_candidate_parameters()
                 .expect("an accepted activating state has one valid candidate scalar projection")
         } else {
-            parameters
+            parameters.clone()
         };
         let record = EventRecord::accepted(
             record_sequence,
@@ -1246,7 +1249,8 @@ where
         .expect("accepted reducer output and projections must form one coherent record");
 
         if parameters_published {
-            self.boundary.publish_parameters(published_parameters);
+            self.boundary
+                .publish_parameters(published_parameters.clone());
             self.last_published_parameters = published_parameters;
         }
         let boundary_full =
@@ -1430,7 +1434,9 @@ where
                         .factory
                         .replace_asset(source, parameter_id, reference.clone())
                 }),
-            StructuralEditIntent::SetSlotOccupancy { .. }
+            StructuralEditIntent::SetVoiceBudget { .. }
+            | StructuralEditIntent::ReplaceEffectAsset { .. }
+            | StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 unreachable!("occupancy intents were submitted above")
@@ -1875,7 +1881,7 @@ where
             return Err(StructuralAdvanceError::CandidateParameterMismatch);
         }
         prepared_graph
-            .refresh_initial_parameters(projected)
+            .refresh_initial_parameters(projected.clone())
             .map_err(StructuralAdvanceError::Refresh)?;
         Ok(projected)
     }
@@ -1908,6 +1914,39 @@ where
                     .set_instrument_config(candidate.clone());
             }
             StructuralEditIntent::PrepareAudition { .. } => {}
+            StructuralEditIntent::SetVoiceBudget { patch_id, voices } => {
+                patches
+                    .iter_mut()
+                    .find(|p| p.id() == *patch_id)
+                    .ok_or(StructuralAdvanceError::Status(
+                        EngineSelectionStatusError::MissingCorrelation,
+                    ))?
+                    .set_voice_limit(*voices)
+                    .map_err(|_| {
+                        StructuralAdvanceError::Status(
+                            EngineSelectionStatusError::MissingCorrelation,
+                        )
+                    })?;
+            }
+            StructuralEditIntent::ReplaceEffectAsset {
+                target,
+                parameter_id,
+                reference,
+            } => {
+                target
+                    .assign(
+                        &mut patches,
+                        &mut returns,
+                        self.state.effects(),
+                        parameter_id,
+                        reference.clone(),
+                    )
+                    .map_err(|_| {
+                        StructuralAdvanceError::CandidateParameters(
+                            ParameterSnapshotError::InvalidEffectConfig { index: 0 },
+                        )
+                    })?;
+            }
             StructuralEditIntent::SetSlotOccupancy {
                 patch_id,
                 slot,
@@ -2548,25 +2587,28 @@ mod tests {
             )
             .unwrap()
         };
-        let prepared = snapshot(revision, &[source, candidate]);
+        let prepared = snapshot(revision, &[source, candidate.clone()]);
         let source_latest = RtPatchParameters::new(
             source_id,
             PatchOutput::new(MixerTrackId::default(), -1.0).unwrap(),
         );
-        let future = snapshot(revision, &[source_latest, candidate]);
+        let future = snapshot(revision, &[source_latest.clone(), candidate.clone()]);
         assert!(prepared_append_snapshot_matches(
             &prepared,
             &future,
             candidate_id
         ));
 
-        let wrong_revision = snapshot(GraphRevision::new(3).unwrap(), &[source_latest, candidate]);
+        let wrong_revision = snapshot(
+            GraphRevision::new(3).unwrap(),
+            &[source_latest.clone(), candidate.clone()],
+        );
         assert!(!prepared_append_snapshot_matches(
             &prepared,
             &wrong_revision,
             candidate_id
         ));
-        let wrong_order = snapshot(revision, &[candidate, source_latest]);
+        let wrong_order = snapshot(revision, &[candidate.clone(), source_latest.clone()]);
         assert!(!prepared_append_snapshot_matches(
             &prepared,
             &wrong_order,
@@ -2833,7 +2875,7 @@ mod tests {
             self.attempted_parameters
                 .lock()
                 .unwrap()
-                .push(*graph.initial_parameters());
+                .push(graph.initial_parameters().clone());
             if self.blocked.load(Ordering::SeqCst) {
                 Err(StructuralBoundaryFull::new(graph))
             } else {
@@ -2902,10 +2944,12 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             if self.sounding {
                 output.fill(0.125);
             }
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {
@@ -3025,7 +3069,7 @@ mod tests {
             .dispatch(AppEvent::Navigate(Direction::Down))
             .unwrap();
         let retained_selection = app_loop.state().selection();
-        let before_parameters = *app_loop.current_parameters();
+        let before_parameters = app_loop.current_parameters().clone();
         let before_patches = app_loop.patches().to_vec();
         let before_global = *app_loop.state().global();
         let command_count = observations.lock().unwrap().commands.len();
@@ -3041,7 +3085,7 @@ mod tests {
         let shell = app_loop.current_graphical_shell();
         let tree: serde_json::Value =
             serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
-        let after_parameters = *app_loop.current_parameters();
+        let after_parameters = app_loop.current_parameters().clone();
 
         assert_eq!(page.patch().id(), Some(PatchId::new(1).unwrap()));
         assert_eq!(page.state_hash(), result.snapshot().hash());
@@ -3126,7 +3170,7 @@ mod tests {
                 .build(
                     GraphRevision::INITIAL,
                     app_loop.patches(),
-                    *app_loop.current_parameters(),
+                    app_loop.current_parameters().clone(),
                     48_000.0,
                     512,
                 )
@@ -3353,6 +3397,7 @@ mod tests {
                     .parameters
                     .last()
                     .unwrap()
+                    .clone()
                     .with_generation(generation + index as u64 + 1)
             );
         }
@@ -3571,7 +3616,7 @@ mod tests {
                 .build(
                     GraphRevision::INITIAL,
                     app_loop.patches(),
-                    *app_loop.current_parameters(),
+                    app_loop.current_parameters().clone(),
                     audio_config.sample_rate(),
                     audio_config.render_capacity_frames(),
                 )
@@ -3726,7 +3771,7 @@ mod tests {
             app_loop.current_patch_page().unwrap().focused_control_id(),
             crate::control::PatchControlId::Envelope(VoiceEnvelopeParameter::AttackMilliseconds)
         );
-        let first_attempt = attempted_parameters.lock().unwrap()[0];
+        let first_attempt = attempted_parameters.lock().unwrap()[0].clone();
         assert_eq!(first_attempt.graph_revision(), target_revision);
         assert_eq!(
             first_attempt
@@ -3908,7 +3953,7 @@ mod tests {
             .build(
                 GraphRevision::INITIAL,
                 app_loop.patches(),
-                *app_loop.current_parameters(),
+                app_loop.current_parameters().clone(),
                 audio_config.sample_rate(),
                 audio_config.render_capacity_frames(),
             )
@@ -4150,7 +4195,7 @@ mod tests {
                 .build(
                     GraphRevision::INITIAL,
                     app_loop.patches(),
-                    *app_loop.current_parameters(),
+                    app_loop.current_parameters().clone(),
                     audio_config.sample_rate(),
                     audio_config.render_capacity_frames(),
                 )
@@ -4193,7 +4238,7 @@ mod tests {
         let saved_before = app_loop.capture_saved_session();
         let document = crate::shell::SessionDocument::new_untitled(saved_before.clone());
         assert!(!document.is_dirty(&app_loop.capture_saved_session()));
-        let source_parameters = *app_loop.current_parameters();
+        let source_parameters = app_loop.current_parameters().clone();
 
         let note = MidiMessage::try_new(
             MidiChannel::new(0).unwrap(),
@@ -4487,7 +4532,7 @@ mod tests {
                 .build(
                     GraphRevision::INITIAL,
                     initial_state.patches(),
-                    initial_parameters,
+                    initial_parameters.clone(),
                     audio_config.sample_rate(),
                     audio_config.render_capacity_frames(),
                 )
@@ -4698,7 +4743,7 @@ mod tests {
             .build(
                 GraphRevision::INITIAL,
                 initial_state.patches(),
-                initial_parameters,
+                initial_parameters.clone(),
                 audio_config.sample_rate(),
                 audio_config.render_capacity_frames(),
             )

@@ -319,7 +319,7 @@ impl StateTree {
         "capabilities.descriptors[].assetRequirements[].parameterId",
         "capabilities.descriptors[].assetRequirements[].required",
         "capabilities.descriptors[].voicePolicy.kind",
-        "capabilities.descriptors[].voicePolicy.voices",
+        "capabilities.descriptors[].voicePolicy.defaultVoices",
         "capabilities.descriptors[].supportedMidiKinds[]",
         "effects.descriptors[].id",
         "effects.descriptors[].label",
@@ -1795,7 +1795,7 @@ mod tests {
                 // The canonical per-Patch ceiling rides the snapshot beside
                 // the envelope and is published here, so a measured proof can
                 // correlate a refused note with the limit that refused it.
-                "voiceLimit": 64,
+                "voiceLimit": crate::synth::VoiceLimit::MAXIMUM,
                 "instrument": {"count": 0, "values": []},
                 "effects": [inactive_effect.clone(), inactive_effect.clone(), inactive_effect],
                 "output": {
@@ -1930,7 +1930,10 @@ mod tests {
             Err(StateTreeError::GenerationMismatch)
         );
 
-        let reversed = [parameters().patches()[1], parameters().patches()[0]];
+        let reversed = [
+            parameters().patches()[1].clone(),
+            parameters().patches()[0].clone(),
+        ];
         let wrong_order = ParameterSnapshot::for_graph(
             42,
             revision,
@@ -1945,7 +1948,7 @@ mod tests {
         );
 
         let wrong_values = [
-            parameters().patches()[0],
+            parameters().patches()[0].clone(),
             RtPatchParameters::new(
                 PatchId::new(9).unwrap(),
                 PatchOutput::new(MixerTrackId::new(9).unwrap(), -10.0).unwrap(),

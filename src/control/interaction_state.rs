@@ -83,7 +83,7 @@ pub enum PatchSubordinateSession {
         suspended_return: Option<ReturnPath>,
     },
     FileBrowser {
-        patch_position: PatchPositionId,
+        patch_position: Option<PatchPositionId>,
         asset_parameter_id: ParameterId,
         suspended_detail: Option<PatchDetailSubject>,
         suspended_return: Option<ReturnPath>,
@@ -129,8 +129,8 @@ impl PatchSubordinateSession {
                 suspended_return,
                 ..
             } => {
-                if *patch_position == PatchPositionId::TrailingEmpty {
-                    *patch_position = PatchPositionId::Created(patch_id);
+                if *patch_position == Some(PatchPositionId::TrailingEmpty) {
+                    *patch_position = Some(PatchPositionId::Created(patch_id));
                 }
                 if let Some(return_path) = suspended_return {
                     return_path.rekey_trailing_empty(patch_id);
@@ -664,7 +664,7 @@ impl InteractionState {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
         self.enter_modal_surface(
-            subject.patch_position(),
+            Some(subject.patch_position()),
             focus,
             |detail, suspended_return| PatchSubordinateSession::Choice {
                 subject,
@@ -676,6 +676,7 @@ impl InteractionState {
 
     /// Replaces the current PATCH main, Utility, or Detail surface with the
     /// controller-native Sample Browser.
+    #[cfg(test)]
     pub(super) fn enter_file_browser(
         &mut self,
         patch_id: PatchId,
@@ -688,6 +689,7 @@ impl InteractionState {
         self.enter_file_browser_at(patch_id.into(), asset_parameter_id, focus)
     }
 
+    #[cfg(test)]
     pub(super) fn enter_file_browser_at(
         &mut self,
         patch_position: PatchPositionId,
@@ -697,6 +699,15 @@ impl InteractionState {
         if self.midi_settings_session.is_some() {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
+        self.enter_asset_browser(Some(patch_position), asset_parameter_id, focus)
+    }
+
+    pub(super) fn enter_asset_browser(
+        &mut self,
+        patch_position: Option<PatchPositionId>,
+        asset_parameter_id: ParameterId,
+        focus: FocusPath,
+    ) -> Result<(), FocusPathError> {
         self.enter_modal_surface(patch_position, focus, |detail, suspended_return| {
             PatchSubordinateSession::FileBrowser {
                 patch_position,
@@ -709,19 +720,21 @@ impl InteractionState {
 
     fn enter_modal_surface(
         &mut self,
-        patch_position: PatchPositionId,
+        patch_position: Option<PatchPositionId>,
         focus: FocusPath,
         make_session: impl FnOnce(
             Option<PatchDetailSubject>,
             Option<ReturnPath>,
         ) -> PatchSubordinateSession,
     ) -> Result<(), FocusPathError> {
-        if self.active_focus.context() != TopLevelContext::Patch
-            || !matches!(
-                self.active_focus.surface(),
-                SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
-            )
-            || self.active_focus.patch_position() != Some(patch_position)
+        let allowed_origin = matches!(
+            self.active_focus.surface(),
+            SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
+        ) || (focus.surface() == SurfaceId::FileBrowser
+            && self.active_focus.surface() == SurfaceId::MixerInspector);
+        if !allowed_origin
+            || self.active_focus.context() != focus.context()
+            || self.active_focus.patch_position() != patch_position
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }
@@ -729,7 +742,7 @@ impl InteractionState {
         if !matches!(
             focus.surface(),
             SurfaceId::PatchChoice | SurfaceId::FileBrowser
-        ) || focus.patch_position() != Some(patch_position)
+        ) || focus.patch_position() != patch_position
         {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }

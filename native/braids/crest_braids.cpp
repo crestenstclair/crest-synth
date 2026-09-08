@@ -11,7 +11,6 @@
 
 namespace {
 
-constexpr size_t kVoiceCount = 16;
 constexpr size_t kMaximumRenderFrames = 24;
 constexpr uint8_t kPlayableModelCount = 47;
 constexpr uint32_t kInitialRandomState = 0x21u;
@@ -23,8 +22,8 @@ std::atomic<uint64_t> g_banks_active(0);
 }  // namespace
 
 struct CrestBraidsBank {
-  alignas(braids::MacroOscillator)
-      unsigned char voice_storage[kVoiceCount][sizeof(braids::MacroOscillator)];
+  braids::MacroOscillator* voices;
+  size_t voice_count;
   uint8_t sync[kMaximumRenderFrames];
   uint32_t random_state;
 };
@@ -32,14 +31,14 @@ struct CrestBraidsBank {
 namespace {
 
 braids::MacroOscillator* Voice(CrestBraidsBank* bank, size_t index) noexcept {
-  return reinterpret_cast<braids::MacroOscillator*>(bank->voice_storage[index]);
+  return bank->voices + index;
 }
 
 int ValidateVoice(CrestBraidsBank* bank, size_t voice) noexcept {
   if (bank == nullptr) {
     return CREST_BRAIDS_NULL_BANK;
   }
-  if (voice >= kVoiceCount) {
+  if (voice >= bank->voice_count) {
     return CREST_BRAIDS_INVALID_VOICE;
   }
   return CREST_BRAIDS_OK;
@@ -47,17 +46,21 @@ int ValidateVoice(CrestBraidsBank* bank, size_t voice) noexcept {
 
 }  // namespace
 
-CrestBraidsBank* crest_braids_bank_create(void) noexcept {
+CrestBraidsBank* crest_braids_bank_create(size_t voice_count) noexcept {
+  if (!voice_count || voice_count > SIZE_MAX / sizeof(braids::MacroOscillator)) return nullptr;
   void* allocation = std::calloc(1, sizeof(CrestBraidsBank));
   if (allocation == nullptr) {
     return nullptr;
   }
 
   CrestBraidsBank* bank = static_cast<CrestBraidsBank*>(allocation);
+  bank->voices = static_cast<braids::MacroOscillator*>(std::calloc(voice_count, sizeof(braids::MacroOscillator)));
+  if (!bank->voices) { std::free(bank); return nullptr; }
+  bank->voice_count = voice_count;
   bank->random_state = kInitialRandomState;
-  for (size_t index = 0; index < kVoiceCount; ++index) {
+  for (size_t index = 0; index < bank->voice_count; ++index) {
     braids::MacroOscillator* oscillator =
-        new (bank->voice_storage[index]) braids::MacroOscillator();
+        new (bank->voices + index) braids::MacroOscillator();
     oscillator->Init();
     oscillator->set_shape(braids::MACRO_OSC_SHAPE_CSAW);
     oscillator->set_pitch(60 * 128);
@@ -73,15 +76,16 @@ void crest_braids_bank_destroy(CrestBraidsBank* bank) noexcept {
   if (bank == nullptr) {
     return;
   }
-  for (size_t index = kVoiceCount; index > 0; --index) {
+  for (size_t index = bank->voice_count; index > 0; --index) {
     Voice(bank, index - 1)->~MacroOscillator();
   }
+  std::free(bank->voices);
   std::free(bank);
   g_banks_destroyed.fetch_add(1, std::memory_order_relaxed);
   g_banks_active.fetch_sub(1, std::memory_order_relaxed);
 }
 
-size_t crest_braids_voice_count(void) noexcept { return kVoiceCount; }
+size_t crest_braids_voice_count(const CrestBraidsBank* bank) noexcept { return bank ? bank->voice_count : 0; }
 
 int crest_braids_voice_reset(CrestBraidsBank* bank, size_t voice) noexcept {
   const int status = ValidateVoice(bank, voice);

@@ -38,6 +38,8 @@ struct ProductionSamplePorts {
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ProductionInstrumentCompositionError {
+    #[error(transparent)]
+    Upstream(#[from] super::upstream_audio::CatalogError),
     #[error("failed to load the production SoundFont asset: {0}")]
     Asset(crate::adapter::hidef_soundfont_asset::HiDefSoundFontAssetError),
     #[error("failed to construct the production capability registry: {0}")]
@@ -204,6 +206,11 @@ pub fn production_instrument_providers(
     if let Some(sample) = optional_production_sample()? {
         providers.push(Box::new(sample.capability));
     }
+    providers.extend(
+        super::upstream_audio::instrument_ports()?
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn InstrumentCapabilityProvider>),
+    );
     Ok(providers)
 }
 
@@ -237,6 +244,11 @@ pub fn production_instrument_preparers(
                 .map_err(ProductionInstrumentCompositionError::Preparation)?,
         ));
     }
+    preparers.extend(
+        super::upstream_audio::instrument_ports()?
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn InstrumentPreparer>),
+    );
     Ok(preparers)
 }
 
@@ -259,33 +271,36 @@ mod tests {
     use crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 
     #[test]
-    fn production_composition_installs_exactly_three_matching_engine_ports() {
+    fn production_composition_installs_all_matching_engine_ports() {
         let providers = production_instrument_providers().unwrap();
         let registry = production_capability_registry().unwrap();
         let preparers = production_instrument_preparers().unwrap();
         assert_eq!(providers.len(), registry.descriptors().len());
+        let mut expected = vec![
+            HIDEF_CAPABILITY_ID.to_owned(),
+            BRAIDS_CAPABILITY_ID.to_owned(),
+            crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID.to_owned(),
+        ];
+        expected.extend(
+            crate::adapter::upstream_audio::instrument_ports()
+                .unwrap()
+                .iter()
+                .map(|port| port.descriptor().id().as_str().to_owned()),
+        );
         assert_eq!(
             registry
                 .descriptors()
                 .iter()
-                .map(|descriptor| descriptor.id().as_str())
+                .map(|d| d.id().as_str())
                 .collect::<Vec<_>>(),
-            [
-                HIDEF_CAPABILITY_ID,
-                BRAIDS_CAPABILITY_ID,
-                crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID
-            ]
+            expected
         );
         assert_eq!(
             preparers
                 .iter()
-                .map(|preparer| preparer.capability_id().as_str())
+                .map(|p| p.capability_id().as_str())
                 .collect::<Vec<_>>(),
-            [
-                HIDEF_CAPABILITY_ID,
-                BRAIDS_CAPABILITY_ID,
-                crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID
-            ]
+            expected
         );
     }
 }

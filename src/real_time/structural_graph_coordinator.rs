@@ -503,8 +503,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(0.0);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {}

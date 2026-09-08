@@ -1,4 +1,5 @@
 use crate::kernel::midi_message::MidiMessageKind;
+use crate::synth::ParameterId;
 use crate::synth::{
     AssetAssignment, AssetReference, AssetRequirement, CapabilityAvailability,
     CapabilityDescriptor, CapabilityError, CapabilityId, CapabilitySection,
@@ -14,7 +15,6 @@ use serde::{Deserialize, Serialize};
 /// `PreparedGraphLayout` positions are one width and must change together: a
 /// partially widened transport is otherwise constructible.
 pub const MAX_POST_EFFECTS_PER_PATCH: usize = crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
-pub const MAX_EFFECT_SCALAR_PARAMETERS: usize = 8;
 
 /// Immutable ordered control-side schema for one installed effect capability.
 ///
@@ -54,12 +54,6 @@ impl EffectCapabilityDescriptor {
             asset_requirements,
         };
         descriptor.validation_descriptor()?;
-        if descriptor.scalar_parameter_count() > MAX_EFFECT_SCALAR_PARAMETERS {
-            return Err(EffectCapabilityError::TooManyScalarParameters {
-                count: descriptor.scalar_parameter_count(),
-                capacity: MAX_EFFECT_SCALAR_PARAMETERS,
-            });
-        }
         Ok(descriptor)
     }
 
@@ -173,12 +167,6 @@ impl EffectCapabilityDescriptor {
     fn validation_descriptor(&self) -> Result<CapabilityDescriptor, EffectCapabilityError> {
         if self.availability.reason().is_some_and(str::is_empty) {
             return Err(CapabilityError::EmptyAvailabilityReason.into());
-        }
-        if self.scalar_parameter_count() > MAX_EFFECT_SCALAR_PARAMETERS {
-            return Err(EffectCapabilityError::TooManyScalarParameters {
-                count: self.scalar_parameter_count(),
-                capacity: MAX_EFFECT_SCALAR_PARAMETERS,
-            });
         }
         CapabilityDescriptor::new(
             CapabilityId::new("instrument.effect-schema")
@@ -337,6 +325,31 @@ impl EffectCapabilityRegistry {
         Ok(())
     }
 
+    pub fn replace_asset(
+        &self,
+        config: &PostEffectConfig,
+        parameter: &ParameterId,
+        reference: AssetReference,
+    ) -> Result<PostEffectConfig, EffectCapabilityError> {
+        self.validate_config(config)?;
+        let descriptor = self.descriptor(config.capability_id()).ok_or_else(|| {
+            EffectCapabilityError::UnknownCapability(config.capability_id().clone())
+        })?;
+        let current = config
+            .asset_reference(parameter)
+            .ok_or_else(|| CapabilityError::UndeclaredParameter(parameter.clone()))?;
+        if current.kind() != reference.kind() {
+            return Err(CapabilityError::WrongAssetKind(parameter.clone()).into());
+        }
+        let mut assets = config.asset_references().to_vec();
+        let assignment = assets
+            .iter_mut()
+            .find(|a| a.parameter_id() == parameter)
+            .ok_or_else(|| CapabilityError::UndeclaredParameter(parameter.clone()))?;
+        *assignment = AssetAssignment::new(parameter.clone(), reference);
+        descriptor.create_config(config.slot_id(), config.values(), &assets)
+    }
+
     pub fn validate_patch_effects(
         &self,
         configs: &[PostEffectConfig],
@@ -369,7 +382,6 @@ pub enum EffectCapabilityError {
     ConfigOrderMismatch(EffectCapabilityId),
     DuplicateSlot(EffectSlotId),
     TooManyEffectSlots { count: usize, capacity: usize },
-    TooManyScalarParameters { count: usize, capacity: usize },
 }
 
 impl From<CapabilityError> for EffectCapabilityError {
@@ -403,10 +415,6 @@ impl fmt::Display for EffectCapabilityError {
                     "Patch has {count} post effects; maximum is {capacity}"
                 )
             }
-            Self::TooManyScalarParameters { count, capacity } => write!(
-                formatter,
-                "effect declares {count} Scalar parameters but capacity is {capacity}"
-            ),
         }
     }
 }

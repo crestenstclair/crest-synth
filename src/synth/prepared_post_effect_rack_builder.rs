@@ -288,7 +288,12 @@ mod tests {
                     rack.slot_id_at(patch_index, position),
                     Some(EffectSlotId::new(position as u16 + 1).unwrap())
                 );
-                assert_eq!(rack.scalar_count_at(patch_index, position), Some(2));
+                let descriptor =
+                    &registry.descriptors()[(patch_index + 1 + position) % descriptor_count];
+                assert_eq!(
+                    rack.scalar_count_at(patch_index, position),
+                    Some(descriptor.scalar_parameters().count())
+                );
             }
         }
     }

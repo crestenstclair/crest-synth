@@ -631,8 +631,7 @@ impl AppState {
                             .descriptor_for_config(patch.instrument_config())
                     })
                     .is_none_or(|descriptor| {
-                        *value == 0
-                            || *value > VoiceLimit::seeded_from(descriptor.voice_policy()).value()
+                        *value == 0 || *value > descriptor.voice_policy().polyphony_ceiling()
                     })
             })
         {
@@ -2171,9 +2170,7 @@ impl AppState {
             capabilities
                 .validate_config(patch.instrument_config())
                 .map_err(|_| EventRejection::InvalidInstrumentConfig)?;
-            if patch.voice_limit().value()
-                > VoiceLimit::seeded_from(descriptor.voice_policy()).value()
-            {
+            if patch.voice_limit().value() > descriptor.voice_policy().polyphony_ceiling() {
                 return Err(EventRejection::InvalidInstrumentConfig);
             }
             validate_effect_slots(&self.effects, patch.effect_slots())
@@ -2255,12 +2252,11 @@ impl AppState {
     fn open_related_surface(&mut self) -> Result<(), EventRejection> {
         match self.interaction.active_surface() {
             SurfaceId::PatchMain => self.enter_patch_detail(),
-            SurfaceId::PatchDetail => self.open_file_browser(),
+            SurfaceId::PatchDetail | SurfaceId::MixerInspector => self.open_file_browser(),
             SurfaceId::PatchUtility
             | SurfaceId::PatchChoice
             | SurfaceId::FileBrowser
             | SurfaceId::MixerMain
-            | SurfaceId::MixerInspector
             | SurfaceId::MidiDeviceSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
@@ -2269,48 +2265,33 @@ impl AppState {
         if self.file_browser.import_request().is_some() {
             return Err(EventRejection::StructuralEditBusy);
         }
-        let patch_id = self
-            .interaction
-            .patch_focus()
-            .ok_or(EventRejection::NoPatchesInstalled)?;
-        let parameter_id = match self.interaction.focus_path().control_id() {
-            SemanticControlId::Patch(crate::control::PatchControlId::Capability(id)) => id.clone(),
-            _ => return Err(EventRejection::ActionUnavailableInContext),
-        };
-        let patch = self
-            .patches
-            .iter()
-            .find(|patch| patch.id() == patch_id)
-            .ok_or(EventRejection::NoPatchesInstalled)?;
-        let descriptor = self
-            .capabilities
-            .descriptor_for_config(patch.instrument_config())
-            .ok_or(EventRejection::InvalidInstrumentConfig)?;
-        let spec = descriptor
-            .parameter(&parameter_id)
-            .filter(|spec| spec.kind() == ParameterKind::Asset)
-            .ok_or(EventRejection::ActionUnavailableInContext)?;
-        let reference = patch
-            .instrument_config()
-            .asset_reference(spec.id())
-            .filter(|reference| {
-                matches!(reference.kind(), AssetKind::Sample | AssetKind::SoundFont)
-            })
-            .ok_or(EventRejection::ActionUnavailableInContext)?;
+        let origin = self.interaction.focus_path().clone();
+        let (patch_id, parameter_id) = self.browser_asset_origin(&origin)?;
+        let reference = if let Some(target) = self.effect_asset_target(&origin) {
+            target
+                .config(&self.patches, &self.returns)
+                .and_then(|c| c.asset_reference(&parameter_id))
+        } else {
+            self.patches
+                .iter()
+                .find(|p| Some(p.id()) == patch_id)
+                .and_then(|p| p.instrument_config().asset_reference(&parameter_id))
+        }
+        .ok_or(EventRejection::InvalidSelection)?;
         self.file_browser
-            .begin(patch_id, parameter_id.clone(), reference.kind());
+            .begin_from(origin.clone(), parameter_id.clone(), reference.kind());
         let row = self
             .file_browser
             .rows()
             .first()
             .ok_or(EventRejection::InvalidSelection)?;
-        let focus = FocusPath::file_browser(
-            patch_id,
+        let focus = FocusPath::file_browser_for_origin(
+            &origin,
             parameter_id.as_str().to_owned(),
             row.id().to_owned(),
         );
         self.interaction
-            .enter_file_browser(patch_id, parameter_id, focus)
+            .enter_asset_browser(origin.patch_position(), parameter_id, focus)
             .map_err(|_| EventRejection::ActionUnavailableInContext)
     }
 
@@ -2340,30 +2321,58 @@ impl AppState {
             .map_err(|_| EventRejection::ActionUnavailableInContext)
     }
 
+    pub(crate) fn effect_asset_target(
+        &self,
+        origin: &FocusPath,
+    ) -> Option<crate::control::EffectAssetTarget> {
+        match origin.control_id() {
+            SemanticControlId::Patch(PatchControlId::Effect(slot_id, _)) => {
+                let patch_id = origin.patch_id()?;
+                let patch = self.patches.iter().find(|p| p.id() == patch_id)?;
+                let index = patch
+                    .effect_slots()
+                    .iter()
+                    .position(|s| s.as_ref().is_some_and(|c| c.slot_id() == *slot_id))?;
+                Some(crate::control::EffectAssetTarget::PatchSlot {
+                    patch_id,
+                    slot: crate::synth::effect_slot_id::EffectSlotIndex::new(index).ok()?,
+                })
+            }
+            SemanticControlId::Mixer(MixerControlId::ReturnEffect { bus, .. }) => {
+                Some(crate::control::EffectAssetTarget::BusReturn { bus: *bus })
+            }
+            _ => None,
+        }
+    }
     fn browser_asset_origin(
         &self,
         origin: &FocusPath,
-    ) -> Result<(PatchId, ParameterId), EventRejection> {
-        if origin.surface() != SurfaceId::PatchDetail {
+    ) -> Result<(Option<PatchId>, ParameterId), EventRejection> {
+        if !matches!(
+            origin.surface(),
+            SurfaceId::PatchDetail | SurfaceId::MixerInspector
+        ) {
             return Err(EventRejection::ActionUnavailableInContext);
         }
-        let patch_id = origin
-            .patch_id()
-            .ok_or(EventRejection::NoPatchesInstalled)?;
-        let SemanticControlId::Patch(PatchControlId::Capability(parameter)) = origin.control_id()
-        else {
-            return Err(EventRejection::ActionUnavailableInContext);
+        let patch_id = origin.patch_id();
+        let parameter = match origin.control_id() {
+            SemanticControlId::Patch(
+                PatchControlId::Capability(p) | PatchControlId::Effect(_, p),
+            ) => p,
+            SemanticControlId::Mixer(MixerControlId::ReturnEffect { parameter, .. }) => parameter,
+            _ => return Err(EventRejection::ActionUnavailableInContext),
         };
-        let patch = self
-            .patches
-            .iter()
-            .find(|patch| patch.id() == patch_id)
-            .ok_or(EventRejection::NoPatchesInstalled)?;
-        if !patch
-            .instrument_config()
-            .asset_reference(parameter)
-            .is_some_and(|asset| matches!(asset.kind(), AssetKind::Sample | AssetKind::SoundFont))
-        {
+        let reference = if let Some(target) = self.effect_asset_target(origin) {
+            target
+                .config(&self.patches, &self.returns)
+                .and_then(|c| c.asset_reference(parameter))
+        } else {
+            self.patches
+                .iter()
+                .find(|p| Some(p.id()) == patch_id)
+                .and_then(|p| p.instrument_config().asset_reference(parameter))
+        };
+        if reference.is_none_or(|r| r.kind() == AssetKind::Other) {
             return Err(EventRejection::ActionUnavailableInContext);
         }
         Ok((patch_id, parameter.clone()))
@@ -2392,7 +2401,7 @@ impl AppState {
             let patch = self
                 .patches
                 .iter()
-                .find(|patch| patch.id() == patch_id)
+                .find(|patch| Some(patch.id()) == patch_id)
                 .ok_or(EventRejection::UnknownPatch)?;
             let expected = AssetReference::new(selection.request.asset_kind, asset.as_str())
                 .map_err(|_| EventRejection::InvalidParameterValue)?;
@@ -2413,7 +2422,12 @@ impl AppState {
                     .with_asset_descriptor(descriptor)
                     .map_err(|_| EventRejection::InvalidInstrumentConfig)?,
             );
-        } else if selection.result.is_ok() && selection.request.asset_kind == AssetKind::SoundFont {
+        } else if selection.result.is_ok()
+            && matches!(
+                selection.request.asset_kind,
+                AssetKind::SoundFont | AssetKind::SysEx
+            )
+        {
             return Err(EventRejection::InvalidInstrumentConfig);
         }
         self.file_browser.finish_file_import(&selection.result);
@@ -2425,7 +2439,22 @@ impl AppState {
         if asset.is_external() {
             return Err(EventRejection::InvalidParameterValue);
         }
-        let effect = match self.request_asset_assignment_for(patch_id, parameter, asset.clone()) {
+        let assignment = if let Some(target) = self.effect_asset_target(&selection.request.origin) {
+            let reference = AssetReference::new(selection.request.asset_kind, asset.as_str())
+                .map_err(|_| EventRejection::InvalidParameterValue)?;
+            self.request_topology_change(StructuralEditIntent::ReplaceEffectAsset {
+                target,
+                parameter_id: parameter,
+                reference,
+            })
+        } else {
+            self.request_asset_assignment_for(
+                patch_id.ok_or(EventRejection::UnknownPatch)?,
+                parameter,
+                asset.clone(),
+            )
+        };
+        let effect = match assignment {
             Ok(effect) => effect,
             Err(EventRejection::ParameterAtBoundary) => return Ok(ReducerEffects::default()),
             Err(error) => return Err(error),
@@ -2761,8 +2790,7 @@ impl AppState {
                 })
             }
             FileBrowserRowKind::File(asset_id) => {
-                if asset_id.is_external() || self.file_browser.asset_kind() == AssetKind::SoundFont
-                {
+                if asset_id.is_external() || self.file_browser.asset_kind() != AssetKind::Sample {
                     if self.engine_selection.is_in_flight()
                         || self.file_browser.import_request().is_some()
                     {
@@ -2841,7 +2869,7 @@ impl AppState {
                 ..
             }) => (
                 patch_position
-                    .patch_id()
+                    .and_then(PatchPositionId::patch_id)
                     .ok_or(EventRejection::ActionUnavailableInContext)?,
                 asset_parameter_id.clone(),
             ),
@@ -3405,6 +3433,27 @@ impl AppState {
                 .set_slot_occupancy(*slot, occupant)
                 .map_err(|_| EventRejection::MismatchedEngineSelection)?;
             self.repair_semantic_paths(&old_patch_order, &old_mixer_order)?;
+        } else if let StructuralEditIntent::SetVoiceBudget { patch_id, voices } = intent {
+            Arc::make_mut(&mut self.patches)
+                .iter_mut()
+                .find(|p| p.id() == *patch_id)
+                .ok_or(EventRejection::UnknownPatch)?
+                .set_voice_limit(*voices)
+                .map_err(|_| EventRejection::InvalidParameterValue)?;
+        } else if let StructuralEditIntent::ReplaceEffectAsset {
+            target,
+            parameter_id,
+            reference,
+        } = intent
+        {
+            target.assign(
+                Arc::make_mut(&mut self.patches).as_mut_slice(),
+                Arc::make_mut(&mut self.returns),
+                &self.effects,
+                parameter_id,
+                reference.clone(),
+            )?;
+            self.file_browser.assignment_ready(request_id);
         } else if let StructuralEditIntent::SetReturnOccupancy { bus, entry } = intent {
             let old_inspector_order = self.mixer_inspector_order();
             Arc::make_mut(&mut self.returns)
@@ -3472,6 +3521,34 @@ impl AppState {
             return Err(EventRejection::StructuralEditBusy);
         }
         match &intent {
+            StructuralEditIntent::SetVoiceBudget { patch_id, voices } => {
+                let patch = self
+                    .patches
+                    .iter()
+                    .find(|p| p.id() == *patch_id)
+                    .ok_or(EventRejection::UnknownPatch)?;
+                let policy = self
+                    .capabilities
+                    .descriptor_for_config(patch.instrument_config())
+                    .ok_or(EventRejection::InvalidInstrumentConfig)?
+                    .voice_policy();
+                if *voices == 0 || *voices > policy.polyphony_ceiling() {
+                    return Err(EventRejection::InvalidParameterValue);
+                }
+            }
+            StructuralEditIntent::ReplaceEffectAsset {
+                target,
+                parameter_id,
+                reference,
+            } => {
+                target.assign(
+                    &mut self.patches.to_vec(),
+                    &mut (*self.returns).clone(),
+                    &self.effects,
+                    parameter_id,
+                    reference.clone(),
+                )?;
+            }
             StructuralEditIntent::SetSlotOccupancy {
                 patch_id,
                 slot,
@@ -3606,7 +3683,9 @@ impl AppState {
             return Err(EventRejection::MismatchedEngineSelection);
         }
         match &intent {
-            StructuralEditIntent::SetSlotOccupancy { .. }
+            StructuralEditIntent::SetVoiceBudget { .. }
+            | StructuralEditIntent::ReplaceEffectAsset { .. }
+            | StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 let status = self
@@ -3621,6 +3700,9 @@ impl AppState {
                 )
                 .expect("Activating correlation owns a target revision");
                 self.engine_selection = status;
+                if matches!(intent, StructuralEditIntent::ReplaceEffectAsset { .. }) {
+                    self.file_browser.assignment_activating(request_id);
+                }
                 Ok(effect)
             }
             StructuralEditIntent::ReplaceCapability { .. }
@@ -3656,6 +3738,9 @@ impl AppState {
             self.engine_selection.failed(failure)
         }
         .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+        if matches!(intent, StructuralEditIntent::ReplaceEffectAsset { .. }) {
+            self.file_browser.assignment_failed(request_id, failure);
+        }
         Ok(())
     }
 
@@ -3667,6 +3752,27 @@ impl AppState {
         correlation: &crate::control::EngineSelectionCorrelation,
     ) -> bool {
         match correlation.intent() {
+            StructuralEditIntent::SetVoiceBudget { patch_id, voices } => {
+                correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
+                    && self
+                        .patches
+                        .iter()
+                        .any(|p| p.id() == *patch_id && *voices > 0)
+            }
+            StructuralEditIntent::ReplaceEffectAsset {
+                target,
+                parameter_id,
+                reference,
+            } => {
+                correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
+                    && target
+                        .config(&self.patches, &self.returns)
+                        .is_some_and(|c| {
+                            self.effects
+                                .replace_asset(c, parameter_id, reference.clone())
+                                .is_ok()
+                        })
+            }
             StructuralEditIntent::ReplaceCapability { .. }
             | StructuralEditIntent::ReplaceParameterChoice { .. }
             | StructuralEditIntent::ReplaceAsset { .. } => {
@@ -3955,7 +4061,12 @@ impl AppState {
                     self.adjust_patch_midi_input(direction)?;
                 }
                 crate::control::PatchControlId::VoiceLimit => {
-                    self.adjust_patch_voice_limit(direction)?;
+                    let effect = self.adjust_patch_voice_limit(direction)?;
+                    return Ok(ReducerEffects {
+                        audio_command: None,
+                        engine_selection_effect: effect,
+                        midi_device_effects: Vec::new(),
+                    });
                 }
                 crate::control::PatchControlId::Engine
                 | crate::control::PatchControlId::Envelope(_)
@@ -4209,7 +4320,7 @@ impl AppState {
                 ..
             }) => (
                 patch_position
-                    .patch_id()
+                    .and_then(PatchPositionId::patch_id)
                     .ok_or(EventRejection::ActionUnavailableInContext)?,
                 asset_parameter_id.clone(),
             ),
@@ -4492,7 +4603,13 @@ impl AppState {
     /// and every projection move the value by the same amounts. The arithmetic
     /// is integral: a voice count has no fractional position, so it is not
     /// routed through the float scalar path.
-    fn adjust_patch_voice_limit(&mut self, direction: Direction) -> Result<(), EventRejection> {
+    fn adjust_patch_voice_limit(
+        &mut self,
+        direction: Direction,
+    ) -> Result<Option<EngineSelectionEffect>, EventRejection> {
+        if self.engine_selection.is_in_flight() {
+            return Err(EventRejection::StructuralEditBusy);
+        }
         let descriptor = VoiceLimit::descriptor();
         let patch_id = self
             .interaction
@@ -4502,6 +4619,11 @@ impl AppState {
             .iter_mut()
             .find(|patch| patch.id() == patch_id)
             .ok_or(EventRejection::NoPatchesInstalled)?;
+        let policy = self
+            .capabilities
+            .descriptor_for_config(patch.instrument_config())
+            .ok_or(EventRejection::InvalidInstrumentConfig)?
+            .voice_policy();
         let current = patch.voice_limit().value();
         let (step, increasing) = match direction {
             Direction::Right => (descriptor.fine_step(), true),
@@ -4510,17 +4632,25 @@ impl AppState {
             Direction::Down => (descriptor.coarse_step(), false),
         };
         let value = if increasing {
-            current.saturating_add(step).min(descriptor.maximum())
+            current.saturating_add(step).min(policy.polyphony_ceiling())
         } else {
             current.saturating_sub(step).max(descriptor.minimum())
         };
         if value == current {
             return Err(EventRejection::ParameterAtBoundary);
         }
+        if value > current && matches!(policy, crate::synth::VoicePolicy::Configurable { .. }) {
+            return self
+                .request_topology_change(StructuralEditIntent::SetVoiceBudget {
+                    patch_id,
+                    voices: value,
+                })
+                .map(Some);
+        }
         patch
             .set_voice_limit(value)
             .map_err(|_| EventRejection::InvalidParameterValue)?;
-        Ok(())
+        Ok(None)
     }
 
     fn adjust_patch_effect(
@@ -5459,7 +5589,9 @@ fn candidate_matches_intent(
     intent: &StructuralEditIntent,
 ) -> bool {
     match intent {
-        StructuralEditIntent::SetSlotOccupancy { .. }
+        StructuralEditIntent::SetVoiceBudget { .. }
+        | StructuralEditIntent::ReplaceEffectAsset { .. }
+        | StructuralEditIntent::SetSlotOccupancy { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. }
         | StructuralEditIntent::AppendPatch { .. } => false,
         StructuralEditIntent::ReplaceCapability {
@@ -5683,6 +5815,205 @@ mod tests {
             .unwrap();
         state.apply(AppEvent::InstallPatches(vec![gapped])).unwrap();
         state
+    }
+
+    #[test]
+    fn effect_assets_browse_from_patch_and_mixer_and_commit_only_on_activation() {
+        use crate::control::{AssetImportResult, SampleAssetLifecycle, SemanticGraphicalViewModel};
+        use crate::synth::{
+            AssetKind, FileBrowserFolderId, FileBrowserListing, FileBrowserRow, FileBrowserRowKind,
+        };
+        for mixer in [false, true] {
+            let effects = crate::adapter::production_effects::production_effect_registry().unwrap();
+            let capability = crate::synth::EffectCapabilityId::new("effect.nam.model").unwrap();
+            let parameter = ParameterId::new(crate::adapter::model_assets::NAM_FILE).unwrap();
+            let slot = EffectSlotIndex::new(0).unwrap();
+            let bus = BusId::ALL[0];
+            let mut returns = BusReturnBank::default();
+            returns
+                .set_return_occupancy(&effects, bus, Some(&capability))
+                .unwrap();
+            let mut patch = patch(1, 0.0);
+            patch
+                .set_slot_occupancy(
+                    slot,
+                    Some(
+                        effects
+                            .descriptor(&capability)
+                            .unwrap()
+                            .default_config(slot.instance_identity())
+                            .unwrap(),
+                    ),
+                )
+                .unwrap();
+            let patch_id = patch.id();
+            let mut state = AppState::new_with_effects(registry(), effects, global_parameters())
+                .with_initial_returns(returns);
+            state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+            let target = if mixer {
+                crate::control::EffectAssetTarget::BusReturn { bus }
+            } else {
+                crate::control::EffectAssetTarget::PatchSlot { patch_id, slot }
+            };
+            if mixer {
+                state
+                    .apply(AppEvent::EnterSurface(SurfaceId::MixerInspector))
+                    .unwrap();
+                let expected =
+                    FocusPath::mixer_return_effect(bus, parameter.clone(), capability.clone());
+                for direction in [Direction::Up, Direction::Down] {
+                    loop {
+                        if state.interaction().focus_path() == &expected {
+                            break;
+                        }
+                        if state.apply(AppEvent::Navigate(direction)).is_err() {
+                            break;
+                        }
+                    }
+                    if state.interaction().focus_path() == &expected {
+                        break;
+                    }
+                }
+                assert_eq!(state.interaction().focus_path(), &expected);
+            } else {
+                state
+                    .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                    .unwrap();
+                navigate_to_patch_control(
+                    &mut state,
+                    |control| matches!(control,PatchControlId::EffectSlot(index) if *index==slot),
+                );
+                state.apply(AppEvent::OpenRelated).unwrap();
+            }
+            let origin = state.interaction().focus_path().clone();
+            let old = target
+                .config(state.patches(), state.bus_returns())
+                .unwrap()
+                .clone();
+            state.apply(AppEvent::OpenRelated).unwrap();
+            assert_eq!(
+                state.context(),
+                if mixer {
+                    TopLevelContext::Mixer
+                } else {
+                    TopLevelContext::Patch
+                }
+            );
+            assert_eq!(
+                state.file_browser().patch_id(),
+                if mixer { None } else { Some(patch_id) }
+            );
+            let folder = FileBrowserFolderId::default();
+            let asset = AssetFileId::new("new.nam").unwrap();
+            state
+                .apply(AppEvent::FileCatalogRefreshed {
+                    asset_kind: AssetKind::NeuralModel,
+                    folder: folder.clone(),
+                    listing: Ok(FileBrowserListing::new(
+                        folder,
+                        vec![
+                            FileBrowserRow::new(
+                                "new",
+                                "New Model",
+                                FileBrowserRowKind::File(asset.clone()),
+                                Some(100),
+                            )
+                            .unwrap(),
+                            FileBrowserRow::new(
+                                "cancel",
+                                "Cancel",
+                                FileBrowserRowKind::Cancel,
+                                None,
+                            )
+                            .unwrap(),
+                        ],
+                    )
+                    .unwrap()),
+                })
+                .unwrap();
+            let model =
+                SemanticGraphicalViewModel::project(&state, "asset-browser-witness").unwrap();
+            let serialized = serde_json::to_string(&model).unwrap();
+            assert!(
+                serialized.contains("NAM MODEL"),
+                "mixer={mixer}: {serialized}"
+            );
+            state.apply(AppEvent::Activate).unwrap();
+            assert_eq!(state.interaction().focus_path(), &origin);
+            let request = state.file_browser().import_request().unwrap().clone();
+            let outcome = state
+                .apply(AppEvent::AssetImported(AssetImportResult {
+                    request,
+                    descriptor: None,
+                    result: Ok(asset.clone()),
+                }))
+                .unwrap();
+            let effect = outcome.engine_selection_effect().unwrap();
+            let request_id = effect.request_id();
+            let intent = effect.intent().clone();
+            assert_eq!(
+                target.config(state.patches(), state.bus_returns()),
+                Some(&old)
+            );
+            for lifecycle in [
+                SampleAssetLifecycle::Validating,
+                SampleAssetLifecycle::Preparing,
+            ] {
+                state
+                    .apply(AppEvent::SampleAssetLifecycleAdvanced {
+                        request_id,
+                        lifecycle,
+                    })
+                    .unwrap();
+            }
+            advance_engine_to_preparing(&mut state);
+            let source = state.engine_selection().active_graph_revision();
+            let revision = source.checked_next().unwrap();
+            state
+                .apply(AppEvent::TopologyPrepared {
+                    request_id,
+                    intent: intent.clone(),
+                    source_graph_revision: source,
+                    target_graph_revision: revision,
+                    prepared_visualization: None,
+                })
+                .unwrap();
+            assert_eq!(
+                state.file_browser().lifecycle(),
+                SampleAssetLifecycle::Activating
+            );
+            assert_eq!(
+                target.config(state.patches(), state.bus_returns()),
+                Some(&old)
+            );
+            let model =
+                SemanticGraphicalViewModel::project(&state, "asset-browser-witness").unwrap();
+            assert!(serde_json::to_string(&model).unwrap().contains("new.nam"));
+            state
+                .apply(AppEvent::EngineActivationAcknowledged {
+                    request_id,
+                    intent,
+                    target_graph_revision: revision,
+                    retired_graph_revision: source,
+                    collected: true,
+                })
+                .unwrap();
+            assert_eq!(
+                state.file_browser().lifecycle(),
+                SampleAssetLifecycle::Ready
+            );
+            assert_eq!(
+                target
+                    .config(state.patches(), state.bus_returns())
+                    .unwrap()
+                    .asset_reference(&parameter)
+                    .unwrap()
+                    .locator(),
+                "new.nam"
+            );
+            assert_eq!(state.interaction().focus_path(), &origin);
+            SemanticGraphicalViewModel::project(&state, "asset-browser-witness").unwrap();
+        }
     }
 
     #[test]
@@ -7879,57 +8210,71 @@ mod tests {
     /// T009: the voice limit honours the descriptor's own fine and coarse
     /// steps — not literals — and refuses at both bounds.
     #[test]
-    fn voice_limit_uses_descriptor_steps_and_refuses_at_both_bounds() {
-        let descriptor = VoiceLimit::descriptor();
+    fn voice_budget_growth_prepares_then_commits_above_the_previous_default() {
         let mut state = installed_state();
-        let seeded = state.patches()[0].voice_limit().value();
-
-        focus_utility_row(&mut state, &PatchControlId::VoiceLimit);
+        let patch_id = state.patches()[0].id();
         state
-            .apply(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .restore_voice_limits(
+                &state
+                    .patches()
+                    .iter()
+                    .map(|p| {
+                        (
+                            p.id(),
+                            if p.id() == patch_id {
+                                128
+                            } else {
+                                p.voice_limit().value()
+                            },
+                        )
+                    })
+                    .collect::<Vec<_>>(),
+            )
             .unwrap();
-
-        // Fine down, then coarse down: each moves by the descriptor's own step.
-        state.apply(AppEvent::Adjust(Direction::Left)).unwrap();
+        focus_utility_row(&mut state, &PatchControlId::VoiceLimit);
+        let origin = state.interaction().focus_path().clone();
+        let outcome = state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
+        let effect = outcome.engine_selection_effect().unwrap();
+        let request_id = effect.request_id();
+        let intent = effect.intent().clone();
         assert_eq!(
-            state.patches()[0].voice_limit().value(),
-            seeded - descriptor.fine_step()
+            intent,
+            StructuralEditIntent::SetVoiceBudget {
+                patch_id,
+                voices: 129
+            }
         );
-        state.apply(AppEvent::Adjust(Direction::Down)).unwrap();
-        assert_eq!(
-            state.patches()[0].voice_limit().value(),
-            seeded - descriptor.fine_step() - descriptor.coarse_step()
-        );
-        // And back up by the same amounts.
-        state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
-        state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
-        assert_eq!(state.patches()[0].voice_limit().value(), seeded);
-
-        // At the maximum, increasing refuses and leaves state identical.
-        while state.patches()[0].voice_limit().value() < descriptor.maximum() {
-            state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
-        }
-        let at_max = state.clone();
+        assert_eq!(state.patches()[0].voice_limit().value(), 128);
         assert_eq!(
             state.apply(AppEvent::Adjust(Direction::Right)),
-            Err(EventRejection::ParameterAtBoundary)
+            Err(EventRejection::StructuralEditBusy)
         );
-        assert_eq!(state, at_max);
-
-        // At the minimum, decreasing refuses and leaves state identical.
-        while state.patches()[0].voice_limit().value() > descriptor.minimum() {
-            state.apply(AppEvent::Adjust(Direction::Down)).unwrap();
-        }
-        assert_eq!(
-            state.patches()[0].voice_limit().value(),
-            descriptor.minimum()
-        );
-        let at_min = state.clone();
-        assert_eq!(
-            state.apply(AppEvent::Adjust(Direction::Left)),
-            Err(EventRejection::ParameterAtBoundary)
-        );
-        assert_eq!(state, at_min);
+        advance_engine_to_preparing(&mut state);
+        let source = state.engine_selection().active_graph_revision();
+        let target = source.checked_next().unwrap();
+        state
+            .apply(AppEvent::TopologyPrepared {
+                request_id,
+                intent: intent.clone(),
+                source_graph_revision: source,
+                target_graph_revision: target,
+                prepared_visualization: None,
+            })
+            .unwrap();
+        assert_eq!(state.patches()[0].voice_limit().value(), 128);
+        state
+            .apply(AppEvent::EngineActivationAcknowledged {
+                request_id,
+                intent,
+                target_graph_revision: target,
+                retired_graph_revision: source,
+                collected: true,
+            })
+            .unwrap();
+        assert_eq!(state.patches()[0].voice_limit().value(), 129);
+        assert_eq!(state.interaction().focus_path(), &origin);
+        state.apply(AppEvent::Adjust(Direction::Down)).unwrap();
+        assert_eq!(state.patches()[0].voice_limit().value(), 121);
     }
 
     /// H1: installation seeds every Patch's limit from its own engine's
@@ -7993,7 +8338,7 @@ mod tests {
         // performs; proved here on the canonical aggregate the reducer mutates.
         let mut patch = patch(1, 0.0);
         patch.seed_voice_limit(VoicePolicy::EngineManaged);
-        assert_eq!(patch.voice_limit().value(), VoiceLimit::MAXIMUM);
+        assert_eq!(patch.voice_limit().value(), 64);
 
         let braids = BraidsCapability::new().unwrap().default_config().unwrap();
         let carry_over = patch.replace_instrument_config(
@@ -8006,7 +8351,7 @@ mod tests {
         assert_eq!(
             carry_over,
             crate::synth::patch::VoiceLimitCarryOver::Clamped {
-                previous: VoiceLimit::new(VoiceLimit::MAXIMUM).unwrap(),
+                previous: VoiceLimit::new(64).unwrap(),
                 limit: VoiceLimit::new(BRAIDS_FIXED_VOICES).unwrap(),
             }
         );

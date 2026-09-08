@@ -971,7 +971,7 @@ fn harness_return_parameters() -> RtPostEffectParameters {
 
 /// Overlays the harness's fixture return entries onto one published snapshot.
 fn with_harness_returns(snapshot: &ParameterSnapshot) -> ParameterSnapshot {
-    let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+    let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
     for (bus, level) in HARNESS_RETURN_BUSES.iter().zip(harness_return_levels()) {
         returns[bus.index()] = RtBusReturnParameters::new(
             EffectSlotId::new(1).expect("the static harness slot id is non-zero"),
@@ -980,7 +980,7 @@ fn with_harness_returns(snapshot: &ParameterSnapshot) -> ParameterSnapshot {
         )
         .expect("the fixture return entry is valid");
     }
-    snapshot.with_returns(returns)
+    snapshot.clone().with_returns(returns)
 }
 
 fn fill_measure_stems(
@@ -1162,7 +1162,7 @@ fn run_cross_track_parameter_leak(mutant_enabled: bool) -> CrossTrackParameterLe
         }
 
         let baseline = tree_value(&app_loop);
-        let before_snapshot = audio.read_latest_parameters();
+        let before_snapshot = audio.read_latest_parameters().clone();
         let before_edited = field.value(before_snapshot.mixer_track(MixerTrackId::ALL[1]));
         let before_comparison = field.value(before_snapshot.mixer_track(MixerTrackId::ALL[0]));
         let edited_before_mix = measure_patch(&before_snapshot, 1);
@@ -1172,10 +1172,10 @@ fn run_cross_track_parameter_leak(mutant_enabled: bool) -> CrossTrackParameterLe
             .dispatch(AppEvent::Adjust(Direction::Right))
             .expect("fixture edit is accepted");
         let after_tree = tree_value(&app_loop);
-        let published = audio.read_latest_parameters();
+        let published = audio.read_latest_parameters().clone();
         let after_edited = field.value(published.mixer_track(MixerTrackId::ALL[1]));
         let after_comparison = field.value(published.mixer_track(MixerTrackId::ALL[0]));
-        let mix_snapshot = snapshot_with_cross_track_leak(published, mutant_enabled);
+        let mix_snapshot = snapshot_with_cross_track_leak(published.clone(), mutant_enabled);
         let edited_after_mix = measure_patch(&mix_snapshot, 1);
         let comparison_after_mix = measure_patch(&mix_snapshot, 0);
 
@@ -1318,8 +1318,8 @@ where
         }
     }
 
-    fn read_latest_parameters(&mut self) -> ParameterSnapshot {
-        self.inner.read_latest_parameters()
+    fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool {
+        self.inner.exchange_latest_parameters(previous)
     }
 }
 
@@ -1377,10 +1377,12 @@ impl PreparedInstrument for RoutedVerificationInstrument {
         output: &mut [f32],
         _frame_count: usize,
         _parameters: &crate::real_time::RtPatchParameters,
-    ) {
+    ) -> Result<(), crate::synth::PreparedInstrumentError> {
         if self.probe.dispatched_patch.load(Ordering::Acquire) == self.patch_id.value() {
             output.fill(0.5);
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {
@@ -1430,7 +1432,7 @@ fn render_routed_command(mutant_enabled: bool) -> RouteRender {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -1661,7 +1663,7 @@ fn faithful_effects_control_baseline_restored() -> bool {
         ))
         .expect("faithful-effects fixture enters Mixer Inspector");
     let baseline_tree = tree_value(&app_loop);
-    let baseline_parameters = audio.read_latest_parameters();
+    let baseline_parameters = audio.read_latest_parameters().clone();
 
     app_loop
         .dispatch(AppEvent::Adjust(Direction::Right))
@@ -1683,7 +1685,7 @@ fn faithful_effects_control_baseline_restored() -> bool {
         .expect("Reverb Send focus restoration is accepted");
 
     let restored_tree = tree_value(&app_loop);
-    let restored_parameters = audio.read_latest_parameters();
+    let restored_parameters = audio.read_latest_parameters().clone();
     let projected_values_restored = [
         "/patches",
         "/mixer",
@@ -1710,8 +1712,8 @@ fn faithful_effects_control_baseline_restored() -> bool {
 fn run_dry_to_wet_bypass(mutant_enabled: bool) -> DryToWetBypassObservation {
     let zero_send = parameter_snapshot_with_sends(0.0, 0.0);
     let nonzero_send = parameter_snapshot_with_sends(0.4, 0.3);
-    let zero_measurement = render_dry_wet(zero_send, mutant_enabled);
-    let nonzero_measurement = render_dry_wet(nonzero_send, mutant_enabled);
+    let zero_measurement = render_dry_wet(zero_send.clone(), mutant_enabled);
+    let nonzero_measurement = render_dry_wet(nonzero_send.clone(), mutant_enabled);
     let finite_audio = zero_measurement.finite && nonzero_measurement.finite;
     let baseline_restored = zero_send == parameter_snapshot_with_sends(0.0, 0.0)
         && nonzero_send == parameter_snapshot_with_sends(0.4, 0.3)
@@ -1908,7 +1910,7 @@ fn run_send_seam_mix(
         )
         .expect("the fixture return entry is valid");
     }
-    let snapshot = base.with_returns(returns);
+    let snapshot = base.clone().with_returns(returns);
 
     let mut block = PatchAudioBlock::prepare(FRAME_COUNT).expect("send-seam block prepares");
     block
@@ -2115,7 +2117,7 @@ fn run_permissive_structural_match(mutant_enabled: bool) -> PermissiveStructural
             1.0,
         )
         .expect("the live return entry is valid");
-        let snapshot = base.with_returns(returns);
+        let snapshot = base.clone().with_returns(returns);
 
         let mut block = PatchAudioBlock::prepare(FRAME_COUNT).expect("match block prepares");
         block
@@ -2285,7 +2287,7 @@ fn topology_fixture() -> TopologyFixture {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             TOPOLOGY_FRAME_COUNT,
         )

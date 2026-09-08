@@ -87,6 +87,7 @@ pub enum SamplePreviewState {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileBrowserState {
+    origin: Option<crate::control::FocusPath>,
     import_request: Option<AssetImportRequest>,
     file_selection_failure: Option<SampleAssetError>,
     asset_kind: crate::synth::AssetKind,
@@ -108,6 +109,7 @@ pub struct FileBrowserState {
 impl Default for FileBrowserState {
     fn default() -> Self {
         Self {
+            origin: None,
             import_request: None,
             file_selection_failure: None,
             catalog: BTreeMap::new(),
@@ -126,6 +128,18 @@ impl Default for FileBrowserState {
 }
 
 impl FileBrowserState {
+    pub fn origin(&self) -> Option<&crate::control::FocusPath> {
+        self.origin.as_ref()
+    }
+    pub(crate) fn begin_from(
+        &mut self,
+        origin: crate::control::FocusPath,
+        parameter: ParameterId,
+        kind: crate::synth::AssetKind,
+    ) {
+        self.begin(origin.patch_id(), parameter, kind);
+        self.origin = Some(origin);
+    }
     pub fn import_request(&self) -> Option<&AssetImportRequest> {
         self.import_request.as_ref()
     }
@@ -137,10 +151,11 @@ impl FileBrowserState {
     pub(crate) fn request_file_import(
         &mut self,
         request: AssetImportRequest,
-        patch_id: PatchId,
+        patch_id: Option<PatchId>,
         parameter: ParameterId,
     ) {
         self.begin(patch_id, parameter, request.asset_kind);
+        self.origin = Some(request.origin.clone());
         self.import_request = Some(request);
         self.lifecycle = SampleAssetLifecycle::Loading;
     }
@@ -236,13 +251,14 @@ impl FileBrowserState {
 
     pub(crate) fn begin(
         &mut self,
-        patch_id: PatchId,
+        patch_id: impl Into<Option<PatchId>>,
         asset_parameter_id: ParameterId,
         kind: crate::synth::AssetKind,
     ) {
         self.file_selection_failure = None;
+        self.origin = None;
         self.asset_kind = kind;
-        self.patch_id = Some(patch_id);
+        self.patch_id = patch_id.into();
         self.asset_parameter_id = Some(asset_parameter_id);
         self.requested_asset = None;
         self.request_id = None;
@@ -292,8 +308,9 @@ impl FileBrowserState {
         folder: FileBrowserFolderId,
         listing: Result<FileBrowserListing, SampleAssetError>,
     ) -> bool {
-        let reload =
-            self.patch_id.is_some() && self.asset_kind == asset_kind && self.folder == folder;
+        let reload = self.asset_parameter_id.is_some()
+            && self.asset_kind == asset_kind
+            && self.folder == folder;
         self.catalog.insert((asset_kind, folder.clone()), listing);
         if reload {
             self.load_folder(folder);

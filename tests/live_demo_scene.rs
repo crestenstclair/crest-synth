@@ -302,7 +302,7 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -339,8 +339,8 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     let runtime_audio = RuntimeAudioWitness::new(
         1,
         app_loop.patches().len(),
-        1,
-        1,
+        app_loop.patches().len(),
+        0,
         true,
         GraphRevision::INITIAL,
         0,
@@ -638,8 +638,11 @@ fn live_demo_scene_uses_production_state_projection_render_and_observation_paths
     assert!(report_json.contains("\"shared_track_sum_exact\":true"));
     assert_eq!(report.runtime_audio().prepared_shared_assets(), 1);
     assert_eq!(report.runtime_audio().prepared_instruments(), 2);
-    assert_eq!(report.runtime_audio().engine_managed_patches(), 1);
-    assert_eq!(report.runtime_audio().fixed_per_patch_patches(), 1);
+    assert_eq!(
+        report.runtime_audio().engine_managed_patches(),
+        report.runtime_audio().prepared_instruments()
+    );
+    assert_eq!(report.runtime_audio().fixed_per_patch_patches(), 0);
     assert!(report.runtime_audio().adjacent_capabilities_distinct());
     assert_eq!(
         report.runtime_audio().active_graph_revision(),
@@ -726,7 +729,7 @@ fn live_demo_early_close_uses_semantic_cleanup_without_success_report() {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )

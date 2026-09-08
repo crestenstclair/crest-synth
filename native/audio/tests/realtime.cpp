@@ -1,0 +1,193 @@
+// Allocation witness for the exact native archives linked by Crest.
+#include <new>
+#include <cstdlib>
+#include <cstdio>
+#include <cmath>
+#include <cstring>
+#include <vector>
+#include <cstdint>
+#include <thread>
+#include <atomic>
+#include <pthread.h>
+static std::atomic<bool> measuring{false};
+static std::atomic<pthread_t> measured_thread;
+static size_t allocations=0,destructions=0,heap_operations=0,locks=0;
+static bool is_measuring() {
+    return measuring.load(std::memory_order_acquire) && pthread_equal(measured_thread.load(std::memory_order_relaxed),pthread_self());
+}
+#ifdef __APPLE__
+#include <pthread.h>
+extern "C" void crest_witness_begin();
+extern "C" void crest_witness_end(size_t*,size_t*);
+#endif
+static void begin_measurement() {
+    allocations=destructions=heap_operations=locks=0;
+    measured_thread.store(pthread_self(),std::memory_order_relaxed);
+    measuring.store(true,std::memory_order_release);
+#ifdef __APPLE__
+    crest_witness_begin();
+#endif
+}
+static void end_measurement() {
+#ifdef __APPLE__
+    crest_witness_end(&heap_operations,&locks);
+#endif
+    measuring.store(false,std::memory_order_release);
+}
+void* operator new(size_t n) { if(is_measuring())++allocations; if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc(); }
+void* operator new[](size_t n) {return ::operator new(n);}
+void operator delete(void* p) noexcept {if(p&&is_measuring())++destructions;std::free(p);}
+void operator delete[](void* p) noexcept {::operator delete(p);}
+void operator delete(void* p,size_t) noexcept {::operator delete(p);}
+void operator delete[](void* p,size_t) noexcept {::operator delete(p);}
+void* operator new(size_t n,std::align_val_t alignment) {if(is_measuring())++allocations;void* p=nullptr;if(posix_memalign(&p,static_cast<size_t>(alignment),n?n:1))throw std::bad_alloc();return p;}
+void* operator new[](size_t n,std::align_val_t a){return ::operator new(n,a);}
+void operator delete(void* p,std::align_val_t) noexcept{::operator delete(p);}
+void operator delete[](void* p,std::align_val_t) noexcept{::operator delete(p);}
+void operator delete(void* p,size_t,std::align_val_t) noexcept{::operator delete(p);}
+void operator delete[](void* p,size_t,std::align_val_t) noexcept{::operator delete(p);}
+extern "C" {
+size_t crest_audio_count();
+const char* crest_audio_id(size_t);
+bool crest_audio_is_instrument(size_t);
+void* crest_audio_create(size_t,float,size_t);
+void crest_audio_destroy(void*);
+size_t crest_audio_param_count(void*);
+float crest_audio_param_default(void*,size_t);
+float crest_audio_param_min(void*,size_t);
+float crest_audio_param_max(void*,size_t);
+bool crest_audio_param_stepped(void*,size_t);
+bool crest_audio_set(void*,const float*,size_t);
+void crest_audio_note(void*,int,int,int);
+void crest_audio_reset(void*);
+bool crest_audio_process(void*,float*,size_t);
+bool crest_audio_load_sample(void*,const uint8_t*,size_t,size_t);
+}
+#include "crest_sample_default.h"
+// Verify instrumentation before accepting a zero-operation measurement.
+static bool counter_self_test() {
+    allocations=destructions=heap_operations=locks=0;
+    begin_measurement();
+    void* cpp=::operator new(64);
+    ::operator delete(cpp);
+    end_measurement();
+    if(allocations!=1||destructions!=1){std::printf("SELF C++ new=%zu delete=%zu\n",allocations,destructions);return false;}
+#ifdef __APPLE__
+    pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
+    pthread_rwlock_t rwlock=PTHREAD_RWLOCK_INITIALIZER;
+    void* (*volatile allocate)(size_t)=malloc;
+    void* (*volatile zero_allocate)(size_t,size_t)=calloc;
+    void* (*volatile resize)(void*,size_t)=realloc;
+    void (*volatile release)(void*)=free;
+    heap_operations=locks=0;
+    begin_measurement();
+    void* p=allocate(64);p=resize(p,128);release(p);
+    p=zero_allocate(2,64);release(p);
+    pthread_mutex_lock(&mutex);pthread_mutex_unlock(&mutex);
+    pthread_rwlock_rdlock(&rwlock);pthread_rwlock_unlock(&rwlock);
+    pthread_rwlock_wrlock(&rwlock);pthread_rwlock_unlock(&rwlock);
+    end_measurement();
+    pthread_mutex_destroy(&mutex);pthread_rwlock_destroy(&rwlock);
+    if(heap_operations!=5||locks!=3){std::printf("SELF C heap=%zu locks=%zu\n",heap_operations,locks);return false;}
+#endif
+    return true;
+}
+int main(){
+    if(!counter_self_test()){std::printf("COUNTER SELF-TEST FAILED\n");return 1;}
+    size_t failures=0,checked=0;
+    for(float rate:{44100.f,48000.f,96000.f})for(size_t index=0;index<crest_audio_count();++index){
+        const char* id=crest_audio_id(index);auto* p=crest_audio_create(index,rate,256);
+        if(!p){std::printf("CREATE %s %.0f\n",id,rate);++failures;continue;}
+        if(!std::strcmp(id,"sfizz_Sample")&&!crest_audio_load_sample(p,reinterpret_cast<const uint8_t*>(crest_sample_default),sizeof(crest_sample_default)-1,48000)){++failures;}
+        const size_t count=crest_audio_param_count(p);std::vector<float> values(count);
+        for(size_t i=0;i<count;++i)values[i]=crest_audio_param_default(p,i);
+        // Preparation occurs on the control thread. Measure first callback use
+        // on a fresh thread, including upstream thread-local initialization.
+        std::thread audio_thread([&] {
+        int failed_parameter=-2;float failed_value=0;bool valid=true;float stereo[512]{};allocations=destructions=heap_operations=locks=0;
+        begin_measurement();
+        crest_audio_reset(p);valid &= crest_audio_set(p,values.data(),count);
+        if(crest_audio_is_instrument(index))crest_audio_note(p,0x90,60,100);
+        for(size_t block=0;block<32;++block){
+            const size_t frames=block%4==0?1:block%4==1?17:block%4==2?127:256;
+            for(size_t i=0;i<frames*2;++i)stereo[i]=std::sin(float(i+block)*.07f)*.1f;
+            valid &= crest_audio_process(p,stereo,frames);
+        }
+        for(size_t i=0;i<count;++i){
+            const float saved=values[i];
+            for(float value:{crest_audio_param_min(p,i),crest_audio_param_max(p,i)}){
+                values[i]=value;valid &= crest_audio_set(p,values.data(),count);
+                const bool result=crest_audio_process(p,stereo,256); valid &= result;
+                if(!result && failed_parameter==-2){failed_parameter=int(i);failed_value=value;}
+            }
+            if(crest_audio_param_stepped(p,i)) {
+                for(float value=crest_audio_param_min(p,i);value<=crest_audio_param_max(p,i);value+=1) {
+                    values[i]=value;valid &= crest_audio_set(p,values.data(),count);
+                    if(crest_audio_is_instrument(index))crest_audio_note(p,0x90,60,100);
+                    for(int b=0;b<4;++b)valid &= crest_audio_process(p,stereo,256);
+                    if(crest_audio_is_instrument(index))crest_audio_note(p,0x80,60,0);
+                }
+            }
+            values[i]=saved;valid &= crest_audio_set(p,values.data(),count);
+        }
+        if(crest_audio_is_instrument(index)){
+            for(int note:{0,36,96,127}){
+                crest_audio_reset(p);valid &= crest_audio_set(p,values.data(),count);
+                crest_audio_note(p,0xe0,0,0);crest_audio_note(p,0x90,note,127);
+                for(int b=0;b<8;++b){const bool result=crest_audio_process(p,stereo,256);valid &= result;if(!result&&failed_parameter==-2){failed_parameter=-3-note;}}
+                crest_audio_note(p,0x80,note,0);
+            }
+        }
+        // The Daisy snare derivatives could diverge only after sustained
+        // rendering at interior frequencies; short endpoint probes missed it.
+        if(!std::strcmp(id,"mutable_SyntheticSnare") || !std::strcmp(id,"mutable_AnalogSnare")) {
+            for(float frequency:{200.f,2495.4f,10000.f})for(int note:{60,84,127})for(float sustain:{0.f,1.f}) {
+                crest_audio_reset(p);
+                values[0]=frequency;values[4]=sustain;
+                valid &= crest_audio_set(p,values.data(),count);
+                crest_audio_note(p,0xe0,0,64);
+                crest_audio_note(p,0x90,note,127);
+                double energy=0;
+                for(size_t block=0;block<size_t(rate*2)/256+1;++block) {
+                    const bool result=crest_audio_process(p,stereo,256);
+                    valid &= result;
+                    if(!result && failed_parameter==-2){failed_parameter=0;failed_value=frequency;}
+                    for(float sample:stereo)energy+=double(sample)*sample;
+                }
+                valid &= std::isfinite(energy) && energy>1e-10;
+                crest_audio_note(p,0x80,note,0);
+            }
+            for(size_t i=0;i<count;++i)values[i]=crest_audio_param_default(p,i);
+        }
+        crest_audio_reset(p);end_measurement();++checked;
+        if(!valid||allocations||destructions||heap_operations||locks){std::printf("FAIL %s %.0f valid=%d parameter=%d value=%g new=%zu delete=%zu heap=%zu locks=%zu\n",id,rate,valid,failed_parameter,failed_value,allocations,destructions,heap_operations,locks);++failures;}
+        });
+        audio_thread.join();
+        crest_audio_destroy(p);
+        // A second instance must not perturb an already prepared instance's random sequence.
+        if(std::strcmp(id,"sfizz_Sample")) {
+            void* solo=crest_audio_create(index,rate,256);
+            void* interleaved=crest_audio_create(index,rate,256);
+            void* disturbance=crest_audio_create(index,rate,256);
+            if(!solo||!interleaved||!disturbance) { ++failures; }
+            else {
+                for(auto* handle:{solo,interleaved,disturbance}) {
+                    crest_audio_reset(handle);crest_audio_set(handle,values.data(),count);
+                    if(crest_audio_is_instrument(index))crest_audio_note(handle,0x90,60,100);
+                }
+                bool independent=true;
+                for(int block=0;block<24;++block) {
+                    float a[512],b[512],noise[512];
+                    for(int n=0;n<512;++n)a[n]=b[n]=noise[n]=std::sin(float(n+block)*.031f)*.1f;
+                    independent &= crest_audio_process(solo,a,256);
+                    independent &= crest_audio_process(disturbance,noise,256);
+                    independent &= crest_audio_process(interleaved,b,256);
+                    independent &= std::memcmp(a,b,sizeof(a))==0;
+                }
+                if(!independent){std::printf("INSTANCE %s %.0f\n",id,rate);++failures;}
+            }
+            crest_audio_destroy(solo);crest_audio_destroy(interleaved);crest_audio_destroy(disturbance);
+        }
+    }
+    std::printf("Native witness: %zu preparations, %zu failures\n",checked,failures);return failures?1:0;
+}

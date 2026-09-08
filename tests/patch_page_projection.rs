@@ -549,7 +549,7 @@ fn prove_patch_lifecycle_visibility() {
     assert_eq!(parameters.graph_revision(), target_revision);
 }
 
-fn same_parameter_values(before: ParameterSnapshot, after: ParameterSnapshot) -> bool {
+fn same_parameter_values(before: &ParameterSnapshot, after: &ParameterSnapshot) -> bool {
     before.graph_revision() == after.graph_revision()
         && before.global() == after.global()
         && before.mixer_tracks() == after.mixer_tracks()
@@ -585,7 +585,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         },
     )
     .unwrap();
-    let before_parameters = *app_loop.current_parameters();
+    let before_parameters = app_loop.current_parameters().clone();
     let before_tree: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
     let before_body = app_loop.current_text().body().to_owned();
     let before_line = app_loop.current_text().selected_line();
@@ -636,7 +636,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     let (after_parameters, patch_tree, patch_page, patch_text, patch_generation) = {
         let app_loop = shared.borrow();
         (
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             serde_json::from_str::<Value>(app_loop.current_state_tree().json()).unwrap(),
             app_loop.current_patch_page().unwrap(),
             app_loop.current_text(),
@@ -652,7 +652,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         after_parameters.generation(),
         before_parameters.generation() + 1
     );
-    assert!(same_parameter_values(before_parameters, after_parameters));
+    assert!(same_parameter_values(&before_parameters, &after_parameters));
     assert_eq!(patch_tree["capabilities"], before_tree["capabilities"]);
     assert_eq!(patch_tree["patches"], before_tree["patches"]);
     assert_eq!(patch_tree["mixer"], before_tree["mixer"]);
@@ -759,7 +759,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
 
         {
             let app_loop = shared.borrow();
-            let focused = *app_loop.current_parameters();
+            let focused = app_loop.current_parameters().clone();
             let page = app_loop.current_patch_page().unwrap();
             let text = app_loop.current_text();
             let tree: Value = serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
@@ -794,7 +794,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                 .all(|event| !matches!(event, EmittedEvent::EngineSelection { .. })));
             if index == 0 {
                 assert_eq!(focused.generation(), detail_entry_generation);
-                assert!(same_parameter_values(after_parameters, focused));
+                assert!(same_parameter_values(&after_parameters, &focused));
                 focus_parameters = Some(focused);
             }
         }
@@ -811,7 +811,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
                 let tree: Value =
                     serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
                 (
-                    *app_loop.current_parameters(),
+                    app_loop.current_parameters().clone(),
                     observations.lock().unwrap().commands.len(),
                     tree["interaction"]["activeFocus"].clone(),
                 )
@@ -826,8 +826,8 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             let after_tree: Value =
                 serde_json::from_str(app_loop.current_state_tree().json()).unwrap();
             assert!(same_parameter_values(
-                before_parameters,
-                *app_loop.current_parameters()
+                &before_parameters,
+                &app_loop.current_parameters().clone()
             ));
             assert_eq!(observations.lock().unwrap().commands.len(), before_commands);
             assert_eq!(after_tree["interaction"]["activeFocus"], before_focus);
@@ -945,8 +945,8 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             GraphRevision::INITIAL
         );
         assert!(same_parameter_values(
-            *app_loop.current_parameters(),
-            after_parameters
+            app_loop.current_parameters(),
+            &after_parameters
         ));
         assert_eq!(
             app_loop.event_log_ref().records().len(),
@@ -973,8 +973,8 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
         assert_eq!(recovered["mixer"], before_tree["mixer"]);
         assert_eq!(recovered["global"], before_tree["global"]);
         assert!(same_parameter_values(
-            before_parameters,
-            *app_loop.current_parameters()
+            &before_parameters,
+            &app_loop.current_parameters().clone()
         ));
         assert!(matches!(
             app_loop.event_log_ref().records().back().unwrap().input(),
@@ -1000,7 +1000,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             .build(
                 GraphRevision::INITIAL,
                 &patches,
-                before_parameters,
+                before_parameters.clone(),
                 SAMPLE_RATE,
                 BLOCK_FRAMES,
             )
@@ -1010,7 +1010,7 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
             .build(
                 GraphRevision::INITIAL,
                 &patches,
-                focus_parameters,
+                focus_parameters.clone(),
                 SAMPLE_RATE,
                 BLOCK_FRAMES,
             )
@@ -1053,8 +1053,8 @@ fn patch_page_context_is_exact_recoverable_and_audio_neutral() {
     assert_eq!(before_renderer.handoff_status().retired_revision(), None);
     assert_eq!(after_renderer.handoff_status().retired_revision(), None);
     assert!(same_parameter_values(
-        *before_renderer.parameters(),
-        *after_renderer.parameters()
+        &before_renderer.parameters().clone(),
+        &after_renderer.parameters().clone()
     ));
 
     println!("CREST_ACCEPTANCE patch_page_projection passed");

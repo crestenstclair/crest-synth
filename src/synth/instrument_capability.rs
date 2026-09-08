@@ -5,9 +5,6 @@ use crate::synth::parameter_id::ParameterId;
 use core::fmt;
 use serde::{Deserialize, Serialize};
 
-/// Maximum descriptor-ordered live instrument values carried by one RT Patch slot.
-pub const MAX_INSTRUMENT_SCALAR_PARAMETERS: usize = 16;
-
 /// Registry-owned availability of one installed capability descriptor.
 ///
 /// An unavailable descriptor remains installed and may still name the
@@ -42,6 +39,10 @@ impl CapabilityAvailability {
 #[serde(rename_all = "camelCase")]
 pub enum AssetKind {
     SoundFont,
+    SysEx,
+    Sfz,
+    NeuralModel,
+    ImpulseResponse,
     Sample,
     Other,
 }
@@ -186,6 +187,11 @@ pub enum VoicePolicy {
     FixedPerPatch { voices: u16 },
     /// One Patch-local engine instance owns allocation under its prepared bound.
     EngineManaged,
+    /// Voice storage is prepared from the Patch budget; this value only seeds new Patches.
+    Configurable {
+        #[serde(rename = "defaultVoices")]
+        default_voices: u16,
+    },
 }
 
 impl VoicePolicy {
@@ -202,8 +208,16 @@ impl VoicePolicy {
     /// This is the seeding oracle for [`crate::synth::VoiceLimit`]: each Patch's
     /// limit comes from its own capability's ceiling, never from a value shared
     /// across capabilities.
+    pub const fn initial_voices(self) -> u16 {
+        match self {
+            Self::Configurable { default_voices } => default_voices,
+            _ => self.polyphony_ceiling(),
+        }
+    }
+
     pub const fn polyphony_ceiling(self) -> u16 {
         match self {
+            Self::Configurable { .. } => u16::MAX,
             Self::FixedPerPatch { voices } => voices,
             Self::EngineManaged => crate::synth::voice_limit::ENGINE_MANAGED_POLYPHONY_CEILING,
         }
@@ -1019,10 +1033,11 @@ impl CapabilityDescriptor {
         validate_namespaced_identifier(&self.semantic_accent).map_err(|_| {
             CapabilityError::InvalidMetadataIdentifier(self.semantic_accent.clone())
         })?;
-        if self.sections.is_empty() {
-            return Err(CapabilityError::NoSections);
-        }
-        if matches!(self.voice_policy, VoicePolicy::FixedPerPatch { voices: 0 }) {
+        if matches!(
+            self.voice_policy,
+            VoicePolicy::FixedPerPatch { voices: 0 }
+                | VoicePolicy::Configurable { default_voices: 0 }
+        ) {
             return Err(CapabilityError::ZeroFixedVoiceCount);
         }
         if self.supported_midi_kinds.is_empty() {
@@ -1134,13 +1149,6 @@ impl CapabilityDescriptor {
             if self.supported_midi_kinds[..index].contains(kind) {
                 return Err(CapabilityError::DuplicateMidiKind(*kind));
             }
-        }
-        let scalar_count = self.scalar_parameter_count();
-        if scalar_count > MAX_INSTRUMENT_SCALAR_PARAMETERS {
-            return Err(CapabilityError::TooManyScalarParameters {
-                count: scalar_count,
-                capacity: MAX_INSTRUMENT_SCALAR_PARAMETERS,
-            });
         }
         Ok(())
     }
@@ -1409,6 +1417,23 @@ impl CapabilityRegistry {
                 || (parameter.kind() == ParameterKind::Choice
                     && parameter.update() == ParameterUpdate::Structural)
             {
+                // Preset browsing becomes editable when an imported library
+                // has multiple choices. Normalize only this cardinality-driven
+                // change; arbitrary interaction-policy changes remain invalid.
+                if parameter.kind() == ParameterKind::Choice {
+                    let interaction = |count| {
+                        if count > 1 {
+                            PatchInteraction::StructuralChoice
+                        } else {
+                            PatchInteraction::ReadOnly
+                        }
+                    };
+                    if parameter.patch_interaction == interaction(parameter.choices.len())
+                        && base.patch_interaction == interaction(base.choices.len())
+                    {
+                        parameter.patch_interaction = base.patch_interaction;
+                    }
+                }
                 parameter.default_value = base.default_value.clone();
                 parameter.choices = base.choices.clone();
             }
@@ -1530,10 +1555,6 @@ pub enum CapabilityError {
     NoSections,
     NoSupportedMidiKinds,
     ZeroFixedVoiceCount,
-    TooManyScalarParameters {
-        count: usize,
-        capacity: usize,
-    },
     NonFiniteContinuousValue,
     InvalidNumericRange,
     InvalidDefaultKind,
@@ -1596,10 +1617,6 @@ impl fmt::Display for CapabilityError {
             Self::ZeroFixedVoiceCount => {
                 formatter.write_str("fixed-per-Patch voice count must be nonzero")
             }
-            Self::TooManyScalarParameters { count, capacity } => write!(
-                formatter,
-                "capability declares {count} Scalar parameters but capacity is {capacity}"
-            ),
             Self::NonFiniteContinuousValue => {
                 formatter.write_str("continuous parameter values must be finite")
             }
@@ -2333,8 +2350,8 @@ mod tests {
     }
 
     #[test]
-    fn descriptor_rejects_more_than_sixteen_scalar_parameters() {
-        let parameters = (0..=MAX_INSTRUMENT_SCALAR_PARAMETERS)
+    fn descriptor_accepts_large_scalar_schemas() {
+        let parameters = (0..257)
             .map(|index| {
                 scalar_parameter(
                     &format!("test.scalar-{index}"),
@@ -2343,20 +2360,15 @@ mod tests {
                 )
             })
             .collect();
-        assert!(matches!(
-            CapabilityDescriptor::new(
-                CapabilityId::new("instrument.too-many-scalars").unwrap(),
-                "Too many Scalars",
-                "instrument.too-many-scalars",
-                vec![CapabilitySection::new("main", "Main", parameters).unwrap()],
-                Vec::new(),
-                VoicePolicy::FixedPerPatch { voices: 1 },
-                vec![MidiMessageKind::NoteOn],
-            ),
-            Err(CapabilityError::TooManyScalarParameters {
-                count: 17,
-                capacity: MAX_INSTRUMENT_SCALAR_PARAMETERS,
-            })
-        ));
+        assert!(CapabilityDescriptor::new(
+            CapabilityId::new("instrument.too-many-scalars").unwrap(),
+            "Too many Scalars",
+            "instrument.too-many-scalars",
+            vec![CapabilitySection::new("main", "Main", parameters).unwrap()],
+            Vec::new(),
+            VoicePolicy::FixedPerPatch { voices: 1 },
+            vec![MidiMessageKind::NoteOn],
+        )
+        .is_ok());
     }
 }

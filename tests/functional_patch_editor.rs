@@ -34,6 +34,9 @@
 //! - **Callback** — `AudioRenderer::render`, with this binary's own
 //!   `#[global_allocator]` counting allocation and destruction across the call.
 
+#[allow(dead_code)]
+mod support;
+
 use core::alloc::{GlobalAlloc, Layout};
 use core::cell::Cell;
 use std::alloc::System;
@@ -3754,30 +3757,29 @@ fn check_a_read_only_section_is_marked_and_a_preparing_one_reports_itself() {
 // T034 — the voice limit: bounded, seeded, enforced, falsifiable
 // ---------------------------------------------------------------------------
 
-/// The bound is `1..=64` and out-of-range construction is refused, not clamped.
+/// Budgets accept every positive representable count, including values above old defaults.
 fn check_the_voice_limit_is_bounded_and_refuses_rather_than_clamps() {
     assert_eq!(VoiceLimit::MINIMUM, 1);
-    assert_eq!(VoiceLimit::MAXIMUM, 64);
+    assert_eq!(VoiceLimit::MAXIMUM, u16::MAX);
     assert_eq!(VoiceLimit::new(1).map(VoiceLimit::value), Ok(1));
     assert_eq!(VoiceLimit::new(64).map(VoiceLimit::value), Ok(64));
-    for out_of_range in [0_u16, 65, 128, u16::MAX] {
-        assert_eq!(
-            VoiceLimit::new(out_of_range),
-            Err(VoiceLimitError::OutOfRange {
-                value: out_of_range
-            }),
-            "{out_of_range} must be refused rather than clamped into the bound"
-        );
+    for value in [65, 128, u16::MAX] {
+        assert_eq!(VoiceLimit::new(value).unwrap().value(), value);
     }
+    assert_eq!(
+        VoiceLimit::new(0),
+        Err(VoiceLimitError::OutOfRange { value: 0 }),
+        "zero must be refused rather than clamped"
+    );
     let descriptor = VoiceLimit::descriptor();
     assert_eq!(descriptor.minimum(), VoiceLimit::MINIMUM);
     assert_eq!(descriptor.maximum(), VoiceLimit::MAXIMUM);
     assert_eq!(descriptor.kind(), ParameterKind::Stepped);
 }
 
-/// Every Patch is seeded from its **own** engine's declared ceiling, and the
+/// Every Patch is seeded from its own engine's declared default, and the
 /// two engines seed differently.
-fn check_each_patch_is_seeded_from_its_own_engine_ceiling() {
+fn check_each_patch_is_seeded_from_its_own_engine_default() {
     let state = fixture_state();
     let registry = state.capabilities();
     for patch in state.patches() {
@@ -3785,11 +3787,11 @@ fn check_each_patch_is_seeded_from_its_own_engine_ceiling() {
             .descriptor(patch.instrument_config().capability_id())
             .expect("every installed Patch names an installed capability")
             .voice_policy()
-            .polyphony_ceiling();
+            .initial_voices();
         assert_eq!(
             patch.voice_limit(),
             VoiceLimit::seeded_from_ceiling(ceiling),
-            "{:?} was not seeded from its own engine's ceiling",
+            "{:?} was not seeded from its own engine's default",
             patch.id()
         );
     }
@@ -3842,6 +3844,14 @@ fn check_the_voice_limit_is_edited_as_a_stepped_control() {
         "Down moves by the descriptor's coarse step"
     );
     state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    assert_eq!(
+        focused_patch(&state).voice_limit().value(),
+        start - descriptor.fine_step() - descriptor.coarse_step(),
+        "growth stays pending until activation"
+    );
+    for event in support::topology_activation_events(state.engine_selection()) {
+        state.apply(event).unwrap();
+    }
     assert_eq!(
         focused_patch(&state).voice_limit().value(),
         start - descriptor.fine_step(),
@@ -4027,7 +4037,7 @@ fn drive_callback_at_limit(limit: u16, note_count: u8) -> (u64, usize, usize, u3
     .build(
         GraphRevision::INITIAL,
         state.patches(),
-        parameters,
+        parameters.clone(),
         SAMPLE_RATE,
         BLOCK_FRAMES,
     )
@@ -4253,8 +4263,8 @@ fn the_voice_limit_is_bounded_and_refuses_rather_than_clamps() {
 }
 
 #[test]
-fn each_patch_is_seeded_from_its_own_engine_ceiling() {
-    check_each_patch_is_seeded_from_its_own_engine_ceiling();
+fn each_patch_is_seeded_from_its_own_engine_default() {
+    check_each_patch_is_seeded_from_its_own_engine_default();
 }
 
 #[test]
@@ -4318,7 +4328,7 @@ fn functional_patch_editor_acceptance() {
 
     // T034
     check_the_voice_limit_is_bounded_and_refuses_rather_than_clamps();
-    check_each_patch_is_seeded_from_its_own_engine_ceiling();
+    check_each_patch_is_seeded_from_its_own_engine_default();
     check_the_voice_limit_is_edited_as_a_stepped_control();
     check_the_voice_limit_rides_the_parameter_snapshot();
     let refusals = check_the_callback_enforces_the_limit();

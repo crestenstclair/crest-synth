@@ -67,6 +67,9 @@ use crate::testing::automatic_midi_test::{AutomaticMidiTest, TestInputError};
 use crate::testing::demo_scene::{DemoScene, DemoSceneError};
 use crate::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport, DemoSceneReportError};
 use crate::testing::exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoError};
+use crate::testing::full_instrument_effect_demo::{
+    FullDemoError, FullDemoPlan, FullDemoSelection, FullInstrumentEffectDemo,
+};
 use crate::testing::midi_event_source::MidiEventSource;
 use crate::testing::{
     DeterministicGraphPreparationHandle, DeterministicGraphPreparationWorker, LiveCheckpoint,
@@ -490,6 +493,7 @@ pub enum ApplicationError {
     StateProjection(StateProjectionError),
     TestInput(TestInputError),
     DemoScene(DemoSceneError),
+    FullInstrumentEffectDemo(FullDemoError),
     ExhaustiveDemo(ExhaustiveGuiDemoError),
     DemoReport(DemoSceneReportError),
     LiveDemoScene(LiveDemoSceneError),
@@ -564,6 +568,7 @@ impl fmt::Display for ApplicationError {
                 write!(formatter, "initial control projection failed: {error}")
             }
             Self::TestInput(error) => write!(formatter, "automatic MIDI input failed: {error}"),
+            Self::FullInstrumentEffectDemo(error) => error.fmt(formatter),
             Self::DemoScene(error) => write!(formatter, "demo scene creation failed: {error}"),
             Self::ExhaustiveDemo(error) => write!(formatter, "exhaustive GUI demo failed: {error}"),
             Self::DemoReport(error) => write!(formatter, "demo report creation failed: {error}"),
@@ -629,6 +634,7 @@ impl std::error::Error for ApplicationError {
             Self::StateProjection(error) => Some(error),
             Self::TestInput(error) => Some(error),
             Self::DemoScene(error) => Some(error),
+            Self::FullInstrumentEffectDemo(error) => Some(error),
             Self::ExhaustiveDemo(error) => Some(error),
             Self::DemoReport(error) => Some(error),
             Self::LiveDemoScene(error) => Some(error),
@@ -818,6 +824,7 @@ pub struct StandaloneApplication<Boundary, Structural, Observation, Source, Wind
     config: ApplicationConfig,
     system_midi_devices: bool,
     default_session_blueprint: Option<DefaultSessionBlueprint>,
+    full_demo_selection: Option<FullDemoSelection>,
 }
 
 impl<Boundary, Structural, Observation, Source, Window, Output>
@@ -886,6 +893,7 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
             config,
             system_midi_devices: false,
             default_session_blueprint: None,
+            full_demo_selection: None,
         })
     }
 
@@ -895,6 +903,13 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
     /// host devices unless the production composition root opts in.
     pub fn with_system_midi_devices(mut self) -> Self {
         self.system_midi_devices = true;
+        self
+    }
+
+    /// Runs an isolated listening tour through the normal window and audio
+    /// lifetime. The composition root selects the reference and known entries to skip.
+    pub fn with_full_instrument_effect_demo(mut self, selection: FullDemoSelection) -> Self {
+        self.full_demo_selection = Some(selection);
         self
     }
 
@@ -970,7 +985,12 @@ fn observe_capability_composition(
         .filter(|patch| {
             capabilities
                 .descriptor_for_config(patch.instrument_config())
-                .is_some_and(|descriptor| descriptor.voice_policy() == VoicePolicy::EngineManaged)
+                .is_some_and(|descriptor| {
+                    matches!(
+                        descriptor.voice_policy(),
+                        VoicePolicy::EngineManaged | VoicePolicy::Configurable { .. }
+                    )
+                })
         })
         .count();
     let fixed_per_patch_patches = patches
@@ -1079,6 +1099,7 @@ where
 {
     app_loop: AppLoop<Control>,
     lifecycle: SessionLifecycleCoordinator,
+    full_demo: Option<FullInstrumentEffectDemo>,
     audio_boundary: Audio,
     structural_audio: StructuralAudio,
     initial_graph: PreparedGraph,
@@ -1090,6 +1111,7 @@ type PreparedProductionStartupFor<Boundary, Structural> = PreparedProductionStar
     <Structural as StructuralGraphBoundary>::AudioHandle,
 >;
 
+#[allow(clippy::too_many_arguments)]
 fn prepare_production_startup<Boundary, Structural>(
     boundary: Boundary,
     instruments: InstrumentRuntimeComposition,
@@ -1098,6 +1120,7 @@ fn prepare_production_startup<Boundary, Structural>(
     audio_config: AudioDeviceConfig,
     dialogs: Box<dyn crate::shell::SessionDialogPort>,
     default_session_blueprint: DefaultSessionBlueprint,
+    full_demo_selection: Option<FullDemoSelection>,
 ) -> Result<PreparedProductionStartupFor<Boundary, Structural>, ApplicationError>
 where
     Boundary: AudioBoundary,
@@ -1123,6 +1146,11 @@ where
         &factory,
     )
     .map_err(DefaultSessionError::Capability)?;
+    let demo_plan = full_demo_selection
+        .as_ref()
+        .map(|selection| FullDemoPlan::build(&factory, &effects, selection))
+        .transpose()
+        .map_err(ApplicationError::FullInstrumentEffectDemo)?;
     let default_session = capture_default_session(
         &default_session_blueprint,
         &factory,
@@ -1136,7 +1164,11 @@ where
         effect_preparers.into_iter().map(Arc::from).collect();
     let initial_instruments = boxed_instrument_preparers(&shared_instruments);
     let initial_effects = boxed_effect_preparers(&shared_effects);
-    let prepared = default_session
+    let initial_session = demo_plan
+        .as_ref()
+        .map(FullDemoPlan::initial_session)
+        .unwrap_or_else(|| default_session.clone());
+    let prepared = initial_session
         .prepare_restore(
             capabilities.clone(),
             effects.clone(),
@@ -1189,6 +1221,19 @@ where
         audio_config,
     )?;
 
+    let full_demo = demo_plan
+        .map(|plan| {
+            ThreadedSessionCandidateWorker::new(
+                capabilities.clone(),
+                boxed_instrument_preparers(&shared_instruments),
+                effects.clone(),
+                boxed_effect_preparers(&shared_effects),
+                audio_config,
+            )
+            .map(|worker| FullInstrumentEffectDemo::new(plan, Box::new(worker)))
+        })
+        .transpose()?;
+
     let candidate_worker = ThreadedSessionCandidateWorker::new(
         capabilities,
         boxed_instrument_preparers(&shared_instruments),
@@ -1209,6 +1254,7 @@ where
     Ok(PreparedProductionStartup {
         app_loop,
         lifecycle,
+        full_demo,
         audio_boundary,
         structural_audio,
         initial_graph,
@@ -1275,7 +1321,7 @@ where
         .build(
             revision,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             plan.audio_config.sample_rate(),
             plan.audio_config.render_capacity_frames(),
         )?;
@@ -1367,6 +1413,7 @@ where
             config,
             system_midi_devices,
             default_session_blueprint,
+            full_demo_selection,
         } = self;
 
         let default_session_blueprint =
@@ -1378,6 +1425,7 @@ where
         let PreparedProductionStartup {
             mut app_loop,
             lifecycle,
+            full_demo,
             audio_boundary,
             structural_audio,
             initial_graph,
@@ -1389,12 +1437,13 @@ where
             device_config,
             dialogs,
             default_session_blueprint,
+            full_demo_selection,
         )?;
         drop(fixture_source);
-        if config.test_midi_on_launch {
+        if config.test_midi_on_launch && full_demo.is_none() {
             app_loop.dispatch_action(crate::control::SemanticAction::ToggleTestMidi)?;
         }
-        if system_midi_devices {
+        if system_midi_devices && full_demo.is_none() {
             let midi_worker = ThreadedMidiDeviceWorker::new(
                 crate::adapter::midir_input_device::system_midi_input_device(),
                 crate::adapter::filesystem_midi_input_preference::per_user_midi_input_preference_store(
@@ -1428,6 +1477,7 @@ where
             ),
             app_loop,
             lifecycle,
+            full_demo,
             device_status,
             midi_clock_micros: 0,
             close_requested: false,
@@ -1435,8 +1485,17 @@ where
         }));
         let on_input = input_callback(Rc::clone(&runtime));
         let projection = projection_callback(Rc::clone(&runtime));
-        let audio_observation: AudioObservationCallback =
-            Box::new(move || observation_reader.read_latest_on_control());
+        let observed_runtime = Rc::clone(&runtime);
+        let audio_observation: AudioObservationCallback = Box::new(move || {
+            let snapshot = observation_reader.read_latest_on_control();
+            let mut runtime = observed_runtime.borrow_mut();
+            if runtime.full_demo.is_some() {
+                if let Err(error) = FullInstrumentEffectDemo::check_audio(snapshot) {
+                    runtime.record_error(ApplicationError::FullInstrumentEffectDemo(error));
+                }
+            }
+            snapshot
+        });
         let midi_activity = midi_activity_observation_callback(Rc::clone(&runtime));
         let on_session_command = session_command_callback(Rc::clone(&runtime));
         let document_projection = document_projection_callback(Rc::clone(&runtime));
@@ -1458,6 +1517,10 @@ where
         let (lifecycle_shutdown_result, midi_shutdown_result, graph_shutdown_result) = {
             let mut runtime = runtime.borrow_mut();
             runtime.file_library.shutdown();
+            if let Some(demo) = runtime.full_demo.as_mut() {
+                demo.shutdown()
+                    .map_err(ApplicationError::FullInstrumentEffectDemo)?;
+            }
             let lifecycle = runtime.lifecycle.shutdown_on_control();
             let midi = runtime.app_loop.shutdown_midi_devices_on_control();
             let graph = runtime.app_loop.shutdown_engine_selection_on_control();
@@ -1540,6 +1603,7 @@ where
             config,
             system_midi_devices: _,
             default_session_blueprint: _,
+            full_demo_selection: _,
         } = self;
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
             .expect("the declared live EventLog capacity is nonzero");
@@ -1740,6 +1804,7 @@ where
             config,
             system_midi_devices: _,
             default_session_blueprint: _,
+            full_demo_selection: _,
         } = self;
         let global_parameters = config.global_parameters();
         let event_log = EventLog::new(LIVE_EVENT_LOG_CAPACITY)
@@ -1826,6 +1891,7 @@ where
             config,
             system_midi_devices: _,
             default_session_blueprint: _,
+            full_demo_selection: _,
         } = self;
 
         let PreparedStartup {
@@ -1867,7 +1933,7 @@ where
             .filter(|line| *line == CHANNEL_SEPARATOR)
             .count();
         let round_robin_channels = channels_are_round_robin(initial_text.body());
-        let initial_parameters = *app_loop.current_parameters();
+        let initial_parameters = app_loop.current_parameters().clone();
         let distinct_patch_channels =
             round_robin_channels && initial_parameters.patch_count() == patch_rows;
 
@@ -1879,7 +1945,7 @@ where
         let mut output = vec![0.0; sample_count];
         renderer.render(&mut output);
         app_loop.advance_structural()?;
-        let raw_parameters = *app_loop.current_parameters();
+        let raw_parameters = app_loop.current_parameters().clone();
         let patch_audio = renderer.active_patch_audio();
 
         let target_index = raw_parameters
@@ -1938,7 +2004,7 @@ where
                 return Err(error.into());
             }
         }
-        let before_parameters = *app_loop.current_parameters();
+        let before_parameters = app_loop.current_parameters().clone();
 
         let control_is_degenerate = degenerate == Some(DegenerateMode::Control);
         let main_result = if control_is_degenerate {
@@ -1950,7 +2016,7 @@ where
             }
             Some(result)
         };
-        let after_parameters = *app_loop.current_parameters();
+        let after_parameters = app_loop.current_parameters().clone();
         let current_text = app_loop.current_text();
 
         let one_value_changed = main_result.is_some()
@@ -2338,7 +2404,7 @@ where
     let mut boundary_noop_nonfatal = false;
     for _ in 0..16 {
         let before_text = app_loop.current_text();
-        let before_parameters = *app_loop.current_parameters();
+        let before_parameters = app_loop.current_parameters().clone();
         match app_loop.dispatch(AppEvent::Adjust(Direction::Up)) {
             Ok(result) => {
                 if result.boundary_full().is_some() {
@@ -2347,7 +2413,7 @@ where
             }
             Err(EventRejection::ParameterAtBoundary) => {
                 boundary_noop_nonfatal = app_loop.current_text() == before_text
-                    && *app_loop.current_parameters() == before_parameters;
+                    && app_loop.current_parameters().clone() == before_parameters;
                 break;
             }
             Err(_) => break,
@@ -2355,10 +2421,10 @@ where
     }
 
     let before_post_text = app_loop.current_text();
-    let before_post_parameters = *app_loop.current_parameters();
+    let before_post_parameters = app_loop.current_parameters().clone();
     let post_boundary_edit_accepted = match app_loop.dispatch(AppEvent::Adjust(Direction::Down)) {
         Ok(result) => {
-            let after_post_parameters = *app_loop.current_parameters();
+            let after_post_parameters = app_loop.current_parameters().clone();
             result.boundary_full().is_none()
                 && result.accepted().generation()
                     == before_post_parameters.generation().saturating_add(1)
@@ -2385,6 +2451,7 @@ where
     file_library: crate::shell::file_library::FileLibraryRuntime,
     app_loop: AppLoop<Boundary>,
     lifecycle: SessionLifecycleCoordinator,
+    full_demo: Option<FullInstrumentEffectDemo>,
     device_status: AudioDeviceStatusReader,
     midi_clock_micros: u64,
     close_requested: bool,
@@ -2408,7 +2475,7 @@ where
 {
     Box::new(move |event| {
         let mut runtime = runtime.borrow_mut();
-        if runtime.error.is_some() {
+        if runtime.error.is_some() || runtime.full_demo.is_some() {
             return;
         }
         if runtime.lifecycle.persisted_edits_blocked() && event.may_change_saved_session() {
@@ -2446,6 +2513,9 @@ where
 {
     Box::new(move || {
         let runtime = runtime.borrow();
+        if let Some(demo) = &runtime.full_demo {
+            return demo.document();
+        }
         runtime
             .lifecycle
             .project_shell(&runtime.app_loop)
@@ -2462,6 +2532,13 @@ where
 {
     Box::new(move |command| {
         let mut runtime = runtime.borrow_mut();
+        if runtime.full_demo.is_some() {
+            if command == SessionCommand::Close {
+                runtime.close_requested = true;
+                return true;
+            }
+            return false;
+        }
         if runtime.error.is_some() || runtime.close_requested {
             return command == SessionCommand::Close && runtime.close_requested;
         }
@@ -2526,6 +2603,7 @@ where
         let ControlRuntime {
             app_loop,
             lifecycle,
+            full_demo,
             device_status: _,
             file_library,
             test_midi,
@@ -2533,6 +2611,18 @@ where
             close_requested,
             error,
         } = &mut *runtime;
+        if let Some(demo) = full_demo {
+            if *close_requested {
+                return false;
+            }
+            return match demo.advance(app_loop, elapsed) {
+                Ok(keep_running) => keep_running,
+                Err(failure) => {
+                    *error = Some(ApplicationError::FullInstrumentEffectDemo(failure));
+                    false
+                }
+            };
+        }
         if let Err(failure) = file_library.advance(app_loop) {
             *error = Some(failure.into());
             return false;
@@ -2783,6 +2873,8 @@ mod tests {
         commands: VecDeque<AudioCommand>,
         parameters: ParameterSnapshot,
         parameter_publications: usize,
+        pending_parameters: Option<ParameterSnapshot>,
+        parameters_dirty: bool,
     }
 
     #[derive(Clone)]
@@ -2820,6 +2912,8 @@ mod tests {
 
         fn publish_parameters(&mut self, parameters: ParameterSnapshot) {
             let mut bus = self.bus.lock().unwrap();
+            bus.pending_parameters = Some(parameters.clone());
+            bus.parameters_dirty = true;
             bus.parameters = parameters;
             bus.parameter_publications += 1;
         }
@@ -2830,8 +2924,14 @@ mod tests {
             self.bus.lock().unwrap().commands.pop_front()
         }
 
-        fn read_latest_parameters(&mut self) -> ParameterSnapshot {
-            self.bus.lock().unwrap().parameters
+        fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool {
+            let mut bus = self.bus.lock().unwrap();
+            if !bus.parameters_dirty {
+                return false;
+            }
+            bus.parameters_dirty = false;
+            core::mem::swap(bus.pending_parameters.as_mut().unwrap(), previous);
+            true
         }
     }
 
@@ -2900,9 +3000,9 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             if !self.sounding {
-                return;
+                return Ok(());
             }
             let index = self.patch_id.value().saturating_sub(1) as usize;
             let amplitude = 0.15 + index as f32 * 0.11;
@@ -2910,6 +3010,8 @@ mod tests {
                 frame[0] = amplitude;
                 frame[1] = amplitude * (1.03 + index as f32 * 0.07);
             }
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {
@@ -3275,12 +3377,12 @@ mod tests {
                     let projection_before = projection();
                     let (parameters_before, publications_before) = {
                         let bus = self.bus.lock().unwrap();
-                        (bus.parameters, bus.parameter_publications)
+                        (bus.parameters.clone(), bus.parameter_publications)
                     };
                     on_input(SemanticAction::Adjust(Direction::Down));
                     let (parameters_after, publications_after) = {
                         let bus = self.bus.lock().unwrap();
-                        (bus.parameters, bus.parameter_publications)
+                        (bus.parameters.clone(), bus.parameter_publications)
                     };
                     assert_eq!(
                         parameters_after.generation(),
@@ -3444,6 +3546,8 @@ mod tests {
                     commands: VecDeque::new(),
                     parameters: parameters(),
                     parameter_publications: 0,
+                    pending_parameters: None,
+                    parameters_dirty: false,
                 })),
             },
             providers(),
@@ -3484,6 +3588,8 @@ mod tests {
             commands: VecDeque::new(),
             parameters: parameters(),
             parameter_publications: 0,
+            pending_parameters: None,
+            parameters_dirty: false,
         }));
         let live_window = LiveTestWindow {
             render: Arc::clone(&render),
@@ -3525,6 +3631,8 @@ mod tests {
                     commands: VecDeque::new(),
                     parameters: parameters(),
                     parameter_publications: 0,
+                    pending_parameters: None,
+                    parameters_dirty: false,
                 })),
             },
             providers(),
@@ -3566,6 +3674,8 @@ mod tests {
                     commands: VecDeque::new(),
                     parameters: parameters(),
                     parameter_publications: 0,
+                    pending_parameters: None,
+                    parameters_dirty: false,
                 })),
             },
             providers(),
@@ -3638,6 +3748,8 @@ mod tests {
                     commands: VecDeque::new(),
                     parameters: parameters(),
                     parameter_publications: 0,
+                    pending_parameters: None,
+                    parameters_dirty: false,
                 })),
             },
             providers(),

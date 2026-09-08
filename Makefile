@@ -174,3 +174,14 @@ test-performance-physical: cache-guard ## Profile existing live scenes with a re
 
 test-performance-runner: ## Prove suite failures, watchdogs, profile validation, and regression comparisons
 	python3 -m unittest discover -s scripts -p 'test_performance_suite.py' -v
+
+.PHONY: test-upstream-audio
+test-upstream-audio: cache-guard ## Verify upstream catalog, import/restore, and native real-time operations
+	cargo test --test upstream_catalog
+	cargo test --lib adapter::upstream_audio
+	python3 scripts/check_native_audio.py
+
+# New catalog listening tour: instruments dry, then effects on unchanged Braids.
+.PHONY: full-instrument-effect-demo
+full-instrument-effect-demo: cache-guard ## Audition new instruments and effects on Braids; eight bars per entry, one voice
+	cargo run --release --bin crest-synth -- --full-instrument-effect-demo

@@ -1,7 +1,9 @@
 use crate::adapter::sample_capability::{
     SampleCapability, SAMPLE_ASSET_PARAMETER_ID, SAMPLE_CAPABILITY_ID,
 };
-use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
+use crate::kernel::midi_message::MidiMessage;
+#[cfg(test)]
+use crate::kernel::midi_message::MidiMessageKind;
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::parameter_snapshot::RtPatchParameters;
 use crate::synth::{
@@ -9,13 +11,16 @@ use crate::synth::{
     InstrumentPreparationError, InstrumentPreparer, ParameterId, Patch, PreparedAssetFootprint,
     PreparedAudition, PreparedInstrument, PreparedInstrumentError, PreparedSampleLandmarks,
     PreparedSamplePcm, PreparedSampleVisualization, SampleAssetCatalogPort, SampleAssetError,
-    SampleDecoderPort, SampleLoopMode, VoiceEnvelopeState, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE,
-    SAMPLE_VOICE_COUNT,
+    SampleDecoderPort, SampleLoopMode, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE,
 };
+#[cfg(test)]
+use crate::synth::{VoiceEnvelopeState, SAMPLE_VOICE_COUNT};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
+#[cfg(test)]
 const PITCH_BEND_RANGE_SEMITONES: f32 = 2.0;
+#[cfg(test)]
 const MIDI_BEND_CENTER: i32 = 8_192;
 
 /// Worker-side factory for the one-asset Sample engine.
@@ -41,6 +46,7 @@ impl SamplePreparer {
         })
     }
 
+    #[cfg(test)]
     fn prepare_patch(
         &self,
         patch: &Patch,
@@ -158,8 +164,53 @@ impl InstrumentPreparer for SamplePreparer {
         sample_rate: f32,
         max_frames: usize,
     ) -> Result<Box<dyn PreparedInstrument>, InstrumentPreparationError> {
-        self.prepare_patch(patch, sample_rate, max_frames)
-            .map(|prepared| Box::new(prepared) as Box<dyn PreparedInstrument>)
+        if !sample_rate.is_finite()
+            || sample_rate.fract() != 0.0
+            || !(MIN_SAMPLE_RATE as f32..=MAX_SAMPLE_RATE as f32).contains(&sample_rate)
+        {
+            return Err(InstrumentPreparationError::InvalidSampleRate);
+        }
+        if max_frames == 0 {
+            return Err(InstrumentPreparationError::InvalidFrameCapacity);
+        }
+        let (reference, id, pcm) =
+            self.prepare_pcm_for_config(patch.id(), patch.instrument_config(), sample_rate as u32)?;
+        let capability = SampleCapability::new(id).map_err(|_| invalid_config(patch.id()))?;
+        let playback = capability
+            .playback_config(patch.instrument_config())
+            .map_err(|e| sample_error(patch.id(), e))?;
+        let landmarks = playback
+            .prepared_landmarks(pcm.frames(), pcm.sample_rate())
+            .map_err(|e| sample_error(patch.id(), e))?;
+        let native_pcm_bytes = pcm
+            .byte_len()
+            .checked_mul(usize::from(patch.voice_limit().value()))
+            .ok_or(InstrumentPreparationError::StorageAllocationFailed {
+                patch_id: patch.id(),
+            })?;
+        if pcm
+            .byte_len()
+            .checked_add(native_pcm_bytes)
+            .is_none_or(|bytes| bytes > crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES)
+        {
+            return Err(sample_error(
+                patch.id(),
+                SampleAssetError::GraphPcmCapacityExceeded,
+            ));
+        }
+        let inner =
+            super::upstream_audio::prepare_sample_bank(patch, sample_rate, max_frames, &pcm)?;
+        Ok(Box::new(UpstreamSampleInstrument {
+            inner,
+            footprint: PreparedAssetFootprint::new(
+                reference,
+                u64::from(pcm.sample_rate()),
+                pcm.byte_len(),
+            )
+            .with_private_bytes(native_pcm_bytes),
+            visualization: PreparedSampleVisualization::new(&pcm, landmarks),
+            _pcm: pcm,
+        }))
     }
 
     fn prepare_audition(
@@ -197,6 +248,43 @@ impl InstrumentPreparer for SamplePreparer {
             sample_rate,
             max_frames,
         )))
+    }
+}
+
+struct UpstreamSampleInstrument {
+    inner: Box<dyn PreparedInstrument>,
+    footprint: PreparedAssetFootprint,
+    visualization: PreparedSampleVisualization,
+    _pcm: Arc<PreparedSamplePcm>,
+}
+impl PreparedInstrument for UpstreamSampleInstrument {
+    fn patch_id(&self) -> PatchId {
+        self.inner.patch_id()
+    }
+    fn dispatch(
+        &mut self,
+        message: MidiMessage,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        self.inner.dispatch(message, params)
+    }
+    fn render(
+        &mut self,
+        audio: &mut [f32],
+        frames: usize,
+        params: &RtPatchParameters,
+    ) -> Result<(), crate::synth::PreparedInstrumentError> {
+        self.inner.render(audio, frames, params)?;
+        Ok(())
+    }
+    fn all_notes_off(&mut self) {
+        self.inner.all_notes_off()
+    }
+    fn prepared_asset_footprint(&self) -> Option<&PreparedAssetFootprint> {
+        Some(&self.footprint)
+    }
+    fn prepared_sample_visualization(&self) -> Option<&PreparedSampleVisualization> {
+        Some(&self.visualization)
     }
 }
 
@@ -326,6 +414,7 @@ impl PreparedAudition for PreparedSampleAudition {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg(test)]
 struct SampleVoice {
     note: Option<u8>,
     velocity: f32,
@@ -334,6 +423,7 @@ struct SampleVoice {
     envelope: VoiceEnvelopeState,
 }
 
+#[cfg(test)]
 impl SampleVoice {
     const IDLE: Self = Self {
         note: None,
@@ -349,11 +439,13 @@ impl SampleVoice {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg(test)]
 struct SampleRtConfig {
     root_note: f32,
     landmarks: PreparedSampleLandmarks,
 }
 
+#[cfg(test)]
 impl SampleRtConfig {
     fn from_rt(
         parameters: &RtPatchParameters,
@@ -393,6 +485,7 @@ impl SampleRtConfig {
     }
 }
 
+#[cfg(test)]
 fn rt_landmarks(
     values: &[f32],
     frames: usize,
@@ -437,6 +530,7 @@ fn rt_landmarks(
     })
 }
 
+#[cfg(test)]
 struct PreparedSampleInstrument {
     patch_id: PatchId,
     pcm: Arc<PreparedSamplePcm>,
@@ -453,6 +547,7 @@ struct PreparedSampleInstrument {
     sample_rate: f32,
 }
 
+#[cfg(test)]
 impl PreparedSampleInstrument {
     fn new(
         patch_id: PatchId,
@@ -536,6 +631,7 @@ impl PreparedSampleInstrument {
     }
 }
 
+#[cfg(test)]
 impl PreparedInstrument for PreparedSampleInstrument {
     fn patch_id(&self) -> PatchId {
         self.patch_id
@@ -590,13 +686,13 @@ impl PreparedInstrument for PreparedSampleInstrument {
         interleaved_stereo: &mut [f32],
         frame_count: usize,
         parameters: &RtPatchParameters,
-    ) {
+    ) -> Result<(), crate::synth::PreparedInstrumentError> {
         let frame_count = frame_count
             .min(self.max_frames)
             .min(interleaved_stereo.len() / 2);
         interleaved_stereo[..frame_count * 2].fill(0.0);
         if parameters.patch_id() != Some(self.patch_id) {
-            return;
+            return Ok(());
         }
         let config = self.config(parameters);
         for voice in &mut self.voices {
@@ -633,6 +729,8 @@ impl PreparedInstrument for PreparedSampleInstrument {
                 );
             }
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {
@@ -651,6 +749,7 @@ impl PreparedInstrument for PreparedSampleInstrument {
 // MIDI is dispatched before each render block, so a sustaining voice has one
 // constant envelope gain throughout this call. Dynamic stages keep advancing
 // sample by sample through the same PCM/loop path.
+#[cfg(test)]
 fn render_sample_voice<const SUSTAIN: bool>(
     voice: &mut SampleVoice,
     pcm: &PreparedSamplePcm,
@@ -691,6 +790,7 @@ fn render_sample_voice<const SUSTAIN: bool>(
     }
 }
 
+#[cfg(test)]
 fn oldest_voice(voices: &[SampleVoice; SAMPLE_VOICE_COUNT], releasing: bool) -> Option<usize> {
     voices
         .iter()
@@ -702,6 +802,7 @@ fn oldest_voice(voices: &[SampleVoice; SAMPLE_VOICE_COUNT], releasing: bool) -> 
         .map(|(index, _)| index)
 }
 
+#[cfg(test)]
 fn wrapped_position(position: f64, landmarks: PreparedSampleLandmarks) -> f64 {
     let start = landmarks.loop_start as f64;
     let span = (landmarks.loop_end - landmarks.loop_start) as f64;
@@ -712,6 +813,7 @@ fn wrapped_position(position: f64, landmarks: PreparedSampleLandmarks) -> f64 {
     }
 }
 
+#[cfg(test)]
 fn interpolated_stereo(
     pcm: &PreparedSamplePcm,
     position: f64,
@@ -925,13 +1027,13 @@ mod tests {
         mono.dispatch(message(MidiMessageKind::NoteOn, 60, 127), &parameters)
             .unwrap();
         let mut output = [0.0; 8];
-        mono.render(&mut output, 4, &parameters);
+        mono.render(&mut output, 4, &parameters).unwrap();
         assert_eq!(&output[..6], &[0.0, 0.0, 0.0625, 0.0625, 0.125, 0.125]);
 
         mono.all_notes_off();
         mono.dispatch(message(MidiMessageKind::NoteOn, 72, 127), &parameters)
             .unwrap();
-        mono.render(&mut output, 4, &parameters);
+        mono.render(&mut output, 4, &parameters).unwrap();
         assert_eq!(&output[..6], &[0.0, 0.0, 0.125, 0.125, 0.25, 0.25]);
 
         let mut stereo = prepared(
@@ -942,7 +1044,7 @@ mod tests {
         stereo
             .dispatch(message(MidiMessageKind::NoteOn, 60, 127), &parameters)
             .unwrap();
-        stereo.render(&mut output, 2, &parameters);
+        stereo.render(&mut output, 2, &parameters).unwrap();
         assert_eq!(&output[..4], &[0.0, 1.0, 0.25, 0.75]);
     }
 
@@ -1035,7 +1137,7 @@ mod tests {
             PatchId::new(99).unwrap(),
             PatchOutput::default(),
             envelope,
-            *parameters.instrument(),
+            parameters.instrument().clone(),
         );
         assert_eq!(
             engine.dispatch(message(MidiMessageKind::NoteOn, 60, 127), &wrong),
@@ -1045,12 +1147,12 @@ mod tests {
             .dispatch(message(MidiMessageKind::NoteOn, 60, 127), &parameters)
             .unwrap();
         let mut output = [0.0; 16];
-        engine.render(&mut output, 2, &parameters);
+        engine.render(&mut output, 2, &parameters).unwrap();
         assert_eq!(output[0], 0.25);
         engine
             .dispatch(message(MidiMessageKind::NoteOff, 60, 0), &parameters)
             .unwrap();
-        engine.render(&mut output, 4, &parameters);
+        engine.render(&mut output, 4, &parameters).unwrap();
         assert_eq!(engine.active_voice_count(), 0);
         assert!(output.iter().all(|sample| sample.is_finite()));
     }
@@ -1114,7 +1216,7 @@ mod tests {
             .dispatch(message(MidiMessageKind::NoteOn, 60, 127), &parameters)
             .unwrap();
         let mut output = [0.0; 32];
-        engine.render(&mut output, 12, &parameters);
+        engine.render(&mut output, 12, &parameters).unwrap();
         let left = output[..24]
             .chunks_exact(2)
             .map(|frame| frame[0])
@@ -1158,7 +1260,7 @@ mod tests {
             .dispatch(message(MidiMessageKind::NoteOn, 60, 127), &parameters)
             .unwrap();
         let mut output = vec![0.0; 19_200 * 2];
-        engine.render(&mut output, 19_200, &parameters);
+        engine.render(&mut output, 19_200, &parameters).unwrap();
         let last = output[(19_200 - 1) * 2];
         assert!(last.is_finite() && (0.49..0.51).contains(&last));
         assert!(output.iter().all(|sample| sample.is_finite()));

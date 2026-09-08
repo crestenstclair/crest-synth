@@ -44,8 +44,10 @@ on browsing and performance. Embedding and redistribution license suitability,
 including dependencies, is a selection gate rather than a deferred concern.
 Prefer coherent upstream DSP collections and preserve musical coverage when
 selecting simpler replacements.
-Existing Crest-owned Sample, SoundFont voice playback, Reverb, and Delay DSP
-are legacy implementations to evaluate against upstream replacements.
+The production Sample renderer uses sfizz; SoundFont uses the full RustySynth
+renderer. Legacy Sample audition, Reverb, and Delay remain for compatibility.
+New catalog entries wrap complete upstream DSP. Old renderer test helpers are
+not evidence for the new production path.
 
 ## Current alignment status
 
@@ -126,14 +128,16 @@ The application currently provides:
 
 - PATCH and MIXER as the only top-level contexts;
 - sparse stable Patch identities; current runtime capacity debt is described above;
-- SoundFont and Braids instrument capabilities in the default registry;
-  SoundFont retains the HiDef capability identity and bundled default while
-  accepting local SF2 banks through the shared file page;
+- SoundFont, Sample, Braids, Mutable, DaisySP, STK, mda, MSFA DX7, and sfizz
+  instruments in the production registry. SoundFont retains its HiDef identity
+  and accepts local SF2 banks; DX7 imports single-voice and bank SysEx libraries;
 - Sample installed by default with `Test Tone.wav` in
   `~/Music/Crest Synth/Samples`; the bundled WAV seeds a new library without
   overwriting an existing asset. `CREST_SAMPLE_LIBRARY_ROOT` and
   `CREST_SAMPLE_DEFAULT_ASSET` remain paired, validated overrides;
-- Chorus, Reverb, and Delay in one effect registry;
+- one effect registry containing the legacy effects plus Airwindows, DaisySP,
+  Mutable Clouds/Warps/Rings resonator, mda, Neural Amp Modeler, FFTConvolver,
+  and Signalsmith pitch/formant processing;
 - ordered Patch post-effect slots, bus returns, and persistent Mixer tracks;
 - descriptor-driven Patch Overview, Detail, generic Choice, shared File Browser,
   waveform/playhead projection, persistent Utility, and persistent Mixer
@@ -216,8 +220,9 @@ The code is organized around hexagonal boundaries:
   assets, and their invariants;
 - application/control code owns `AppState`, reducer transitions, semantic
   resolution, projection, orchestration ports, and correlation lifecycles;
-- real-time code owns fixed destructor-free snapshots, prepared render graphs,
-  queues, voices, buses, and bounded scratch;
+- real-time code owns prepared render graphs, queues, voices, buses, and bounded
+  scratch. Scalar snapshots own prepared vectors and transfer by swaps; retired
+  snapshot ownership returns with the graph for destruction off callback;
 - adapters own SoundFont/WAV parsing, filesystem access, MIDI fixtures,
   physical devices, native input, and Tauri integration;
 - `webview-page/` paints the serialized semantic projection and emits no
@@ -379,7 +384,10 @@ status and are formatted/handled off callback.
   remain source-level behavior to account for when making that configurable.
 - Every engine applies the Patch-owned ADSR to independent native note voices;
   one post-stem envelope is nonconforming.
-- SoundFont uses one synthesizer per Patch with engine-managed polyphony.
+- SoundFont uses one full upstream RustySynth synthesizer per prepared host
+  voice, sharing an immutable parsed SoundFont. Each synthesizer admits the
+  maximum overlapping regions for its selected preset. Native envelopes and
+  filters remain upstream; the Patch ADSR retains independent note ownership.
 - Each Braids Patch owns independent voices and exposes upstream model choices;
   there is no global Braids voice pool.
   Model, Timbre, and Color declare `ScalarEdit`. In Detail, K+A/D steps the
@@ -389,11 +397,16 @@ status and are formatted/handled off callback.
   descriptor's update category, so Sample Loop uses the same adjacent-choice
   path. Values still commit only through `AppState::apply` and reach the active
   renderer through compatible snapshots.
-- Each Sample Patch owns one asset and independent voices. Allocation order is
-  inactive, oldest releasing, then oldest active.
-- Sample and SoundFont select a constant-sustain render path once per voice
-  block. Attack, decay and release still advance sample by sample. Both paths
-  share the same PCM interpolation, loop boundaries, mixing and clipping rules.
+- Sample uses resident sfizz playback, with independently prepared host voices.
+  The upstream voice bank and Braids refuse exhaustion without stealing another
+  note. Voice-budget growth prepares a replacement engine through the structural
+  lifecycle and commits only after activation; reductions change admission.
+  Configurable engines preserve budgets across engine changes. Descriptor
+  defaults seed new Patches and do not impose engine ceilings.
+- Instrument and effect scalar layouts use prepared vectors rather than fixed
+  parameter counts. Callback ownership swaps avoid allocation or destruction
+  when a compatible snapshot arrives. Render rejection becomes a typed routing
+  failure observation instead of successful silence.
 - Unsupported assets, engines, effects, devices, rates, and topology states
   produce typed visible errors. No engine/effect/asset silently substitutes or
   falls back.
@@ -452,9 +465,10 @@ remains version 2 and contains none of those device fields.
 
 SoundFont and Sample file work is off callback: resolve, validate, read, parse,
 decode, resample/precompute, allocate/warm voices, then publish a complete
-prepared graph. Prepared callback ownership contains numeric PCM, zones,
-addresses, landmarks, and bounded voice state—not paths, names, parsers, or
-decoders.
+prepared graph. Callback objects retain upstream immutable asset data and
+prepared voice state. Some upstream objects include names and parsed metadata;
+that ownership does not authorize callback parsing, file access, mutation, or
+destruction.
 
 SoundFont preset identity is numeric bank/program; labels are exact authored
 SF2 names. Ordering is bank then program, with source ordinal only for malformed
@@ -474,10 +488,9 @@ SF2 admission checks RIFF/list chunk arithmetic before parser allocation and
 bounds numeric region expansion against the admitted resource budget.
 Malformed and unavailable files produce explicit failures. Current numeric
 admission thresholds remain in source and are not product requirements.
-Worker-owned caches share active numeric banks
-through weak references; unused banks are not retained indefinitely. Authored
-catalogs remain control-side, and callback objects retain only numeric banks
-and bounded voice state. The bundled `./sf2/HiDef.sf2` reference remains exact.
+Worker-owned caches share active banks through weak references. The full
+upstream SoundFont is shared by prepared voices; authored capability catalogs
+remain control-side. The bundled `./sf2/HiDef.sf2` reference remains exact.
 
 The Sample adapter uses exact `hound = 3.5.1` (Apache-2.0, no optional
 features). It accepts uncompressed RIFF/WAVE only: mono/stereo signed
@@ -495,19 +508,63 @@ file-start, no-loop audio through the origin Patch's post-FX, trim, Mixer,
 sends, returns, and gates. Stop uses a prepared 5 ms de-click. Preview never
 commits an asset or mutates saved state.
 
+The shared browser also selects DX7 SysEx, SFZ, NAM models, and WAV impulse
+responses. Effect files open from Patch Detail or Mixer return parameters and
+return to that exact origin. Imports validate before storing library-relative
+references; assignment remains pending until the replacement graph activates.
+Library folders are `SysEx`, `SFZ Libraries`, `NAM Models`, and `Impulse
+Responses` beneath `~/Music/Crest Synth`.
+
+SFZ import uses the upstream parser for includes and definitions, confines
+referenced files to the selected folder, and embeds their samples into a
+self-contained library. Unsupported opcodes, unresolved or corrupt samples,
+and partial libraries fail explicitly. The library build uses resident sample
+loading and removes streaming/garbage-worker paths from audio processing.
+Crest maintains these adaptations because the selected sfizz repository is
+archived. sfizz currently duplicates resident samples across host voices;
+Sample admission accounts for private PCM copies separately from shared PCM.
+This remains a memory optimization opportunity.
+
+Catalog descriptors expose native parameters through existing generic lists.
+Plaits includes all upstream models; Elements and Rings retain their native
+physical models, and Rings also accepts effect input. The unstable DaisySP
+analog and synthetic snare ports are replaced by the original Mutable Plaits
+implementations, with explicit Mutable capability identities. No replacement
+snare algorithm is authored by Crest.
+
+Native sources and dependencies are pinned under `vendor/audio/sources.json`;
+`vendor/audio/PROVENANCE.md` records build adaptations. Builds use local
+vendored sources and require CMake plus a C++20 compiler. Native compilation
+shares Cargo's job budget; complete native source/header trees and the bundled
+SFZ input are tracked so Rust-only edits reuse native output. Keep the tracked
+`capabilities/` directory even though Tauri permissions are inline: Tauri watches
+it, and a missing directory forces a rebuild on every invocation. Redistribution notices
+are bundled from `assets/licenses/UPSTREAM_AUDIO.txt`; Eigen's MPL-covered
+source ships in the adjacent `EIGEN_SOURCE.tar.gz` resource. STK's upstream patent statements
+remain documented qualifications, separate from its embedding license.
+
+Native rate/block adapters use r8brain and prepared storage. Native random
+state belongs to each prepared instance. On Darwin, a pthread key allocated
+during preparation selects that state without first-render C++ TLS allocation.
+Current graph mixing does not compensate latency between parallel paths. Warps can use its
+built-in carrier or explicitly labeled stereo input channels; mda TalkBox
+expects separately authored carrier/modulator channels. Neither provides an
+independent Patch/bus sidechain route. These routing constraints are not a
+claim of complete plugin-host equivalence.
+
 Return or Shift+W on Sample File or SoundFont File opens the same in-app FileBrowser page.
 The page uses the existing semantic navigation, confirm, back, and preview
 controls; no platform asset dialog is involved. W/S navigates rows, Return
 enters folders or selects a file, Shift+S returns unchanged, and holding Space
 on a Sample file auditions it. Parent and Cancel are reachable list rows.
-`FileBrowserState` owns the exact origin and focus; the page remains a PATCH
-subordinate surface, never a new top-level context.
+`FileBrowserState` owns the exact origin and focus; the page remains subordinate
+to the origin's PATCH or MIXER context, never a new top-level context.
 
 Shared `AssetFileId`, `FileBrowserFolderId`, row, and listing types are defined
 in `synth::file_browser`. `FilesystemFileBrowser` owns directory navigation and
 WAV/SF2 filtering by `AssetKind`; engine adapters own decoding and metadata.
 `FileLibraryRuntime` shares one capacity-one listing/import worker between
-Sample and SoundFont. Listings are correlated by Patch, asset kind, and folder;
+Sample and SoundFont. Listings are correlated by exact semantic origin, asset kind, and folder;
 the reducer rejects stale imports by origin, generation, and graph revision.
 SoundFonts use `~/Music/Crest Synth/SoundFonts`; SF2 rows show source size and
 validation-on-selection. Hold-to-preview remains a Sample operation. SoundFont
@@ -786,6 +843,56 @@ one for another or demand an unrelated repeat of already accepted work.
 `make run`, `make play`, and `make ui` use the optimized release profile for both
 Rust and native DSP. `cargo run --bin crest-synth` remains an explicit debug
 launch; unoptimized timing is not a supported real-time performance target.
+
+`make full-instrument-effect-demo` runs a sequential listening tour in the
+production window and audio runtime, focused on the new audio catalog. The
+composition root skips SoundFont, standalone Braids auditions, and the legacy
+Chorus, Reverb, and Delay. The changed Sample renderer remains included. The
+installed registries supply the remaining entries: each instrument is
+auditioned dry, then each effect occupies one post-effect position on the
+composition-root-designated Braids
+default. Every audition has one Patch, a prepared voice budget of one, a
+neutral host envelope, no bus returns, and the same gated major-seventh
+arpeggio across three octaves. Keyboard edits, file commands, automatic test
+MIDI, and physical MIDI are isolated; closing the window cancels the tour.
+
+Each entry gets eight bars total of 4/4 at 120 BPM, using eighth notes with
+200 ms gates so the bundled Elements resampler can sound before note-off.
+The first bar plays defaults; the remaining seven sample editable parameters
+across the descriptor order. Smaller parameter sets revisit controls with
+different values. Continuous values sample quantized quarter, midpoint, and
+three-quarter positions; discrete controls and structural presets sample
+representative choices. Default values are omitted from the variations where
+alternatives exist; entries without editable alternatives stay at defaults.
+This is a quick listening tour, not exhaustive parameter or preset coverage.
+Other parameters reset to defaults between bars, except descriptor
+prerequisites required to enable the selected control. File parameters use
+bundled assets, and read-only fields and asset scope are reported explicitly;
+the demo does not enumerate imported file libraries. In particular, the
+bundled NAM test model and transparent convolution IR do not demonstrate a
+library of amp captures or reverbs.
+
+Scene navigation uses the production semantic resolver and reducer. Complete
+session candidates use the existing background session worker and structural
+coordinator, with block-boundary activation and off-callback retirement.
+Scalar variations use ordinary semantic adjustments and scalar snapshots on
+the existing graph. Previous values are restored before enabling the next
+control's prerequisites, preserving the engine and effect history throughout
+each entry. Note delivery runs before a small budget of control work each tick;
+parameter changes progress during playback and must settle within their bar.
+Navigation and scalar edits do not pause the musical clock or
+replace the graph. Preparation pauses occur only between entries or for
+structural changes; late window ticks stretch playback without replaying
+missed notes. Terminal
+and document status show the current audition, actual value, and bar; startup
+prints the registry-derived duration. Preparation timeouts and audio failure
+observations fail explicitly. This is a listening tool, with complete-note
+headless coverage through the real worker, reducer, projector, and native
+renderer; it does not claim a completed physical listening review.
+The tour exposed an unsafe Elements modulation-offset endpoint in wrapper
+metadata. Its admitted range is now 0–0.5, keeping the offset plus the internal
+0–0.5 LFO within the upstream approximate cosine oscillator's supported domain.
+No synthesis algorithm was changed.
 
 `make performance-tools` installs the pinned Samply profiler locally.
 `make test-performance` builds optimized code with line tables, then runs the

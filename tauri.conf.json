@@ -13,13 +13,21 @@
         {
           "identifier": "crest-projection-page-events",
           "description": "The MIXER projection page listens on crest://projection and crest://meters and echoes crest://painted; no other IPC surface is granted.",
-          "windows": ["main"],
-          "permissions": ["core:event:default"]
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "core:event:default"
+          ]
         }
       ]
     }
   },
   "bundle": {
-    "active": false
+    "active": false,
+    "resources": [
+      "assets/licenses/UPSTREAM_AUDIO.txt",
+      "assets/licenses/EIGEN_SOURCE.tar.gz"
+    ]
   }
 }

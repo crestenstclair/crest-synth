@@ -493,9 +493,9 @@ mod tests {
     fn effects_at(
         occupancy: &[(usize, RtPostEffectParameters)],
     ) -> [RtPostEffectParameters; MAX_EFFECT_SLOTS] {
-        let mut effects = [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS];
+        let mut effects = [const { RtPostEffectParameters::EMPTY }; MAX_EFFECT_SLOTS];
         for (position, effect) in occupancy {
-            effects[*position] = *effect;
+            effects[*position] = effect.clone();
         }
         effects
     }
@@ -512,7 +512,7 @@ mod tests {
                     *output,
                     VoiceEnvelope::default(),
                     RtInstrumentParameters::EMPTY,
-                    *effects,
+                    effects.clone(),
                 )
             })
             .collect();
@@ -584,7 +584,7 @@ mod tests {
         );
         assert!(rack0.matches_parameters(&snapshot_with_effects(
             1,
-            &[(1, output, effects_at(&[(0, chorus_params)]))]
+            &[(1, output, effects_at(&[(0, chorus_params.clone())]))]
         )));
         let wrong_scalars =
             RtPostEffectParameters::new(EffectSlotId::new(1).unwrap(), &[0.5]).unwrap();
@@ -596,13 +596,13 @@ mod tests {
             "wrong scalar_count at position 0 must be rejected"
         );
         assert!(
-            !rack0.matches_parameters(&snapshot_with_effects(3, &[(1, output, inactive)])),
+            !rack0.matches_parameters(&snapshot_with_effects(3, &[(1, output, inactive.clone())])),
             "occupied position 0 facing inactive parameters must be rejected"
         );
         assert!(
             !rack0.matches_parameters(&snapshot_with_effects(
                 4,
-                &[(1, output, effects_at(&[(1, chorus_params)]))]
+                &[(1, output, effects_at(&[(1, chorus_params.clone())]))]
             )),
             "the matching entry at the WRONG position must be rejected, not repositioned"
         );
@@ -616,16 +616,16 @@ mod tests {
         );
         assert!(rack1.matches_parameters(&snapshot_with_effects(
             5,
-            &[(1, output, effects_at(&[(1, chorus_params)]))]
+            &[(1, output, effects_at(&[(1, chorus_params.clone())]))]
         )));
         assert!(
-            !rack1.matches_parameters(&snapshot_with_effects(6, &[(1, output, inactive)])),
+            !rack1.matches_parameters(&snapshot_with_effects(6, &[(1, output, inactive.clone())])),
             "occupied position 1 facing inactive parameters must be rejected"
         );
         assert!(
             !rack1.matches_parameters(&snapshot_with_effects(
                 7,
-                &[(1, output, effects_at(&[(0, chorus_params)]))]
+                &[(1, output, effects_at(&[(0, chorus_params.clone())]))]
             )),
             "an entry at position 0 must not attest an instance prepared at position 1"
         );
@@ -648,18 +648,19 @@ mod tests {
         assert!(
             !rack2.matches_parameters(&snapshot_with_effects(
                 9,
-                &[(2, output, effects_at(&[(2, chorus_params)]))]
+                &[(2, output, effects_at(&[(2, chorus_params.clone())]))]
             )),
             "wrong slot_id at position 2 must be rejected"
         );
 
         // Empty chain: an active parameter entry has no prepared position.
         let empty_rack = build_rack(&[patch_fixture(1, &[])], &registry, &preparers);
-        assert!(empty_rack.matches_parameters(&snapshot_with_effects(10, &[(1, output, inactive)])));
+        assert!(empty_rack
+            .matches_parameters(&snapshot_with_effects(10, &[(1, output, inactive.clone())])));
         assert!(
             !empty_rack.matches_parameters(&snapshot_with_effects(
                 11,
-                &[(1, output, effects_at(&[(0, chorus_params)]))]
+                &[(1, output, effects_at(&[(0, chorus_params.clone())]))]
             )),
             "active parameters facing an empty chain must be rejected"
         );
@@ -682,30 +683,29 @@ mod tests {
             &[(
                 1,
                 output,
-                effects_at(&[(0, chorus_params), (1, reverb_params)])
+                effects_at(&[(0, chorus_params.clone()), (1, reverb_params.clone())])
             )]
         )));
         assert!(
             !rack_multi.matches_parameters(&snapshot_with_effects(
                 13,
-                &[(1, output, effects_at(&[(0, chorus_params)]))]
+                &[(1, output, effects_at(&[(0, chorus_params.clone())]))]
             )),
             "naming only one of two occupied positions must be rejected"
         );
         assert!(!rack_multi.matches_parameters(&snapshot_with_effects(
             14,
-            &[(1, output, effects_at(&[(1, reverb_params)]))]
+            &[(1, output, effects_at(&[(1, reverb_params.clone())]))]
         )));
-        assert!(
-            !rack_multi.matches_parameters(&snapshot_with_effects(15, &[(1, output, inactive)]))
-        );
+        assert!(!rack_multi
+            .matches_parameters(&snapshot_with_effects(15, &[(1, output, inactive.clone())])));
         assert!(
             !rack_multi.matches_parameters(&snapshot_with_effects(
                 16,
                 &[(
                     1,
                     output,
-                    effects_at(&[(0, reverb_params), (1, chorus_params)])
+                    effects_at(&[(0, reverb_params), (1, chorus_params.clone())])
                 )]
             )),
             "exchanging the two entries across positions must be rejected"
@@ -714,7 +714,7 @@ mod tests {
         // Patch identity and count stay part of the proof.
         assert!(!rack0.matches_parameters(&snapshot_with_effects(
             17,
-            &[(2, output, effects_at(&[(0, chorus_params)]))]
+            &[(2, output, effects_at(&[(0, chorus_params.clone())]))]
         )));
         assert!(!rack0.matches_parameters(&snapshot_with_effects(
             18,
@@ -987,8 +987,10 @@ mod tests {
 
         let original = PatchOutput::default();
         let rerouted = PatchOutput::new(MixerTrackId::new(9).unwrap(), -6.0).unwrap();
-        let stable_snapshot =
-            snapshot_with_effects(1, &[(1, original, effects_at(&[(0, chorus_params)]))]);
+        let stable_snapshot = snapshot_with_effects(
+            1,
+            &[(1, original, effects_at(&[(0, chorus_params.clone())]))],
+        );
         let rerouted_snapshot =
             snapshot_with_effects(2, &[(1, rerouted, effects_at(&[(0, chorus_params)]))]);
         assert!(stable_rack.matches_parameters(&rerouted_snapshot));

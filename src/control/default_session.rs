@@ -544,7 +544,7 @@ mod tests {
         let capabilities = prepared.state().capabilities().clone();
         let effects = prepared.state().effects().clone();
         let (replacement, graph) = prepared.into_replacement();
-        let parameters = *graph.initial_parameters();
+        let parameters = graph.initial_parameters().clone();
         let mut state = AppState::for_graph_with_effects(
             capabilities,
             effects,

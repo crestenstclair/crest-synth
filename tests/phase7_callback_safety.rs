@@ -277,11 +277,12 @@ fn sample_dispatch_render_audition_swap_and_retirement_are_callback_allocation_a
 fn sample_callback_implementations_have_no_lock_io_log_or_panic_surface() {
     let source = include_str!("../src/adapter/sample_preparer.rs");
     let start = source
-        .find("struct PreparedSampleAudition")
+        .find("struct UpstreamSampleInstrument")
         .expect("the audited audition implementation exists");
-    let end = source
-        .find("#[cfg(test)]")
-        .expect("unit tests delimit the callback-only implementations");
+    let end = start
+        + source[start..]
+            .find("#[cfg(test)]")
+            .expect("unit tests delimit the callback-only implementations");
     let callback_source = &source[start..end];
     for forbidden in [
         ".lock(",

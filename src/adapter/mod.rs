@@ -30,3 +30,13 @@ pub mod threaded_graph_preparation_worker;
 pub mod threaded_midi_device_worker;
 pub mod threaded_session_candidate_worker;
 pub mod wav_sample_decoder;
+
+pub mod upstream_audio;
+
+pub mod dx7_library;
+
+pub mod model_assets;
+
+pub mod sfz_library;
+
+mod rustysynth_voice;

@@ -1,0 +1,92 @@
+#include "processor.h"
+#include <cmath>
+#include <algorithm>
+#include <cstring>
+#include "random_state.h"
+#define CREST_FACTORY(symbol, instrument, label) CrestProcessor* make_##symbol(float, size_t);
+#include "plugin_factories.inc"
+#include "daisy_factories.inc"
+#include "stk_factories.inc"
+#include "mutable_factories.inc"
+#include "specialist_factories.inc"
+#undef CREST_FACTORY
+struct Factory {
+    const char* id;
+    const char* name;
+    bool instrument;
+    CrestProcessor* (*make)(float, size_t);
+};
+static const Factory factories[] = {
+#define CREST_FACTORY(symbol, instrument, label) {#symbol, label, instrument, make_##symbol},
+#include "plugin_factories.inc"
+#include "daisy_factories.inc"
+#include "stk_factories.inc"
+#include "mutable_factories.inc"
+#include "specialist_factories.inc"
+#undef CREST_FACTORY
+};
+struct Handle {
+    CrestRandomState random;
+    std::unique_ptr<CrestProcessor> processor;
+    std::vector<float> left, right, parameters;
+    Handle(std::unique_ptr<CrestProcessor> p, size_t n, CrestRandomState state): random(state), processor(std::move(p)), left(n+1), right(n+1), parameters(processor->count(), NAN) {}
+};
+extern "C" {
+size_t crest_audio_count() noexcept { return sizeof(factories)/sizeof(Factory); }
+const char* crest_audio_id(size_t i) noexcept { return i < crest_audio_count() ? factories[i].id : nullptr; }
+const char* crest_audio_name(size_t i) noexcept { return i < crest_audio_count() ? factories[i].name : nullptr; }
+bool crest_audio_is_instrument(size_t i) noexcept { return i < crest_audio_count() && factories[i].instrument; }
+void* crest_audio_create(size_t i, float rate, size_t frames) noexcept {
+    if (i >= crest_audio_count() || !std::isfinite(rate) || rate < 8000 || frames == 0 || frames > INT32_MAX) return nullptr;
+    if (!crest_random_initialize()) return nullptr;
+    try {
+        CrestRandomState random;
+        std::unique_ptr<CrestProcessor> processor;
+        { CrestRandomScope scope(random); processor.reset(factories[i].make(rate,frames)); }
+        return new Handle(std::move(processor),frames,random);
+    }
+    catch (...) { return nullptr; }
+}
+bool crest_audio_load_sample(void* h,const uint8_t* bytes,size_t size,size_t frames) noexcept {
+    try { auto& v=*static_cast<Handle*>(h); CrestRandomScope scope(v.random); return v.processor->load_sample(bytes,size,frames); } catch (...) {return false;}
+}
+bool crest_audio_load_ir(void* h,const float* pcm,size_t frames,size_t channels,float rate) noexcept {
+    try { auto& v=*static_cast<Handle*>(h); CrestRandomScope scope(v.random); return v.processor->load_ir(pcm,frames,channels,rate); } catch (...) { return false; }
+}
+bool crest_audio_load(void* h,const uint8_t* bytes,size_t size) noexcept {
+    try { auto& v=*static_cast<Handle*>(h); CrestRandomScope scope(v.random); return v.processor->load(bytes,size); } catch (...) { return false; }
+}
+size_t crest_audio_latency(void* h) noexcept { return static_cast<Handle*>(h)->processor->latency(); }
+void crest_audio_destroy(void* h) noexcept { delete static_cast<Handle*>(h); }
+size_t crest_audio_param_count(void* h) noexcept { return static_cast<Handle*>(h)->processor->count(); }
+const char* crest_audio_param_label(void* h, size_t i) noexcept { return static_cast<Handle*>(h)->processor->label(i); }
+float crest_audio_param_default(void* h, size_t i) noexcept { return static_cast<Handle*>(h)->processor->initial(i); }
+float crest_audio_param_min(void* h, size_t i) noexcept { return static_cast<Handle*>(h)->processor->minimum(i); }
+float crest_audio_param_max(void* h, size_t i) noexcept { return static_cast<Handle*>(h)->processor->maximum(i); }
+bool crest_audio_param_stepped(void* h, size_t i) noexcept { return static_cast<Handle*>(h)->processor->stepped(i); }
+bool crest_audio_set(void* h, const float* params, size_t count) noexcept {
+    auto& handle = *static_cast<Handle*>(h); CrestRandomScope scope(handle.random);
+    auto& p = *handle.processor;
+    if (count != p.count()) return false;
+    for (size_t i=0; i<count; ++i) {
+        if (!std::isfinite(params[i]) || params[i] < p.minimum(i) || params[i] > p.maximum(i) || (p.stepped(i) && std::floor(params[i]) != params[i])) return false;
+    }
+    auto& previous=static_cast<Handle*>(h)->parameters;
+    for (size_t i=0; i<count; ++i) if (previous[i]!=params[i]) { p.set(i, params[i]); previous[i]=params[i]; }
+    return true;
+}
+void crest_audio_note(void* h, int status, int a, int b) noexcept { auto& v=*static_cast<Handle*>(h); CrestRandomScope scope(v.random); v.processor->note(status,a,b); }
+void crest_audio_reset(void* h) noexcept { auto& v=*static_cast<Handle*>(h); CrestRandomScope scope(v.random); v.processor->reset(); std::fill(v.parameters.begin(),v.parameters.end(),NAN); }
+bool crest_audio_process(void* h, float* stereo, size_t frames) noexcept {
+    auto& v = *static_cast<Handle*>(h); CrestRandomScope scope(v.random);
+    if (frames >= v.left.size()) return false;
+    for (size_t i=0; i<frames; ++i) { v.left[i+1]=stereo[2*i]; v.right[i+1]=stereo[2*i+1]; }
+    v.processor->process(v.left.data()+1, v.right.data()+1, frames);
+    if (!v.processor->healthy()) return false;
+    for (size_t i=0; i<frames; ++i) {
+        if (!std::isfinite(v.left[i+1]) || !std::isfinite(v.right[i+1])) return false;
+        stereo[2*i]=v.left[i+1]; stereo[2*i+1]=v.right[i+1];
+    }
+    return true;
+}
+}

@@ -2,20 +2,8 @@ use crate::synth::instrument_capability::{ParameterKind, VoicePolicy};
 use core::fmt;
 use serde::Serialize;
 
-/// The prepared per-Patch voice-slot ceiling every `VoicePolicy::EngineManaged`
-/// capability renders under.
-///
-/// **Provenance.** Exactly one engine-managed capability is installed: the HiDef
-/// SoundFont engine. Its adapter declares
-/// `adapter::hidef_soundfont_capability::HIDEF_POLYPHONY_CEILING` and its
-/// preparer reserves exactly that many voice slots for every Patch
-/// (`SOUNDFONT_ENGINE_VOICE_SLOTS`). The domain does not depend on an adapter,
-/// so the number is restated here rather than imported upward — and
-/// [`tests::the_bound_is_the_installed_engine_polyphony_ceiling`] pins the two
-/// declarations together against the production registry. Registering an engine
-/// with a lower ceiling, or moving the adapter's ceiling, fails that test
-/// instead of silently leaving a Patch able to declare a limit its own engine
-/// could not honour.
+/// Initial budget for legacy EngineManaged providers. New production providers
+/// declare configurable defaults; this is not a product maximum.
 pub const ENGINE_MANAGED_POLYPHONY_CEILING: u16 = 64;
 
 /// The stable identifier of the one canonical voice-limit surface field.
@@ -170,11 +158,8 @@ impl VoiceLimit {
     /// note; a zero limit is a mute, which is the mixer's concern.
     pub const MINIMUM: u16 = 1;
 
-    /// The largest representable limit: the polyphony ceiling declared by the
-    /// installed engine-managed capability. See
-    /// [`ENGINE_MANAGED_POLYPHONY_CEILING`] for the provenance and for what
-    /// makes a narrower engine discoverable rather than latent.
-    pub const MAXIMUM: u16 = ENGINE_MANAGED_POLYPHONY_CEILING;
+    /// Storage representation bound, independent of any engine or hardware budget.
+    pub const MAXIMUM: u16 = u16::MAX;
 
     /// Returns the one voice-limit field exactly once.
     ///
@@ -195,40 +180,30 @@ impl VoiceLimit {
         &VOICE_LIMIT_SURFACE_DESCRIPTOR[0]
     }
 
-    /// Constructs one bounded limit, refusing anything outside `1..=64`.
+    /// Constructs a positive voice budget.
     ///
     /// Out-of-range input is an error, never a clamped, wrapped, defaulted, or
     /// substituted value — the same refuse-rather-than-wrap idiom the reducer
     /// applies at every other boundary. Seeding, which narrows a declared engine
     /// ceiling into these bounds, is [`Self::seeded_from`].
     pub const fn new(value: u16) -> Result<Self, VoiceLimitError> {
-        if value < Self::MINIMUM || value > Self::MAXIMUM {
+        if value < Self::MINIMUM {
             return Err(VoiceLimitError::OutOfRange { value });
         }
         Ok(Self(value))
     }
 
-    /// Seeds one Patch's limit from its own capability's declared per-Patch
-    /// polyphony ceiling.
-    ///
-    /// A `FixedPerPatch` capability seeds from the capacity it declares; an
-    /// engine-managed capability seeds from the ceiling its prepared engine
-    /// renders under. The declared ceiling is narrowed into the bounds so that
-    /// installation always yields a real limit: no Patch starts
-    /// unlimited-by-omission, and none starts with a limit its engine could not
-    /// honour. This is the one place narrowing is correct — construction and the
-    /// reducer-facing setter both refuse instead.
+    /// Seeds a new Patch from its capability's initial prepared voice budget.
+    /// Configurable defaults do not establish a product maximum. Increasing an
+    /// installed Patch's budget prepares replacement storage before activation.
     pub const fn seeded_from(policy: VoicePolicy) -> Self {
-        Self::seeded_from_ceiling(policy.polyphony_ceiling())
+        Self::seeded_from_ceiling(policy.initial_voices())
     }
 
     /// Seeds from a raw declared ceiling. See [`Self::seeded_from`].
     pub const fn seeded_from_ceiling(ceiling: u16) -> Self {
         if ceiling < Self::MINIMUM {
             return Self(Self::MINIMUM);
-        }
-        if ceiling > Self::MAXIMUM {
-            return Self(Self::MAXIMUM);
         }
         Self(ceiling)
     }
@@ -268,14 +243,8 @@ mod tests {
             VoiceLimit::new(0),
             Err(VoiceLimitError::OutOfRange { value: 0 })
         );
-        assert_eq!(
-            VoiceLimit::new(65),
-            Err(VoiceLimitError::OutOfRange { value: 65 })
-        );
-        assert_eq!(
-            VoiceLimit::new(u16::MAX),
-            Err(VoiceLimitError::OutOfRange { value: u16::MAX })
-        );
+        assert_eq!(VoiceLimit::new(65).unwrap().value(), 65);
+        assert_eq!(VoiceLimit::new(u16::MAX).unwrap().value(), u16::MAX);
 
         assert_eq!(VoiceLimit::new(1).unwrap().value(), 1);
         assert_eq!(VoiceLimit::new(64).unwrap().value(), 64);
@@ -288,7 +257,7 @@ mod tests {
     fn the_refusal_names_the_bound_it_violated() {
         assert_eq!(
             VoiceLimit::new(0).unwrap_err().to_string(),
-            "voiceLimit must be in 1..=64, got 0"
+            "voiceLimit must be in 1..=65535, got 0"
         );
     }
 
@@ -304,13 +273,13 @@ mod tests {
         assert_eq!(field.label(), "Voice Limit");
         assert_eq!(field.unit(), None, "a voice count is unitless");
         assert_eq!(field.minimum(), 1);
-        assert_eq!(field.maximum(), 64);
+        assert_eq!(field.maximum(), u16::MAX);
         assert_eq!(field.fine_step(), 1);
         assert_eq!(field.coarse_step(), 8);
         assert!(!field.contains(0));
         assert!(field.contains(1));
         assert!(field.contains(64));
-        assert!(!field.contains(65));
+        assert!(field.contains(65));
     }
 
     /// The claim this subtask exists to make: the `Stepped` classification, which
@@ -327,45 +296,28 @@ mod tests {
         );
     }
 
-    /// The bound's relationship to the installed engines is pinned, not latent.
-    ///
-    /// Both installed capabilities are enumerated with their own declared
-    /// ceilings, so registering a third engine — or moving either declaration —
-    /// fails here and forces this bound to be revisited, instead of leaving a
-    /// Patch able to declare a limit its own engine could not honour.
+    /// Every production capability declares a configurable, valid initial budget.
     #[test]
-    fn the_bound_is_the_installed_engine_polyphony_ceiling() {
+    fn production_capabilities_declare_configurable_voice_budgets() {
         assert_eq!(ENGINE_MANAGED_POLYPHONY_CEILING, HIDEF_POLYPHONY_CEILING);
-        assert_eq!(VoiceLimit::MAXIMUM, HIDEF_POLYPHONY_CEILING);
+        assert_eq!(VoiceLimit::MAXIMUM, u16::MAX);
 
         let registry = production_capability_registry().unwrap();
-        let declared: Vec<(String, u16)> = registry
+        assert!(registry
             .descriptors()
             .iter()
-            .map(|descriptor| {
-                (
-                    descriptor.id().as_str().to_owned(),
-                    descriptor.voice_policy().polyphony_ceiling(),
-                )
-            })
-            .collect();
-
-        assert_eq!(
-            declared,
-            vec![
-                (HIDEF_CAPABILITY_ID.to_owned(), HIDEF_POLYPHONY_CEILING),
-                (BRAIDS_CAPABILITY_ID.to_owned(), BRAIDS_FIXED_VOICES),
-                (
-                    crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID.to_owned(),
-                    crate::synth::SAMPLE_VOICE_COUNT as u16
-                ),
-            ]
-        );
-        for (capability, ceiling) in declared {
-            let seeded = VoiceLimit::seeded_from_ceiling(ceiling);
-            assert!(
-                seeded.value() <= ceiling,
-                "{capability} seeds {seeded} above its own {ceiling}-voice ceiling"
+            .any(|d| d.id().as_str() == HIDEF_CAPABILITY_ID));
+        assert!(registry
+            .descriptors()
+            .iter()
+            .any(|d| d.id().as_str() == BRAIDS_CAPABILITY_ID));
+        for descriptor in registry.descriptors() {
+            let VoicePolicy::Configurable { default_voices } = descriptor.voice_policy() else {
+                panic!("{} must expose a configurable budget", descriptor.id());
+            };
+            assert_eq!(
+                VoiceLimit::seeded_from(descriptor.voice_policy()),
+                VoiceLimit::new(default_voices).unwrap()
             );
         }
     }
@@ -383,11 +335,14 @@ mod tests {
             .value(),
             BRAIDS_FIXED_VOICES
         );
-        // A capability declaring more than the bound admits is narrowed, and one
-        // declaring less than one voice still seeds a sounding Patch.
+        // A larger configured default is preserved. Legacy zero declarations
+        // still seed the smallest positive budget.
         assert_eq!(
-            VoiceLimit::seeded_from(VoicePolicy::FixedPerPatch { voices: 4096 }).value(),
-            VoiceLimit::MAXIMUM
+            VoiceLimit::seeded_from(VoicePolicy::Configurable {
+                default_voices: 4096
+            })
+            .value(),
+            4096
         );
         assert_eq!(
             VoiceLimit::seeded_from_ceiling(0).value(),

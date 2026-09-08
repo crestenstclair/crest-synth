@@ -1,4 +1,3 @@
-use crate::adapter::braids_capability::BRAIDS_FIXED_VOICES;
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::app_state::EventRejection;
 use crate::control::event_log::EventLog;
@@ -22,7 +21,6 @@ use crate::shell::window_input::{WindowInput, WindowInputKind, WindowKey};
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 use crate::synth::instrument_capability::{CapabilityRegistry, ParameterValue};
 use crate::synth::patch::{Patch, PatchEditableTarget};
-use crate::synth::voice_limit::VoiceLimit;
 use crate::synth::{
     EffectCapabilityRegistry, ParameterId, PatchInteraction, PostEffectConfig,
     VoiceEnvelopeParameter,
@@ -1257,6 +1255,7 @@ fn push_patch_utility_scalar_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch
     )));
     push_key_press(steps, WindowKey::A);
     push_key_press(steps, WindowKey::D);
+    push_topology_completion(steps, "voiceBudget.restored");
     steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
         WindowKey::K,
     )));
@@ -1954,7 +1953,6 @@ fn push_engine_selection_steps(
             activating_adsr: None,
         },
     );
-    push_voice_limit_restoration_steps(steps, patch);
     push_key_press(steps, WindowKey::Digit1);
     push_checkpoint(steps, DemoCheckpoint::new("engine.context.restored"));
 }
@@ -1988,55 +1986,6 @@ impl ParameterValueLookup for PostEffectConfig {
     fn parameter_value(&self, id: &ParameterId) -> Option<&ParameterValue> {
         self.value(id)
     }
-}
-
-/// Restores the voice limit the engine journey narrowed.
-///
-/// Swapping to a narrower engine clamps the Patch's limit in canonical state,
-/// and swapping back does **not** widen it again: the carry-over preserves a
-/// limit the new engine can honour rather than second-guessing the player. The
-/// narrowing is therefore one-way by declaration, so the scene restores the
-/// value the same way a player would — through the PATCH Utility voice-limit
-/// row — instead of the restoration check quietly excusing the field.
-fn push_voice_limit_restoration_steps(steps: &mut Vec<DemoSceneStep>, patch: &Patch) {
-    let descriptor = VoiceLimit::descriptor();
-    let baseline = patch.voice_limit().value();
-    let narrowed = BRAIDS_FIXED_VOICES.min(baseline);
-    let coarse_presses = baseline
-        .saturating_sub(narrowed)
-        .div_ceil(descriptor.coarse_step());
-    if coarse_presses == 0 {
-        return;
-    }
-
-    steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
-        SurfaceId::PatchUtility,
-    )));
-    for _ in 0..utility_row_distance(
-        &PatchControlId::Output(PatchOutputParameter::TrimGain),
-        &PatchControlId::VoiceLimit,
-    ) {
-        push_key_press(steps, WindowKey::S);
-    }
-    steps.push(DemoSceneStep::WindowInput(WindowInput::key_down(
-        WindowKey::K,
-    )));
-    // Coarse steps clamp at the descriptor maximum, so overshooting the exact
-    // baseline is impossible; the last press simply lands on it.
-    for _ in 0..coarse_presses {
-        push_key_press(steps, WindowKey::W);
-    }
-    steps.push(DemoSceneStep::WindowInput(WindowInput::key_up(
-        WindowKey::K,
-    )));
-    steps.push(DemoSceneStep::PassiveAction(SemanticAction::Return));
-    push_checkpoint(
-        steps,
-        DemoCheckpoint::new(format!(
-            "patch.{}.voiceLimit.engineRestored",
-            patch.id().value()
-        )),
-    );
 }
 
 /// Exercises the four occupancy lifecycle events through the

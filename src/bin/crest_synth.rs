@@ -30,8 +30,9 @@ use crest_synth::shell::standalone_application::{
 };
 use crest_synth::shell::webview::TauriWebviewWindow;
 use crest_synth::shell::window_input::WindowInput;
-use crest_synth::synth::CapabilityId;
+use crest_synth::synth::{CapabilityId, EffectCapabilityId};
 use crest_synth::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport};
+use crest_synth::testing::full_instrument_effect_demo::FullDemoSelection;
 use crest_synth::testing::{
     BehavioralMutationCase, BehavioralMutationHarness, BehavioralMutationObservation,
     LiveDemoReport, LIVE_DEMO_NO_PROGRESS_TIMEOUT, LIVE_DEMO_TOTAL_TIMEOUT,
@@ -74,6 +75,24 @@ unsafe impl GlobalAlloc for CallbackMeasuringAllocator {
 fn main() -> Result<()> {
     let options = parse_options(env::args().skip(1))?;
     run(options)
+}
+
+fn full_demo_selection() -> Result<FullDemoSelection> {
+    Ok(FullDemoSelection {
+        effect_reference: CapabilityId::new(BRAIDS_CAPABILITY_ID)?,
+        skipped_instruments: [HIDEF_CAPABILITY_ID, BRAIDS_CAPABILITY_ID]
+            .into_iter()
+            .map(CapabilityId::new)
+            .collect::<Result<_, _>>()?,
+        skipped_effects: [
+            crest_synth::adapter::chorus_capability::CHORUS_CAPABILITY_ID,
+            crest_synth::adapter::reverb_capability::REVERB_CAPABILITY_ID,
+            crest_synth::adapter::delay_capability::DELAY_CAPABILITY_ID,
+        ]
+        .into_iter()
+        .map(EffectCapabilityId::new)
+        .collect::<Result<_, _>>()?,
+    })
 }
 
 fn run(options: Options) -> Result<()> {
@@ -131,7 +150,12 @@ fn run(options: Options) -> Result<()> {
             .with_system_midi_devices())
     };
 
-    if options.demo_component_library {
+    if options.full_instrument_effect_demo {
+        make_application()?
+            .with_full_instrument_effect_demo(full_demo_selection()?)
+            .run()
+            .context("full instrument/effect demo failed")?;
+    } else if options.demo_component_library {
         // Browsable rather than autonomous: no milestone timeout, no total
         // timeout, and no generation correlation. It finishes when the operator
         // closes the window.
@@ -433,6 +457,7 @@ struct Options {
     smoke: bool,
     observe: bool,
     demo_scene: bool,
+    full_instrument_effect_demo: bool,
     demo_live: bool,
     demo_live_mixer: bool,
     demo_live_semantic: bool,
@@ -462,6 +487,9 @@ where
     let arguments = arguments.into_iter();
     for argument in arguments {
         match argument.as_ref() {
+            "--full-instrument-effect-demo" if !options.full_instrument_effect_demo => {
+                options.full_instrument_effect_demo = true;
+            }
             "--smoke" if !options.smoke => options.smoke = true,
             "--observe" if !options.observe => options.observe = true,
             "--demo-scene" if !options.demo_scene => options.demo_scene = true,
@@ -514,7 +542,8 @@ where
             "--degenerate-control" if options.degenerate.is_none() => {
                 options.degenerate = Some(DegenerateMode::Control);
             }
-            "--smoke"
+            "--full-instrument-effect-demo"
+            | "--smoke"
             | "--observe"
             | "--demo-scene"
             | "--demo-live"
@@ -537,6 +566,18 @@ where
         }
     }
 
+    if options.full_instrument_effect_demo
+        && (options.smoke
+            || options.observe
+            || options.demo_scene
+            || options.demo_live
+            || options.demo_component_library
+            || options.degenerate.is_some()
+            || options.defeat_patch_selection
+            || options.defeat_detail_and_assets_preview)
+    {
+        bail!("--full-instrument-effect-demo must be used by itself");
+    }
     if options.observe && !options.smoke {
         bail!("--observe requires --smoke");
     }
@@ -1362,6 +1403,58 @@ mod tests {
     use crest_synth::control::event_record::{EventDirection, MidiKind};
 
     #[test]
+    fn full_instrument_effect_demo_option_is_isolated_and_unique() {
+        assert_eq!(
+            parse_options(["--full-instrument-effect-demo"]).unwrap(),
+            Options {
+                full_instrument_effect_demo: true,
+                ..Options::default()
+            }
+        );
+        for other in [
+            "--full-instrument-effect-demo",
+            "--smoke",
+            "--demo-live",
+            "--demo-live-component-library",
+            "--defeat-patch-selection",
+        ] {
+            assert!(parse_options(["--full-instrument-effect-demo", other]).is_err());
+        }
+    }
+
+    #[test]
+    fn full_demo_selection_skips_known_audio_and_keeps_the_changed_sampler() {
+        let selection = super::full_demo_selection().unwrap();
+        assert_eq!(
+            selection.effect_reference.as_str(),
+            super::BRAIDS_CAPABILITY_ID
+        );
+        assert_eq!(
+            selection
+                .skipped_instruments
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+            [super::HIDEF_CAPABILITY_ID, super::BRAIDS_CAPABILITY_ID]
+        );
+        assert_eq!(
+            selection
+                .skipped_effects
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+            ["effect.chorus", "effect.reverb", "effect.delay"]
+        );
+        assert!(
+            !selection
+                .skipped_instruments
+                .iter()
+                .any(|id| id.as_str()
+                    == crest_synth::adapter::sample_capability::SAMPLE_CAPABILITY_ID)
+        );
+    }
+
+    #[test]
     fn accepts_normal_smoke_observation_demo_scene_and_each_negative_mode() {
         assert_eq!(parse_options([] as [&str; 0]).unwrap(), Options::default());
         assert_eq!(
@@ -1370,6 +1463,7 @@ mod tests {
                 smoke: true,
                 observe: false,
                 demo_scene: false,
+                full_instrument_effect_demo: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1389,6 +1483,7 @@ mod tests {
                 smoke: true,
                 observe: true,
                 demo_scene: false,
+                full_instrument_effect_demo: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1408,6 +1503,7 @@ mod tests {
                 smoke: true,
                 observe: true,
                 demo_scene: true,
+                full_instrument_effect_demo: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1427,6 +1523,7 @@ mod tests {
                 smoke: true,
                 observe: true,
                 demo_scene: false,
+                full_instrument_effect_demo: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1452,6 +1549,7 @@ mod tests {
                 smoke: true,
                 observe: true,
                 demo_scene: true,
+                full_instrument_effect_demo: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,

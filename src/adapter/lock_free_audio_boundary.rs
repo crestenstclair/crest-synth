@@ -101,6 +101,13 @@ pub struct LockFreeAudioHandle {
     recovery_pending: Arc<AtomicBool>,
 }
 
+impl LockFreeAudioHandle {
+    /// Borrows the newest published projection for control-side witnesses.
+    pub fn read_latest_parameters(&mut self) -> &ParameterSnapshot {
+        self.parameters.read()
+    }
+}
+
 impl AudioThreadBoundary for LockFreeAudioHandle {
     fn pop_command(&mut self) -> Option<AudioCommand> {
         let command = self.commands.pop().ok()?;
@@ -110,8 +117,12 @@ impl AudioThreadBoundary for LockFreeAudioHandle {
         Some(command)
     }
 
-    fn read_latest_parameters(&mut self) -> ParameterSnapshot {
-        *self.parameters.read()
+    fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool {
+        if !self.parameters.update() {
+            return false;
+        }
+        core::mem::swap(self.parameters.output_buffer_mut(), previous);
+        true
     }
 }
 

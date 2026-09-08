@@ -365,7 +365,7 @@ impl VoiceLimitCarryOver {
     /// same answer to say so, so the two can never disagree about whether a
     /// swap costs the player anything.
     pub const fn resolve(current: VoiceLimit, policy: VoicePolicy) -> Self {
-        let ceiling = VoiceLimit::seeded_from(policy);
+        let ceiling = VoiceLimit::seeded_from_ceiling(policy.polyphony_ceiling());
         if current.value() <= ceiling.value() {
             Self::Preserved(current)
         } else {
@@ -700,7 +700,7 @@ mod tests {
             let patch = installed_patch(index as u32 + 1, policy);
             assert_eq!(
                 patch.voice_limit().value(),
-                policy.polyphony_ceiling().min(VoiceLimit::MAXIMUM),
+                policy.initial_voices(),
                 "{} must seed from its own declared ceiling",
                 descriptor.id().as_str()
             );
@@ -728,10 +728,7 @@ mod tests {
             patch.set_voice_limit(0),
             Err(VoiceLimitError::OutOfRange { value: 0 })
         );
-        assert_eq!(
-            patch.set_voice_limit(65),
-            Err(VoiceLimitError::OutOfRange { value: 65 })
-        );
+
         assert_eq!(
             patch.voice_limit().value(),
             24,
@@ -743,10 +740,8 @@ mod tests {
     /// An engine replacement replaces the config, not the player's limit — and
     /// when the incoming engine cannot honour it, the narrowing is reported.
     #[test]
-    fn an_engine_swap_keeps_the_limit_and_reports_a_narrowing_ceiling() {
-        use crate::adapter::braids_capability::{
-            BraidsCapability, BRAIDS_CAPABILITY_ID, BRAIDS_FIXED_VOICES,
-        };
+    fn a_configurable_engine_swap_preserves_the_voice_budget() {
+        use crate::adapter::braids_capability::{BraidsCapability, BRAIDS_CAPABILITY_ID};
         use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 
         let braids_policy = BraidsCapability::new().unwrap().descriptor().voice_policy();
@@ -768,21 +763,15 @@ mod tests {
         assert_eq!(patch.voice_limit().value(), 8);
         assert_eq!(patch.instrument_config(), &braids_config);
 
-        // A limit above the incoming engine's ceiling is narrowed at the swap,
-        // and the narrowing is reported rather than silently applied.
+        // Configurable engines preserve a budget above their initial default.
         let mut patch = test_patch();
-        patch.set_voice_limit(48).unwrap();
-        let carry_over = patch.replace_instrument_config(braids_config.clone(), braids_policy);
+        patch.set_voice_limit(129).unwrap();
+        let carry_over = patch.replace_instrument_config(braids_config, braids_policy);
         assert_eq!(
             carry_over,
-            VoiceLimitCarryOver::Clamped {
-                previous: VoiceLimit::new(48).unwrap(),
-                limit: VoiceLimit::new(BRAIDS_FIXED_VOICES).unwrap(),
-            }
+            VoiceLimitCarryOver::Preserved(VoiceLimit::new(129).unwrap())
         );
-        assert!(carry_over.was_clamped());
-        assert_eq!(carry_over.limit().value(), BRAIDS_FIXED_VOICES);
-        assert_eq!(patch.voice_limit().value(), BRAIDS_FIXED_VOICES);
+        assert_eq!(patch.voice_limit().value(), 129);
     }
 
     #[test]
@@ -821,7 +810,7 @@ mod tests {
                 Vec::new(),
                 Vec::new(),
             ),
-            MidiChannel::new((id - 1) as u8).unwrap(),
+            MidiChannel::new(((id - 1) % 16) as u8).unwrap(),
             PatchOutput::default(),
         );
         patch.seed_voice_limit(policy);

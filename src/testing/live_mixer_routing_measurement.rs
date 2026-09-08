@@ -472,7 +472,7 @@ fn run_mix(
                 .map(|patch_id| RtPatchParameters::new(patch_id, output))
         })
         .collect::<Option<Vec<_>>>()?;
-    let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+    let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
     for bus in unity_return_buses {
         returns[bus.index()] =
             RtBusReturnParameters::new(EffectSlotId::new(1).ok()?, &[], 1.0).ok()?;

@@ -104,9 +104,15 @@ impl PreparedEngineRackBuilder {
             }
             if let Some(footprint) = instrument.prepared_asset_footprint() {
                 let identity = (footprint.reference().clone(), footprint.preparation_key());
-                if prepared_asset_identities.insert(identity) {
+                {
+                    let shared = if prepared_asset_identities.insert(identity) {
+                        footprint.bytes()
+                    } else {
+                        0
+                    };
                     prepared_asset_bytes = prepared_asset_bytes
-                        .checked_add(footprint.bytes())
+                        .checked_add(shared)
+                        .and_then(|bytes| bytes.checked_add(footprint.private_bytes()))
                         .ok_or(RackPreparationError::PreparedAssetCapacityExceeded {
                             bytes: usize::MAX,
                             capacity: MAX_PREPARED_ASSET_GRAPH_BYTES,
@@ -367,8 +373,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(0.25);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {
@@ -407,8 +415,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(-0.5);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {
@@ -705,8 +715,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(0.0);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {}

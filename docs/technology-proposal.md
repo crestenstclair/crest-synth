@@ -2,8 +2,13 @@
 
 Research date: 2026-09-06. This report recommends upstream technologies; it is
 not an implementation plan, product authority, or automatic context for future
-tasks. Source, interfaces, and licensing were screened. No new engines were
-integrated, built, auditioned, or benchmarked.
+tasks. Source, interfaces, and licensing were screened during research.
+
+Implementation now follows this selection in the production capability registries.
+See [DESIGN.md](../DESIGN.md) for current behavior and remaining integration
+constraints, and [source provenance](../vendor/audio/PROVENANCE.md) for pinned
+versions, dependency scope, and maintained adaptations. This report remains a
+research decision input, not a second architecture document.
 
 ## Selection basis
 
@@ -194,8 +199,8 @@ algorithms whose sound and behavior still need listening comparisons.
 
 Original mda voice pools and preset counts are implementation details. Preserve
 the algorithms while adapting instance/voice storage to configurable resources;
-do not copy those constants into Crest's product contract. Native per-note
-integration and prepared rendering remain to be proved.
+do not copy those constants into Crest's product contract. Current per-note
+integration and prepared rendering are documented in `DESIGN.md`.
 
 ### STK: a substantial additional instrument family
 
@@ -271,7 +276,7 @@ permissive selection does not satisfy it.
 
 ## Sampler recommendation
 
-| Current capability | What Crest actually uses | Proposed direction |
+| Capability | Backend before catalog integration | Selected direction |
 | --- | --- | --- |
 | Sample | `hound` decodes WAV; Crest owns playback, interpolation, transposition, loop handling, and envelopes. | Evaluate sfizz as the complete playback backend for both simple imported samples and SFZ libraries. A new decoder alone would leave the custom sampler DSP intact. |
 | SoundFont | `rustysynth` parses SF2; Crest renders prepared regions with its own numeric voice engine. | First evaluate the full upstream RustySynth `Synthesizer`, already available through the installed dependency. |
@@ -397,11 +402,12 @@ account for reported latency on dry/send paths. Signalsmith Stretch depends on
 [Signalsmith Linear][linear-license]; choose its portable implementation.
 Stretch is a processor, not a complete sampler or a substitute for sfizz.
 
-## What remains to establish before implementation is accepted
+## Evaluation criteria
 
 The recommended core has source-level musical, controller, and embedding
 license support. STK model patent notices and sfizz maintenance remain explicit
-qualifications. Runtime suitability still requires proof:
+qualifications. Runtime acceptance uses these criteria; current evidence and
+remaining constraints belong in DESIGN.md:
 
 - Use capability schemas and existing semantic actions through `AppState::apply`;
   keep asset/preset identities stable and preparation failures explicit.

@@ -455,7 +455,7 @@ fn navigation_journey_preserves_saved_content_parameters_graph_and_sustained_aud
         .build(
             GraphRevision::INITIAL,
             app.patches(),
-            *app.current_parameters(),
+            app.current_parameters().clone(),
             48_000.0,
             256,
         )
@@ -479,7 +479,7 @@ fn navigation_journey_preserves_saved_content_parameters_graph_and_sustained_aud
         .unwrap(),
     })
     .unwrap();
-    let parameters = *app.current_parameters();
+    let parameters = app.current_parameters().clone();
     let journey = [
         AppEvent::NavigatePage(Direction::Up),
         AppEvent::NavigatePage(Direction::Down),

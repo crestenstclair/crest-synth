@@ -1,0 +1,100 @@
+# Embedded audio source provenance
+
+`sources.json` pins the selected repositories and nested dependencies. Each
+component includes its original license and a `SHA256SUMS` manifest. The source
+fetcher is `scripts/vendor_audio_sources.py`; normal builds use the vendored
+files without fetching source. `scripts/audio_notices.py` collects redistribution
+notices in `assets/licenses/UPSTREAM_AUDIO.txt`, included by the Tauri bundle.
+The separately vendored RustySynth records its small local change in
+`../rustysynth/PROVENANCE.md`.
+
+Crest wraps complete upstream instruments and processors. Rust owns capability
+metadata, asset import, per-note envelopes, prepared graph handoff, and typed
+failures. C++ wrappers adapt processing boundaries and instance ownership. They
+do not add synthesis or effect algorithms. Original source notices remain in
+place; `build.rs` and `build_support/sfizz.rs` stage adaptations into Cargo's
+output directory rather than altering the pinned source inputs.
+
+## Build adaptations
+
+- Mutable and DaisySP objects receive the zero-initialized storage their
+  firmware initialization expects. Native rate/block requirements are adapted
+  by r8brain with prepared buffers. Per-instance PRNG state is selected around
+  native calls. On Darwin, a pthread key allocated during preparation selects
+  that state without C++ thread-local storage allocation on first render;
+  other targets use constant-initialized pointer TLS. Mutable's staged PRNG
+  accesses the selected instance, isolating preparation from rendering.
+  Elements' modulation-offset metadata admits 0–0.5: its internal triangle
+  LFO adds up to 0.5 before the upstream approximate cosine oscillator, so
+  larger offsets can leave that oscillator's supported domain and diverge.
+  The upstream signal algorithm is unchanged.
+- Airwindows/mda DSP is isolated behind a small SDK compatibility boundary;
+  no VST2 SDK or foreign editor is distributed. mda ePiano's constructor-owned
+  sample crossfades use private sample storage. ButterComp2's local static
+  noise counters become instance fields. mda Piano's diagnostic print is
+  excluded. These changes preserve the original signal algorithms.
+- The selected DaisySP analog and synthetic snare ports failed finite-output
+  checks at admitted frequencies. Their catalog roles use the original Mutable
+  Plaits AnalogSnareDrum and SyntheticSnareDrum with explicit Mutable identities.
+  The synthetic port diverges even at 2495.4 Hz with otherwise default controls;
+  the original retains its own filter and resonance semantics.
+  The other selected DaisySP algorithms remain the MIT main-library versions;
+  the separate LGPL subtree is not included in the build.
+- STK uses its fixed native sample rate behind r8brain. Setup/retirement of its
+  global observer list is serialized off callback. Raw waves are embedded and
+  loaded during preparation. Delay capacity for BandedWG is reserved during
+  construction; Shakers' selectable materials are warmed there. Mandolin's
+  admitted damping range avoids the upstream invalid loop-gain endpoint.
+- MSFA is Google's original Apache-2.0 DX7 core. The bundled electric-piano
+  voice comes from its `synth_unit.cc`. Crest supplies validated SysEx framing,
+  checksums, stable bank/voice identities, and preset selection. No GPL Dexed
+  code or cartridge manager is used.
+- NAM compiles the current full core and its selected dependencies with
+  `EIGEN_MPL2_ONLY`. The bundled model is the upstream test LSTM, not a branded
+  amp capture. FFTConvolver uses Ooura/AudioFFT, not FFTW. Its initial impulse
+  is explicitly named as transparent. Signalsmith uses its portable backend.
+
+## Maintained sfizz library build
+
+Crest builds the BSD core as a static library, without JACK, libsndfile, plugin
+clients, UI, tests, docs, or LTO. The compiler and macOS deployment target match
+the surrounding native build. Selected decoder/dependency licenses and Faust
+exceptions remain separate grants in the notices file.
+
+The staged implementation forces resident loading, removes file-pool worker
+creation and callback garbage-collection locking, guards absent worker joins,
+and uses inline OSC message-index storage. A compatibility correction updates
+atomic_queue syntax for current Clang.
+
+Import enables strict parsing, rejects unknown opcodes and discarded regions,
+checks sample-decoder failures, and rejects invalid embedded samples. An
+include callback validates containment before the parser reads each included
+file. The bundler uses that parser, confines sample/include references to the
+selected folder, enforces source budgets, and embeds samples. The WavPack
+adapter checks a complete `wvpk` header before calling its raw decoder; invalid
+bytes must not enter the raw Matroska decoding path.
+
+The upstream repository is archived. These staged changes, their validation,
+and future dependency maintenance are Crest's responsibility. Current host
+voices own separate sfizz instances and duplicate sample residency.
+
+## Verification scope
+
+`scripts/check_native_audio.py` links the same native archives as Cargo and
+exercises initialization, controls, model choices, MIDI, reset/release, variable
+blocks, multiple sample rates, and interleaved instance independence. It tracks
+C++ allocation/destruction and, on macOS, interposes common C heap and pthread
+locking functions from a separate interposer library. Counter self-tests must
+pass, and first rendering runs on a fresh thread after control-thread
+preparation. This is a regression witness for exercised paths, not proof
+for every imported model, library, parameter combination, platform, or driver.
+Rust tests cover capability ports, lifecycle correlation, graph activation,
+parameter ownership, asset validation, persistence, and rendering.
+
+Engine grants do not license arbitrary imported models, samples, presets, or
+IRs. STK retains its upstream patent qualifications. Eigen MPL-covered source
+is retained under `nam/Dependencies/eigen`; include the applicable source-access
+information when distributing a binary. The notice generator packages the actual
+source as `assets/licenses/EIGEN_SOURCE.tar.gz`, included by the Tauri bundle.
+See the component notices for the
+actual terms rather than assigning one license to the entire catalog.

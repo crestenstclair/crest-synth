@@ -647,8 +647,7 @@ impl LiveDemoScene {
             .descriptors()
             .first()
             .ok_or(LiveDemoSceneError::InvalidEffectConfig)?;
-        if state.effects.descriptors().len() != 3
-            || state.patches[0].post_effects.len() != 1
+        if state.patches[0].post_effects.len() != 1
             || state.patches[0].post_effects[0].capability_id() != expected_effect.id()
             || state.patches[0].post_effects[0].slot_id()
                 != crate::synth::effect_slot_id::EffectSlotIndex::ALL[0].instance_identity()
@@ -1358,7 +1357,9 @@ impl LiveEngineTransition {
             | StructuralEditIntent::PrepareAudition { parameter_id, .. } => {
                 PatchControlId::Capability(parameter_id.clone())
             }
-            StructuralEditIntent::SetSlotOccupancy { .. }
+            StructuralEditIntent::SetVoiceBudget { .. }
+            | StructuralEditIntent::ReplaceEffectAsset { .. }
+            | StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 unreachable!("live demo engine transitions carry instrument intents")

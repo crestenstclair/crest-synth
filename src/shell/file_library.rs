@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 
 type ImportedFile = Result<(AssetFileId, Option<CapabilityDescriptor>), SampleAssetError>;
-type ListingKey = (crate::kernel::PatchId, AssetKind, FileBrowserFolderId);
+type ListingKey = (crate::control::FocusPath, AssetKind, FileBrowserFolderId);
 
 enum LibraryWork {
     Import(AssetImportRequest, JoinHandle<ImportedFile>),
@@ -76,11 +76,15 @@ impl FileLibraryRuntime {
                             },
                         )?;
                     }
-                    LibraryWork::List((patch, asset_kind, folder), worker) => {
+                    LibraryWork::List((origin, asset_kind, folder), worker) => {
                         let listing = worker.join().unwrap_or(Err(SampleAssetError::Unavailable));
                         let browser = app.state().file_browser();
                         if app.state().interaction().active_surface() == SurfaceId::FileBrowser
-                            && browser.patch_id() == Some(patch)
+                            && app
+                                .state()
+                                .interaction()
+                                .return_path()
+                                .is_some_and(|path| path.origin() == &origin)
                             && browser.asset_kind() == asset_kind
                             && browser.folder() == &folder
                         {
@@ -117,6 +121,14 @@ impl FileLibraryRuntime {
                         .ok_or(SampleAssetError::Unavailable)?
                         .import_browser_asset(&asset)
                         .map(|(id, descriptor)| (id, Some(descriptor))),
+                    AssetKind::Sfz => {
+                        crate::adapter::sfz_library::import(&asset).map(|id| (id, None))
+                    }
+                    AssetKind::SysEx => crate::adapter::dx7_library::import(&asset)
+                        .map(|(id, descriptor)| (id, Some(descriptor))),
+                    AssetKind::NeuralModel | AssetKind::ImpulseResponse => {
+                        crate::adapter::model_assets::import(kind, &asset).map(|id| (id, None))
+                    }
                     AssetKind::Other => Err(SampleAssetError::Unavailable),
                 }) {
                 Ok(worker) => self.work = Some(LibraryWork::Import(request, worker)),
@@ -136,12 +148,17 @@ impl FileLibraryRuntime {
             return Ok(());
         }
         let browser = app.state().file_browser();
-        let Some(patch) = browser.patch_id() else {
+        let Some(origin) = app
+            .state()
+            .interaction()
+            .return_path()
+            .map(|path| path.origin().clone())
+        else {
             return Ok(());
         };
         let kind = browser.asset_kind();
         let folder = browser.folder().clone();
-        let key = (patch, kind, folder.clone());
+        let key = (origin, kind, folder.clone());
         if self.visited.as_ref() == Some(&key) {
             return Ok(());
         }
@@ -158,6 +175,10 @@ impl FileLibraryRuntime {
                 AssetKind::SoundFont => soundfonts
                     .ok_or(SampleAssetError::Unavailable)?
                     .list(&requested),
+                AssetKind::SysEx => crate::adapter::dx7_library::browser()?.list(&requested, kind),
+                AssetKind::Sfz | AssetKind::NeuralModel | AssetKind::ImpulseResponse => {
+                    crate::adapter::model_assets::browser(kind)?.list(&requested, kind)
+                }
                 AssetKind::Other => Err(SampleAssetError::Unavailable),
             }) {
             Ok(worker) => self.work = Some(LibraryWork::List(key, worker)),

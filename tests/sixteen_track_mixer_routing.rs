@@ -367,10 +367,12 @@ impl PreparedInstrument for ConstantInstrument {
         interleaved_stereo: &mut [f32],
         _frame_count: usize,
         _parameters: &RtPatchParameters,
-    ) {
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         for sample in interleaved_stereo {
             *sample = self.amplitude;
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {}
@@ -616,7 +618,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     navigate_to_output_track(&mut invalid_state);
     set_mode(&mut invalid_state, InteractionMode::Adjust);
     let invalid_parameters = projector.parameter_snapshot(&invalid_state).unwrap();
-    let boundary = LockFreeAudioBoundary::new(4, invalid_parameters);
+    let boundary = LockFreeAudioBoundary::new(4, invalid_parameters.clone());
     let (control, mut audio) = boundary.into_handles();
     let mut app_loop = AppLoop::new(invalid_state, StateProjector::new(), control).unwrap();
     let rejected_tree = app_loop.current_state_tree();
@@ -628,8 +630,8 @@ fn production_path_proves_canonical_sixteen_track_routing() {
         app_loop.current_state_tree().state_hash(),
         rejected_tree.state_hash()
     );
-    assert_eq!(*app_loop.current_parameters(), invalid_parameters);
-    assert_eq!(audio.read_latest_parameters(), invalid_parameters);
+    assert_eq!(app_loop.current_parameters().clone(), invalid_parameters);
+    assert_eq!(audio.read_latest_parameters(), &invalid_parameters);
     app_loop
         .dispatch_action(SemanticAction::Adjust(Direction::Left))
         .unwrap();
@@ -809,12 +811,12 @@ fn production_path_proves_canonical_sixteen_track_routing() {
         .build(
             GraphRevision::INITIAL,
             renderer_state.patches(),
-            renderer_parameters,
+            renderer_parameters.clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
         .unwrap();
-    let boundary = LockFreeAudioBoundary::new(4, renderer_parameters);
+    let boundary = LockFreeAudioBoundary::new(4, renderer_parameters.clone());
     let (mut control, audio) = boundary.into_handles();
     let (observation_writer, observation_reader) = AtomicAudioObservation::default().into_handles();
     let mut renderer = AudioRenderer::with_observation(
@@ -851,7 +853,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     assert_eq!(route_parameters.graph_revision(), GraphRevision::INITIAL);
     assert_eq!(route_parameters.patches()[0].output().track_id(), track(4));
     assert_eq!(route_parameters.patches()[1].output().track_id(), track(3));
-    control.publish_parameters(route_parameters);
+    control.publish_parameters(route_parameters.clone());
 
     begin_memory_count();
     renderer.render(&mut renderer_output);
@@ -860,7 +862,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     assert_eq!(route_deallocations, 0);
     assert_eq!(instrument_drops.load(Ordering::Relaxed), 0);
     assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
-    assert_eq!(*renderer.parameters(), route_parameters);
+    assert_eq!(renderer.parameters().clone(), route_parameters);
     let route_observation = observation_reader.read_latest_on_control();
     assert_eq!(
         route_observation.parameter_generation(),

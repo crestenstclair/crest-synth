@@ -1252,7 +1252,7 @@ fn engine_choice_keeps_prepared_waveform_after_sample_activation() {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             audio_config.sample_rate(),
             audio_config.render_capacity_frames(),
         )
@@ -1446,7 +1446,7 @@ fn coordinator_advances_assignment_through_activation_before_committing_the_asse
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             audio_config.sample_rate(),
             audio_config.render_capacity_frames(),
         )
@@ -1797,7 +1797,7 @@ fn sample_detail_and_browser_project_generic_sections_rows_status_and_visualizat
     else {
         panic!("the browser carries its typed summary");
     };
-    assert_eq!(*projected_patch, patch_id);
+    assert_eq!(*projected_patch, Some(patch_id));
     assert_eq!(
         active_asset.as_ref().map(AssetReference::locator),
         Some("Factory.wav")

@@ -2338,7 +2338,11 @@ fn runtime_composition_matches(tree: &StateTree, runtime: RuntimeAudioWitness) -
         .filter(|capability| {
             registry.descriptors().iter().any(|descriptor| {
                 descriptor.id().as_str() == **capability
-                    && descriptor.voice_policy() == crate::synth::VoicePolicy::EngineManaged
+                    && matches!(
+                        descriptor.voice_policy(),
+                        crate::synth::VoicePolicy::EngineManaged
+                            | crate::synth::VoicePolicy::Configurable { .. }
+                    )
             })
         })
         .count();

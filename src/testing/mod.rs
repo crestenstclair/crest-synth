@@ -1,4 +1,6 @@
+pub mod full_instrument_effect_demo;
 pub mod instrument_part;
+pub(crate) mod patch_control_navigation;
 pub use instrument_part::InstrumentPart;
 
 pub mod automatic_midi_test;

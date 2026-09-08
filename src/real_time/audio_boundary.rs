@@ -63,7 +63,10 @@ pub trait ControlAudioBoundary: Send {
 pub trait AudioThreadBoundary: Send {
     fn pop_command(&mut self) -> Option<AudioCommand>;
 
-    fn read_latest_parameters(&mut self) -> ParameterSnapshot;
+    /// Exchanges a newly published snapshot with caller-owned retirement
+    /// storage. Old allocations return to the producer; the callback neither
+    /// clones nor destroys snapshot storage.
+    fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool;
 }
 
 /// Factory contract for one complete lock-free control/audio boundary.
@@ -140,8 +143,12 @@ mod tests {
             self.queued.take()
         }
 
-        fn read_latest_parameters(&mut self) -> ParameterSnapshot {
-            self.latest
+        fn exchange_latest_parameters(&mut self, previous: &mut ParameterSnapshot) -> bool {
+            if self.latest.generation() < previous.generation() {
+                return false;
+            }
+            core::mem::swap(&mut self.latest, previous);
+            true
         }
     }
 
@@ -188,17 +195,15 @@ mod tests {
 
         assert_eq!(audio.pop_command(), Some(command()));
         assert_eq!(audio.pop_command(), None);
-        assert_eq!(audio.read_latest_parameters().generation(), 1);
+        assert_eq!(audio.latest.generation(), 1);
         assert_eq!(control.latest.generation(), 2);
     }
 
     #[test]
-    fn real_time_values_are_copyable_and_need_no_destruction() {
+    fn discrete_commands_are_copyable_and_need_no_destruction() {
         fn assert_copy<T: Copy>() {}
 
         assert_copy::<AudioCommand>();
-        assert_copy::<ParameterSnapshot>();
         assert!(!core::mem::needs_drop::<AudioCommand>());
-        assert!(!core::mem::needs_drop::<ParameterSnapshot>());
     }
 }

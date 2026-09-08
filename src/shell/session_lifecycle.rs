@@ -1326,7 +1326,7 @@ mod tests {
         .build(
             GraphRevision::INITIAL,
             state.patches(),
-            parameters,
+            parameters.clone(),
             audio_config.sample_rate(),
             audio_config.render_capacity_frames(),
         )
@@ -2071,7 +2071,7 @@ mod tests {
             .build(
                 GraphRevision::INITIAL,
                 state.patches(),
-                parameters,
+                parameters.clone(),
                 audio_config.sample_rate(),
                 audio_config.render_capacity_frames(),
             )

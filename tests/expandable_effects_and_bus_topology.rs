@@ -611,7 +611,7 @@ fn fixture() -> Fixture {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -714,7 +714,7 @@ fn measure_routing() -> RoutingMeasurements {
             &patches,
         )
         .unwrap();
-        let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
         for bus in unity_buses {
             returns[bus.index()] =
                 RtBusReturnParameters::new(EffectSlotId::new(live_slot).unwrap(), &[], 1.0)
@@ -867,7 +867,7 @@ fn measure_carry_over_identity_refusal() -> bool {
         .map(|descriptor| descriptor.id().clone())
         .collect();
     let incumbent = entries[0].clone();
-    let candidate_entry = entries[3].clone();
+    let candidate_entry = EffectCapabilityId::new(FOURTH_CAPABILITY_ID).unwrap();
     let scalar_layout_agrees = effects
         .descriptor(&incumbent)
         .unwrap()
@@ -1228,7 +1228,7 @@ fn measure() -> (EffectsAndBusesObservation, Vec<u8>) {
     // Position 0 is empty at this point (the cleared-slot case above) and bus
     // 1 carries a built-in occupant, so both roles start from a known state.
     // ---------------------------------------------------------------------
-    let fourth = entries[3].clone();
+    let fourth = EffectCapabilityId::new(FOURTH_CAPABILITY_ID).unwrap();
 
     // Stage 1 — SLOT OCCUPANCY. The ordinary `SetSlotOccupancy` gesture, the
     // same call the three built-ins used above, with no fourth-entry branch.
@@ -1428,7 +1428,7 @@ fn measure() -> (EffectsAndBusesObservation, Vec<u8>) {
     let seam_instrument_preparers = production_instrument_preparers().unwrap();
     let seam_effect_preparers = witness_effect_preparers();
     let seam_capabilities = production_capability_registry().unwrap();
-    let seam_parameters = *fixture.app_loop.current_parameters();
+    let seam_parameters = fixture.app_loop.current_parameters().clone();
     let seam_layout = PreparedGraphBuilder::new(&seam_capabilities, &seam_instrument_preparers)
         .with_effects(fixture.app_loop.effects(), &seam_effect_preparers)
         .with_returns(fixture.app_loop.bus_returns())

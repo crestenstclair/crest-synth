@@ -6,7 +6,7 @@ use crate::synth::{
     ParameterChoice, ParameterDefault, ParameterId, ParameterKind, ParameterPredicate,
     ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue, PatchInteraction,
     SampleAssetError, SampleLoopMode, SamplePlaybackConfig, VoicePolicy, WaveformLandmarkRole,
-    WaveformLandmarkSpec, MAX_INSTRUMENT_SCALAR_PARAMETERS, SAMPLE_VOICE_COUNT,
+    WaveformLandmarkSpec, SAMPLE_VOICE_COUNT,
 };
 
 pub const SAMPLE_CAPABILITY_ID: &str = "instrument.sample";
@@ -144,8 +144,8 @@ impl SampleCapability {
                 )?,
             ],
             vec![AssetRequirement::new(asset_id, true)],
-            VoicePolicy::FixedPerPatch {
-                voices: SAMPLE_VOICE_COUNT as u16,
+            VoicePolicy::Configurable {
+                default_voices: SAMPLE_VOICE_COUNT as u16,
             },
             SAMPLE_SUPPORTED_MIDI_KINDS.to_vec(),
         )?
@@ -175,7 +175,6 @@ impl SampleCapability {
             )?,
             CapabilityVisualization::status("sample.status", "Preparation")?,
         ])?;
-        debug_assert!(descriptor.scalar_parameter_count() <= MAX_INSTRUMENT_SCALAR_PARAMETERS);
         Ok(Self { descriptor })
     }
 
@@ -338,10 +337,9 @@ mod tests {
         assert_eq!(descriptor.id().as_str(), SAMPLE_CAPABILITY_ID);
         assert_eq!(
             descriptor.voice_policy(),
-            VoicePolicy::FixedPerPatch { voices: 16 }
+            VoicePolicy::Configurable { default_voices: 16 }
         );
         assert_eq!(descriptor.scalar_parameter_count(), 7);
-        assert!(descriptor.scalar_parameter_count() <= MAX_INSTRUMENT_SCALAR_PARAMETERS);
         assert_eq!(descriptor.asset_requirements().len(), 1);
         assert!(descriptor.asset_requirements()[0].required());
         assert_eq!(

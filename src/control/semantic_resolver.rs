@@ -357,14 +357,12 @@ impl<'a> SemanticResolver<'a> {
                 asset_parameter_id,
                 ..
             }) => (
-                patch_position
-                    .patch_id()
-                    .ok_or(EventRejection::NoPatchesInstalled)?,
+                patch_position.and_then(PatchPositionId::patch_id),
                 asset_parameter_id,
             ),
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
-        if self.state.file_browser().patch_id() != Some(patch_id)
+        if self.state.file_browser().patch_id() != patch_id
             || self.state.file_browser().asset_parameter_id() != Some(parameter_id)
         {
             return Err(EventRejection::InvalidSelection);
@@ -375,8 +373,12 @@ impl<'a> SemanticResolver<'a> {
             .rows()
             .iter()
             .map(|row| {
-                FocusPath::file_browser(
-                    patch_id,
+                FocusPath::file_browser_for_origin(
+                    self.state
+                        .interaction()
+                        .return_path()
+                        .expect("browser retains origin")
+                        .origin(),
                     parameter_id.as_str().to_owned(),
                     row.id().to_owned(),
                 )
@@ -748,7 +750,8 @@ impl<'a> SemanticResolver<'a> {
                 .descriptor(config.capability_id())
                 .ok_or(EventRejection::InvalidEffectConfig)?;
             for spec in descriptor.parameters() {
-                if spec.patch_interaction() == PatchInteraction::ScalarEdit
+                if (spec.patch_interaction() == PatchInteraction::ScalarEdit
+                    || spec.kind() == crate::synth::ParameterKind::Asset)
                     && row_is_visible_and_enabled(spec, |id| config.value(id))
                 {
                     paths.push(FocusPath::mixer_return_effect(

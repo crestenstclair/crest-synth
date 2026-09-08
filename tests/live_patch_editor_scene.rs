@@ -503,6 +503,11 @@ fn the_voice_limit_script_lands_exactly_on_the_declared_minimum() {
             .unwrap_or_else(|rejection| {
                 panic!("the restoring script's {event:?} must be accepted: {rejection}")
             });
+        for completion in support::topology_activation_events(app_loop.engine_selection_status()) {
+            app_loop
+                .dispatch_from(completion, EventSource::System)
+                .unwrap();
+        }
     }
     assert_eq!(
         app_loop.dispatch_from(AppEvent::Adjust(Direction::Down), EventSource::DemoScene),
@@ -515,6 +520,11 @@ fn the_voice_limit_script_lands_exactly_on_the_declared_minimum() {
             .unwrap_or_else(|rejection| {
                 panic!("the restoring script's {event:?} must be accepted: {rejection}")
             });
+        for completion in support::topology_activation_events(app_loop.engine_selection_status()) {
+            app_loop
+                .dispatch_from(completion, EventSource::System)
+                .unwrap();
+        }
     }
     assert_eq!(
         projected_voice_limit(&app_loop, installed[1]),

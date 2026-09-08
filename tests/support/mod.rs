@@ -226,11 +226,13 @@ impl PreparedInstrument for FixtureLeadInstrument {
         output: &mut [f32],
         _frame_count: usize,
         _parameters: &crest_synth::real_time::RtPatchParameters,
-    ) {
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         for frame in output.chunks_exact_mut(2) {
             frame[0] = 0.15;
             frame[1] = 0.15;
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {}
@@ -258,11 +260,13 @@ impl PreparedInstrument for FixturePadInstrument {
         output: &mut [f32],
         _frame_count: usize,
         _parameters: &crest_synth::real_time::RtPatchParameters,
-    ) {
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         for frame in output.chunks_exact_mut(2) {
             frame[0] = 0.26;
             frame[1] = 0.2782;
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {}
@@ -318,7 +322,7 @@ pub fn run_demo() -> DemoRun {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -391,4 +395,47 @@ pub fn run_demo() -> DemoRun {
         baseline,
         expected_coverage,
     }
+}
+
+/// Simulated worker/activation messages for reducer-only structural tests.
+/// Actual graph construction and callback activation are exercised separately.
+#[allow(dead_code)]
+pub fn topology_activation_events(
+    status: &crest_synth::control::EngineSelectionStatus,
+) -> Vec<crest_synth::control::app_event::AppEvent> {
+    use crest_synth::control::{app_event::AppEvent, EngineSelectionStatusKind};
+    if status.kind() != EngineSelectionStatusKind::Loading {
+        return Vec::new();
+    }
+    let correlation = status
+        .correlation()
+        .expect("pending structural correlation");
+    let request_id = correlation.request_id();
+    let intent = correlation.intent().clone();
+    let source = correlation.source_graph_revision();
+    let target = source.checked_next().unwrap();
+    vec![
+        AppEvent::EngineSelectionLifecycleAdvanced {
+            request_id,
+            lifecycle: EngineSelectionStatusKind::Validating,
+        },
+        AppEvent::EngineSelectionLifecycleAdvanced {
+            request_id,
+            lifecycle: EngineSelectionStatusKind::Preparing,
+        },
+        AppEvent::TopologyPrepared {
+            request_id,
+            intent: intent.clone(),
+            source_graph_revision: source,
+            target_graph_revision: target,
+            prepared_visualization: None,
+        },
+        AppEvent::EngineActivationAcknowledged {
+            request_id,
+            intent,
+            target_graph_revision: target,
+            retired_graph_revision: source,
+            collected: true,
+        },
+    ]
 }

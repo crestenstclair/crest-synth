@@ -227,7 +227,7 @@ fn effects_and_buses_scene_completes_with_measured_topology_and_responsiveness()
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -264,8 +264,8 @@ fn effects_and_buses_scene_completes_with_measured_topology_and_responsiveness()
     let runtime_audio = RuntimeAudioWitness::new(
         1,
         app_loop.patches().len(),
-        1,
-        1,
+        app_loop.patches().len(),
+        0,
         true,
         GraphRevision::INITIAL,
         0,

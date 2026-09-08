@@ -1056,11 +1056,12 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
             .iter()
             .map(|descriptor| descriptor["id"].as_str().unwrap())
             .collect::<Vec<_>>(),
-        [
-            "instrument.soundfont.hidef",
-            "instrument.braids",
-            "instrument.sample"
-        ]
+        production_capability_registry()
+            .unwrap()
+            .descriptors()
+            .iter()
+            .map(|descriptor| descriptor.id().as_str())
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         tree["patches"]

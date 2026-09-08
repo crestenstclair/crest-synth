@@ -141,7 +141,12 @@ impl PreparedInstrument for ToneInstrument {
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], frame_count: usize, _parameters: &RtPatchParameters) {
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        frame_count: usize,
+        _parameters: &RtPatchParameters,
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         for frame in output[..frame_count * 2].chunks_exact_mut(2) {
             self.phase += self.increment;
             if self.phase >= 1.0 {
@@ -151,6 +156,8 @@ impl PreparedInstrument for ToneInstrument {
             frame[0] = sample;
             frame[1] = sample * 0.9;
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {}
@@ -531,7 +538,7 @@ fn run_phase7_headless(defeat_preview: bool) -> crest_synth::testing::LiveDemoRe
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -576,8 +583,8 @@ fn run_phase7_headless(defeat_preview: bool) -> crest_synth::testing::LiveDemoRe
     let runtime = RuntimeAudioWitness::new(
         prepared_shared_assets,
         app_loop.patches().len(),
-        1,
-        2,
+        app_loop.patches().len(),
+        0,
         true,
         GraphRevision::INITIAL,
         0,
@@ -721,8 +728,11 @@ fn phase7_headless_scene_correlates_worker_renderer_projection_and_lossless_repo
     );
     assert!(report.mixer_routing().is_complete());
     assert_eq!(report.runtime_audio().prepared_instruments(), 3);
-    assert_eq!(report.runtime_audio().engine_managed_patches(), 1);
-    assert_eq!(report.runtime_audio().fixed_per_patch_patches(), 2);
+    assert_eq!(
+        report.runtime_audio().engine_managed_patches(),
+        report.runtime_audio().prepared_instruments()
+    );
+    assert_eq!(report.runtime_audio().fixed_per_patch_patches(), 0);
     assert!(report.runtime_audio().adjacent_capabilities_distinct());
     assert_eq!(report.event_log().dropped_records(), 0);
     assert_eq!(

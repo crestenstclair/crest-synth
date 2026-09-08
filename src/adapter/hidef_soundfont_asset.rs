@@ -37,8 +37,9 @@ impl HiDefSoundFontAsset {
         let sound_font = std::panic::catch_unwind(|| SoundFont::new(&mut Cursor::new(bytes)))
             .map_err(|_| HiDefSoundFontAssetError::Parse)?
             .map_err(|_| HiDefSoundFontAssetError::Parse)?;
+        let sound_font = Arc::new(sound_font);
         let (prepared_bank, playable_source_ordinals) =
-            PreparedSoundFontBank::from_sound_font(&sound_font)
+            PreparedSoundFontBank::from_sound_font(sound_font.clone())
                 .map_err(HiDefSoundFontAssetError::from_prepared_bank)?;
 
         let mut playable = vec![false; sound_font.get_presets().len()];
@@ -65,8 +66,8 @@ impl HiDefSoundFontAsset {
         let catalog = SoundFontPresetCatalog::from_sources(sources)
             .map_err(HiDefSoundFontAssetError::Catalog)?;
 
-        // `sound_font` and all parser/name-bearing allocations are dropped on
-        // this control-owned stack before either projection is returned.
+        // Retain the immutable upstream SoundFont for the complete renderer.
+        // No parsing, metadata edits, or destruction occurs on the callback.
         Ok(Self {
             catalog: Arc::new(catalog),
             prepared_bank: Arc::new(prepared_bank),
@@ -95,18 +96,6 @@ impl HiDefSoundFontAsset {
 
     pub const fn parse_count(&self) -> usize {
         self.parse_count
-    }
-
-    /// Returns the audited count of forbidden metadata categories retained by
-    /// callback-reachable numeric storage.
-    pub fn callback_metadata_counts(&self) -> [usize; 4] {
-        let counts = self.prepared_bank.callback_metadata_counts();
-        [
-            counts.strings,
-            counts.paths,
-            counts.catalog_entries,
-            counts.parser_structures,
-        ]
     }
 }
 
@@ -246,14 +235,5 @@ mod tests {
             .entries()
             .iter()
             .all(|entry| asset.prepared_bank().has_preset(entry.id())));
-        assert_eq!(
-            asset.prepared_bank().callback_metadata_counts(),
-            crate::adapter::soundfont_voice_engine::CallbackSoundFontMetadataCounts {
-                strings: 0,
-                paths: 0,
-                catalog_entries: 0,
-                parser_structures: 0,
-            }
-        );
     }
 }

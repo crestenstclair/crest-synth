@@ -215,7 +215,11 @@ impl PreparedEngineRack {
                 });
             };
             slot.instrument
-                .render(stem, frame_count, &parameters.patches()[index]);
+                .render(stem, frame_count, &parameters.patches()[index])
+                .map_err(|source| RackRenderError::Instrument {
+                    patch_id: slot.patch_id,
+                    source,
+                })?;
         }
         Ok(())
     }
@@ -327,6 +331,10 @@ impl std::error::Error for RackDispatchError {}
 /// Fixed-size callback status for caller-owned stem validation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RackRenderError {
+    Instrument {
+        patch_id: PatchId,
+        source: PreparedInstrumentError,
+    },
     PatchCountMismatch {
         rack: usize,
         stems: usize,
@@ -345,6 +353,9 @@ pub enum RackRenderError {
 impl fmt::Display for RackRenderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Instrument { patch_id, source } => {
+                write!(formatter, "Patch {patch_id}: {source}")
+            }
             Self::PatchCountMismatch { rack, stems } => {
                 write!(
                     formatter,
@@ -412,8 +423,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(self.fill);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {}

@@ -29,7 +29,7 @@ pub trait PreparedInstrument: Send {
         interleaved_stereo: &mut [f32],
         frame_count: usize,
         parameters: &RtPatchParameters,
-    );
+    ) -> Result<(), PreparedInstrumentError>;
 
     /// Silences this instrument's voices with bounded work.
     fn all_notes_off(&mut self);
@@ -54,6 +54,7 @@ pub struct PreparedAssetFootprint {
     reference: AssetReference,
     preparation_key: u64,
     bytes: usize,
+    private_bytes: usize,
 }
 
 impl PreparedAssetFootprint {
@@ -62,7 +63,17 @@ impl PreparedAssetFootprint {
             reference,
             preparation_key,
             bytes,
+            private_bytes: 0,
         }
+    }
+
+    /// Media copied into independent upstream instances cannot be deduplicated.
+    pub const fn with_private_bytes(mut self, bytes: usize) -> Self {
+        self.private_bytes = bytes;
+        self
+    }
+    pub const fn private_bytes(&self) -> usize {
+        self.private_bytes
     }
 
     pub const fn reference(&self) -> &AssetReference {
@@ -83,6 +94,9 @@ impl PreparedAssetFootprint {
 pub enum PreparedInstrumentError {
     UnsupportedMidiKind { kind: MidiMessageKind },
     DispatchRejected,
+    RenderRejected,
+    ScalarLayoutMismatch,
+    InvalidFrameCapacity,
 }
 
 impl fmt::Display for PreparedInstrumentError {
@@ -92,6 +106,13 @@ impl fmt::Display for PreparedInstrumentError {
                 write!(formatter, "prepared instrument does not support {kind:?}")
             }
             Self::DispatchRejected => formatter.write_str("prepared instrument rejected MIDI"),
+            Self::RenderRejected => formatter.write_str("prepared instrument rejected rendering"),
+            Self::ScalarLayoutMismatch => {
+                formatter.write_str("prepared instrument scalar layout is incompatible")
+            }
+            Self::InvalidFrameCapacity => {
+                formatter.write_str("prepared instrument frame capacity is incompatible")
+            }
         }
     }
 }

@@ -125,7 +125,6 @@ struct PresetObservation {
     choice_ids_round_trip: bool,
     duplicate_behavior_exact: bool,
     parse_count: usize,
-    callback_metadata_counts: [usize; 4],
     focused_control_id: String,
     source_choice_id: String,
     target_choice_id: String,
@@ -392,7 +391,7 @@ fn soundfont_preset_selection() {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -720,7 +719,6 @@ fn soundfont_preset_selection() {
         choice_ids_round_trip,
         duplicate_behavior_exact: synthetic_catalog_predicates(),
         parse_count: asset.parse_count(),
-        callback_metadata_counts: asset.callback_metadata_counts(),
         focused_control_id: preset_control.to_string(),
         source_choice_id,
         target_choice_id,
@@ -747,7 +745,6 @@ fn soundfont_preset_selection() {
     assert!(result.choice_ids_round_trip);
     assert!(result.duplicate_behavior_exact);
     assert_eq!(result.parse_count, 1);
-    assert_eq!(result.callback_metadata_counts, [0; 4]);
     assert_eq!(
         result.focused_control_id,
         "patch.capability.soundfont.preset"

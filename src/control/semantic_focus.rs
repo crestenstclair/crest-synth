@@ -49,13 +49,11 @@ impl SurfaceId {
     /// system surface that suspends rather than replaces PATCH/MIXER.
     pub const fn context(self) -> Option<TopLevelContext> {
         match self {
-            Self::PatchMain
-            | Self::PatchUtility
-            | Self::PatchDetail
-            | Self::PatchChoice
-            | Self::FileBrowser => Some(TopLevelContext::Patch),
+            Self::PatchMain | Self::PatchUtility | Self::PatchDetail | Self::PatchChoice => {
+                Some(TopLevelContext::Patch)
+            }
             Self::MixerMain | Self::MixerInspector => Some(TopLevelContext::Mixer),
-            Self::MidiDeviceSettings => None,
+            Self::MidiDeviceSettings | Self::FileBrowser => None,
         }
     }
 
@@ -561,6 +559,22 @@ impl FocusPath {
         }
     }
 
+    /// Browser rows retain the owning context and optional Patch identity.
+    pub fn file_browser_for_origin(
+        origin: &FocusPath,
+        modal_id: impl Into<String>,
+        entry_id: impl Into<String>,
+    ) -> Self {
+        Self {
+            context: origin.context,
+            surface: SurfaceId::FileBrowser,
+            patch_position: origin.patch_position,
+            capability_id: None,
+            control_id: SemanticControlId::Modal(ModalControlId::BrowserEntry(entry_id.into())),
+            modal_id: Some(modal_id.into()),
+        }
+    }
+
     pub const fn mixer_track(track_id: MixerTrackId, parameter: MixerTrackParameter) -> Self {
         Self {
             context: TopLevelContext::Mixer,
@@ -729,7 +743,7 @@ impl FocusPath {
                 SurfaceId::FileBrowser,
                 SemanticControlId::Modal(ModalControlId::BrowserEntry(id)),
             ) => {
-                if self.patch_position.is_none()
+                if (self.context == TopLevelContext::Patch) != self.patch_position.is_some()
                     || self.capability_id.is_some()
                     || self.modal_id.as_ref().is_none_or(String::is_empty)
                     || id.is_empty()
@@ -869,7 +883,14 @@ impl ReturnPath {
     pub fn new(origin: FocusPath, entered_surface: SurfaceId) -> Result<Self, FocusPathError> {
         origin.validate()?;
         let origin_allowed = match entered_surface {
-            SurfaceId::PatchChoice | SurfaceId::FileBrowser => {
+            SurfaceId::FileBrowser => matches!(
+                origin.surface(),
+                SurfaceId::PatchMain
+                    | SurfaceId::PatchUtility
+                    | SurfaceId::PatchDetail
+                    | SurfaceId::MixerInspector
+            ),
+            SurfaceId::PatchChoice => {
                 matches!(
                     origin.surface(),
                     SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
@@ -879,7 +900,9 @@ impl ReturnPath {
         };
         if !origin_allowed
             || !entered_surface.is_return_target()
-            || entered_surface.context() != Some(origin.context())
+            || entered_surface
+                .context()
+                .is_some_and(|context| context != origin.context())
         {
             return Err(FocusPathError::ContextSurfaceMismatch);
         }

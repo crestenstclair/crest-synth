@@ -72,7 +72,7 @@ fn every_braids_control_edits_from_keyboard_without_rebuilding_and_persists() {
         .build(
             GraphRevision::INITIAL,
             state.patches(),
-            parameters,
+            parameters.clone(),
             48_000.0,
             256,
         )
@@ -180,21 +180,21 @@ fn every_braids_control_edits_from_keyboard_without_rebuilding_and_persists() {
         for _ in 0..4 {
             key(&mut app, &mut keyboard, WindowKey::W, true);
         }
-        let at_max = *app.current_parameters();
+        let at_max = app.current_parameters().clone();
         assert_eq!(
             app.dispatch(AppEvent::Adjust(Direction::Right)),
             Err(crest_synth::control::EventRejection::ParameterAtBoundary)
         );
-        assert_eq!(*app.current_parameters(), at_max);
+        assert_eq!(app.current_parameters().clone(), at_max);
         for _ in 0..10 {
             key(&mut app, &mut keyboard, WindowKey::S, true);
         }
-        let at_min = *app.current_parameters();
+        let at_min = app.current_parameters().clone();
         assert_eq!(
             app.dispatch(AppEvent::Adjust(Direction::Left)),
             Err(crest_synth::control::EventRejection::ParameterAtBoundary)
         );
-        assert_eq!(*app.current_parameters(), at_min);
+        assert_eq!(app.current_parameters().clone(), at_min);
         for _ in 0..6 {
             key(&mut app, &mut keyboard, WindowKey::W, true);
         }

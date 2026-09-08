@@ -115,6 +115,8 @@ impl GraphPreparationCorrelation {
         target_graph_revision: GraphRevision,
     ) -> Result<Self, GraphPreparationRequestError> {
         let patch_id = match &intent {
+            StructuralEditIntent::SetVoiceBudget { patch_id, .. } => Some(*patch_id),
+            StructuralEditIntent::ReplaceEffectAsset { target, .. } => target.patch_id(),
             StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => Some(*patch_id),
             StructuralEditIntent::SetReturnOccupancy { .. } => None,
             _ => return Err(GraphPreparationRequestError::IntentMismatch),
@@ -215,6 +217,20 @@ impl GraphPreparationCorrelation {
     /// never disagree.
     pub fn replacement_scope(&self) -> Option<crate::real_time::GraphReplacementScope> {
         match &self.intent {
+            StructuralEditIntent::SetVoiceBudget { patch_id, .. } => Some(
+                crate::real_time::GraphReplacementScope::SelectedEngine(*patch_id),
+            ),
+            StructuralEditIntent::ReplaceEffectAsset { target, .. } => Some(match target {
+                crate::control::EffectAssetTarget::PatchSlot { patch_id, slot } => {
+                    crate::real_time::GraphReplacementScope::PatchSlot {
+                        patch_id: *patch_id,
+                        slot: *slot,
+                    }
+                }
+                crate::control::EffectAssetTarget::BusReturn { bus } => {
+                    crate::real_time::GraphReplacementScope::BusReturn(*bus)
+                }
+            }),
             StructuralEditIntent::ReplaceCapability { .. }
             | StructuralEditIntent::ReplaceParameterChoice { .. }
             | StructuralEditIntent::ReplaceAsset { .. } => Some(
@@ -412,6 +428,39 @@ impl GraphPreparationRequest {
         let mut candidate_patches = active_patches.to_vec();
         let mut candidate_returns = active_returns.clone();
         match correlation.intent() {
+            StructuralEditIntent::SetVoiceBudget { patch_id, voices } => {
+                let patch = candidate_patches
+                    .iter_mut()
+                    .find(|p| p.id() == *patch_id)
+                    .ok_or(GraphPreparationRequestError::UnknownPatch)?;
+                if *voices
+                    > registry
+                        .descriptor_for_config(patch.instrument_config())
+                        .ok_or(GraphPreparationRequestError::InvalidActiveConfig)?
+                        .voice_policy()
+                        .polyphony_ceiling()
+                {
+                    return Err(GraphPreparationRequestError::InvalidOccupancy);
+                }
+                patch
+                    .set_voice_limit(*voices)
+                    .map_err(|_| GraphPreparationRequestError::InvalidOccupancy)?;
+            }
+            StructuralEditIntent::ReplaceEffectAsset {
+                target,
+                parameter_id,
+                reference,
+            } => {
+                target
+                    .assign(
+                        &mut candidate_patches,
+                        &mut candidate_returns,
+                        effects,
+                        parameter_id,
+                        reference.clone(),
+                    )
+                    .map_err(|_| GraphPreparationRequestError::InvalidOccupancy)?;
+            }
             StructuralEditIntent::SetSlotOccupancy {
                 patch_id,
                 slot,
@@ -887,7 +936,9 @@ fn validate_candidate_delta(
                 return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
             }
         }
-        StructuralEditIntent::SetSlotOccupancy { .. }
+        StructuralEditIntent::SetVoiceBudget { .. }
+        | StructuralEditIntent::ReplaceEffectAsset { .. }
+        | StructuralEditIntent::SetSlotOccupancy { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. }
         | StructuralEditIntent::AppendPatch { .. } => {
             return Err(GraphPreparationRequestError::IntentMismatch);
@@ -992,7 +1043,7 @@ pub(crate) fn prepare_graph_request_with_effects(
     let result = builder.build(
         correlation.target_graph_revision(),
         request.candidate_patches(),
-        *request.candidate_parameters(),
+        request.candidate_parameters().clone(),
         audio_config.sample_rate(),
         audio_config.render_capacity_frames(),
     );
@@ -1162,6 +1213,8 @@ fn map_sample_asset_failure(error: crate::synth::SampleAssetError) -> EngineSele
         | SampleAssetError::NonFinitePcm
         | SampleAssetError::MalformedPcm
         | SampleAssetError::MalformedSoundFont
+        | SampleAssetError::MalformedSysEx
+        | SampleAssetError::MalformedModel
         | SampleAssetError::MalformedWave
         | SampleAssetError::MalformedCatalog
         | SampleAssetError::PathEscape

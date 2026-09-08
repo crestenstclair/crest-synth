@@ -1648,7 +1648,9 @@ where
             .ok_or(LiveDemoError::EngineTargetConfigMismatch)?;
         let pending = status != EngineSelectionStatusKind::Ready;
         let preset = match transition.intent() {
-            StructuralEditIntent::SetSlotOccupancy { .. }
+            StructuralEditIntent::SetVoiceBudget { .. }
+            | StructuralEditIntent::ReplaceEffectAsset { .. }
+            | StructuralEditIntent::SetSlotOccupancy { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 return Err(LiveDemoError::EngineProjectionMismatch)
@@ -2085,80 +2087,16 @@ where
             Ok(false)
         }
         LiveTopologySupport::FocusPatchControl { control } => {
-            let page = app_loop
-                .current_patch_page()
-                .ok_or(LiveDemoError::MissingPatchProjection)?;
-            if page.focused_control_id() == *control {
-                return Ok(true);
-            }
-            let surface = app_loop.state().interaction().active_surface();
-            if matches!(surface, SurfaceId::PatchDetail | SurfaceId::PatchUtility) {
-                let paths = SemanticResolver::new(app_loop.state()).ordered_paths(surface)?;
-                let current_path = app_loop.state().interaction().focus_path();
-                let current = paths
-                    .iter()
-                    .position(|path| path == current_path)
-                    .ok_or(LiveDemoError::TopologySupportMismatch)?;
-                if let Some(target) = paths.iter().position(|path| {
-                    path.control_id() == &crate::control::SemanticControlId::Patch(control.clone())
-                }) {
-                    let direction = if current < target {
-                        Direction::Down
-                    } else {
-                        Direction::Up
-                    };
-                    dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
-                } else {
-                    dispatch_engine_event(app_loop, AppEvent::Return)?;
+            match crate::testing::patch_control_navigation::next_patch_control_action(
+                app_loop.state(),
+                control,
+            )? {
+                Some(action) => {
+                    dispatch_engine_event(app_loop, AppEvent::from_semantic_action(action))?;
+                    Ok(false)
                 }
-                return Ok(false);
+                None => Ok(true),
             }
-
-            let controls = app_loop.state().focused_patch_controls()?;
-            let current = controls
-                .iter()
-                .position(|candidate| candidate == &page.focused_control_id())
-                .ok_or(LiveDemoError::TopologySupportMismatch)?;
-            let direct_target = controls.iter().position(|candidate| candidate == control);
-            let detail_origin = match control {
-                PatchControlId::Capability(_) => Some(PatchControlId::Engine),
-                PatchControlId::Effect(slot_id, _) => app_loop
-                    .patches()
-                    .iter()
-                    .find(|patch| Some(patch.id()) == page.patch().id())
-                    .and_then(|patch| {
-                        patch
-                            .effect_slots()
-                            .iter()
-                            .position(|occupancy| {
-                                occupancy
-                                    .as_ref()
-                                    .is_some_and(|effect| effect.slot_id() == *slot_id)
-                            })
-                            .and_then(|index| {
-                                crate::synth::effect_slot_id::EffectSlotIndex::new(index).ok()
-                            })
-                    })
-                    .map(PatchControlId::EffectSlot),
-                _ => None,
-            };
-            let target = direct_target.or_else(|| {
-                detail_origin
-                    .as_ref()
-                    .and_then(|origin| controls.iter().position(|candidate| candidate == origin))
-            });
-            let target = target.ok_or(LiveDemoError::TopologySupportMismatch)?;
-            if direct_target.is_none() && current == target {
-                dispatch_engine_event(app_loop, AppEvent::EnterSurface(SurfaceId::PatchDetail))?;
-            } else {
-                let direction = if current < target {
-                    Direction::Down
-                } else {
-                    Direction::Up
-                };
-                dispatch_engine_event(app_loop, AppEvent::Navigate(direction))?;
-            }
-            Ok(false)
         }
         LiveTopologySupport::FocusInspectorControl { track_id, control } => {
             let focused = app_loop.state().interaction().focus_path().clone();
@@ -2591,7 +2529,9 @@ where
         )),
         StructuralEditIntent::ReplaceAsset { .. }
         | StructuralEditIntent::PrepareAudition { .. } => Ok(false),
-        StructuralEditIntent::SetSlotOccupancy { .. }
+        StructuralEditIntent::SetVoiceBudget { .. }
+        | StructuralEditIntent::ReplaceEffectAsset { .. }
+        | StructuralEditIntent::SetSlotOccupancy { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. }
         | StructuralEditIntent::AppendPatch { .. } => Ok(false),
     }

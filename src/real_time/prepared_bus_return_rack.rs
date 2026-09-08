@@ -663,41 +663,41 @@ mod tests {
         rack.install(bus, Box::new(UnityEffect), parameters(), 0.5)
             .unwrap();
 
-        let mut exact = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        let mut exact = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
         exact[bus.index()] = live(0.25);
-        assert!(rack.matches_parameters(&snapshot_with(exact)));
+        assert!(rack.matches_parameters(&snapshot_with(exact.clone())));
         assert_eq!(rack.slot_id(bus), Some(EffectSlotId::new(1).unwrap()));
         assert_eq!(rack.scalar_count(bus), Some(0));
 
         // Occupied return facing an inactive entry is rejected.
         assert!(!rack.matches_parameters(&snapshot_with(
-            [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS]
+            [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS]
         )));
 
         // The matching entry at the wrong bus is rejected, not repositioned.
-        let mut repositioned = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        let mut repositioned = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
         repositioned[0] = live(0.25);
         assert!(!rack.matches_parameters(&snapshot_with(repositioned)));
 
         // Wrong instance identity and wrong scalar layout are rejected.
-        let mut wrong_slot = exact;
+        let mut wrong_slot = exact.clone();
         wrong_slot[bus.index()] =
             RtBusReturnParameters::new(EffectSlotId::new(9).unwrap(), &[], 0.25).unwrap();
         assert!(!rack.matches_parameters(&snapshot_with(wrong_slot)));
-        let mut wrong_count = exact;
+        let mut wrong_count = exact.clone();
         wrong_count[bus.index()] =
             RtBusReturnParameters::new(EffectSlotId::new(1).unwrap(), &[0.5], 0.25).unwrap();
         assert!(!rack.matches_parameters(&snapshot_with(wrong_count)));
 
         // An active entry facing an unoccupied return is rejected.
-        let mut extra = exact;
+        let mut extra = exact.clone();
         extra[7] = live(1.0);
         assert!(!rack.matches_parameters(&snapshot_with(extra)));
 
         // The empty rack attests only the all-inactive bank.
         let empty = PreparedBusReturnRack::new(2).unwrap();
         assert!(empty.matches_parameters(&snapshot_with(
-            [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS]
+            [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS]
         )));
         assert!(!empty.matches_parameters(&snapshot_with(exact)));
     }

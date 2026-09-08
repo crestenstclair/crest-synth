@@ -11,7 +11,7 @@ use crate::real_time::{GraphPreparationError, GraphRevision, PreparedGraph, Prep
 use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
 use crate::synth::{
     CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer, InstrumentConfig,
-    InstrumentPreparer, Patch, PostEffectConfig, VoiceEnvelope, VoiceLimit,
+    InstrumentPreparer, Patch, PostEffectConfig, VoiceEnvelope,
 };
 use serde::{Deserialize, Serialize};
 
@@ -171,7 +171,7 @@ impl SavedSession {
                             envelope: patch.envelope,
                             output: patch.output,
                             effects: patch.effects,
-                            voice_limit: VoiceLimit::seeded_from(descriptor.voice_policy()).value(),
+                            voice_limit: descriptor.voice_policy().polyphony_ceiling(),
                         })
                     })
                     .collect::<Result<Vec<_>, SavedSessionError>>()?;
@@ -271,7 +271,7 @@ impl SavedSession {
                 .descriptor_for_config(&saved.instrument)
                 .ok_or(SavedSessionError::InvalidCapability)?;
             if saved.voice_limit == 0
-                || saved.voice_limit > VoiceLimit::seeded_from(descriptor.voice_policy()).value()
+                || saved.voice_limit > descriptor.voice_policy().polyphony_ceiling()
             {
                 return Err(SavedSessionError::InvalidVoiceLimit);
             }
@@ -789,8 +789,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(0.0);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {}

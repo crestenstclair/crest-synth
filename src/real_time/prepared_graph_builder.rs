@@ -303,15 +303,23 @@ impl<'a> PreparedGraphBuilder<'a> {
                 .chain(prepared.prepared_asset_footprint())
             {
                 let identity = (footprint.reference().clone(), footprint.preparation_key());
-                if identities.insert(identity) {
-                    bytes = bytes.checked_add(footprint.bytes()).ok_or({
-                        GraphPreparationError::Rack(
-                            RackPreparationError::PreparedAssetCapacityExceeded {
-                                bytes: usize::MAX,
-                                capacity: crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES,
-                            },
-                        )
-                    })?;
+                {
+                    let shared = if identities.insert(identity) {
+                        footprint.bytes()
+                    } else {
+                        0
+                    };
+                    bytes = bytes
+                        .checked_add(shared)
+                        .and_then(|bytes| bytes.checked_add(footprint.private_bytes()))
+                        .ok_or({
+                            GraphPreparationError::Rack(
+                                RackPreparationError::PreparedAssetCapacityExceeded {
+                                    bytes: usize::MAX,
+                                    capacity: crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES,
+                                },
+                            )
+                        })?;
                     if bytes > crate::synth::MAX_SAMPLE_GRAPH_PCM_BYTES {
                         return Err(GraphPreparationError::Rack(
                             RackPreparationError::PreparedAssetCapacityExceeded {
@@ -603,8 +611,10 @@ mod tests {
             output: &mut [f32],
             _frame_count: usize,
             _parameters: &crate::real_time::RtPatchParameters,
-        ) {
+        ) -> Result<(), crate::synth::PreparedInstrumentError> {
             output.fill(0.25);
+
+            Ok(())
         }
 
         fn all_notes_off(&mut self) {}
@@ -913,7 +923,7 @@ mod tests {
         edited_patches[0]
             .set_output(PatchOutput::new(MixerTrackId::new(3).unwrap(), -9.0).unwrap());
         let refreshed = parameters(revision, &edited_patches).with_generation(99);
-        graph.refresh_initial_parameters(refreshed).unwrap();
+        graph.refresh_initial_parameters(refreshed.clone()).unwrap();
         assert_eq!(graph.initial_parameters(), &refreshed);
         assert_eq!(
             graph
@@ -924,7 +934,7 @@ mod tests {
             edited_patches[0].output()
         );
 
-        let retained = *graph.initial_parameters();
+        let retained = graph.initial_parameters().clone();
         assert_eq!(
             graph.refresh_initial_parameters(parameters(GraphRevision::new(8).unwrap(), &patches)),
             Err(PreparedGraphRefreshError::RevisionMismatch)
@@ -1036,7 +1046,7 @@ mod tests {
             .with_returns(&bank);
         assert!(matches!(
             effects_builder
-                .build(first_revision, &[], return_parameters, f32::MAX, 1)
+                .build(first_revision, &[], return_parameters.clone(), f32::MAX, 1)
                 .unwrap_err(),
             GraphPreparationError::BusReturn { bus, .. }
                 if bus == crate::mixer::bus_id::BusId::new(0).unwrap()

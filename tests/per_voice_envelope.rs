@@ -172,8 +172,11 @@ fn common_adsr_is_per_voice_in_both_production_engines() {
     assert!(extremes_finite);
 
     let soundfont_synthesizers_per_patch =
-        prove_one_soundfont_synthesizer_per_patch(&soundfont_preparer, &soundfont_patch);
-    assert_eq!(soundfont_synthesizers_per_patch, 1);
+        prove_prepared_soundfont_synthesizer_ownership(&soundfont_preparer, &soundfont_patch);
+    assert_eq!(
+        soundfont_synthesizers_per_patch,
+        usize::from(soundfont_patch.voice_limit().value())
+    );
     let braids_voices_per_patch = BRAIDS_VOICE_COUNT;
     assert_eq!(braids_voices_per_patch, 16);
 
@@ -293,7 +296,9 @@ fn render_onset(
         .dispatch(note(patch, MidiMessageKind::NoteOn, 60, 120), &parameters)
         .unwrap();
     let mut output = [0.0_f32; BLOCK_SAMPLES];
-    instrument.render(&mut output, BLOCK_FRAMES, &parameters);
+    instrument
+        .render(&mut output, BLOCK_FRAMES, &parameters)
+        .unwrap();
     output
 }
 
@@ -309,12 +314,16 @@ fn render_release(
         .dispatch(note(patch, MidiMessageKind::NoteOn, 60, 120), &parameters)
         .unwrap();
     let mut warmup = [0.0_f32; BLOCK_SAMPLES];
-    instrument.render(&mut warmup, BLOCK_FRAMES, &parameters);
+    instrument
+        .render(&mut warmup, BLOCK_FRAMES, &parameters)
+        .unwrap();
     instrument
         .dispatch(note(patch, MidiMessageKind::NoteOff, 60, 0), &parameters)
         .unwrap();
     let mut output = [0.0_f32; BLOCK_SAMPLES];
-    instrument.render(&mut output, BLOCK_FRAMES, &parameters);
+    instrument
+        .render(&mut output, BLOCK_FRAMES, &parameters)
+        .unwrap();
     output
 }
 
@@ -368,9 +377,15 @@ fn prove_overlapping_release(preparer: &dyn InstrumentPreparer, patch: &Patch) -
     let mut first_warmup = [0.0_f32; BLOCK_SAMPLES];
     let mut held_warmup = [0.0_f32; BLOCK_SAMPLES];
     let mut both_warmup = [0.0_f32; BLOCK_SAMPLES];
-    first_released.render(&mut first_warmup, BLOCK_FRAMES, &parameters);
-    both_held.render(&mut held_warmup, BLOCK_FRAMES, &parameters);
-    both_released.render(&mut both_warmup, BLOCK_FRAMES, &parameters);
+    first_released
+        .render(&mut first_warmup, BLOCK_FRAMES, &parameters)
+        .unwrap();
+    both_held
+        .render(&mut held_warmup, BLOCK_FRAMES, &parameters)
+        .unwrap();
+    both_released
+        .render(&mut both_warmup, BLOCK_FRAMES, &parameters)
+        .unwrap();
     let synchronized = first_warmup == held_warmup && first_warmup == both_warmup;
 
     first_released
@@ -385,9 +400,15 @@ fn prove_overlapping_release(preparer: &dyn InstrumentPreparer, patch: &Patch) -
     let mut first_output = [0.0_f32; BLOCK_SAMPLES];
     let mut held_output = [0.0_f32; BLOCK_SAMPLES];
     let mut both_output = [0.0_f32; BLOCK_SAMPLES];
-    first_released.render(&mut first_output, BLOCK_FRAMES, &parameters);
-    both_held.render(&mut held_output, BLOCK_FRAMES, &parameters);
-    both_released.render(&mut both_output, BLOCK_FRAMES, &parameters);
+    first_released
+        .render(&mut first_output, BLOCK_FRAMES, &parameters)
+        .unwrap();
+    both_held
+        .render(&mut held_output, BLOCK_FRAMES, &parameters)
+        .unwrap();
+    both_released
+        .render(&mut both_output, BLOCK_FRAMES, &parameters)
+        .unwrap();
 
     synchronized
         && finite(&first_output)
@@ -410,18 +431,22 @@ fn prove_finite_extremes(preparer: &dyn InstrumentPreparer, patch: &Patch) -> bo
             .dispatch(note(patch, MidiMessageKind::NoteOn, 60, 127), &parameters)
             .unwrap();
         let mut onset = [0.0_f32; BLOCK_SAMPLES];
-        instrument.render(&mut onset, BLOCK_FRAMES, &parameters);
+        instrument
+            .render(&mut onset, BLOCK_FRAMES, &parameters)
+            .unwrap();
         instrument
             .dispatch(note(patch, MidiMessageKind::NoteOff, 60, 0), &parameters)
             .unwrap();
         let mut release = [0.0_f32; BLOCK_SAMPLES];
-        instrument.render(&mut release, BLOCK_FRAMES, &parameters);
+        instrument
+            .render(&mut release, BLOCK_FRAMES, &parameters)
+            .unwrap();
         instrument.all_notes_off();
         finite(&onset) && finite(&release)
     })
 }
 
-fn prove_one_soundfont_synthesizer_per_patch(
+fn prove_prepared_soundfont_synthesizer_ownership(
     preparer: &HiDefSoundFontPreparer,
     patch: &Patch,
 ) -> usize {
@@ -433,7 +458,10 @@ fn prove_one_soundfont_synthesizer_per_patch(
     drop(instrument);
     let after = soundfont_engine_lifecycle_counts();
     assert_eq!(after.active, before.active);
-    assert_eq!(after.destroyed.saturating_sub(before.destroyed), 1);
+    assert_eq!(
+        after.destroyed.saturating_sub(before.destroyed),
+        u64::from(patch.voice_limit().value())
+    );
     assert_eq!(created_delta, active_delta);
     active_delta
 }
@@ -704,7 +732,7 @@ fn prove_mixed_callback_contract() -> (usize, usize, bool) {
         .build(
             GraphRevision::INITIAL,
             state.patches(),
-            parameters,
+            parameters.clone(),
             SAMPLE_RATE,
             BLOCK_FRAMES,
         )

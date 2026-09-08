@@ -193,7 +193,7 @@ struct BraidsObservation {
     no_braids_specific_patch_limit: bool,
     independent_patch_banks: bool,
     sixteen_voices_audible: bool,
-    seventeenth_stole_oldest: bool,
+    exhaustion_preserves_sounding_voices: bool,
     scalar_cases_exercised: usize,
     unsupported_rate_rejected: bool,
     mixed_routing_exact: bool,
@@ -262,7 +262,7 @@ fn pinned_braids_engine_satisfies_the_mixed_production_contract() {
     drop(maximum_rack);
 
     let preparer = BraidsPreparer::new().unwrap();
-    let probe_patch = braids_patch(1, 0);
+    let probe_patch = braids_patch(1, 0).with_voice_limit(16).unwrap();
     let parameters = braids_parameters(probe_patch.id(), [0.0, 0.5, 0.5]);
     let mut sixteen = preparer
         .prepare(&probe_patch, SAMPLE_RATE, BLOCK_FRAMES)
@@ -276,13 +276,15 @@ fn pinned_braids_engine_satisfies_the_mixed_production_contract() {
             .unwrap();
     }
     let mut sixteen_output = [0.0_f32; BLOCK_FRAMES * 2];
-    sixteen.render(&mut sixteen_output, BLOCK_FRAMES, &parameters);
+    sixteen
+        .render(&mut sixteen_output, BLOCK_FRAMES, &parameters)
+        .unwrap();
     let sixteen_voices_audible = sounding(&sixteen_output) && finite(&sixteen_output);
     assert!(sixteen_voices_audible);
 
-    let seventeenth_stole_oldest =
-        prove_oldest_voice_is_stolen(&preparer, &probe_patch, &parameters);
-    assert!(seventeenth_stole_oldest);
+    let exhaustion_preserves_sounding_voices =
+        prove_exhaustion_preserves_sounding_voices(&preparer, &probe_patch, &parameters);
+    assert!(exhaustion_preserves_sounding_voices);
 
     let baseline = render_braids_scalar_case(&preparer, &probe_patch, [0.0, 0.5, 0.5]);
     let scalar_variants = [
@@ -340,7 +342,7 @@ fn pinned_braids_engine_satisfies_the_mixed_production_contract() {
         no_braids_specific_patch_limit,
         independent_patch_banks,
         sixteen_voices_audible,
-        seventeenth_stole_oldest,
+        exhaustion_preserves_sounding_voices,
         scalar_cases_exercised,
         unsupported_rate_rejected,
         mixed_routing_exact,
@@ -451,29 +453,33 @@ fn sounding(output: &[f32]) -> bool {
     output.iter().any(|sample| sample.abs() > 1.0e-6)
 }
 
-fn prove_oldest_voice_is_stolen(
+fn prove_exhaustion_preserves_sounding_voices(
     preparer: &BraidsPreparer,
     patch: &Patch,
     parameters: &RtPatchParameters,
 ) -> bool {
-    let mut released_oldest = preparer.prepare(patch, SAMPLE_RATE, BLOCK_FRAMES).unwrap();
-    let mut untouched = preparer.prepare(patch, SAMPLE_RATE, BLOCK_FRAMES).unwrap();
-    for key in 40..57 {
+    let mut full = preparer.prepare(patch, SAMPLE_RATE, BLOCK_FRAMES).unwrap();
+    let mut control = preparer.prepare(patch, SAMPLE_RATE, BLOCK_FRAMES).unwrap();
+    for key in 40..56 {
         let message = note(patch.channel(), MidiMessageKind::NoteOn, key, 112);
-        released_oldest.dispatch(message, parameters).unwrap();
-        untouched.dispatch(message, parameters).unwrap();
+        full.dispatch(message, parameters).unwrap();
+        control.dispatch(message, parameters).unwrap();
     }
-    released_oldest
-        .dispatch(
-            note(patch.channel(), MidiMessageKind::NoteOff, 40, 0),
-            parameters,
-        )
+    assert!(matches!(
+        full.dispatch(
+            note(patch.channel(), MidiMessageKind::NoteOn, 56, 112),
+            parameters
+        ),
+        Err(crest_synth::synth::PreparedInstrumentError::DispatchRejected)
+    ));
+    let mut after_refusal = [0.0_f32; BLOCK_FRAMES * 2];
+    let mut reference = [0.0_f32; BLOCK_FRAMES * 2];
+    full.render(&mut after_refusal, BLOCK_FRAMES, parameters)
         .unwrap();
-    let mut released = [0.0_f32; BLOCK_FRAMES * 2];
-    let mut control = [0.0_f32; BLOCK_FRAMES * 2];
-    released_oldest.render(&mut released, BLOCK_FRAMES, parameters);
-    untouched.render(&mut control, BLOCK_FRAMES, parameters);
-    released == control && sounding(&released) && finite(&released)
+    control
+        .render(&mut reference, BLOCK_FRAMES, parameters)
+        .unwrap();
+    after_refusal == reference && sounding(&after_refusal) && finite(&after_refusal)
 }
 
 fn render_braids_scalar_case(
@@ -490,7 +496,9 @@ fn render_braids_scalar_case(
         )
         .unwrap();
     let mut output = [0.0_f32; BLOCK_FRAMES * 2];
-    instrument.render(&mut output, BLOCK_FRAMES, &parameters);
+    instrument
+        .render(&mut output, BLOCK_FRAMES, &parameters)
+        .unwrap();
     output
 }
 
@@ -531,7 +539,7 @@ fn prove_mixed_routing_and_isolation() -> (bool, bool) {
         .build(
             GraphRevision::INITIAL,
             baseline_state.patches(),
-            baseline_parameters,
+            baseline_parameters.clone(),
             SAMPLE_RATE,
             BLOCK_FRAMES,
         )
@@ -540,7 +548,7 @@ fn prove_mixed_routing_and_isolation() -> (bool, bool) {
         .build(
             GraphRevision::INITIAL,
             edited_state.patches(),
-            edited_parameters,
+            edited_parameters.clone(),
             SAMPLE_RATE,
             BLOCK_FRAMES,
         )
@@ -615,7 +623,7 @@ fn measure_worst_case_mixed_callback() -> (u64, usize, usize, u64, bool) {
         .build(
             GraphRevision::INITIAL,
             state.patches(),
-            parameters,
+            parameters.clone(),
             SAMPLE_RATE,
             BLOCK_FRAMES,
         )

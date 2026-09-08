@@ -16,6 +16,8 @@ use crate::synth::{
 
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum ProductionEffectCompositionError {
+    #[error(transparent)]
+    Upstream(#[from] super::upstream_audio::CatalogError),
     #[error("failed to construct the production effect capability: {0}")]
     Capability(EffectCapabilityError),
     #[error("failed to construct the production effect preparer: {0}")]
@@ -34,20 +36,32 @@ pub enum ProductionEffectCompositionError {
 /// or a bus return.
 pub fn production_effect_providers(
 ) -> Result<Vec<Box<dyn EffectCapabilityProvider>>, ProductionEffectCompositionError> {
-    Ok(vec![
+    let mut ports: Vec<Box<dyn EffectCapabilityProvider>> = vec![
         Box::new(ChorusCapability::new().map_err(ProductionEffectCompositionError::Capability)?),
         Box::new(ReverbCapability::new().map_err(ProductionEffectCompositionError::Capability)?),
         Box::new(DelayCapability::new().map_err(ProductionEffectCompositionError::Capability)?),
-    ])
+    ];
+    ports.extend(
+        super::upstream_audio::effect_ports()?
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn EffectCapabilityProvider>),
+    );
+    Ok(ports)
 }
 
 pub fn production_effect_preparers(
 ) -> Result<Vec<Box<dyn EffectPreparer>>, ProductionEffectCompositionError> {
-    Ok(vec![
+    let mut ports: Vec<Box<dyn EffectPreparer>> = vec![
         Box::new(ChorusPreparer::new().map_err(ProductionEffectCompositionError::Preparation)?),
         Box::new(ReverbPreparer::new().map_err(ProductionEffectCompositionError::Preparation)?),
         Box::new(DelayPreparer::new().map_err(ProductionEffectCompositionError::Preparation)?),
-    ])
+    ];
+    ports.extend(
+        super::upstream_audio::effect_ports()?
+            .into_iter()
+            .map(|p| Box::new(p) as Box<dyn EffectPreparer>),
+    );
+    Ok(ports)
 }
 
 pub fn production_effect_registry(
@@ -204,7 +218,23 @@ mod tests {
             .iter()
             .map(|descriptor| descriptor.id().as_str().to_owned())
             .collect();
-        assert_eq!(ids, ["effect.chorus", "effect.reverb", "effect.delay"]);
+        let mut expected = vec![
+            "effect.chorus".to_owned(),
+            "effect.reverb".to_owned(),
+            "effect.delay".to_owned(),
+        ];
+        expected.extend(
+            crate::adapter::upstream_audio::effect_ports()
+                .unwrap()
+                .iter()
+                .map(|port| {
+                    crate::synth::EffectCapabilityProvider::descriptor(port)
+                        .id()
+                        .as_str()
+                        .to_owned()
+                }),
+        );
+        assert_eq!(ids, expected);
     }
 
     #[test]
@@ -704,7 +734,7 @@ mod tests {
                         })
                     };
                 retired
-                    .install_bus_return(*bus, effect, *parameters, *return_level)
+                    .install_bus_return(*bus, effect, parameters.clone(), *return_level)
                     .unwrap();
             }
 
@@ -796,7 +826,7 @@ mod tests {
             position: usize,
             value: f32,
         ) -> [RtBusReturnParameters; MAX_BUS_RETURNS] {
-            let mut edited = returns;
+            let mut edited = returns.clone();
             let entry = &returns[bus];
             let mut scalars: Vec<f32> = entry.scalars().to_vec();
             scalars[position] = value;
@@ -814,7 +844,7 @@ mod tests {
             bus: usize,
             value: f32,
         ) -> [RtBusReturnParameters; MAX_BUS_RETURNS] {
-            let mut edited = returns;
+            let mut edited = returns.clone();
             let entry = &returns[bus];
             edited[bus] =
                 RtBusReturnParameters::new(entry.slot_id().unwrap(), entry.scalars(), value)
@@ -833,38 +863,38 @@ mod tests {
         defaults = with_scalar(defaults, 1, 1, 0.4);
         defaults = with_level(defaults, 1, 0.6);
         let baseline = GlobalParameters::new(0.0).unwrap();
-        let baseline_output = render(baseline, defaults);
+        let baseline_output = render(baseline, defaults.clone());
 
         let variants: [(&str, GlobalParameters, [RtBusReturnParameters; 8]); 7] = [
             (
                 "masterGainDb",
                 GlobalParameters::new(6.0).unwrap(),
-                defaults,
+                defaults.clone(),
             ),
             (
                 "returns[0].scalars[0] (room size)",
                 baseline,
-                with_scalar(defaults, 0, 0, 0.6),
+                with_scalar(defaults.clone(), 0, 0, 0.6),
             ),
             (
                 "returns[0].scalars[1] (damping)",
                 baseline,
-                with_scalar(defaults, 0, 1, 0.4),
+                with_scalar(defaults.clone(), 0, 1, 0.4),
             ),
             (
                 "returns[0].returnLevel",
                 baseline,
-                with_level(defaults, 0, 0.7),
+                with_level(defaults.clone(), 0, 0.7),
             ),
             (
                 "returns[1].scalars[0] (milliseconds)",
                 baseline,
-                with_scalar(defaults, 1, 0, 110.0),
+                with_scalar(defaults.clone(), 1, 0, 110.0),
             ),
             (
                 "returns[1].scalars[1] (feedback)",
                 baseline,
-                with_scalar(defaults, 1, 1, 0.5),
+                with_scalar(defaults.clone(), 1, 1, 0.5),
             ),
             (
                 "returns[1].returnLevel",

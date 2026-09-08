@@ -265,7 +265,7 @@ fn engine_selection_workflow_is_correlated_audible_and_falsifiable() {
             .build(
                 GraphRevision::INITIAL,
                 app_loop.patches(),
-                *app_loop.current_parameters(),
+                app_loop.current_parameters().clone(),
                 SAMPLE_RATE,
                 FRAME_COUNT,
             )

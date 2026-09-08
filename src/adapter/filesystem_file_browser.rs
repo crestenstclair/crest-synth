@@ -145,6 +145,10 @@ impl FilesystemFileBrowser {
         let extension = match kind {
             AssetKind::Sample => "wav",
             AssetKind::SoundFont => "sf2",
+            AssetKind::SysEx => "syx",
+            AssetKind::Sfz => "sfz",
+            AssetKind::NeuralModel => "nam",
+            AssetKind::ImpulseResponse => "wav",
             AssetKind::Other => return Err(SampleAssetError::UnsupportedContainer),
         };
         let mut directories = Vec::new();

@@ -275,7 +275,7 @@ impl Rig {
             .build(
                 GraphRevision::INITIAL,
                 app.patches(),
-                *app.current_parameters(),
+                app.current_parameters().clone(),
                 48_000.0,
                 256,
             )
@@ -674,7 +674,7 @@ fn file_page_loads_independent_banks_and_restores_exact_presets_with_safe_callba
     assert_eq!(fresh.capabilities().asset_descriptors().len(), 2);
     let revision = graph.revision();
     let (control, callback) =
-        LockFreeAudioBoundary::new(128, *graph.initial_parameters()).into_handles();
+        LockFreeAudioBoundary::new(128, graph.initial_parameters().clone()).into_handles();
     let (_, structural_audio) =
         LockFreeStructuralGraphBoundary::new(1, 1, GraphHandoffStatus::with_active(revision))
             .unwrap()

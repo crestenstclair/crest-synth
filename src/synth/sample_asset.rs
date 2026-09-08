@@ -394,6 +394,10 @@ pub enum SampleAssetError {
     MalformedWave,
     #[error("SoundFont bank is malformed or contains no supported playable presets")]
     MalformedSoundFont,
+    #[error("DX7 SysEx library has invalid framing, payload, parameter ranges, or checksum")]
+    MalformedSysEx,
+    #[error("model or impulse could not be prepared by its upstream processor")]
+    MalformedModel,
     #[error("catalog listing is malformed")]
     MalformedCatalog,
     #[error("asset is unavailable")]

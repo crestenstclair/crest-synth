@@ -129,7 +129,7 @@ mod tests {
             .build(
                 GraphRevision::INITIAL,
                 app.patches(),
-                *app.current_parameters(),
+                app.current_parameters().clone(),
                 48_000.0,
                 256,
             )

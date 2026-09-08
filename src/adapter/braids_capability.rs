@@ -262,8 +262,8 @@ impl BraidsCapability {
                 vec![model, timbre, color],
             )?],
             Vec::new(),
-            VoicePolicy::FixedPerPatch {
-                voices: BRAIDS_FIXED_VOICES,
+            VoicePolicy::Configurable {
+                default_voices: BRAIDS_FIXED_VOICES,
             },
             BRAIDS_SUPPORTED_MIDI_KINDS.to_vec(),
         )?;
@@ -344,7 +344,7 @@ mod tests {
         assert_eq!(descriptor.id().as_str(), BRAIDS_CAPABILITY_ID);
         assert_eq!(
             descriptor.voice_policy(),
-            VoicePolicy::FixedPerPatch { voices: 16 }
+            VoicePolicy::Configurable { default_voices: 16 }
         );
         assert_eq!(
             descriptor.supported_midi_kinds(),

@@ -905,7 +905,7 @@ fn patch_utility_controls_dispatch_through_the_same_semantic_callback() {
         },
     )
     .unwrap();
-    let before_parameters = *app_loop.current_parameters();
+    let before_parameters = app_loop.current_parameters().clone();
     let initial_output = app_loop.patches()[0].output();
     let shared = Rc::new(RefCell::new(app_loop));
 
@@ -1028,7 +1028,7 @@ fn patch_utility_controls_dispatch_through_the_same_semantic_callback() {
         .unwrap()
         .parameters
         .last()
-        .copied()
+        .cloned()
         .expect("the accepted trim edit publishes one parameter snapshot");
     assert_eq!(
         observed_parameters.patches()[0].output(),

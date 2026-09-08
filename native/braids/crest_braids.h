@@ -22,10 +22,10 @@ enum CrestBraidsStatus {
   CREST_BRAIDS_NULL_OUTPUT = 5,
 };
 
-CrestBraidsBank* crest_braids_bank_create(void) CREST_BRAIDS_NOEXCEPT;
+CrestBraidsBank* crest_braids_bank_create(size_t voice_count) CREST_BRAIDS_NOEXCEPT;
 void crest_braids_bank_destroy(CrestBraidsBank* bank) CREST_BRAIDS_NOEXCEPT;
 
-size_t crest_braids_voice_count(void) CREST_BRAIDS_NOEXCEPT;
+size_t crest_braids_voice_count(const CrestBraidsBank* bank) CREST_BRAIDS_NOEXCEPT;
 int crest_braids_voice_reset(CrestBraidsBank* bank, size_t voice)
     CREST_BRAIDS_NOEXCEPT;
 int crest_braids_voice_configure(CrestBraidsBank* bank,

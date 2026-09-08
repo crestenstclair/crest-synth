@@ -97,7 +97,7 @@ impl HiDefSoundFontCapability {
                 vec![preset, file],
             )?],
             vec![AssetRequirement::new(file_id, true)],
-            VoicePolicy::EngineManaged,
+            VoicePolicy::Configurable { default_voices: 64 },
             HIDEF_SUPPORTED_MIDI_KINDS.to_vec(),
         )?;
         Ok(Self {
@@ -142,7 +142,10 @@ mod tests {
         let descriptor = provider.descriptor();
 
         assert_eq!(descriptor.id().as_str(), HIDEF_CAPABILITY_ID);
-        assert_eq!(descriptor.voice_policy(), VoicePolicy::EngineManaged);
+        assert_eq!(
+            descriptor.voice_policy(),
+            VoicePolicy::Configurable { default_voices: 64 }
+        );
         let parameters = descriptor.sections()[0].parameters();
         assert_eq!(
             parameters

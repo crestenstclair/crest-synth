@@ -1043,6 +1043,7 @@ impl EventRecord {
         "input.selection.descriptor.visualizations[].id",
         "input.selection.descriptor.visualizations[].kind",
         "input.selection.descriptor.visualizations[].label",
+        "input.selection.descriptor.voicePolicy.defaultVoices",
         "input.selection.descriptor.voicePolicy.kind",
         "input.selection.request.assetId",
         "input.selection.request.assetKind",

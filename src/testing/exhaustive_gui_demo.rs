@@ -405,6 +405,22 @@ where
                         run.observed
                             .insert(format!("patchControl.{}", page.focused_control_id()));
                     }
+                    // Generic topology checkpoints also establish the active baseline
+                    // for later engine/preset lifecycle assertions.
+                    if checkpoint.engine_expectation().is_none()
+                        && checkpoint.preset_expectation().is_none()
+                        && self.app_loop.engine_selection_status().kind()
+                            == EngineSelectionStatusKind::Ready
+                    {
+                        if self.app_loop.graph_revision() != self.renderer.active_revision() {
+                            return Err(ExhaustiveGuiDemoError::EngineCheckpoint {
+                                step: checkpoint.name().to_owned(),
+                                reason: "acknowledged topology differs from the renderer"
+                                    .to_owned(),
+                            });
+                        }
+                        run.last_ready_graph_revision = self.app_loop.graph_revision();
+                    }
                     let tree = self.app_loop.current_state_tree();
                     let mut observation = DemoSceneCheckpoint::new(
                         checkpoint.name(),
@@ -2408,7 +2424,7 @@ mod tests {
             .build(
                 crate::real_time::GraphRevision::INITIAL,
                 app_loop.patches(),
-                *app_loop.current_parameters(),
+                app_loop.current_parameters().clone(),
                 48_000.0,
                 512,
             )

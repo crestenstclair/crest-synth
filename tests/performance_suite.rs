@@ -265,7 +265,7 @@ struct Rig {
 }
 impl Rig {
     fn new(state: AppState, graph: PreparedGraph) -> Self {
-        let parameters = *graph.initial_parameters();
+        let parameters = graph.initial_parameters().clone();
         let (control, audio) = LockFreeAudioBoundary::new(4096, parameters).into_handles();
         let (structural, structural_audio) = LockFreeStructuralGraphBoundary::new(
             1,
@@ -682,7 +682,7 @@ fn graph_swap_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
         let start = Instant::now();
         let graph = fixtures.graph(&state, 256, revision);
         preparation.push(start.elapsed());
-        let parameters = *graph.initial_parameters();
+        let parameters = graph.initial_parameters().clone();
         rig.structural.publish_prepared_on_control(graph).unwrap();
         // Graph activation uses its own complete initial scalars; stale
         // control snapshots must not overwrite this revision.
@@ -729,7 +729,7 @@ fn concurrent_worker_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
         .collect::<Vec<_>>();
     let state = fixtures.state(&engines, 16, 0, 3, 8);
     let graph = fixtures.graph(&state, 256, GraphRevision::INITIAL);
-    let parameters = *graph.initial_parameters();
+    let parameters = graph.initial_parameters().clone();
     let (control, audio) = LockFreeAudioBoundary::new(4096, parameters).into_handles();
     let (structural, structural_audio) = LockFreeStructuralGraphBoundary::new(
         1,

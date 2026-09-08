@@ -8,51 +8,38 @@ use crate::mixer::mixer_track_parameters::MixerTrackParameters;
 use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
-use crate::synth::instrument_capability::{CapabilityRegistry, MAX_INSTRUMENT_SCALAR_PARAMETERS};
+use crate::synth::instrument_capability::CapabilityRegistry;
 use crate::synth::patch::Patch;
 use crate::synth::voice_envelope::VoiceEnvelope;
 use crate::synth::voice_limit::VoiceLimit;
-use crate::synth::{EffectCapabilityRegistry, EffectSlotId, MAX_EFFECT_SCALAR_PARAMETERS};
+use crate::synth::{EffectCapabilityRegistry, EffectSlotId};
 use core::fmt;
 use serde::{Serialize, Serializer};
 
-/// Fixed descriptor-ordered live instrument values for one Patch.
+/// Descriptor-ordered live instrument values allocated on the control thread.
 ///
 /// Choice values are encoded as descriptor indices, toggles as 0/1, and
-/// numeric values directly. Unused storage is always zeroed.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// numeric values directly. Storage contains exactly the declared values.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RtInstrumentParameters {
-    count: u8,
-    values: [f32; MAX_INSTRUMENT_SCALAR_PARAMETERS],
+    values: Vec<f32>,
 }
 
 impl RtInstrumentParameters {
-    pub const EMPTY: Self = Self {
-        count: 0,
-        values: [0.0; MAX_INSTRUMENT_SCALAR_PARAMETERS],
-    };
+    pub const EMPTY: Self = Self { values: Vec::new() };
 
-    /// Copies a complete descriptor-ordered scalar prefix into fixed storage.
+    /// Prepares the complete descriptor-ordered scalar storage off callback.
     pub fn new(values: &[f32]) -> Result<Self, ParameterSnapshotError> {
-        if values.len() > MAX_INSTRUMENT_SCALAR_PARAMETERS {
-            return Err(ParameterSnapshotError::TooManyInstrumentScalars {
-                count: values.len(),
-                capacity: MAX_INSTRUMENT_SCALAR_PARAMETERS,
-            });
-        }
         if let Some(index) = values.iter().position(|value| !value.is_finite()) {
             return Err(ParameterSnapshotError::NonFiniteInstrumentScalar { index });
         }
-        let mut storage = [0.0; MAX_INSTRUMENT_SCALAR_PARAMETERS];
-        storage[..values.len()].copy_from_slice(values);
         Ok(Self {
-            count: values.len() as u8,
-            values: storage,
+            values: values.to_vec(),
         })
     }
 
     pub const fn count(&self) -> usize {
-        self.count as usize
+        self.values.len()
     }
 
     pub fn values(&self) -> &[f32] {
@@ -63,7 +50,7 @@ impl RtInstrumentParameters {
         self.values().get(index).copied()
     }
 
-    pub const fn storage(&self) -> &[f32; MAX_INSTRUMENT_SCALAR_PARAMETERS] {
+    pub fn storage(&self) -> &[f32] {
         &self.values
     }
 }
@@ -93,37 +80,27 @@ impl Default for RtInstrumentParameters {
     }
 }
 
-/// Fixed descriptor-ordered live values for one optional Patch post-effect slot.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Descriptor-ordered effect scalars prepared off callback and exchanged by ownership.
+#[derive(Clone, Debug, PartialEq)]
 pub struct RtPostEffectParameters {
     slot_id: Option<EffectSlotId>,
-    scalar_count: u8,
-    scalars: [f32; MAX_EFFECT_SCALAR_PARAMETERS],
+    scalars: Vec<f32>,
 }
 
 impl RtPostEffectParameters {
     pub const EMPTY: Self = Self {
         slot_id: None,
-        scalar_count: 0,
-        scalars: [0.0; MAX_EFFECT_SCALAR_PARAMETERS],
+        scalars: Vec::new(),
     };
 
     pub fn new(slot_id: EffectSlotId, scalars: &[f32]) -> Result<Self, ParameterSnapshotError> {
-        if scalars.len() > MAX_EFFECT_SCALAR_PARAMETERS {
-            return Err(ParameterSnapshotError::TooManyEffectScalars {
-                count: scalars.len(),
-                capacity: MAX_EFFECT_SCALAR_PARAMETERS,
-            });
-        }
         if let Some(index) = scalars.iter().position(|value| !value.is_finite()) {
             return Err(ParameterSnapshotError::NonFiniteEffectScalar { index });
         }
-        let mut storage = [0.0; MAX_EFFECT_SCALAR_PARAMETERS];
-        storage[..scalars.len()].copy_from_slice(scalars);
+
         Ok(Self {
             slot_id: Some(slot_id),
-            scalar_count: scalars.len() as u8,
-            scalars: storage,
+            scalars: scalars.to_vec(),
         })
     }
 
@@ -136,7 +113,7 @@ impl RtPostEffectParameters {
     }
 
     pub const fn scalar_count(&self) -> usize {
-        self.scalar_count as usize
+        self.scalars.len()
     }
 
     pub fn scalars(&self) -> &[f32] {
@@ -147,7 +124,7 @@ impl RtPostEffectParameters {
         self.scalars().get(index).copied()
     }
 
-    pub const fn storage(&self) -> &[f32; MAX_EFFECT_SCALAR_PARAMETERS] {
+    pub fn storage(&self) -> &[f32] {
         &self.scalars
     }
 }
@@ -189,7 +166,7 @@ impl Serialize for RtPostEffectParameters {
 /// whose live scalars cross the real-time boundary each block. The one
 /// addition is the return-owned level, which scales the wet contribution and
 /// survives occupancy changes on the domain side.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RtBusReturnParameters {
     effect: RtPostEffectParameters,
     return_level: f32,
@@ -286,11 +263,11 @@ impl Serialize for RtBusReturnParameters {
     }
 }
 
-/// The fixed-size audio parameters for one active Patch.
+/// The prepared audio parameters for one active Patch.
 ///
 /// The value is copyable and owns no heap storage. An absent Patch identity is
 /// the canonical inactive value used for unused ParameterSnapshot entries.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct RtPatchParameters {
     patch_id: Option<PatchId>,
     output: PatchOutput,
@@ -298,7 +275,7 @@ pub struct RtPatchParameters {
     /// The Patch's canonical ceiling on simultaneously sounding notes, riding
     /// the latest-scalar transport as a plain bounded integer beside the
     /// envelope: it allocates nothing, borrows nothing, and carries no
-    /// destructor, so the entry stays `Copy` and fixed-size.
+    /// destructor; scalar storage is exchanged by ownership.
     ///
     /// It is enumerated in [`ParameterSnapshot::SERIALIZED_LEAF_DESCRIPTOR`]
     /// and mirrored in `StateTree` as `parameters.patches[].voiceLimit`. A
@@ -329,7 +306,7 @@ impl RtPatchParameters {
             envelope: VoiceEnvelope::DEFAULT,
             voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument: RtInstrumentParameters::EMPTY,
-            effects: [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS],
+            effects: [const { RtPostEffectParameters::EMPTY }; MAX_EFFECT_SLOTS],
         }
     }
 
@@ -346,7 +323,7 @@ impl RtPatchParameters {
             envelope,
             voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument,
-            effects: [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS],
+            effects: [const { RtPostEffectParameters::EMPTY }; MAX_EFFECT_SLOTS],
         }
     }
 
@@ -424,7 +401,7 @@ impl RtPatchParameters {
             envelope: VoiceEnvelope::DEFAULT,
             voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument: RtInstrumentParameters::EMPTY,
-            effects: [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS],
+            effects: [const { RtPostEffectParameters::EMPTY }; MAX_EFFECT_SLOTS],
         }
     }
 }
@@ -464,12 +441,8 @@ pub enum ParameterSnapshotError {
     TooManyPatches { count: usize, capacity: usize },
     /// An inactive value was supplied inside the active Patch prefix.
     InactivePatch { index: usize },
-    /// A descriptor exceeded the fixed live instrument scalar capacity.
-    TooManyInstrumentScalars { count: usize, capacity: usize },
     /// A scalar could not be represented as a finite real-time value.
     NonFiniteInstrumentScalar { index: usize },
-    /// An effect descriptor exceeded the fixed live effect scalar capacity.
-    TooManyEffectScalars { count: usize, capacity: usize },
     /// An effect scalar could not be represented as a finite real-time value.
     NonFiniteEffectScalar { index: usize },
     /// A Patch config did not resolve through the immutable registry.
@@ -488,17 +461,9 @@ impl fmt::Display for ParameterSnapshotError {
             Self::InactivePatch { index } => {
                 write!(formatter, "parameter snapshot patch {index} is inactive")
             }
-            Self::TooManyInstrumentScalars { count, capacity } => write!(
-                formatter,
-                "instrument projection has {count} Scalars; maximum is {capacity}"
-            ),
             Self::NonFiniteInstrumentScalar { index } => {
                 write!(formatter, "instrument Scalar {index} is not finite")
             }
-            Self::TooManyEffectScalars { count, capacity } => write!(
-                formatter,
-                "effect projection has {count} Scalars; maximum is {capacity}"
-            ),
             Self::NonFiniteEffectScalar { index } => {
                 write!(formatter, "effect Scalar {index} is not finite")
             }
@@ -516,10 +481,10 @@ impl std::error::Error for ParameterSnapshotError {}
 
 /// The newest complete control state required for rendering.
 ///
-/// Every field is fully owned, fixed-size, and copyable. Audio-thread readers
-/// can therefore consume one coherent value without allocation, locking,
-/// blocking, I/O, logging, or destruction.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Storage is allocated on the control thread. Audio-thread readers exchange
+/// complete ownership through the triple buffer; superseded storage returns to
+/// the producer or graph retirement without allocation or destruction on audio.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ParameterSnapshot {
     generation: u64,
     graph_revision: GraphRevision,
@@ -599,7 +564,7 @@ impl ParameterSnapshot {
             global,
             mixer,
             patches,
-            [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS],
+            [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS],
         )
     }
 
@@ -622,8 +587,8 @@ impl ParameterSnapshot {
             return Err(ParameterSnapshotError::InactivePatch { index });
         }
 
-        let mut storage = [RtPatchParameters::inactive(); MAX_ACTIVE_PATCHES];
-        storage[..patches.len()].copy_from_slice(patches);
+        let mut storage = std::array::from_fn(|_| RtPatchParameters::inactive());
+        storage[..patches.len()].clone_from_slice(patches);
 
         Ok(Self {
             generation,
@@ -638,7 +603,7 @@ impl ParameterSnapshot {
 
     /// Replaces the eight live return entries on an already-complete snapshot.
     #[must_use]
-    pub const fn with_returns(mut self, returns: [RtBusReturnParameters; MAX_BUS_RETURNS]) -> Self {
+    pub fn with_returns(mut self, returns: [RtBusReturnParameters; MAX_BUS_RETURNS]) -> Self {
         self.returns = returns;
         self
     }
@@ -656,7 +621,7 @@ impl ParameterSnapshot {
         effect_registry: &EffectCapabilityRegistry,
         bank: &crate::mixer::bus_return::BusReturnBank,
     ) -> Result<[RtBusReturnParameters; MAX_BUS_RETURNS], ParameterSnapshotError> {
-        let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
         for bus_return in bank.returns() {
             let Some(config) = bus_return.effect() else {
                 continue;
@@ -773,7 +738,7 @@ impl ParameterSnapshot {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let instrument = RtInstrumentParameters::new(&instrument_values)?;
-                let mut effects = [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS];
+                let mut effects = [const { RtPostEffectParameters::EMPTY }; MAX_EFFECT_SLOTS];
                 let slots = patch.effect_slots();
                 for (position, occupancy) in slots.iter().enumerate() {
                     let Some(config) = occupancy else {
@@ -1005,7 +970,8 @@ mod tests {
     use crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
     use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
     use crate::synth::voice_envelope::VoiceEnvelope;
-    use crate::synth::{EffectSlotId, MAX_EFFECT_SCALAR_PARAMETERS};
+    use crate::synth::EffectSlotId;
+    const EFFECT_SCALAR_FIXTURE_COUNT: usize = 31;
     use serde_json::Value;
     use std::collections::BTreeSet;
 
@@ -1054,11 +1020,8 @@ mod tests {
             .iter()
             .all(|value| *value == 0.0));
         assert_eq!(
-            RtInstrumentParameters::new(&[0.0; 17]),
-            Err(ParameterSnapshotError::TooManyInstrumentScalars {
-                count: 17,
-                capacity: 16,
-            })
+            RtInstrumentParameters::new(&[0.0; 257]).unwrap().count(),
+            257
         );
         assert_eq!(
             RtInstrumentParameters::new(&[f32::NAN]),
@@ -1118,7 +1081,7 @@ mod tests {
             }
         }
 
-        let mut effects = [RtPostEffectParameters::EMPTY; MAX_EFFECT_SLOTS];
+        let mut effects = [const { RtPostEffectParameters::EMPTY }; MAX_EFFECT_SLOTS];
         effects[1] =
             RtPostEffectParameters::new(EffectSlotId::new(1).unwrap(), &[0.5, 0.75]).unwrap();
         let projected = RtPatchParameters::projected_with_effects(
@@ -1128,7 +1091,7 @@ mod tests {
             RtInstrumentParameters::new(&[2.0, 0.35, 0.65]).unwrap(),
             effects,
         );
-        let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
         returns[2] =
             RtBusReturnParameters::new(EffectSlotId::new(3).unwrap(), &[0.25, 0.5], 0.75).unwrap();
         let snapshot = ParameterSnapshot::for_graph(
@@ -1169,7 +1132,7 @@ mod tests {
 
     #[test]
     fn rejects_state_larger_than_the_compile_time_bound() {
-        let patches = [patch(1, 0.0); MAX_ACTIVE_PATCHES + 1];
+        let patches = std::array::from_fn::<_, { MAX_ACTIVE_PATCHES + 1 }, _>(|_| patch(1, 0.0));
         let error =
             ParameterSnapshot::new(1, global(), MixerState::default(), &patches).unwrap_err();
 
@@ -1183,36 +1146,17 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_and_patch_values_need_no_drop_or_dynamic_storage() {
-        fn assert_copy<T: Copy>() {}
-
-        assert_copy::<ParameterSnapshot>();
-        assert_copy::<RtPatchParameters>();
-        assert_copy::<RtInstrumentParameters>();
-        assert_copy::<RtBusReturnParameters>();
-        assert!(!core::mem::needs_drop::<ParameterSnapshot>());
-        assert!(!core::mem::needs_drop::<RtPatchParameters>());
-        assert!(!core::mem::needs_drop::<RtInstrumentParameters>());
-        assert!(!core::mem::needs_drop::<RtBusReturnParameters>());
-        assert_eq!(
-            core::mem::size_of::<ParameterSnapshot>(),
-            core::mem::size_of_val(
-                &ParameterSnapshot::new(0, global(), MixerState::default(), &[]).unwrap(),
-            )
+    fn scalar_storage_accepts_complete_large_schemas() {
+        let values = (0..257).map(|i| i as f32).collect::<Vec<_>>();
+        let instrument = RtInstrumentParameters::new(&values).unwrap();
+        let effect = RtPostEffectParameters::new(EffectSlotId::new(1).unwrap(), &values).unwrap();
+        assert_eq!(instrument.values(), values);
+        assert_eq!(effect.scalars(), values);
+        assert!(RtInstrumentParameters::new(&[f32::NAN]).is_err());
+        assert!(
+            RtPostEffectParameters::new(EffectSlotId::new(1).unwrap(), &[f32::INFINITY]).is_err()
         );
     }
-
-    // `the_voice_limit_widens_the_entry_by_one_bounded_integer` was deleted
-    // here. Its docstring claimed an exact assertion, but both of its checks
-    // were tautologies: `size_of::<T>() % align_of::<T>() == 0` holds for
-    // every Rust type, and `size_of::<RtPatchParameters>() * MAX_ACTIVE_PATCHES <=
-    // size_of::<ParameterSnapshot>()` is trivially true because the snapshot
-    // embeds that array plus six further fields. Nothing is left uncovered:
-    // `snapshot_and_patch_values_need_no_drop_or_dynamic_storage` above is
-    // what actually fails if the limit ever arrives behind indirection — a
-    // boxed owner breaks both `Copy` and `!needs_drop` — and
-    // `voice_limit::tests::the_limit_carries_only_a_bounded_integer` pins the
-    // value at `size_of::<u16>()`.
 
     /// The limit is a Patch-owned canonical value that crosses the boundary
     /// intact, per Patch — not one number applied to the whole bank.
@@ -1284,7 +1228,7 @@ mod tests {
             let slot =
                 EffectSlotId::new((seed * MAX_EFFECT_SLOTS as u32) as u16 + position as u16 + 1)
                     .unwrap();
-            let scalars: Vec<f32> = (0..MAX_EFFECT_SCALAR_PARAMETERS)
+            let scalars: Vec<f32> = (0..EFFECT_SCALAR_FIXTURE_COUNT)
                 .map(|index| (seed as f32 + position as f32 + index as f32) * 0.01)
                 .collect();
             RtPostEffectParameters::new(slot, &scalars).unwrap()
@@ -1317,7 +1261,7 @@ mod tests {
             for position in 0..MAX_EFFECT_SLOTS {
                 let entry = patch.effect(position).unwrap();
                 assert!(entry.is_active(), "patch {index} position {position}");
-                assert_eq!(entry.scalar_count(), MAX_EFFECT_SCALAR_PARAMETERS);
+                assert_eq!(entry.scalar_count(), EFFECT_SCALAR_FIXTURE_COUNT);
             }
             assert!(patch.effect(MAX_EFFECT_SLOTS).is_none());
         }
@@ -1503,22 +1447,21 @@ mod tests {
         assert_eq!(returns[1].return_level(), 0.5);
         assert!(returns[2..].iter().all(|entry| !entry.is_active()));
 
-        let projected = snapshot.with_returns(returns);
+        let projected = snapshot.with_returns(returns.clone());
         assert_eq!(projected.bus_return(BusId::new(1).unwrap()), &returns[1]);
     }
 
     /// T028: capacity and finiteness errors fire through the reused
     /// effect-projection error paths, including the return level convention.
     #[test]
-    fn bus_return_projection_rejects_capacity_and_finiteness_violations() {
+    fn bus_return_projection_validates_finiteness_without_scalar_caps() {
         let slot = EffectSlotId::new(1).unwrap();
 
         assert_eq!(
-            RtBusReturnParameters::new(slot, &[0.0; MAX_EFFECT_SCALAR_PARAMETERS + 1], 0.5),
-            Err(ParameterSnapshotError::TooManyEffectScalars {
-                count: MAX_EFFECT_SCALAR_PARAMETERS + 1,
-                capacity: MAX_EFFECT_SCALAR_PARAMETERS,
-            })
+            RtBusReturnParameters::new(slot, &[0.0; 257], 0.5)
+                .unwrap()
+                .scalar_count(),
+            257
         );
         assert_eq!(
             RtBusReturnParameters::new(slot, &[0.5, f32::NAN], 0.5),
@@ -1544,7 +1487,7 @@ mod tests {
     /// change exactly the audio-observed return values.
     #[test]
     fn explicit_returns_are_the_only_live_return_source() {
-        let mut returns = [RtBusReturnParameters::EMPTY; MAX_BUS_RETURNS];
+        let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
         returns[5] =
             RtBusReturnParameters::new(EffectSlotId::new(6).unwrap(), &[0.1, 0.2, 0.3], 1.0)
                 .unwrap();
@@ -1555,7 +1498,7 @@ mod tests {
             global(),
             MixerState::default(),
             &[],
-            returns,
+            returns.clone(),
         )
         .unwrap();
 
@@ -1563,7 +1506,10 @@ mod tests {
         assert!(!explicit.returns()[0].is_active());
         assert!(explicit.returns()[5].is_active());
         assert_eq!(explicit.returns()[5].scalar_count(), 3);
-        assert_eq!(bare.with_returns(returns).returns(), &returns);
+        assert_eq!(
+            bare.clone().with_returns(returns.clone()).returns(),
+            &returns
+        );
         assert!(!bare.audio_values_equal(&explicit));
     }
 

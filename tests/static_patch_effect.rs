@@ -150,7 +150,6 @@ struct StaticPatchEffectObservation {
     unsupported_rate_rejected: bool,
     missing_registration_rejected: bool,
     fallback_count: u64,
-    callback_reachable_strings: u64,
     callback_allocations: u64,
     callback_deallocations: u64,
     callback_destructions: u64,
@@ -213,13 +212,13 @@ impl PreparedInstrument for FixtureInstrument {
         output: &mut [f32],
         _frame_count: usize,
         _parameters: &crest_synth::real_time::RtPatchParameters,
-    ) {
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         if self.patch_id.value() == 2 {
             for frame in output.chunks_exact_mut(2) {
                 frame[0] = 0.07;
                 frame[1] = -0.04;
             }
-            return;
+            return Ok(());
         }
         const WAVE: [f32; 8] = [0.20, 0.12, -0.04, -0.18, -0.16, -0.02, 0.14, 0.22];
         for frame in output.chunks_exact_mut(2) {
@@ -228,6 +227,8 @@ impl PreparedInstrument for FixtureInstrument {
             frame[1] = sample;
             self.phase = self.phase.wrapping_add(1);
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {}
@@ -395,7 +396,7 @@ fn static_patch_effect() {
     let effect_providers = production_effect_providers().unwrap();
     let effect_registry = production_effect_registry().unwrap();
     let effect_preparers = production_effect_preparers().unwrap();
-    assert_eq!(effect_registry.descriptors().len(), 3);
+    assert_eq!(effect_registry.descriptors().len(), effect_providers.len());
     let descriptor = &effect_registry.descriptors()[0];
     assert_eq!(descriptor.id().as_str(), CHORUS_CAPABILITY_ID);
     assert_eq!(descriptor.label(), "Chorus");
@@ -568,7 +569,7 @@ fn static_patch_effect() {
             .build(
                 GraphRevision::INITIAL,
                 app_loop.patches(),
-                *app_loop.current_parameters(),
+                app_loop.current_parameters().clone(),
                 CHORUS_SAMPLE_RATE,
                 FRAME_COUNT,
             ),
@@ -593,7 +594,7 @@ fn static_patch_effect() {
         .build(
             GraphRevision::INITIAL,
             app_loop.patches(),
-            *app_loop.current_parameters(),
+            app_loop.current_parameters().clone(),
             CHORUS_SAMPLE_RATE,
             FRAME_COUNT,
         )
@@ -722,18 +723,13 @@ fn static_patch_effect() {
     assert!(independent_instances);
     assert!(independent_tails);
 
-    let callback_reachable_strings = u64::from(
-        std::mem::needs_drop::<RtPostEffectParameters>()
-            || std::mem::needs_drop::<crest_synth::real_time::PatchEffectObservation>(),
-    );
-    assert_eq!(callback_reachable_strings, 0);
     let configured_effect_slots = app_loop
         .patches()
         .iter()
         .map(|patch| patch.effect_slots().iter().flatten().count() as u32)
         .sum::<u32>();
     assert_eq!(configured_effect_slots, 1);
-    assert_eq!(effect_providers.len(), 3);
+    assert_eq!(effect_providers.len(), effect_registry.descriptors().len());
     let fallback_count = observed.routing_failures();
     assert_eq!(fallback_count, 0);
 
@@ -759,7 +755,6 @@ fn static_patch_effect() {
         unsupported_rate_rejected,
         missing_registration_rejected,
         fallback_count,
-        callback_reachable_strings,
         callback_allocations,
         callback_deallocations,
         callback_destructions,
@@ -788,7 +783,10 @@ fn chorus_source_provenance() {
 #[test]
 fn chorus_capability_schema_and_config_are_exact() {
     let registry = production_effect_registry().unwrap();
-    assert_eq!(registry.descriptors().len(), 3);
+    assert_eq!(
+        registry.descriptors().len(),
+        production_effect_providers().unwrap().len()
+    );
     let descriptor = &registry.descriptors()[0];
     assert_eq!(descriptor.id().as_str(), CHORUS_CAPABILITY_ID);
     assert_eq!(descriptor.label(), "Chorus");

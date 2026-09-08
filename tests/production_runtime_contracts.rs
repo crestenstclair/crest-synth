@@ -132,14 +132,21 @@ impl PreparedInstrument for ToneInstrument {
         Ok(())
     }
 
-    fn render(&mut self, output: &mut [f32], frame_count: usize, _parameters: &RtPatchParameters) {
+    fn render(
+        &mut self,
+        output: &mut [f32],
+        frame_count: usize,
+        _parameters: &RtPatchParameters,
+    ) -> Result<(), crest_synth::synth::PreparedInstrumentError> {
         if frame_count > self.max_frames {
             self.probe.oversized_render.store(true, Ordering::Relaxed);
-            return;
+            return Ok(());
         }
         for sample in output.iter_mut().take(frame_count.saturating_mul(2)) {
             *sample = 0.25;
         }
+
+        Ok(())
     }
 
     fn all_notes_off(&mut self) {}
@@ -682,7 +689,7 @@ fn graph_fixture(
         .build(
             revision,
             std::slice::from_ref(&patch),
-            parameters,
+            parameters.clone(),
             sample_rate,
             max_frames,
         )

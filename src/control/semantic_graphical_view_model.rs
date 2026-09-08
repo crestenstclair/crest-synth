@@ -549,7 +549,7 @@ pub enum SemanticSurfaceSummary {
         subject: PatchChoiceSubject,
     },
     FileBrowser {
-        patch_id: PatchId,
+        patch_id: Option<PatchId>,
         asset_parameter_id: crate::synth::ParameterId,
         folder: crate::synth::FileBrowserFolderId,
         active_asset: Option<AssetReference>,
@@ -573,9 +573,8 @@ impl SemanticSurfaceSummary {
     /// The Patch this surface speaks for, or `None` for a MIXER surface.
     pub const fn patch_id(&self) -> Option<PatchId> {
         match self {
-            Self::Patch { patch_id, .. }
-            | Self::PatchUtility { patch_id, .. }
-            | Self::FileBrowser { patch_id, .. } => Some(*patch_id),
+            Self::Patch { patch_id, .. } | Self::PatchUtility { patch_id, .. } => Some(*patch_id),
+            Self::FileBrowser { patch_id, .. } => *patch_id,
             Self::PatchDetail { patch_position, .. } | Self::PatchChoice { patch_position, .. } => {
                 patch_position.patch_id()
             }
@@ -589,11 +588,13 @@ impl SemanticSurfaceSummary {
 
     pub const fn patch_position(&self) -> Option<crate::control::PatchPositionId> {
         match self {
-            Self::Patch { patch_id, .. }
-            | Self::PatchUtility { patch_id, .. }
-            | Self::FileBrowser { patch_id, .. } => {
+            Self::Patch { patch_id, .. } | Self::PatchUtility { patch_id, .. } => {
                 Some(crate::control::PatchPositionId::Created(*patch_id))
             }
+            Self::FileBrowser { patch_id, .. } => match patch_id {
+                Some(id) => Some(crate::control::PatchPositionId::Created(*id)),
+                None => None,
+            },
             Self::EmptyPatch { .. } | Self::EmptyPatchUtility { .. } => {
                 Some(crate::control::PatchPositionId::TrailingEmpty)
             }
@@ -1396,6 +1397,9 @@ impl SemanticGraphicalViewModel {
                 }
             },
         };
+        if let Some(browser) = project_file_browser_surface(state, &resolver)? {
+            surfaces.push(browser);
+        }
         project_control_intent(state, &resolver, &mut surfaces)?;
         let valid_actions = resolver.valid_actions();
         let data = SemanticGraphicalData {
@@ -1570,8 +1574,10 @@ fn project_control_intent(
             control.requested_value = requested_value;
             control.requested_label = requested_label;
             if control.kind == SemanticControlKind::Asset
-                && control.path.patch_id() == state.file_browser().patch_id()
-                && matches!(control.path.control_id(), SemanticControlId::Patch(PatchControlId::Capability(id)) if Some(id) == state.file_browser().asset_parameter_id())
+                && (state.file_browser().origin() == Some(&control.path)
+                    || (state.file_browser().origin().is_none()
+                        && control.path.patch_id() == state.file_browser().patch_id()
+                        && matches!(control.path.control_id(), SemanticControlId::Patch(PatchControlId::Capability(id)) if Some(id) == state.file_browser().asset_parameter_id())))
             {
                 let lifecycle = state.file_browser().lifecycle();
                 let kind = match lifecycle {
@@ -1746,6 +1752,30 @@ fn project_requested_value(
         ) if bus == target_bus => Some(SemanticControlValue::Identity(occupancy_value(
             entry.as_ref(),
         )?)),
+        (
+            SemanticControlId::Patch(PatchControlId::VoiceLimit),
+            crate::control::StructuralEditIntent::SetVoiceBudget { patch_id, voices },
+        ) if path.patch_id() == Some(*patch_id) => {
+            Some(SemanticControlValue::Scalar(f64::from(*voices)))
+        }
+        (
+            control,
+            crate::control::StructuralEditIntent::ReplaceEffectAsset {
+                target,
+                parameter_id,
+                reference,
+            },
+        ) if state.effect_asset_target(path) == Some(*target)
+            && match control {
+                SemanticControlId::Patch(PatchControlId::Effect(_, id)) => id == parameter_id,
+                SemanticControlId::Mixer(MixerControlId::ReturnEffect { parameter, .. }) => {
+                    parameter == parameter_id
+                }
+                _ => false,
+            } =>
+        {
+            Some(SemanticControlValue::Asset(reference.clone()))
+        }
         _ => None,
     };
     // The name for the requested choice id, from the descriptor the intent
@@ -1954,6 +1984,24 @@ fn project_errors(
     resolver: &SemanticResolver<'_>,
     _status: &SemanticLifecycleStatus,
 ) -> Result<Vec<SemanticError>, SemanticGraphicalViewModelError> {
+    if let (Some(cause), Some(origin)) = (
+        state.file_browser().file_selection_failure(),
+        state.file_browser().origin(),
+    ) {
+        let failure = match cause {
+            crate::synth::SampleAssetError::Unavailable
+            | crate::synth::SampleAssetError::DownloadRequired => {
+                EngineSelectionFailure::AssetUnavailable
+            }
+            crate::synth::SampleAssetError::Cancelled => EngineSelectionFailure::Cancelled,
+            _ => EngineSelectionFailure::InvalidAsset,
+        };
+        return Ok(vec![SemanticError {
+            code: SemanticErrorCode::EngineSelection(failure),
+            label: cause.to_string(),
+            source_path: Some(origin.clone()),
+        }]);
+    }
     if let (Some(cause), Some(patch_id), Some(parameter)) = (
         state.file_browser().file_selection_failure(),
         state.file_browser().patch_id(),
@@ -1998,6 +2046,31 @@ fn project_errors(
     // attributable to that exact slot or return row; instrument intents
     // anchor a PATCH-surface source path through the resolver.
     let source_path = match correlation.intent() {
+        crate::control::StructuralEditIntent::SetVoiceBudget { patch_id, .. } => Some(
+            FocusPath::patch_utility(*patch_id, PatchControlId::VoiceLimit),
+        ),
+        crate::control::StructuralEditIntent::ReplaceEffectAsset {
+            target,
+            parameter_id,
+            ..
+        } => target
+            .config(state.patches(), state.bus_returns())
+            .map(|config| match target {
+                crate::control::EffectAssetTarget::PatchSlot { patch_id, .. } => {
+                    FocusPath::patch_detail(
+                        *patch_id,
+                        FocusCapabilityId::Effect(config.capability_id().clone()),
+                        PatchControlId::Effect(config.slot_id(), parameter_id.clone()),
+                    )
+                }
+                crate::control::EffectAssetTarget::BusReturn { bus } => {
+                    FocusPath::mixer_return_effect(
+                        *bus,
+                        parameter_id.clone(),
+                        config.capability_id().clone(),
+                    )
+                }
+            }),
         crate::control::StructuralEditIntent::SetSlotOccupancy { patch_id, slot, .. } => Some(
             FocusPath::patch_main(*patch_id, None, PatchControlId::EffectSlot(*slot)),
         ),
@@ -2758,124 +2831,142 @@ fn project_patch_surfaces(
         });
     }
 
-    if let Some(PatchSubordinateSession::FileBrowser {
-        patch_position,
-        asset_parameter_id,
-        ..
+    Ok(surfaces)
+}
+
+fn project_file_browser_surface(
+    state: &AppState,
+    resolver: &SemanticResolver<'_>,
+) -> Result<Option<SemanticSurfaceViewModel>, SemanticGraphicalViewModelError> {
+    let Some(PatchSubordinateSession::FileBrowser {
+        asset_parameter_id, ..
     }) = state.interaction().subordinate_session()
-    {
-        let patch_id = patch_position
-            .patch_id()
-            .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
-        let paths = resolver.file_browser_paths().map_err(map_resolver_error)?;
-        let controls = paths
-            .into_iter()
-            .zip(state.file_browser().rows())
-            .map(|(path, row)| {
-                let (kind, marker) = match row.kind() {
-                    crate::synth::FileBrowserRowKind::Parent(_) => {
-                        (SemanticControlKind::BrowserParent, "PARENT")
-                    }
-                    crate::synth::FileBrowserRowKind::Folder(_) => {
-                        (SemanticControlKind::BrowserFolder, "FOLDER")
-                    }
-                    crate::synth::FileBrowserRowKind::File(_) => {
-                        (SemanticControlKind::BrowserFile, "FILE")
-                    }
-                    crate::synth::FileBrowserRowKind::Cancel => {
-                        (SemanticControlKind::BrowserCancel, "CANCEL — UNCHANGED")
-                    }
-                };
-                SemanticControlViewModel {
-                    focused: active == &path,
-                    path,
-                    label: row.label().to_owned(),
-                    kind,
-                    value: SemanticControlValue::Identity(row.id().to_owned()),
-                    numeric_range: None,
-                    unit: None,
-                    browser_metadata: project_browser_metadata(
-                        row,
-                        state.file_browser().asset_kind(),
-                    ),
-                    availability_label: None,
-                    enabled: true,
-                    visible: true,
-                    focusable: true,
-                    editable: true,
-                    status: None,
-                    error: None,
-                    requested_value: None,
-                    requested_label: None,
-                    patch_interaction: None,
-                    selected_label: Some(marker.to_owned()),
-                    valid_actions: Vec::new(),
-                }
-            })
-            .collect();
-        let descriptor = state
-            .capabilities()
-            .descriptor_for_config(patch.instrument_config())
-            .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
-        let preview_asset = match state.file_browser().preview() {
-            SamplePreviewState::Held { asset_id }
-            | SamplePreviewState::Preparing { asset_id, .. }
-            | SamplePreviewState::Playing { asset_id }
-            | SamplePreviewState::Stopping { asset_id }
-            | SamplePreviewState::Failed { asset_id, .. } => Some(asset_id),
-            SamplePreviewState::Idle => state.file_browser().requested_asset(),
-        };
-        let browser_asset = preview_asset
-            .and_then(|asset_id| AssetReference::new(AssetKind::Sample, asset_id.as_str()).ok())
-            .or_else(|| {
+    else {
+        return Ok(None);
+    };
+    let active = state.interaction().focus_path();
+    let origin = state
+        .interaction()
+        .return_path()
+        .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?
+        .origin();
+    let patch_id = origin.patch_id();
+    let patch = state
+        .patches()
+        .iter()
+        .find(|patch| Some(patch.id()) == patch_id);
+    let target = state.effect_asset_target(origin);
+    let active_asset = if let Some(target) = target {
+        target
+            .config(state.patches(), state.bus_returns())
+            .and_then(|config| config.asset_reference(asset_parameter_id))
+            .cloned()
+    } else {
+        patch
+            .and_then(|patch| {
                 patch
                     .instrument_config()
                     .asset_reference(asset_parameter_id)
-                    .cloned()
-            });
-        let mut visualizations = project_visualizations(
-            state,
-            &patch,
-            descriptor.visualizations(),
-            &|id| patch.instrument_config().value(id),
-            &|id| {
-                if id == asset_parameter_id {
-                    browser_asset.clone()
-                } else {
-                    None
+            })
+            .cloned()
+    };
+    let paths = resolver.file_browser_paths().map_err(map_resolver_error)?;
+    let controls = paths
+        .into_iter()
+        .zip(state.file_browser().rows())
+        .map(|(path, row)| {
+            let (kind, marker) = match row.kind() {
+                crate::synth::FileBrowserRowKind::Parent(_) => {
+                    (SemanticControlKind::BrowserParent, "PARENT")
                 }
-            },
-        );
-        visualizations.retain(|visualization| {
-            matches!(
-                visualization.data(),
-                SemanticVisualizationData::Waveform { .. }
-            )
-        });
-        surfaces.push(SemanticSurfaceViewModel {
-            id: SurfaceId::FileBrowser,
-            label: "FILE BROWSER".to_owned(),
-            role: SemanticSurfaceRole::Modal,
-            controls,
-            sections: Vec::new(),
-            visualizations,
-            summary: SemanticSurfaceSummary::FileBrowser {
-                patch_id,
-                asset_parameter_id: asset_parameter_id.clone(),
-                folder: state.file_browser().folder().clone(),
-                active_asset: patch
-                    .instrument_config()
-                    .asset_reference(asset_parameter_id)
-                    .cloned(),
-                requested_asset: state.file_browser().requested_asset().cloned(),
-                lifecycle: state.file_browser().lifecycle(),
-                preview_request_id: state.file_browser().preview_request_id(),
-                preview: state.file_browser().preview().clone(),
-            },
-        });
-    }
+                crate::synth::FileBrowserRowKind::Folder(_) => {
+                    (SemanticControlKind::BrowserFolder, "FOLDER")
+                }
+                crate::synth::FileBrowserRowKind::File(_) => {
+                    (SemanticControlKind::BrowserFile, "FILE")
+                }
+                crate::synth::FileBrowserRowKind::Cancel => {
+                    (SemanticControlKind::BrowserCancel, "CANCEL — UNCHANGED")
+                }
+            };
+            SemanticControlViewModel {
+                focused: active == &path,
+                path,
+                label: row.label().to_owned(),
+                kind,
+                value: SemanticControlValue::Identity(row.id().to_owned()),
+                numeric_range: None,
+                unit: None,
+                browser_metadata: project_browser_metadata(row, state.file_browser().asset_kind()),
+                availability_label: None,
+                enabled: true,
+                visible: true,
+                focusable: true,
+                editable: true,
+                status: None,
+                error: None,
+                requested_value: None,
+                requested_label: None,
+                patch_interaction: None,
+                selected_label: Some(marker.to_owned()),
+                valid_actions: Vec::new(),
+            }
+        })
+        .collect();
 
-    Ok(surfaces)
+    let mut visualizations = Vec::new();
+    if target.is_none() && state.file_browser().asset_kind() == AssetKind::Sample {
+        if let Some(patch) = patch {
+            let descriptor = state
+                .capabilities()
+                .descriptor_for_config(patch.instrument_config())
+                .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)?;
+            let preview_asset = match state.file_browser().preview() {
+                SamplePreviewState::Held { asset_id }
+                | SamplePreviewState::Preparing { asset_id, .. }
+                | SamplePreviewState::Playing { asset_id }
+                | SamplePreviewState::Stopping { asset_id }
+                | SamplePreviewState::Failed { asset_id, .. } => Some(asset_id),
+                SamplePreviewState::Idle => state.file_browser().requested_asset(),
+            };
+            let browser_asset = preview_asset
+                .and_then(|id| AssetReference::new(AssetKind::Sample, id.as_str()).ok())
+                .or_else(|| active_asset.clone());
+            visualizations = project_visualizations(
+                state,
+                &SemanticPatchSource::Created(patch),
+                descriptor.visualizations(),
+                &|id| patch.instrument_config().value(id),
+                &|id| {
+                    if id == asset_parameter_id {
+                        browser_asset.clone()
+                    } else {
+                        None
+                    }
+                },
+            );
+            visualizations
+                .retain(|item| matches!(item.data(), SemanticVisualizationData::Waveform { .. }));
+        }
+    }
+    Ok(Some(SemanticSurfaceViewModel {
+        id: SurfaceId::FileBrowser,
+        label: "FILE BROWSER".into(),
+        role: SemanticSurfaceRole::Modal,
+        controls,
+        sections: Vec::new(),
+        visualizations,
+        summary: SemanticSurfaceSummary::FileBrowser {
+            patch_id,
+            asset_parameter_id: asset_parameter_id.clone(),
+            folder: state.file_browser().folder().clone(),
+            active_asset,
+            requested_asset: state.file_browser().requested_asset().cloned(),
+            lifecycle: state.file_browser().lifecycle(),
+            preview_request_id: state.file_browser().preview_request_id(),
+            preview: state.file_browser().preview().clone(),
+        },
+    }))
 }
 
 fn project_browser_metadata(
@@ -2934,22 +3025,42 @@ fn project_browser_metadata(
             cause: Some(*cause),
         },
         None => SemanticBrowserMetadata {
-            status: if kind == AssetKind::SoundFont {
+            status: if kind != AssetKind::Sample {
                 SemanticBrowserMetadataStatus::Ready
             } else {
                 SemanticBrowserMetadataStatus::Pending
             },
             text: row.source_bytes().map_or_else(
                 || {
-                    if kind == AssetKind::SoundFont {
-                        "SF2 · VALIDATED ON SELECTION".to_owned()
+                    if kind != AssetKind::Sample {
+                        format!(
+                            "{} · VALIDATED ON SELECTION",
+                            match kind {
+                                AssetKind::SysEx => "SYSEX",
+                                AssetKind::Sfz => "SFZ",
+                                AssetKind::NeuralModel => "NAM MODEL",
+                                AssetKind::ImpulseResponse => "WAV IR",
+                                AssetKind::SoundFont => "SF2",
+                                _ => "FILE",
+                            }
+                        )
                     } else {
                         "METADATA LOADING".to_owned()
                     }
                 },
                 |bytes| {
-                    if kind == AssetKind::SoundFont {
-                        format!("SF2 · {bytes} BYTES · VALIDATED ON SELECTION")
+                    if kind != AssetKind::Sample {
+                        format!(
+                            "{} · {bytes} BYTES · VALIDATED ON SELECTION",
+                            match kind {
+                                AssetKind::SysEx => "SYSEX",
+                                AssetKind::Sfz => "SFZ",
+                                AssetKind::NeuralModel => "NAM MODEL",
+                                AssetKind::ImpulseResponse => "WAV IR",
+                                AssetKind::SoundFont => "SF2",
+                                _ => "FILE",
+                            }
+                        )
                     } else {
                         format!("METADATA LOADING · {bytes} BYTES")
                     }
@@ -3688,7 +3799,9 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
     let active_surface_matches_context = if data.active_surface.is_system() {
         data.active_surface == SurfaceId::MidiDeviceSettings
     } else {
-        data.active_surface.context() == Some(data.context)
+        data.active_surface
+            .context()
+            .is_none_or(|context| context == data.context)
     };
     if data.context != data.focus_path.context()
         || data.active_surface != data.focus_path.surface()
@@ -3713,7 +3826,9 @@ fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalVi
                         SurfaceId::PatchChoice | SurfaceId::FileBrowser
                     ) && matches!(
                         path.origin().surface(),
-                        SurfaceId::PatchUtility | SurfaceId::PatchDetail
+                        SurfaceId::PatchUtility
+                            | SurfaceId::PatchDetail
+                            | SurfaceId::MixerInspector
                     ))) => {}
         _ => return Err(SemanticGraphicalViewModelError::IncoherentSurface),
     }
@@ -4311,7 +4426,7 @@ mod projection_enrichment_tests {
     /// reported through the same typed outcome the commit will apply rather
     /// than left for a player to find afterwards.
     #[test]
-    fn a_swap_that_narrows_the_voice_limit_projects_the_narrowed_value_on_that_row() {
+    fn configurable_engine_swaps_do_not_project_a_reduced_voice_budget() {
         let mut state = patch_state();
         let patch_id = state.interaction().patch_focus().unwrap();
         let before = state
@@ -4343,8 +4458,8 @@ mod projection_enrichment_tests {
         );
         assert_eq!(
             limit.requested_value(),
-            Some(&SemanticControlValue::Scalar(16.0)),
-            "Braids caps at sixteen, and a swap that costs the player 48 voices must say so"
+            None,
+            "Braids preserves the selected budget"
         );
 
         // The widening direction says nothing: preserving the player's value is

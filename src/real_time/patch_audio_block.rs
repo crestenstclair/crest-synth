@@ -256,7 +256,7 @@ mod tests {
     }
 
     fn snapshot(ids: &[u32]) -> ParameterSnapshot {
-        let mut patches = [patch(1); MAX_ACTIVE_PATCHES];
+        let mut patches = std::array::from_fn::<_, MAX_ACTIVE_PATCHES, _>(|_| patch(1));
         for (slot, id) in patches.iter_mut().zip(ids) {
             *slot = patch(*id);
         }
