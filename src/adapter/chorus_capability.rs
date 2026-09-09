@@ -33,7 +33,9 @@ impl ChorusCapability {
             )?],
             Vec::new(),
         )?;
-        Ok(Self { descriptor })
+        Ok(Self {
+            descriptor: descriptor.with_effect_category(crate::synth::EffectCategory::Modulation),
+        })
     }
 
     pub fn default_config(

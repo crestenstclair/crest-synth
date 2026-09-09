@@ -656,7 +656,8 @@ fn maximum_option_capability_registry() -> CapabilityRegistry {
             prototype.voice_policy(),
             prototype.supported_midi_kinds().to_vec(),
         )
-        .unwrap();
+        .unwrap()
+        .with_instrument_category(prototype.instrument_category());
         descriptors.push(if index == 17 {
             descriptor.with_availability(CapabilityAvailability::Unavailable {
                 reason: "provider handshake unavailable after a deliberately long typed cause"
@@ -690,7 +691,8 @@ fn maximum_option_effect_registry() -> EffectCapabilityRegistry {
             prototype.sections().to_vec(),
             prototype.asset_requirements().to_vec(),
         )
-        .unwrap();
+        .unwrap()
+        .with_effect_category(prototype.effect_category());
         descriptors.push(if index == 17 {
             descriptor.with_availability(CapabilityAvailability::Unavailable {
                 reason: "prepared effect assets are unavailable for this installed entry"

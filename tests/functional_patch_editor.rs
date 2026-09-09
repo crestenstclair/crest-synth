@@ -510,6 +510,12 @@ fn page_control_id(control: &Value) -> String {
 }
 
 fn page_normalized_percentage(control: &Value) -> bool {
+    if control
+        .get("selectedLabel")
+        .is_some_and(|label| !label.is_null())
+    {
+        return false;
+    }
     if control.get("unit").is_some_and(|unit| !unit.is_null()) {
         return false;
     }
@@ -574,6 +580,12 @@ fn page_numeric_value_text(control: &Value, value: f64) -> String {
 }
 
 fn page_unit_text(control: &Value) -> Option<String> {
+    if control
+        .get("selectedLabel")
+        .is_some_and(|label| !label.is_null())
+    {
+        return None;
+    }
     control
         .get("unit")
         .and_then(Value::as_str)
@@ -612,12 +624,19 @@ fn page_value_text(control: &Value) -> String {
                 return UNAVAILABLE_MARK.to_owned();
             };
             match parameter.get("kind").and_then(Value::as_str) {
-                Some("continuous") => page_numeric_value_text(
-                    control,
-                    parameter["value"].as_f64().unwrap_or(f64::NAN),
-                ),
-                Some("stepped") => display(&parameter["value"]),
-                Some("choice") => control
+                Some("continuous") => control
+                    .get("selectedLabel")
+                    .filter(|label| !label.is_null())
+                    .map_or_else(
+                        || {
+                            page_numeric_value_text(
+                                control,
+                                parameter["value"].as_f64().unwrap_or(f64::NAN),
+                            )
+                        },
+                        display,
+                    ),
+                Some("stepped" | "choice") => control
                     .get("selectedLabel")
                     .filter(|label| !label.is_null())
                     .map_or_else(|| display(&parameter["value"]), display),
@@ -657,6 +676,12 @@ fn page_requested_value_text(control: &Value) -> Option<String> {
 /// `rangeEndpointText` + `rangeHtml` — the projected bounds as painted, or
 /// `None` when the document carries none.
 fn page_range_text(control: &Value) -> Option<String> {
+    if control
+        .get("selectedLabel")
+        .is_some_and(|label| !label.is_null())
+    {
+        return None;
+    }
     let range = control.get("numericRange").filter(|r| r.is_object())?;
     let minimum = range.get("minimum").and_then(Value::as_f64)?;
     let maximum = range.get("maximum").and_then(Value::as_f64)?;
@@ -1320,7 +1345,7 @@ fn check_legacy_transcribed_page_rules_match_the_committed_script() -> usize {
         ("the scalar arm's stepped/continuous split", "      return control.kind === \"stepped\"\n        ? String(Math.round(Number(value.value)))\n        : Number(value.value).toFixed(3);"),
         ("the parameter value discriminator", "    if (value.kind === \"parameter\") {\n      var parameter = value.value;\n      if (parameter && typeof parameter === \"object\") {"),
         ("the continuous parameter's three places", "        if (parameter.kind === \"continuous\") {\n          return Number(parameter.value).toFixed(3);"),
-        ("the stepped parameter reads as itself", "        if (parameter.kind === \"stepped\") {\n          return String(parameter.value);"),
+        ("the stepped parameter reads its name when available", "        if (parameter.kind === \"stepped\") {\n          return String(control.selectedLabel ?? parameter.value);"),
         ("the choice discriminator", "        if (parameter.kind === \"choice\") {"),
         ("the authored option label read (F-33)", "          return String(\n            control.selectedLabel === null || control.selectedLabel === undefined\n              ? parameter.value\n              : control.selectedLabel\n          );"),
         ("the toggle wording", "        if (parameter.kind === \"toggle\") {\n          return parameter.value ? \"ON\" : \"OFF\";"),
@@ -1437,6 +1462,18 @@ fn check_legacy_transcribed_page_rules_match_the_committed_script() -> usize {
 fn check_the_transcribed_page_rules_match_the_committed_script() -> usize {
     let script = page_source("page.js");
     let required = [
+        (
+            "continuous selectors display projected names",
+            "return String(control.selectedLabel ?? numericValueText(control, Number(parameter.value)));",
+        ),
+        (
+            "named values omit raw numeric bounds",
+            "      !range ||\n      control.selectedLabel != null ||",
+        ),
+        (
+            "named values carry their complete display text",
+            "  function controlUnitText(control) {\n    if (control && control.selectedLabel != null) {\n      return \"\";",
+        ),
         (
             "complete-path control lookup",
             "    var wanted = JSON.stringify(path || null);",

@@ -192,6 +192,293 @@ fn text(pointer: *const c_char) -> Result<String, CatalogError> {
         .map(str::to_owned)
         .map_err(|e| CatalogError(e.to_string()))
 }
+// Names follow the pinned upstream enums and preset tables, not ordinal IDs.
+fn stepped_labels(native_id: &str, parameter: usize) -> Vec<String> {
+    if (native_id, parameter) == ("stk.voicform", 0) {
+        // Phonemes.cpp and VoicForm::controlChange: four formant scales,
+        // each covering the same 32 phonemes in the original order.
+        return ["0.9", "1.0", "1.1", "1.2"]
+            .iter()
+            .flat_map(|scale| {
+                [
+                    "eee", "ihh", "ehh", "aaa", "ahh", "aww", "ohh", "uhh", "uuu", "ooo", "rrr",
+                    "lll", "mmm", "nnn", "nng", "ngg", "fff", "sss", "thh", "shh", "xxx", "hee",
+                    "hoo", "hah", "bbb", "ddd", "jjj", "ggg", "vvv", "zzz", "thz", "zhh",
+                ]
+                .into_iter()
+                .map(move |phoneme| format!("{phoneme} (formants {scale}×)"))
+            })
+            .collect();
+    }
+    let names: &[&str] = match (native_id, parameter) {
+        // Registration order in plaits/dsp/voice.cc, including the three FM banks.
+        ("mutable.plaits", 0) => &[
+            "Virtual Analog + VCF",
+            "Phase Distortion",
+            "6-Operator FM Bank 1",
+            "6-Operator FM Bank 2",
+            "6-Operator FM Bank 3",
+            "Wave Terrain",
+            "String Machine",
+            "Chiptune",
+            "Virtual Analog",
+            "Waveshaping",
+            "2-Operator FM",
+            "Granular Formant",
+            "Additive",
+            "Wavetable",
+            "Chords",
+            "Speech",
+            "Swarm",
+            "Filtered Noise",
+            "Particle Noise",
+            "String",
+            "Modal Resonator",
+            "Bass Drum",
+            "Snare Drum",
+            "Hi-Hat",
+        ],
+        ("mutable.rings" | "mutable.ringsresonator", 0) => &[
+            "Modal Resonator",
+            "Sympathetic Strings",
+            "Inharmonic String",
+            "FM Voice",
+            "Quantized Sympathetic Strings",
+            "String + Reverb",
+        ],
+        ("mutable.elements", 0) => &[
+            "Modal Resonator",
+            "Inharmonic String",
+            "String Chords",
+            "Ominous FM",
+        ],
+        // Original Rings chord table in rings/dsp/part.cc, polyphony 1.
+        ("mutable.rings", 5) => &[
+            "Octaves",
+            "Minor 7",
+            "Minor",
+            "Minor add9",
+            "Minor add11",
+            "Fifths",
+            "Major add11",
+            "Major add9",
+            "Major",
+            "Major 7",
+            "Sus4",
+        ],
+        // tides2/ramp_generator.h OutputMode and physical output channels.
+        ("mutable.tides", 0) => &["Gates", "Amplitude", "Slope / Phase", "Frequency"],
+        ("mutable.tides", 5 | 6) => &["Output 1", "Output 2", "Output 3", "Output 4"],
+        ("mutable.analogsnare" | "mutable.syntheticsnare", 4)
+        | (
+            "mutable.cloudsgranular"
+            | "mutable.cloudsstretch"
+            | "mutable.cloudsdelay"
+            | "mutable.cloudsspectral",
+            9,
+        )
+        | ("mutable.warps", 6)
+        | ("daisy.analogbassdrum", 5)
+        | ("daisy.syntheticbassdrum", 6)
+        | ("daisy.hihat", 4)
+        | ("daisy.stringvoice" | "daisy.modalvoice", 3)
+        | ("signalsmith.stretch", 2) => &["Off", "On"],
+        // Warps' xmod, vocoder, and shifter carriers differ. The field label
+        // declares that order; resources.h names the quadrature wave tables.
+        ("mutable.warps", 2) => &[
+            "Left Input",
+            "Sine / Saw / Sine",
+            "Triangle / Pulse / Harmonics",
+            "Saw / Noise / Buzzy",
+        ],
+        // DaisySP Synthesis/oscillator.h Waveform enum.
+        ("daisy.tremolo", 2) => &[
+            "Sine",
+            "Triangle",
+            "Saw",
+            "Ramp",
+            "Square",
+            "PolyBLEP Triangle",
+            "PolyBLEP Saw",
+            "PolyBLEP Square",
+        ],
+        // STK Shakers.h, ModalBar.h, and BandedWG.h preset order.
+        ("stk.shakers", 0) => &[
+            "Maraca",
+            "Cabasa",
+            "Sekere",
+            "Tambourine",
+            "Sleigh Bells",
+            "Bamboo Chimes",
+            "Sand Paper",
+            "Coke Can",
+            "Sticks",
+            "Crunch",
+            "Big Rocks",
+            "Little Rocks",
+            "Next Mug",
+            "Penny + Mug",
+            "Nickel + Mug",
+            "Dime + Mug",
+            "Quarter + Mug",
+            "Franc + Mug",
+            "Peso + Mug",
+            "Guiro",
+            "Wrench",
+            "Water Drops",
+            "Tuned Bamboo Chimes",
+        ],
+        ("stk.modalbar", 0) => &[
+            "Marimba",
+            "Vibraphone",
+            "Agogo",
+            "Wood 1",
+            "Reso",
+            "Wood 2",
+            "Beats",
+            "Two Fixed",
+            "Clump",
+        ],
+        ("stk.bandedwg", 0) => &[
+            "Uniform Bar",
+            "Tuned Bar",
+            "Glass Harmonica",
+            "Tibetan Bowl",
+        ],
+        _ => &[],
+    };
+    names.iter().map(|name| (*name).to_owned()).collect()
+}
+
+// Find exact f32 selector boundaries using the upstream's monotone conversion.
+// Decimal approximations of 2/7.9, for example, can name the wrong DSP mode.
+fn normalized_label_bands(
+    names: &[&str],
+    select: impl Fn(f32) -> usize,
+) -> Vec<ContinuousValueLabel> {
+    let mut minimum = 0_u32;
+    names
+        .iter()
+        .enumerate()
+        .filter_map(|(index, name)| {
+            let mut low = minimum;
+            let mut high = 1.0_f32.to_bits() + 1;
+            while low < high {
+                let middle = low + (high - low) / 2;
+                if select(f32::from_bits(middle)) <= index {
+                    low = middle + 1;
+                } else {
+                    high = middle;
+                }
+            }
+            let start = minimum;
+            minimum = low;
+            if name.is_empty() || start == low {
+                return None;
+            }
+            Some(ContinuousValueLabel::new(
+                ParameterRange::new(f32::from_bits(start).into(), f32::from_bits(low - 1).into())
+                    .expect("ordered finite normalized bounds"),
+                *name,
+            ))
+        })
+        .collect()
+}
+
+fn continuous_labels(native_id: &str, parameter: usize) -> Vec<ContinuousValueLabel> {
+    match (native_id, parameter) {
+        // Biquad2Proc.cpp uses double constants after reading the float control.
+        ("airwindows.biquad2", 0) => {
+            normalized_label_bands(&["Lowpass", "Highpass", "Bandpass", "Notch"], |v| {
+                ((f64::from(v) * 3.999 + 0.00001).ceil() as usize).saturating_sub(1)
+            })
+        }
+        ("mda.jx10", 3) => normalized_label_bands(
+            &[
+                "Poly",
+                "Poly",
+                "Poly Legato",
+                "Poly Glide",
+                "Mono",
+                "Mono",
+                "Mono Legato",
+                "Mono Glide",
+            ],
+            |v| (7.9_f32 * v) as usize,
+        ),
+        ("mda.jx10", 22) => normalized_label_bands(
+            &[
+                "−2 Octaves",
+                "−1 Octave",
+                "Unison",
+                "+1 Octave",
+                "+2 Octaves",
+            ],
+            // update() computes floor(param[22] * 4.9) in double precision.
+            // Its getParameterDisplay uses float, which disagrees at some edges.
+            |v| (4.9 * f64::from(v)).floor() as usize,
+        ),
+        ("mda.leslie", 0) => normalized_label_bands(&["Stop", "Slow", "Fast"], |v| {
+            if v < 0.1_f32 {
+                0
+            } else if v < 0.5_f32 {
+                1
+            } else {
+                2
+            }
+        }),
+        ("mda.talkbox", 2) => {
+            normalized_label_bands(&["Right", "Left"], |v| usize::from(v > 0.5_f32))
+        }
+        ("mda.epiano", 4) | ("mda.jx10", 20) => {
+            let piano = native_id == "mda.epiano";
+            let mut bands = normalized_label_bands(
+                if piano {
+                    &["Pan", "Tremolo"]
+                } else {
+                    &["PWM", "Vibrato"]
+                },
+                |v| usize::from(if piano { v > 0.5_f32 } else { v >= 0.5_f32 }),
+            );
+            bands[0] = bands[0].clone().with_amount(-200.0, 100.0, "%");
+            bands[1] = bands[1].clone().with_amount(200.0, -100.0, "%");
+            bands
+        }
+        ("mda.jx10", 10) => normalized_label_bands(&["Off", ""], |v| usize::from(v >= 0.05_f32)),
+        ("mda.dynamics", 1) => normalized_label_bands(&["", "Limit", ""], |v| {
+            if f64::from(v) <= 0.58 {
+                0
+            } else if f64::from(v) < 0.62 {
+                1
+            } else {
+                2
+            }
+        }),
+        ("mda.dynamics", 5) => {
+            normalized_label_bands(&["", "Off"], |v| usize::from(f64::from(v) > 0.98))
+        }
+        ("mda.dynamics", 6) => {
+            normalized_label_bands(&["Off", ""], |v| usize::from(f64::from(v) >= 0.02))
+        }
+        ("mda.dubdelay", 1 | 2) => {
+            // DubDelay combines feedback protection and tone with signed amounts.
+            let mut bands = normalized_label_bands(
+                if parameter == 1 {
+                    &["Saturating", "Limiting"]
+                } else {
+                    &["Low", "High"]
+                },
+                |v| usize::from(v > 0.5_f32),
+            );
+            let extent = if parameter == 1 { 110.0 } else { 100.0 };
+            bands[0] = bands[0].clone().with_amount(-2.0 * extent, extent, "%");
+            bands[1] = bands[1].clone().with_amount(2.0 * extent, -extent, "%");
+            bands
+        }
+        _ => Vec::new(),
+    }
+}
+
 fn build_catalog() -> Result<Catalog, CatalogError> {
     let mut catalog = Catalog {
         instruments: Vec::new(),
@@ -212,6 +499,13 @@ fn build_catalog() -> Result<Catalog, CatalogError> {
             let parameter = (|| -> Result<ParameterSpec, CapabilityError> {
                 let label = text(unsafe { crest_audio_param_label(native.handle.as_ptr(), i) })
                     .map_err(|_| CapabilityError::EmptyLabel)?;
+                let label = match (id.as_str(), i) {
+                    ("mutable.warps", 0) => "Algorithm Morph".to_owned(),
+                    ("mutable.warps", 2) => "Carrier (Xmod / Vocoder / Shifter)".to_owned(),
+                    ("mda.jx10", 3) => "Voice / Glide Mode".to_owned(),
+                    ("mda.jx10", 20) => "PWM / Vibrato".to_owned(),
+                    _ => label,
+                };
                 let default =
                     unsafe { crest_audio_param_default(native.handle.as_ptr(), i) } as f64;
                 let min = unsafe { crest_audio_param_min(native.handle.as_ptr(), i) } as f64;
@@ -244,6 +538,10 @@ fn build_catalog() -> Result<Catalog, CatalogError> {
                 )
             })()
             .map_err(|e| CatalogError(format!("{id} parameter {i}: {e}")))?;
+            let parameter = parameter
+                .with_stepped_labels(stepped_labels(&id, i))
+                .and_then(|parameter| parameter.with_continuous_labels(continuous_labels(&id, i)))
+                .map_err(|e| CatalogError(format!("{id} parameter {i}: {e}")))?;
             params.push(parameter);
         }
         let mut assets = Vec::new();
@@ -319,7 +617,8 @@ fn build_catalog() -> Result<Catalog, CatalogError> {
                     MidiMessageKind::AllNotesOff,
                 ],
             )
-            .map_err(|e| CatalogError(e.to_string()))?;
+            .map_err(|e| CatalogError(e.to_string()))?
+            .with_instrument_category(instrument_category(id.as_str()));
             let descriptor = if id.as_str() == super::dx7_library::CAPABILITY {
                 super::dx7_library::Dx7Library::bundled()
                     .descriptor(
@@ -338,11 +637,89 @@ fn build_catalog() -> Result<Catalog, CatalogError> {
                 .map_err(|e| CatalogError(e.to_string()))?;
             let descriptor =
                 EffectCapabilityDescriptor::new(id.clone(), label, id.as_str(), sections, assets)
-                    .map_err(|e| CatalogError(e.to_string()))?;
+                    .map_err(|e| CatalogError(e.to_string()))?
+                    .with_effect_category(effect_category(id.as_str()));
             catalog.effects.push(UpstreamEffect { index, descriptor });
         }
     }
     Ok(catalog)
+}
+
+fn effect_category(id: &str) -> EffectCategory {
+    match id {
+        "effect.airwindows.purestecho"
+        | "effect.airwindows.doublelay"
+        | "effect.airwindows.tapedelay2"
+        | "effect.mda.dubdelay"
+        | "effect.mutable.cloudsdelay" => EffectCategory::DelayAndEcho,
+        "effect.airwindows.reverb" | "effect.airwindows.kplated" | "effect.fft.convolver" => {
+            EffectCategory::ReverbAndIr
+        }
+        "effect.airwindows.stereochorus"
+        | "effect.airwindows.vibrato"
+        | "effect.airwindows.autopan"
+        | "effect.mda.leslie"
+        | "effect.daisy.flanger"
+        | "effect.daisy.phaser"
+        | "effect.daisy.tremolo" => EffectCategory::Modulation,
+        "effect.airwindows.buttercomp2"
+        | "effect.airwindows.softgate"
+        | "effect.mda.dynamics"
+        | "effect.mda.deesser"
+        | "effect.daisy.limiter" => EffectCategory::Dynamics,
+        "effect.airwindows.baxandall2"
+        | "effect.airwindows.parametric"
+        | "effect.airwindows.biquad2"
+        | "effect.airwindows.capacitor2"
+        | "effect.daisy.autowah" => EffectCategory::EqAndFilters,
+        "effect.airwindows.density2"
+        | "effect.airwindows.totape6"
+        | "effect.airwindows.derez3"
+        | "effect.nam.model" => EffectCategory::DriveAndAmp,
+        "effect.signalsmith.stretch" | "effect.mda.talkbox" | "effect.mutable.warps" => {
+            EffectCategory::PitchAndVoice
+        }
+        "effect.mutable.cloudsgranular"
+        | "effect.mutable.cloudsstretch"
+        | "effect.mutable.cloudsspectral" => EffectCategory::GranularAndSpectral,
+        "effect.mutable.ringsresonator" => EffectCategory::Resonators,
+        _ => EffectCategory::Other,
+    }
+}
+
+fn instrument_category(id: &str) -> InstrumentCategory {
+    match id {
+        "instrument.mda.piano"
+        | "instrument.mda.epiano"
+        | "instrument.stk.beethree"
+        | "instrument.stk.rhodey"
+        | "instrument.stk.wurley" => InstrumentCategory::KeysAndOrgans,
+        "instrument.daisy.stringvoice" | "instrument.stk.bowed" | "instrument.stk.mandolin" => {
+            InstrumentCategory::Strings
+        }
+        "instrument.stk.voicform"
+        | "instrument.stk.clarinet"
+        | "instrument.stk.flute"
+        | "instrument.stk.brass" => InstrumentCategory::WindsAndVoices,
+        "instrument.daisy.modalvoice"
+        | "instrument.stk.bandedwg"
+        | "instrument.stk.mesh2d"
+        | "instrument.mutable.rings"
+        | "instrument.mutable.elements" => InstrumentCategory::Resonators,
+        "instrument.daisy.analogbassdrum"
+        | "instrument.daisy.syntheticbassdrum"
+        | "instrument.daisy.hihat"
+        | "instrument.stk.shakers"
+        | "instrument.stk.modalbar"
+        | "instrument.mutable.peaksbass"
+        | "instrument.mutable.peakssnare"
+        | "instrument.mutable.peaksfm"
+        | "instrument.mutable.peakshat"
+        | "instrument.mutable.analogsnare"
+        | "instrument.mutable.syntheticsnare" => InstrumentCategory::DrumsAndPercussion,
+        "instrument.sfizz.sampler" | "instrument.sfizz.sample" => InstrumentCategory::Samplers,
+        _ => InstrumentCategory::Synths,
+    }
 }
 impl InstrumentCapabilityProvider for UpstreamInstrument {
     fn descriptor(&self) -> CapabilityDescriptor {

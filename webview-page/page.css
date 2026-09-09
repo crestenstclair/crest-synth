@@ -1096,6 +1096,22 @@ body {
   overflow-wrap: anywhere;
 }
 
+.option-group {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-16);
+  padding-block: var(--space-8);
+}
+
+.option-group-help {
+  margin-left: auto;
+}
+
+.option-modal:has(.option-group) {
+  grid-template-rows: auto auto auto auto auto minmax(0, 1fr);
+}
+
 .option-origin-status {
   min-width: 0;
   padding: var(--space-8) var(--space-12);

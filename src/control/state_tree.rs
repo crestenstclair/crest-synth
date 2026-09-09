@@ -180,6 +180,11 @@ struct MidiTreeTemplate {
 impl StateTree {
     /// The stable schema version emitted in every serialized tree.
     ///
+    /// Version 26: provider-owned instrument families and the active picker label.
+    /// Version 27: effect families and the shared instrument/effect picker label.
+    /// Version 28: descriptor-derived explanations for read-only controls.
+    /// Version 29: optional display names for numeric stepped parameters.
+    ///
     /// Version 23: browser metadata distinguishes unavailable files from
     /// invalid audio and carries download-required and empty-file causes.
     ///
@@ -233,7 +238,7 @@ impl StateTree {
     /// Version 24: asset-scoped capability catalogs and file-kind-correlated browser events.
     /// Version 25: source-specific `NavigatePage` actions and Settings-only
     /// PATCH page absence in full and generation-only projections.
-    pub const SCHEMA_VERSION: u32 = 25;
+    pub const SCHEMA_VERSION: u32 = 30;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -280,6 +285,7 @@ impl StateTree {
         "schemaVersion",
         "generation",
         "capabilities.descriptors[].assetScopedChoices",
+        "capabilities.descriptors[].instrumentCategory",
         "capabilities.descriptors[].id",
         "capabilities.descriptors[].label",
         "capabilities.descriptors[].semanticAccent",
@@ -307,6 +313,13 @@ impl StateTree {
         "capabilities.descriptors[].sections[].parameters[].range",
         "capabilities.descriptors[].sections[].parameters[].choices[].id",
         "capabilities.descriptors[].sections[].parameters[].choices[].label",
+        "capabilities.descriptors[].sections[].parameters[].steppedLabels[]",
+        "capabilities.descriptors[].sections[].parameters[].continuousLabels[].range.minimum",
+        "capabilities.descriptors[].sections[].parameters[].continuousLabels[].range.maximum",
+        "capabilities.descriptors[].sections[].parameters[].continuousLabels[].label",
+        "capabilities.descriptors[].sections[].parameters[].continuousLabels[].valueScale",
+        "capabilities.descriptors[].sections[].parameters[].continuousLabels[].valueOffset",
+        "capabilities.descriptors[].sections[].parameters[].continuousLabels[].valueUnit",
         "capabilities.descriptors[].sections[].parameters[].fineStep",
         "capabilities.descriptors[].sections[].parameters[].coarseStep",
         "capabilities.descriptors[].sections[].parameters[].unit",
@@ -322,6 +335,7 @@ impl StateTree {
         "capabilities.descriptors[].voicePolicy.defaultVoices",
         "capabilities.descriptors[].supportedMidiKinds[]",
         "effects.descriptors[].id",
+        "effects.descriptors[].effectCategory",
         "effects.descriptors[].label",
         "effects.descriptors[].semanticAccent",
         "effects.descriptors[].availability.kind",
@@ -342,6 +356,13 @@ impl StateTree {
         "effects.descriptors[].sections[].parameters[].range",
         "effects.descriptors[].sections[].parameters[].choices[].id",
         "effects.descriptors[].sections[].parameters[].choices[].label",
+        "effects.descriptors[].sections[].parameters[].steppedLabels[]",
+        "effects.descriptors[].sections[].parameters[].continuousLabels[].range.minimum",
+        "effects.descriptors[].sections[].parameters[].continuousLabels[].range.maximum",
+        "effects.descriptors[].sections[].parameters[].continuousLabels[].label",
+        "effects.descriptors[].sections[].parameters[].continuousLabels[].valueScale",
+        "effects.descriptors[].sections[].parameters[].continuousLabels[].valueOffset",
+        "effects.descriptors[].sections[].parameters[].continuousLabels[].valueUnit",
         "effects.descriptors[].sections[].parameters[].fineStep",
         "effects.descriptors[].sections[].parameters[].coarseStep",
         "effects.descriptors[].sections[].parameters[].unit",

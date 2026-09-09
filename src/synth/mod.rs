@@ -32,8 +32,8 @@ pub use capability_visualization::{
 };
 pub use descriptor_default_config_factory::DescriptorDefaultConfigFactory;
 pub use effect_capability::{
-    EffectCapabilityDescriptor, EffectCapabilityError, EffectCapabilityRegistry, PostEffectConfig,
-    MAX_POST_EFFECTS_PER_PATCH,
+    EffectCapabilityDescriptor, EffectCapabilityError, EffectCapabilityRegistry, EffectCategory,
+    PostEffectConfig, MAX_POST_EFFECTS_PER_PATCH,
 };
 pub use effect_capability_id::EffectCapabilityId;
 pub use effect_capability_provider::EffectCapabilityProvider;
@@ -42,10 +42,10 @@ pub use effect_preparer::{EffectPreparationError, EffectPreparer};
 pub use effect_slot_id::{EffectSlotId, EffectSlotIdError};
 pub use instrument_capability::{
     AssetAssignment, AssetKind, AssetReference, AssetRequirement, CapabilityAvailability,
-    CapabilityDescriptor, CapabilityError, CapabilityRegistry, CapabilitySection, InstrumentConfig,
-    ParameterAdjustment, ParameterAssignment, ParameterChoice, ParameterDefault, ParameterKind,
-    ParameterPredicate, ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue,
-    PatchInteraction, VoicePolicy,
+    CapabilityDescriptor, CapabilityError, CapabilityRegistry, CapabilitySection,
+    ContinuousValueLabel, InstrumentCategory, InstrumentConfig, ParameterAdjustment,
+    ParameterAssignment, ParameterChoice, ParameterDefault, ParameterKind, ParameterPredicate,
+    ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue, PatchInteraction, VoicePolicy,
 };
 pub use instrument_capability_provider::InstrumentCapabilityProvider;
 pub use instrument_composition::{compose_instrument_registry, InstrumentCompositionError};

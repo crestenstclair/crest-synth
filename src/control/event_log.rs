@@ -162,7 +162,9 @@ impl EventLog {
     /// `EnginePrepared`, making Phase 7 replay lossless without logging PCM.
     /// Version 7 adds file-kind correlation and imported asset descriptors.
     /// Version 8 adds source-specific `NavigatePage` input records.
-    pub const SCHEMA_VERSION: u32 = 8;
+    /// Version 9 adds instrument families to imported capability descriptors.
+    /// Version 10 adds optional stepped value labels to imported descriptors.
+    pub const SCHEMA_VERSION: u32 = 11;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "totalObserved",

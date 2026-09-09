@@ -70,6 +70,14 @@ fn configured_state(first: InstrumentConfig, second: InstrumentConfig) -> AppSta
         .unwrap();
     let effects = EffectCapabilityRegistry::new(vec![
         production_effects.descriptors()[0].clone(),
+        production_effects
+            .descriptor(&EffectCapabilityId::new("effect.mutable.ringsresonator").unwrap())
+            .unwrap()
+            .clone(),
+        production_effects
+            .descriptor(&EffectCapabilityId::new("effect.airwindows.biquad2").unwrap())
+            .unwrap()
+            .clone(),
         schema_effect,
     ])
     .unwrap();
@@ -245,6 +253,23 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
         ),
     ];
     let creation_registry = production_capability_registry().unwrap();
+    trees.push(state_tree_after(
+        soundfont_config.clone(),
+        braids_config.clone(),
+        |state| {
+            state
+                .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+                .unwrap();
+            state
+                .apply(AppEvent::SetInteractionMode(
+                    crest_synth::control::InteractionMode::Adjust,
+                ))
+                .unwrap();
+            state
+                .apply(AppEvent::Adjust(crest_synth::control::Direction::Up))
+                .unwrap();
+        },
+    ));
     let creation_blueprint = crest_synth::control::PatchCreationBlueprint::resolve(
         &CapabilityId::new(crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID)
             .unwrap(),
@@ -829,7 +854,67 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             .descriptor()
             .with_asset_scoped_choices()
             .with_availability(availability);
-        let mut scoped = serde_json::to_value(&base).unwrap();
+        let mut base = serde_json::to_value(base).unwrap();
+        use crest_synth::synth::{
+            CapabilityDescriptor, ParameterAssignment, ParameterDefault, ParameterId,
+            ParameterKind, ParameterRange, ParameterSpec, ParameterUpdate, ParameterValue,
+        };
+        let named_id = ParameterId::new("schema.named-step").unwrap();
+        let named = ParameterSpec::new(
+            named_id.clone(),
+            "Named step",
+            ParameterKind::Stepped,
+            ParameterUpdate::Scalar,
+            ParameterDefault::Value(ParameterValue::Stepped(0)),
+            Some(ParameterRange::new(0.0, 1.0).unwrap()),
+            Vec::new(),
+            Some(1.0),
+            Some(1.0),
+            None,
+            "integer",
+            None,
+            None,
+        )
+        .unwrap()
+        .with_stepped_labels(vec!["First".into(), "Second".into()])
+        .unwrap();
+        base["sections"][0]["parameters"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(named).unwrap());
+        // Asset-scoped schemas also carry normalized selector presentation.
+        let normalized = crest_synth::adapter::upstream_audio::instrument_ports()
+            .unwrap()
+            .into_iter()
+            .find(|port| port.descriptor().id().as_str() == "instrument.mda.jx10")
+            .unwrap()
+            .descriptor()
+            .parameters()
+            .nth(3)
+            .unwrap()
+            .clone();
+        let normalized_assignment = match normalized.default_value() {
+            ParameterDefault::Value(value) => {
+                ParameterAssignment::new(normalized.id().clone(), value.clone())
+            }
+            _ => unreachable!(),
+        };
+        base["sections"][0]["parameters"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::to_value(normalized).unwrap());
+        let mut scoped = base.clone();
+        let base: CapabilityDescriptor = serde_json::from_value(base).unwrap();
+        let initial = sample.default_config().unwrap();
+        let mut values = initial.values().to_vec();
+        values.push(normalized_assignment);
+        values.push(ParameterAssignment::new(
+            named_id,
+            ParameterValue::Stepped(0),
+        ));
+        let initial = base
+            .create_config(&values, initial.asset_references())
+            .unwrap();
         for section in scoped["sections"].as_array_mut().unwrap() {
             for parameter in section["parameters"].as_array_mut().unwrap() {
                 if parameter["kind"] == "asset" {
@@ -845,7 +930,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             .unwrap();
         let config = registry
             .replace_asset(
-                &sample.default_config().unwrap(),
+                &initial,
                 &crest_synth::synth::ParameterId::new(
                     crest_synth::adapter::sample_capability::SAMPLE_ASSET_PARAMETER_ID,
                 )
@@ -911,7 +996,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // physical MIDI lifecycle facts while excluding handles and observations.
     // Version 20 adds the explicit tagged trailing-empty Patch shape and its
     // prospective/capacity ownership facts without inventing a Patch ID.
-    assert_eq!(StateTree::SCHEMA_VERSION, 25);
+    assert_eq!(StateTree::SCHEMA_VERSION, 30);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

@@ -16,6 +16,40 @@ use serde::{Deserialize, Serialize};
 /// partially widened transport is otherwise constructible.
 pub const MAX_POST_EFFECTS_PER_PATCH: usize = crate::synth::effect_slot_id::MAX_EFFECT_SLOTS;
 
+/// Provider-owned effect families in picker order.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EffectCategory {
+    DelayAndEcho,
+    ReverbAndIr,
+    Modulation,
+    Dynamics,
+    EqAndFilters,
+    DriveAndAmp,
+    PitchAndVoice,
+    GranularAndSpectral,
+    Resonators,
+    #[default]
+    Other,
+}
+
+impl EffectCategory {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DelayAndEcho => "Delay & Echo",
+            Self::ReverbAndIr => "Reverb & IR",
+            Self::Modulation => "Modulation",
+            Self::Dynamics => "Dynamics",
+            Self::EqAndFilters => "EQ & Filters",
+            Self::DriveAndAmp => "Drive & Amp",
+            Self::PitchAndVoice => "Pitch & Voice",
+            Self::GranularAndSpectral => "Granular & Spectral",
+            Self::Resonators => "Resonators",
+            Self::Other => "Other",
+        }
+    }
+}
+
 /// Immutable ordered control-side schema for one installed effect capability.
 ///
 /// An entry declares identity, visible parameters, bounds, units, and
@@ -28,6 +62,8 @@ pub struct EffectCapabilityDescriptor {
     id: EffectCapabilityId,
     label: String,
     semantic_accent: String,
+    #[serde(default)]
+    effect_category: EffectCategory,
     #[serde(default)]
     availability: CapabilityAvailability,
     sections: Vec<CapabilitySection>,
@@ -48,6 +84,7 @@ impl EffectCapabilityDescriptor {
             id,
             label: label.into(),
             semantic_accent: semantic_accent.into(),
+            effect_category: EffectCategory::default(),
             availability: CapabilityAvailability::Available,
             sections,
             visualizations: Vec::new(),
@@ -67,6 +104,15 @@ impl EffectCapabilityDescriptor {
 
     pub fn semantic_accent(&self) -> &str {
         &self.semantic_accent
+    }
+
+    pub const fn effect_category(&self) -> EffectCategory {
+        self.effect_category
+    }
+
+    pub fn with_effect_category(mut self, category: EffectCategory) -> Self {
+        self.effect_category = category;
+        self
     }
 
     pub const fn availability(&self) -> &CapabilityAvailability {

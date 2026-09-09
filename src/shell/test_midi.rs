@@ -4,6 +4,7 @@ use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::MidiChannel;
 use crate::real_time::ControlAudioBoundary;
 use crate::testing::automatic_midi_test::TestInputError;
+use crate::testing::full_instrument_effect_demo::{ARPEGGIO, NOTE_GATE, NOTE_LENGTH};
 use std::time::Duration;
 
 /// A bounded control-side input source: two MIDI edges at most per tick,
@@ -37,8 +38,9 @@ impl TestMidiPattern {
         };
         self.running = enabled;
         let micros = self.elapsed.as_micros();
-        let desired = (enabled && micros % 500_000 < 300_000)
-            .then(|| [60, 64, 67, 64][((micros / 500_000) % 4) as usize]);
+        let note_length = NOTE_LENGTH.as_micros();
+        let desired = (enabled && micros % note_length < NOTE_GATE.as_micros())
+            .then(|| ARPEGGIO[((micros / note_length) % ARPEGGIO.len() as u128) as usize]);
         if desired == self.held {
             return Ok(());
         }

@@ -52,7 +52,9 @@ impl ReverbCapability {
             )?],
             Vec::new(),
         )?;
-        Ok(Self { descriptor })
+        Ok(Self {
+            descriptor: descriptor.with_effect_category(crate::synth::EffectCategory::ReverbAndIr),
+        })
     }
 
     pub fn default_config(

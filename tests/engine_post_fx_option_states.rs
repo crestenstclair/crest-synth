@@ -27,8 +27,8 @@ use crest_synth::real_time::GraphRevision;
 use crest_synth::synth::effect_slot_id::EffectSlotIndex;
 use crest_synth::synth::sound_font_instrument::SoundFontInstrument;
 use crest_synth::synth::{
-    CapabilityAvailability, CapabilityRegistry, EffectCapabilityRegistry, EffectSlotId,
-    InstrumentConfig, Patch,
+    CapabilityAvailability, CapabilityRegistry, EffectCapabilityRegistry, EffectCategory,
+    EffectSlotId, InstrumentCapabilityProvider, InstrumentCategory, InstrumentConfig, Patch,
 };
 use crest_synth::testing::automatic_midi_test::create_soundfont_config;
 use serde_json::Value;
@@ -115,6 +115,564 @@ fn focused_choice_id(state: &AppState) -> &str {
         SemanticControlId::Modal(ModalControlId::Choice(id)) => id,
         other => panic!("expected choice focus, got {other:?}"),
     }
+}
+
+fn focused_category(state: &AppState) -> InstrumentCategory {
+    SemanticResolver::new(state)
+        .choice_source(choice_subject(state))
+        .unwrap()
+        .active_category(state.interaction().focus_path())
+        .and_then(|category| match category {
+            crest_synth::control::ChoiceCategory::Instrument(category) => Some(category),
+            _ => None,
+        })
+        .unwrap()
+}
+
+fn press(state: &mut AppState, key: crest_synth::shell::WindowKey) {
+    let action = crest_synth::shell::KeyboardInputTranslator::new()
+        .translate(crest_synth::shell::WindowInput::key_down(key))
+        .unwrap();
+    let outcome = state.apply_semantic_action(action).unwrap();
+    assert!(outcome.audio_command().is_none());
+    assert!(outcome.engine_selection_effect().is_none());
+    assert!(!outcome.accepted().saved_session_changed());
+}
+
+fn focused_effect_category(state: &AppState) -> EffectCategory {
+    match SemanticResolver::new(state)
+        .choice_source(choice_subject(state))
+        .unwrap()
+        .active_category(state.interaction().focus_path())
+        .unwrap()
+    {
+        crest_synth::control::ChoiceCategory::Effect(category) => category,
+        other => panic!("expected effect family, got {other:?}"),
+    }
+}
+
+fn focus_choice(state: &mut AppState, id: &str) {
+    let source = SemanticResolver::new(state)
+        .choice_source(choice_subject(state))
+        .unwrap();
+    let target = source
+        .options()
+        .iter()
+        .find(|option| option.id() == id)
+        .unwrap();
+    assert!(target.is_enabled());
+    let category = target.category();
+    loop {
+        let active = source.active_category(state.interaction().focus_path());
+        if active == category {
+            break;
+        }
+        state
+            .apply(AppEvent::Navigate(if active < category {
+                Direction::Right
+            } else {
+                Direction::Left
+            }))
+            .unwrap();
+    }
+    let ids: Vec<_> = source
+        .visible_options(state.interaction().focus_path())
+        .filter(|option| option.is_enabled())
+        .map(|option| option.id())
+        .collect();
+    let mut current = ids
+        .iter()
+        .position(|id| *id == focused_choice_id(state))
+        .unwrap();
+    let target = ids.iter().position(|candidate| *candidate == id).unwrap();
+    while current != target {
+        let direction = if current < target {
+            current += 1;
+            Direction::Down
+        } else {
+            current -= 1;
+            Direction::Up
+        };
+        state.apply(AppEvent::Navigate(direction)).unwrap();
+    }
+}
+
+#[test]
+fn effect_groups_reach_every_installed_effect_and_empty_without_editing_audio() {
+    use crest_synth::shell::WindowKey;
+    use std::collections::BTreeSet;
+    let mut state = installed_state();
+    let before = state.patches()[0].clone();
+    navigate_to(
+        &mut state,
+        &PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]),
+    );
+    let origin = state.interaction().focus_path().clone();
+    open_choice(&mut state);
+    assert_eq!(
+        focused_choice_id(&state),
+        crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID
+    );
+    let categories = [
+        EffectCategory::DelayAndEcho,
+        EffectCategory::ReverbAndIr,
+        EffectCategory::Modulation,
+        EffectCategory::Dynamics,
+        EffectCategory::EqAndFilters,
+        EffectCategory::DriveAndAmp,
+        EffectCategory::PitchAndVoice,
+        EffectCategory::GranularAndSpectral,
+        EffectCategory::Resonators,
+    ];
+    let mut visited = BTreeSet::new();
+    for (group_index, category) in categories.iter().enumerate() {
+        assert_eq!(focused_effect_category(&state), *category);
+        let expected: Vec<_> = (group_index == 0)
+            .then(|| crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID.to_owned())
+            .into_iter()
+            .chain(
+                state
+                    .effects()
+                    .descriptors()
+                    .iter()
+                    .filter(|descriptor| descriptor.effect_category() == *category)
+                    .map(|descriptor| descriptor.id().to_string()),
+            )
+            .collect();
+        let model = project(&state);
+        let document = serde_json::to_value(&model).unwrap();
+        let modal = model.surface(SurfaceId::PatchChoice).unwrap();
+        assert_eq!(
+            surface(&document, "patchChoice")["summary"]["choiceGroupLabel"],
+            category.label()
+        );
+        assert_eq!(modal.controls().len(), expected.len());
+        assert_eq!(
+            modal
+                .controls()
+                .iter()
+                .filter(|control| control.focused())
+                .count(),
+            1
+        );
+        press(&mut state, WindowKey::W);
+        assert_eq!(focused_choice_id(&state), expected.last().unwrap());
+        press(&mut state, WindowKey::S);
+        assert_eq!(focused_choice_id(&state), &expected[0]);
+        for (index, id) in expected.iter().enumerate() {
+            assert_eq!(focused_choice_id(&state), id);
+            assert!(visited.insert(id.clone()));
+            if index + 1 < expected.len() {
+                press(&mut state, WindowKey::S);
+            }
+        }
+        press(&mut state, WindowKey::S);
+        assert_eq!(focused_choice_id(&state), &expected[0]);
+        press(&mut state, WindowKey::W);
+        assert_eq!(focused_choice_id(&state), expected.last().unwrap());
+        assert_eq!(state.patches()[0], before);
+        if group_index + 1 < categories.len() {
+            press(&mut state, WindowKey::D);
+        }
+    }
+    press(&mut state, WindowKey::D);
+    assert_eq!(
+        focused_effect_category(&state),
+        EffectCategory::DelayAndEcho
+    );
+    press(&mut state, WindowKey::A);
+    assert_eq!(focused_effect_category(&state), EffectCategory::Resonators);
+    assert_eq!(
+        visited,
+        std::iter::once(crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID.to_owned())
+            .chain(
+                state
+                    .effects()
+                    .descriptors()
+                    .iter()
+                    .map(|descriptor| descriptor.id().to_string())
+            )
+            .collect()
+    );
+    for _ in 1..categories.len() {
+        press(&mut state, WindowKey::A);
+    }
+    assert_eq!(
+        focused_choice_id(&state),
+        crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID
+    );
+    press(&mut state, WindowKey::A);
+    assert_eq!(focused_effect_category(&state), EffectCategory::Resonators);
+    press(&mut state, WindowKey::D);
+    assert_eq!(
+        focused_effect_category(&state),
+        EffectCategory::DelayAndEcho
+    );
+    press(&mut state, WindowKey::S);
+    press(&mut state, WindowKey::W);
+    state.apply(AppEvent::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &origin);
+    assert_eq!(state.patches()[0], before);
+}
+
+#[test]
+fn effect_groups_skip_unavailable_families_and_keep_clear_available_with_no_providers() {
+    use crest_synth::shell::WindowKey;
+    let registry = EffectCapabilityRegistry::new(
+        production_effect_registry()
+            .unwrap()
+            .descriptors()
+            .iter()
+            .cloned()
+            .map(|descriptor| {
+                if matches!(
+                    descriptor.effect_category(),
+                    EffectCategory::Dynamics
+                        | EffectCategory::DelayAndEcho
+                        | EffectCategory::Resonators
+                ) {
+                    descriptor.with_availability(CapabilityAvailability::Unavailable {
+                        reason: "test provider offline".to_owned(),
+                    })
+                } else {
+                    descriptor
+                }
+            })
+            .collect(),
+    )
+    .unwrap();
+    let mut state = state_with(
+        production_capability_registry().unwrap(),
+        registry,
+        patch_with_duplicate_effects(),
+    );
+    navigate_to(
+        &mut state,
+        &PatchControlId::EffectSlot(EffectSlotIndex::ALL[1]),
+    );
+    let origin = state.interaction().focus_path().clone();
+    let before = state.patches()[0].clone();
+    open_choice(&mut state);
+    assert_eq!(focused_effect_category(&state), EffectCategory::Modulation);
+    press(&mut state, WindowKey::D);
+    assert_eq!(
+        focused_effect_category(&state),
+        EffectCategory::EqAndFilters
+    );
+    let target = focused_choice_id(&state).to_owned();
+    focus_choice(&mut state, crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID);
+    assert_eq!(focused_effect_category(&state), EffectCategory::ReverbAndIr);
+    press(&mut state, WindowKey::A);
+    assert_eq!(
+        focused_effect_category(&state),
+        EffectCategory::GranularAndSpectral
+    );
+    press(&mut state, WindowKey::D);
+    assert_eq!(focused_effect_category(&state), EffectCategory::ReverbAndIr);
+    focus_choice(&mut state, &target);
+    let outcome = state.apply(AppEvent::Activate).unwrap();
+    assert!(outcome.engine_selection_effect().is_some());
+    assert!(
+        matches!(state.engine_selection().correlation().unwrap().intent(), StructuralEditIntent::SetSlotOccupancy { patch_id: PATCH_ID, slot, entry: Some(id) } if *slot == EffectSlotIndex::ALL[1] && id.as_str() == target)
+    );
+    assert_eq!(state.interaction().focus_path(), &origin);
+    assert_eq!(state.patches()[0], before);
+
+    let patch = Patch::new(
+        PATCH_ID,
+        "No effects".to_owned(),
+        soundfont_config(),
+        MidiChannel::new(0).unwrap(),
+        PatchOutput::default(),
+    );
+    let mut empty = state_with(
+        production_capability_registry().unwrap(),
+        EffectCapabilityRegistry::new(Vec::new()).unwrap(),
+        patch,
+    );
+    navigate_to(
+        &mut empty,
+        &PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]),
+    );
+    open_choice(&mut empty);
+    assert_eq!(
+        focused_choice_id(&empty),
+        crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID
+    );
+    assert_eq!(
+        project(&empty)
+            .surface(SurfaceId::PatchChoice)
+            .unwrap()
+            .controls()
+            .len(),
+        1
+    );
+    for key in [WindowKey::A, WindowKey::D, WindowKey::W, WindowKey::S] {
+        let focus = empty.interaction().focus_path().clone();
+        press(&mut empty, key);
+        assert_eq!(empty.interaction().focus_path(), &focus);
+    }
+    assert!(empty
+        .apply(AppEvent::Activate)
+        .unwrap()
+        .engine_selection_effect()
+        .is_none());
+}
+
+#[test]
+fn older_effect_descriptors_remain_loadable_and_unclassified_effects_remain_reachable() {
+    let mut serialized =
+        serde_json::to_value(&production_effect_registry().unwrap().descriptors()[0]).unwrap();
+    serialized.as_object_mut().unwrap().remove("effectCategory");
+    let descriptor: crest_synth::synth::EffectCapabilityDescriptor =
+        serde_json::from_value(serialized).unwrap();
+    assert_eq!(descriptor.effect_category(), EffectCategory::Other);
+    let mut state = state_with(
+        production_capability_registry().unwrap(),
+        EffectCapabilityRegistry::new(vec![descriptor]).unwrap(),
+        patch_with_duplicate_effects(),
+    );
+    navigate_to(
+        &mut state,
+        &PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]),
+    );
+    open_choice(&mut state);
+    assert_eq!(focused_effect_category(&state), EffectCategory::Other);
+    assert_eq!(
+        project(&state)
+            .surface(SurfaceId::PatchChoice)
+            .unwrap()
+            .controls()
+            .len(),
+        2
+    );
+    press(&mut state, crest_synth::shell::WindowKey::W);
+    let empty_focus = state.interaction().focus_path().clone();
+    assert_eq!(
+        focused_choice_id(&state),
+        crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID
+    );
+    press(&mut state, crest_synth::shell::WindowKey::A);
+    press(&mut state, crest_synth::shell::WindowKey::D);
+    assert_eq!(state.interaction().focus_path(), &empty_focus);
+}
+
+#[test]
+fn instrument_groups_reach_every_installed_engine_through_physical_keys() {
+    use crest_synth::shell::WindowKey;
+    use std::collections::BTreeSet;
+    let mut state = installed_state();
+    let original_config = state.patches()[0].instrument_config().clone();
+    let origin = state.interaction().focus_path().clone();
+    open_choice(&mut state);
+    assert_eq!(focused_category(&state), InstrumentCategory::Samplers);
+    let categories = [
+        InstrumentCategory::Synths,
+        InstrumentCategory::KeysAndOrgans,
+        InstrumentCategory::Strings,
+        InstrumentCategory::WindsAndVoices,
+        InstrumentCategory::Resonators,
+        InstrumentCategory::DrumsAndPercussion,
+        InstrumentCategory::Samplers,
+    ];
+    for _ in 1..categories.len() {
+        press(&mut state, WindowKey::A);
+    }
+    press(&mut state, WindowKey::A);
+    assert_eq!(focused_category(&state), InstrumentCategory::Samplers);
+    press(&mut state, WindowKey::D);
+    assert_eq!(focused_category(&state), InstrumentCategory::Synths);
+    let mut visited = BTreeSet::new();
+    for (index, category) in categories.iter().enumerate() {
+        assert_eq!(focused_category(&state), *category);
+        let expected: Vec<_> = state
+            .capabilities()
+            .descriptors()
+            .iter()
+            .filter(|descriptor| descriptor.instrument_category() == *category)
+            .map(|descriptor| descriptor.id().to_string())
+            .collect();
+        let model = project(&state);
+        let modal = model.surface(SurfaceId::PatchChoice).unwrap();
+        let document = serde_json::to_value(&model).unwrap();
+        assert_eq!(
+            surface(&document, "patchChoice")["summary"]["choiceGroupLabel"],
+            category.label()
+        );
+        assert_eq!(modal.controls().len(), expected.len());
+        assert_eq!(
+            modal.controls().iter().filter(|row| row.focused()).count(),
+            1
+        );
+        press(&mut state, WindowKey::W);
+        assert_eq!(focused_choice_id(&state), expected.last().unwrap());
+        press(&mut state, WindowKey::S);
+        assert_eq!(focused_choice_id(&state), &expected[0]);
+        for (row_index, id) in expected.iter().enumerate() {
+            assert_eq!(focused_choice_id(&state), id);
+            visited.insert(id.clone());
+            if row_index + 1 < expected.len() {
+                press(&mut state, WindowKey::S);
+                press(&mut state, WindowKey::W);
+                assert_eq!(focused_choice_id(&state), id);
+                press(&mut state, WindowKey::S);
+            }
+        }
+        press(&mut state, WindowKey::S);
+        assert_eq!(focused_choice_id(&state), &expected[0]);
+        press(&mut state, WindowKey::W);
+        assert_eq!(focused_choice_id(&state), expected.last().unwrap());
+        assert_eq!(state.patches()[0].instrument_config(), &original_config);
+        if index + 1 < categories.len() {
+            press(&mut state, WindowKey::D);
+        }
+    }
+    assert_eq!(
+        visited,
+        state
+            .capabilities()
+            .descriptors()
+            .iter()
+            .map(|descriptor| descriptor.id().to_string())
+            .collect()
+    );
+    press(&mut state, WindowKey::D);
+    assert_eq!(focused_category(&state), InstrumentCategory::Synths);
+    press(&mut state, WindowKey::A);
+    assert_eq!(focused_category(&state), InstrumentCategory::Samplers);
+    state.apply(AppEvent::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &origin);
+    assert_eq!(state.patches()[0].instrument_config(), &original_config);
+}
+
+#[test]
+fn group_navigation_skips_unavailable_families_and_confirmation_requests_exact_engine() {
+    use crest_synth::shell::WindowKey;
+    let registry = CapabilityRegistry::new(
+        production_capability_registry()
+            .unwrap()
+            .descriptors()
+            .iter()
+            .cloned()
+            .map(|descriptor| {
+                if descriptor.instrument_category() == InstrumentCategory::DrumsAndPercussion {
+                    descriptor.with_availability(CapabilityAvailability::Unavailable {
+                        reason: "test provider offline".to_owned(),
+                    })
+                } else {
+                    descriptor
+                }
+            })
+            .collect(),
+    )
+    .unwrap();
+    let mut state = state_with(
+        registry,
+        production_effect_registry().unwrap(),
+        patch_with_duplicate_effects(),
+    );
+    let original = state.patches()[0].instrument_config().clone();
+    let origin = state.interaction().focus_path().clone();
+    open_choice(&mut state);
+    press(&mut state, WindowKey::A);
+    assert_eq!(focused_category(&state), InstrumentCategory::Resonators);
+    press(&mut state, WindowKey::D);
+    assert_eq!(focused_choice_id(&state), original.capability_id().as_str());
+    press(&mut state, WindowKey::A);
+    let requested = focused_choice_id(&state).to_owned();
+    let outcome = state.apply(AppEvent::Activate).unwrap();
+    assert!(outcome.engine_selection_effect().is_some());
+    assert_eq!(
+        state
+            .engine_selection()
+            .correlation()
+            .unwrap()
+            .target_capability_id()
+            .unwrap()
+            .as_str(),
+        requested
+    );
+    assert_eq!(state.patches()[0].instrument_config(), &original);
+    assert_eq!(state.interaction().focus_path(), &origin);
+}
+
+#[test]
+fn empty_patch_group_browsing_does_not_create_a_patch_and_effects_use_current_group() {
+    use crest_synth::shell::WindowKey;
+    let mut state = installed_state();
+    let factory = crest_synth::synth::DescriptorDefaultConfigFactory::new(
+        state.capabilities().clone(),
+        crest_synth::adapter::production_instruments::production_instrument_providers().unwrap(),
+    );
+    let blueprint = crest_synth::control::PatchCreationBlueprint::resolve(
+        state.patches()[0].instrument_config().capability_id(),
+        &factory,
+    )
+    .unwrap();
+    state = state.with_patch_creation_blueprint(blueprint);
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .unwrap();
+    let origin = state.interaction().focus_path().clone();
+    assert_eq!(
+        origin.patch_position(),
+        Some(crest_synth::control::PatchPositionId::TrailingEmpty)
+    );
+    open_choice(&mut state);
+    press(&mut state, WindowKey::A);
+    assert_eq!(
+        focused_category(&state),
+        InstrumentCategory::DrumsAndPercussion
+    );
+    assert_eq!(
+        project(&state).focused_control().unwrap().path(),
+        state.interaction().focus_path()
+    );
+    assert_eq!(state.patches().len(), 1);
+    assert!(state.engine_selection().correlation().is_none());
+    state.apply(AppEvent::Return).unwrap();
+    assert_eq!(state.interaction().focus_path(), &origin);
+    state.apply(AppEvent::SelectPatch(Direction::Left)).unwrap();
+    navigate_to(
+        &mut state,
+        &PatchControlId::EffectSlot(EffectSlotIndex::ALL[0]),
+    );
+    open_choice(&mut state);
+    let document = serde_json::to_value(project(&state)).unwrap();
+    assert_eq!(
+        surface(&document, "patchChoice")["summary"]["choiceGroupLabel"],
+        "Modulation"
+    );
+    assert_eq!(
+        surface(&document, "patchChoice")["controls"]
+            .as_array()
+            .unwrap()
+            .len(),
+        state
+            .effects()
+            .descriptors()
+            .iter()
+            .filter(|descriptor| descriptor.effect_category() == EffectCategory::Modulation)
+            .count()
+    );
+    press(&mut state, WindowKey::A);
+    assert_eq!(focused_effect_category(&state), EffectCategory::ReverbAndIr);
+    press(&mut state, WindowKey::D);
+    assert_eq!(focused_effect_category(&state), EffectCategory::Modulation);
+}
+
+#[test]
+fn instrument_category_deserializes_older_descriptors_without_changing_identity() {
+    let descriptor = BraidsCapability::new().unwrap().descriptor();
+    let mut serialized = serde_json::to_value(&descriptor).unwrap();
+    serialized
+        .as_object_mut()
+        .unwrap()
+        .remove("instrumentCategory");
+    let restored: crest_synth::synth::CapabilityDescriptor =
+        serde_json::from_value(serialized).unwrap();
+    assert_eq!(restored, descriptor);
+    assert_eq!(restored.instrument_category(), InstrumentCategory::Synths);
 }
 
 fn project(state: &AppState) -> crest_synth::control::SemanticGraphicalViewModel {
@@ -222,7 +780,15 @@ fn registry_options_drive_order_availability_initial_focus_and_empty() {
             .with_availability(CapabilityAvailability::Unavailable {
                 reason: "provider offline".to_owned(),
             });
-    let expected_engine_id = descriptors[1].id().to_string();
+    let expected_engine_id = descriptors
+        .iter()
+        .find(|descriptor| {
+            descriptor.availability().is_enabled()
+                && descriptor.instrument_category() == descriptors[0].instrument_category()
+        })
+        .unwrap()
+        .id()
+        .to_string();
     let expected_engine_labels = descriptors
         .iter()
         .map(|descriptor| descriptor.label().to_owned())
@@ -256,7 +822,12 @@ fn registry_options_drive_order_availability_initial_focus_and_empty() {
     assert_eq!(focused_choice_id(&engine), expected_engine_id);
     let model = project(&engine);
     let option_surface = model.surface(SurfaceId::PatchChoice).unwrap();
-    assert_eq!(option_surface.controls().len(), source.options().len());
+    assert_eq!(
+        option_surface.controls().len(),
+        source
+            .visible_options(engine.interaction().focus_path())
+            .count()
+    );
     assert!(!option_surface.controls()[0].focusable());
     assert!(option_surface.controls()[0].valid_actions().is_empty());
 
@@ -293,8 +864,16 @@ fn registry_options_drive_order_availability_initial_focus_and_empty() {
     assert!(source.options()[1].is_current());
     assert!(!source.options()[1].is_enabled());
     assert_eq!(
+        focused_effect_category(&post_fx),
+        EffectCategory::Modulation
+    );
+    assert_eq!(
         focused_choice_id(&post_fx),
-        crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID
+        source
+            .visible_options(post_fx.interaction().focus_path())
+            .find(|option| option.is_enabled())
+            .unwrap()
+            .id()
     );
 
     let unavailable = CapabilityAvailability::Unavailable {
@@ -330,9 +909,11 @@ fn registry_options_drive_order_availability_initial_focus_and_empty() {
 #[test]
 fn engine_options_serialization_is_exact_stable_and_origin_anchored() {
     let registry = unavailable_instrument_registry();
+    let category = registry.descriptors()[0].instrument_category();
     let expected = registry
         .descriptors()
         .iter()
+        .filter(|descriptor| descriptor.instrument_category() == category)
         .map(|descriptor| {
             (
                 descriptor.id().to_string(),
@@ -396,19 +977,6 @@ fn engine_options_serialization_is_exact_stable_and_origin_anchored() {
 #[test]
 fn post_fx_options_serialization_is_exact_for_every_slot_and_duplicate() {
     let effects = unavailable_effect_registry();
-    let expected = std::iter::once((
-        crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID.to_owned(),
-        "EMPTY".to_owned(),
-        None,
-    ))
-    .chain(effects.descriptors().iter().map(|descriptor| {
-        (
-            descriptor.id().to_string(),
-            descriptor.label().to_owned(),
-            descriptor.availability().reason().map(str::to_owned),
-        )
-    }))
-    .collect::<Vec<_>>();
     let mut modal_ids = Vec::new();
     for slot in EffectSlotIndex::ALL {
         let mut state = state_with(
@@ -418,6 +986,35 @@ fn post_fx_options_serialization_is_exact_for_every_slot_and_duplicate() {
         );
         navigate_to(&mut state, &PatchControlId::EffectSlot(slot));
         open_choice(&mut state);
+        let category = if slot == EffectSlotIndex::ALL[2] {
+            EffectCategory::DelayAndEcho
+        } else {
+            EffectCategory::Modulation
+        };
+        let expected = (slot == EffectSlotIndex::ALL[2])
+            .then(|| {
+                (
+                    crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID.to_owned(),
+                    "EMPTY".to_owned(),
+                    None,
+                )
+            })
+            .into_iter()
+            .chain(
+                effects
+                    .descriptors()
+                    .iter()
+                    .filter(|descriptor| descriptor.effect_category() == category)
+                    .map(|descriptor| {
+                        (
+                            descriptor.id().to_string(),
+                            descriptor.label().to_owned(),
+                            descriptor.availability().reason().map(str::to_owned),
+                        )
+                    }),
+            )
+            .collect::<Vec<_>>();
+        assert_eq!(focused_effect_category(&state), category);
         let first = serde_json::to_string(&project(&state)).unwrap();
         let second = serde_json::to_string(&project(&state)).unwrap();
         assert_eq!(first, second, "slot {} JSON is byte stable", slot.index());
@@ -448,14 +1045,7 @@ fn post_fx_options_serialization_is_exact_for_every_slot_and_duplicate() {
             .filter(|(_, row)| row["selectedLabel"] == "CURRENT")
             .collect::<Vec<_>>();
         assert_eq!(current.len(), 1);
-        assert_eq!(
-            current[0].0,
-            if slot == EffectSlotIndex::ALL[2] {
-                0
-            } else {
-                1
-            }
-        );
+        assert_eq!(current[0].0, 0);
         assert_eq!(rows.iter().filter(|row| row["focused"] == true).count(), 1);
         modal_ids.push(document["focusPath"]["modalId"].clone());
     }
@@ -515,9 +1105,7 @@ fn option_lifecycle_failure_and_repair_serialize_at_the_exact_origin() {
         &PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]),
     );
     open_choice(&mut failed_slot);
-    failed_slot
-        .apply(AppEvent::Navigate(Direction::Down))
-        .unwrap();
+    focus_choice(&mut failed_slot, "effect.chorus");
     failed_slot.apply(AppEvent::Activate).unwrap();
     open_choice(&mut failed_slot);
     let correlation = failed_slot
@@ -585,26 +1173,21 @@ fn choice_navigation_actions_choose_and_close_are_reducer_owned() {
     let origin = current.interaction().focus_path().clone();
     open_choice(&mut current);
     let current_id = focused_choice_id(&current).to_owned();
-    let at_start = current.clone();
-    assert_eq!(
-        current.apply(AppEvent::Navigate(Direction::Up)),
-        Err(EventRejection::ActionUnavailableInContext)
-    );
-    assert_eq!(current, at_start);
-    for direction in [Direction::Left, Direction::Right] {
-        let unchanged = current.clone();
-        assert_eq!(
-            current.apply(AppEvent::Navigate(direction)),
-            Err(EventRejection::ActionUnavailableInContext)
-        );
-        assert_eq!(current, unchanged);
-    }
+    press(&mut current, crest_synth::shell::WindowKey::W);
+    press(&mut current, crest_synth::shell::WindowKey::S);
+    assert_eq!(focused_choice_id(&current), current_id);
+    press(&mut current, crest_synth::shell::WindowKey::D);
+    assert_eq!(focused_category(&current), InstrumentCategory::Synths);
+    press(&mut current, crest_synth::shell::WindowKey::A);
+    assert_eq!(focused_choice_id(&current), current_id);
     let model = project(&current);
     let focused = model.focused_control().unwrap();
     assert_eq!(focused.path(), current.interaction().focus_path());
     for action in [
         SemanticAction::Navigate(Direction::Up),
         SemanticAction::Navigate(Direction::Down),
+        SemanticAction::Navigate(Direction::Left),
+        SemanticAction::Navigate(Direction::Right),
         SemanticAction::Activate,
         SemanticAction::Return,
     ] {
@@ -780,7 +1363,9 @@ fn choose_changed_engine() -> (AppState, InstrumentConfig, InstrumentConfig) {
     let mut state = installed_state();
     let active = state.patches()[0].instrument_config().clone();
     open_choice(&mut state);
-    state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    while focused_category(&state) != InstrumentCategory::Synths {
+        state.apply(AppEvent::Navigate(Direction::Left)).unwrap();
+    }
     state.apply(AppEvent::Activate).unwrap();
     let requested = BraidsCapability::new().unwrap().default_config().unwrap();
     (state, active, requested)
@@ -980,7 +1565,7 @@ fn engine_and_slot_lifecycles_retain_acknowledged_truth_until_matching_ack() {
         &PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]),
     );
     open_choice(&mut slot);
-    slot.apply(AppEvent::Navigate(Direction::Down)).unwrap();
+    focus_choice(&mut slot, "effect.chorus");
     slot.apply(AppEvent::Activate).unwrap();
     let intent = slot
         .engine_selection()
@@ -1049,9 +1634,7 @@ fn engine_and_slot_lifecycles_retain_acknowledged_truth_until_matching_ack() {
             &PatchControlId::EffectSlot(EffectSlotIndex::ALL[2]),
         );
         open_choice(&mut failed_slot);
-        failed_slot
-            .apply(AppEvent::Navigate(Direction::Down))
-            .unwrap();
+        focus_choice(&mut failed_slot, "effect.chorus");
         failed_slot.apply(AppEvent::Activate).unwrap();
         let correlation = failed_slot
             .engine_selection()
@@ -1120,7 +1703,7 @@ fn engine_and_slot_lifecycles_retain_acknowledged_truth_until_matching_ack() {
         .unwrap()
         .clone();
     open_choice(&mut clear);
-    clear.apply(AppEvent::Navigate(Direction::Up)).unwrap();
+    focus_choice(&mut clear, crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID);
     assert_eq!(
         focused_choice_id(&clear),
         crest_synth::control::EMPTY_OCCUPANCY_CHOICE_ID

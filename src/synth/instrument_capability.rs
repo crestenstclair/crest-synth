@@ -4,6 +4,7 @@ use crate::synth::capability_visualization::CapabilityVisualization;
 use crate::synth::parameter_id::ParameterId;
 use core::fmt;
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 /// Registry-owned availability of one installed capability descriptor.
 ///
@@ -334,6 +335,49 @@ impl ParameterPredicate {
     }
 }
 
+/// A named region of a continuous parameter, evaluated on its f32 DSP scalar.
+/// Optional affine amounts use the upstream's whole-number display convention.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContinuousValueLabel {
+    range: ParameterRange,
+    label: String,
+    value_scale: Option<f64>,
+    value_offset: f64,
+    value_unit: String,
+}
+
+impl ContinuousValueLabel {
+    pub fn new(range: ParameterRange, label: impl Into<String>) -> Self {
+        Self {
+            range,
+            label: label.into(),
+            value_scale: None,
+            value_offset: 0.0,
+            value_unit: String::new(),
+        }
+    }
+
+    pub fn with_amount(mut self, scale: f64, offset: f64, unit: impl Into<String>) -> Self {
+        self.value_scale = Some(scale);
+        self.value_offset = offset;
+        self.value_unit = unit.into();
+        self
+    }
+
+    fn text(&self, value: f64) -> Cow<'_, str> {
+        match self.value_scale {
+            Some(scale) => Cow::Owned(format!(
+                "{} {:.0}{}",
+                self.label,
+                value * scale + self.value_offset,
+                self.value_unit
+            )),
+            None => Cow::Borrowed(&self.label),
+        }
+    }
+}
+
 /// Immutable schema and presentation metadata for one capability parameter.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -346,6 +390,12 @@ pub struct ParameterSpec {
     default_value: ParameterDefault,
     range: Option<ParameterRange>,
     choices: Vec<ParameterChoice>,
+    /// Optional names for every integer from the inclusive range minimum.
+    #[serde(default)]
+    stepped_labels: Vec<String>,
+    /// Presentation only: continuous editing and saved values remain unchanged.
+    #[serde(default)]
+    continuous_labels: Vec<ContinuousValueLabel>,
     fine_step: Option<f64>,
     coarse_step: Option<f64>,
     unit: Option<String>,
@@ -415,6 +465,8 @@ impl ParameterSpec {
             default_value,
             range,
             choices,
+            stepped_labels: Vec::new(),
+            continuous_labels: Vec::new(),
             fine_step,
             coarse_step,
             unit,
@@ -456,6 +508,51 @@ impl ParameterSpec {
 
     pub fn choices(&self) -> &[ParameterChoice] {
         &self.choices
+    }
+
+    /// Adds display names without changing the stored numeric value or RT encoding.
+    pub fn with_stepped_labels(mut self, labels: Vec<String>) -> Result<Self, CapabilityError> {
+        self.stepped_labels = labels;
+        self.validate_shape()?;
+        Ok(self)
+    }
+
+    pub fn with_continuous_labels(
+        mut self,
+        labels: Vec<ContinuousValueLabel>,
+    ) -> Result<Self, CapabilityError> {
+        self.continuous_labels = labels;
+        self.validate_shape()?;
+        Ok(self)
+    }
+
+    /// Resolves descriptor-owned presentation without changing the stored value.
+    pub fn value_label(&self, value: &ParameterValue) -> Option<Cow<'_, str>> {
+        match value {
+            ParameterValue::Choice(id) => self
+                .choices
+                .iter()
+                .find(|choice| choice.id() == id)
+                .map(|choice| Cow::Borrowed(choice.label())),
+            ParameterValue::Stepped(value) => {
+                let minimum = self.range?.minimum as i128;
+                let index = usize::try_from(i128::from(*value).checked_sub(minimum)?).ok()?;
+                self.stepped_labels
+                    .get(index)
+                    .map(|label| Cow::Borrowed(label.as_str()))
+            }
+            ParameterValue::Continuous(value) => {
+                if !value.is_finite() || !self.range?.contains(*value) {
+                    return None;
+                }
+                let scalar = f64::from(*value as f32);
+                self.continuous_labels
+                    .iter()
+                    .find(|label| label.range.contains(scalar))
+                    .map(|label| label.text(scalar))
+            }
+            _ => None,
+        }
     }
 
     pub const fn fine_step(&self) -> Option<f64> {
@@ -595,6 +692,63 @@ impl ParameterSpec {
             .map_err(|_| CapabilityError::InvalidMetadataIdentifier(self.formatter.clone()))?;
         if self.unit.as_ref().is_some_and(String::is_empty) {
             return Err(CapabilityError::EmptyUnit);
+        }
+        if !self.stepped_labels.is_empty() {
+            let valid = self.kind == ParameterKind::Stepped
+                && self.range.is_some_and(|range| {
+                    let minimum = range.minimum as i128;
+                    let maximum = range.maximum as i128;
+                    range.minimum.is_finite()
+                        && range.maximum.is_finite()
+                        && range.minimum.fract() == 0.0
+                        && range.maximum.fract() == 0.0
+                        && minimum >= i128::from(i64::MIN)
+                        && maximum <= i128::from(i64::MAX)
+                        && maximum
+                            .checked_sub(minimum)
+                            .and_then(|span| span.checked_add(1))
+                            == Some(self.stepped_labels.len() as i128)
+                })
+                && self
+                    .stepped_labels
+                    .iter()
+                    .all(|label| !label.trim().is_empty());
+            if !valid {
+                return Err(CapabilityError::InvalidParameterShape {
+                    parameter_id: self.id.clone(),
+                    reason: "stepped labels require one nonempty name per integer in the range",
+                });
+            }
+        }
+        if !self.continuous_labels.is_empty() {
+            let valid = self.kind == ParameterKind::Continuous
+                && self.range.is_some_and(|range| {
+                    self.continuous_labels.iter().all(|label| {
+                        let bounds = label.range;
+                        bounds.minimum.is_finite()
+                            && bounds.maximum.is_finite()
+                            && bounds.minimum <= bounds.maximum
+                            && range.contains(bounds.minimum)
+                            && range.contains(bounds.maximum)
+                            && !label.label.trim().is_empty()
+                            && label.value_offset.is_finite()
+                            && label.value_scale.is_none_or(|scale| {
+                                scale.is_finite()
+                                    && (bounds.minimum * scale + label.value_offset).is_finite()
+                                    && (bounds.maximum * scale + label.value_offset).is_finite()
+                            })
+                    })
+                })
+                && self
+                    .continuous_labels
+                    .windows(2)
+                    .all(|pair| pair[0].range.maximum < pair[1].range.minimum);
+            if !valid {
+                return Err(CapabilityError::InvalidParameterShape {
+                    parameter_id: self.id.clone(),
+                    reason: "continuous labels require ordered nonoverlapping finite ranges and nonempty names",
+                });
+            }
         }
         if self.choices.len() > 1 {
             // Large asset catalogs must not make every config validation
@@ -817,6 +971,35 @@ impl AssetRequirement {
     }
 }
 
+/// Musical families used to browse installed instruments. Providers own the
+/// classification; the order is independent of registry installation order.
+#[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum InstrumentCategory {
+    #[default]
+    Synths,
+    KeysAndOrgans,
+    Strings,
+    WindsAndVoices,
+    Resonators,
+    DrumsAndPercussion,
+    Samplers,
+}
+
+impl InstrumentCategory {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Synths => "Synths",
+            Self::KeysAndOrgans => "Keys & Organs",
+            Self::Strings => "Strings",
+            Self::WindsAndVoices => "Winds & Voices",
+            Self::Resonators => "Resonators",
+            Self::DrumsAndPercussion => "Drums & Percussion",
+            Self::Samplers => "Samplers",
+        }
+    }
+}
+
 /// The immutable ordered control-side schema for one instrument capability.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -824,6 +1007,8 @@ pub struct CapabilityDescriptor {
     id: CapabilityId,
     label: String,
     semantic_accent: String,
+    #[serde(default)]
+    instrument_category: InstrumentCategory,
     #[serde(default)]
     availability: CapabilityAvailability,
     sections: Vec<CapabilitySection>,
@@ -850,6 +1035,7 @@ impl CapabilityDescriptor {
             id,
             label: label.into(),
             semantic_accent: semantic_accent.into(),
+            instrument_category: InstrumentCategory::default(),
             availability: CapabilityAvailability::Available,
             sections,
             visualizations: vec![CapabilityVisualization::envelope(
@@ -875,6 +1061,15 @@ impl CapabilityDescriptor {
 
     pub fn semantic_accent(&self) -> &str {
         &self.semantic_accent
+    }
+
+    pub const fn instrument_category(&self) -> InstrumentCategory {
+        self.instrument_category
+    }
+
+    pub fn with_instrument_category(mut self, category: InstrumentCategory) -> Self {
+        self.instrument_category = category;
+        self
     }
 
     pub const fn availability(&self) -> &CapabilityAvailability {

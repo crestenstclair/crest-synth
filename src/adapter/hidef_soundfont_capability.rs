@@ -101,7 +101,9 @@ impl HiDefSoundFontCapability {
             HIDEF_SUPPORTED_MIDI_KINDS.to_vec(),
         )?;
         Ok(Self {
-            descriptor: descriptor.with_asset_scoped_choices(),
+            descriptor: descriptor
+                .with_instrument_category(crate::synth::InstrumentCategory::Samplers)
+                .with_asset_scoped_choices(),
         })
     }
 

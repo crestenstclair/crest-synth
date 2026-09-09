@@ -268,6 +268,7 @@ pub struct SemanticControlViewModel {
     unit: Option<String>,
     browser_metadata: Option<SemanticBrowserMetadata>,
     availability_label: Option<String>,
+    read_only_label: Option<String>,
     enabled: bool,
     visible: bool,
     focusable: bool,
@@ -298,24 +299,8 @@ impl SemanticControlViewModel {
         &self.value
     }
 
-    /// The authored label the owning descriptor gives the option this row's
-    /// stored choice id names, or `None` on a row whose value is not a choice.
-    ///
-    /// The canonical value stays the stored id — [`Self::value`] still carries
-    /// `ParameterValue::Choice("sf2.bank-0.program-40")`, because that is what
-    /// the config holds and what the reducer edits. This carries the *name*
-    /// beside it, from the one producer that owns it
-    /// ([`ParameterSpec::choices`]), exactly as
-    /// [`crate::control::PatchPageParameterRow::selected_label`] already does.
-    ///
-    /// It exists because without it a choice id was on screen. The webview
-    /// consumes exactly the serde serialization of this model, so the PATCH page's
-    /// `selectedLabel` never reached it and the shipped Preset row painted
-    /// `sf2.bank-0.program-40` while `DESIGN.md` calls it "the **authored-name**
-    /// Preset row" and declares SoundFont presets "labeled with exact authored
-    /// SF2 names". The product contract forbids a serialization key on
-    /// screen as a *label*; this key reached the screen as a *value*, which the
-    /// label guard could not see.
+    /// The descriptor-owned name for a choice or named stepped value.
+    /// The canonical value remains its original choice ID or integer.
     pub fn selected_label(&self) -> Option<&str> {
         self.selected_label.as_deref()
     }
@@ -336,6 +321,11 @@ impl SemanticControlViewModel {
     /// chosen, or `None` for ordinary available and dependency-disabled rows.
     pub fn availability_label(&self) -> Option<&str> {
         self.availability_label.as_deref()
+    }
+
+    /// A more specific explanation for a read-only parameter, when available.
+    pub fn read_only_label(&self) -> Option<&str> {
+        self.read_only_label.as_deref()
     }
 
     pub const fn enabled(&self) -> bool {
@@ -547,6 +537,8 @@ pub enum SemanticSurfaceSummary {
     PatchChoice {
         patch_position: crate::control::PatchPositionId,
         subject: PatchChoiceSubject,
+        #[serde(default, alias = "instrumentCategoryLabel")]
+        choice_group_label: Option<String>,
     },
     FileBrowser {
         patch_id: Option<PatchId>,
@@ -995,15 +987,15 @@ impl SemanticGraphicalViewModel {
         "surfaces[].controls[].path.modalId",
         "surfaces[].controls[].path.patchId",
         "surfaces[].controls[].path.surface",
+        "surfaces[].controls[].readOnlyLabel",
         "surfaces[].controls[].requestedLabel",
         "surfaces[].controls[].requestedValue",
         "surfaces[].controls[].requestedValue.kind",
         "surfaces[].controls[].requestedValue.value",
         "surfaces[].controls[].requestedValue.value.kind",
         "surfaces[].controls[].requestedValue.value.value",
-        // The authored name for a choice row's stored id. Present on every
-        // control and `null` wherever the value is not a choice, so a fixture
-        // that never opens a choice row still discovers the leaf.
+        // The descriptor-owned name for a choice or named stepped value;
+        // null when no display name is declared.
         "surfaces[].controls[].selectedLabel",
         "surfaces[].controls[].status",
         "surfaces[].controls[].status.graphRevision",
@@ -1059,6 +1051,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].summary.focusedControl.trackId",
         "surfaces[].summary.focusedTrack",
         "surfaces[].summary.globalParameterCount",
+        "surfaces[].summary.choiceGroupLabel",
         "surfaces[].summary.kind",
         "surfaces[].summary.patchCount",
         "surfaces[].summary.patchId",
@@ -1128,7 +1121,9 @@ impl SemanticGraphicalViewModel {
         // which is the variant that names an exact occupied position — so a
         // fixture that opens only an instrument detail entry cannot see it.
         "surfaces[].summary.subject.capabilityId",
+        "surfaces[].summary.subject.controlId",
         "surfaces[].summary.subject.kind",
+        "surfaces[].summary.subject.patchId",
         "surfaces[].summary.subject.slotId",
         "surfaces[].visualizations[].data.asset.kind",
         "surfaces[].visualizations[].data.asset.locator",
@@ -1444,6 +1439,7 @@ fn fixture_surfaces(
         unit: None,
         browser_metadata: None,
         availability_label: None,
+        read_only_label: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -1898,6 +1894,7 @@ fn project_midi_device_settings_surface(
             unit: None,
             browser_metadata: None,
             availability_label: Some("WATCHING FOR DEVICES".to_owned()),
+            read_only_label: None,
             enabled: true,
             visible: true,
             focusable: true,
@@ -1922,6 +1919,7 @@ fn project_midi_device_settings_surface(
                 unit: None,
                 browser_metadata: None,
                 availability_label: (!row.present).then(|| "NOT PRESENT".to_owned()),
+                read_only_label: None,
                 enabled: true,
                 visible: true,
                 focusable: true,
@@ -2258,6 +2256,7 @@ fn project_patch_surfaces(
         unit: None,
         browser_metadata: None,
         availability_label: None,
+        read_only_label: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -2316,6 +2315,7 @@ fn project_patch_surfaces(
             unit: None,
             browser_metadata: None,
             availability_label: None,
+            read_only_label: None,
             enabled: true,
             visible: true,
             focusable: true,
@@ -2534,6 +2534,7 @@ fn project_patch_surfaces(
                 unit,
                 browser_metadata: None,
                 availability_label: None,
+                read_only_label: None,
                 enabled: true,
                 visible: true,
                 focusable: true,
@@ -2701,6 +2702,7 @@ fn project_patch_surfaces(
                         unit: descriptor.unit().map(str::to_owned),
                         browser_metadata: None,
                         availability_label: None,
+                        read_only_label: None,
                         enabled: true,
                         visible: true,
                         focusable: true,
@@ -2779,8 +2781,7 @@ fn project_patch_surfaces(
             .choice_source(subject)
             .map_err(map_resolver_error)?;
         let choice_controls = source
-            .options()
-            .iter()
+            .visible_options(active)
             .map(|option| {
                 let path = FocusPath::patch_choice_at(
                     subject.patch_position(),
@@ -2797,6 +2798,7 @@ fn project_patch_surfaces(
                     unit: None,
                     browser_metadata: None,
                     availability_label: option.availability().reason().map(str::to_owned),
+                    read_only_label: None,
                     enabled: option.is_enabled(),
                     visible: true,
                     focusable: option.is_enabled(),
@@ -2827,6 +2829,9 @@ fn project_patch_surfaces(
             summary: SemanticSurfaceSummary::PatchChoice {
                 patch_position,
                 subject: subject.clone(),
+                choice_group_label: source
+                    .active_category(active)
+                    .map(|category| category.label().to_owned()),
             },
         });
     }
@@ -2899,6 +2904,7 @@ fn project_file_browser_surface(
                 unit: None,
                 browser_metadata: project_browser_metadata(row, state.file_browser().asset_kind()),
                 availability_label: None,
+                read_only_label: None,
                 enabled: true,
                 visible: true,
                 focusable: true,
@@ -3369,6 +3375,7 @@ fn project_mixer_surfaces(
                     unit: None,
                     browser_metadata: None,
                     availability_label: None,
+                    read_only_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -3414,6 +3421,7 @@ fn project_mixer_surfaces(
                     unit: None,
                     browser_metadata: None,
                     availability_label: None,
+                    read_only_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -3446,6 +3454,7 @@ fn project_mixer_surfaces(
                     unit: None,
                     browser_metadata: None,
                     availability_label: None,
+                    read_only_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -3504,6 +3513,7 @@ fn project_mixer_surfaces(
                     unit: Some(descriptor.unit().to_owned()),
                     browser_metadata: None,
                     availability_label: None,
+                    read_only_label: None,
                     enabled: true,
                     visible: true,
                     focusable: true,
@@ -3597,6 +3607,7 @@ fn track_control(
         unit: descriptor.unit().map(str::to_owned),
         browser_metadata: None,
         availability_label: None,
+        read_only_label: None,
         enabled: true,
         visible: true,
         focusable: true,
@@ -3635,20 +3646,10 @@ fn control_from_parameter(
             spec.coarse_step().unwrap_or(1.0),
         )
     });
-    // The authored name for the stored choice id, from the descriptor that
-    // declared both. The canonical value below stays the id; this carries the
-    // name beside it, the way `PatchPageParameterRow::selected_label` already
-    // does — one producer, `ParameterSpec::choices`, and no second vocabulary.
-    //
-    // Resolved here rather than at each caller because this is the one site
-    // that builds a descriptor-backed row, and therefore the only site whose
-    // value can be a choice at all.
     let selected_label = match &value {
-        SemanticControlValue::Parameter(ParameterValue::Choice(choice_id)) => spec
-            .choices()
-            .iter()
-            .find(|choice| choice.id() == choice_id)
-            .map(|choice| choice.label().to_owned()),
+        SemanticControlValue::Parameter(value) => {
+            spec.value_label(value).map(|label| label.into_owned())
+        }
         _ => None,
     };
     SemanticControlViewModel {
@@ -3663,6 +3664,10 @@ fn control_from_parameter(
         unit: spec.unit().map(str::to_owned),
         browser_metadata: None,
         availability_label: None,
+        read_only_label: (spec.patch_interaction() == PatchInteraction::ReadOnly
+            && spec.kind() == ParameterKind::Choice
+            && spec.choices().len() == 1)
+            .then(|| format!("1 {} available", spec.label().to_lowercase())),
         enabled: projection.enabled,
         visible: projection.visible,
         focusable: projection.focusable,
@@ -3690,6 +3695,7 @@ fn surface_root_control(
         unit: None,
         browser_metadata: None,
         availability_label: None,
+        read_only_label: None,
         enabled: true,
         visible: true,
         focusable: true,

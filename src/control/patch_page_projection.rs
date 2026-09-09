@@ -519,9 +519,14 @@ impl PatchPageParameterRow {
             kind: spec.kind(),
             update: spec.update(),
             patch_interaction: spec.patch_interaction(),
+            selected_label: match &value {
+                PatchPageParameterValue::Parameter { value } => {
+                    spec.value_label(value).map(|label| label.into_owned())
+                }
+                _ => None,
+            },
             value,
             selected_choice_id: None,
-            selected_label: None,
             range: spec.range(),
             choices: spec.choices().to_vec(),
             fine_step: spec.fine_step(),
@@ -899,12 +904,12 @@ fn detail_sections<'a>(
                         } => Some(choice_id.clone()),
                         _ => None,
                     };
-                    let selected_label = selected_choice_id.as_deref().and_then(|choice_id| {
-                        spec.choices()
-                            .iter()
-                            .find(|choice| choice.id() == choice_id)
-                            .map(|choice| choice.label().to_owned())
-                    });
+                    let selected_label = match &resolved {
+                        PatchPageParameterValue::Parameter { value } => {
+                            spec.value_label(value).map(|label| label.into_owned())
+                        }
+                        _ => None,
+                    };
                     Ok(PatchPageParameterRow {
                         // Every visible enabled detail row is a focus target,
                         // whatever its patch interaction: the detail order is
@@ -1505,12 +1510,10 @@ impl PatchPageProjection {
                             } => Some(choice_id.clone()),
                             _ => None,
                         };
-                        let selected_label = selected_choice_id.as_deref().and_then(|choice_id| {
-                            spec.choices()
-                                .iter()
-                                .find(|choice| choice.id() == choice_id)
-                                .map(|choice| choice.label().to_owned())
-                        });
+                        let selected_label = match &value {
+                            PatchPageParameterValue::Parameter { value } => spec.value_label(value).map(|label| label.into_owned()),
+                            _ => None,
+                        };
                         let row_correlation = correlation.filter(|correlation| {
                             correlation.patch_id() == source.correlation_patch_id()
                                 && matches!(

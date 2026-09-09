@@ -114,7 +114,9 @@ sample row and stopping on release; Start is reserved elsewhere.
 Crest Synth is a standalone, controller-first MIDI instrument host. The
 production composition is a Rust application using a Tauri v2/WKWebView shell
 and CPAL stereo audio output. Normal startup opens one clean, playable Sample
-`INIT` document and starts a bounded repeating test MIDI pattern on channel 1.
+`INIT` document and starts a bounded repeating test MIDI pattern on channel 1:
+the catalog demo's ascending/descending major-seventh arpeggio across three
+octaves, played as eighth notes at 120 BPM with 200 ms gates.
 `T` stops or restarts the pattern; the footer reports the available action.
 Test playback pauses in Sample Browser and during session replacement. The
 parsed `midi/Radiohead - Everything In Its Right Place - HiDef Compatible.mid`
@@ -237,10 +239,12 @@ focus, asset, or routing models are forbidden.
 Control-side `AppState` snapshots share the Patch collection and bus-return
 bank through copy-on-write `Arc` storage. Accepted reducer edits detach only
 the aggregate being changed; navigation and action-availability probes do not
-deep-copy unchanged configurations. No shared control aggregate enters the
-callback. MIDI-only semantic projections likewise replace generation and hash
-while sharing immutable surface content. Their serialized field order, values,
-and public projection contract remain unchanged. MIDI advances the last
+deep-copy unchanged configurations. The immutable Patch-creation blueprint,
+including installed defaults and structural preset choices, is also shared;
+per-control availability probes never duplicate that catalog. No shared
+control aggregate enters the callback. MIDI-only semantic projections replace
+generation and hash while sharing immutable surface content. Their serialized
+field order, values, and public projection contract remain unchanged. MIDI advances the last
 published scalar snapshot's generation without rebuilding unchanged values,
 including candidate values during graph activation.
 Text-projection coherence checks compare shared body identity before scanning
@@ -281,6 +285,15 @@ audio buffers.
 The installed capability registries own available choices and ordered schema.
 Reducers, projectors, racks, renderers, and demo orchestration must not switch
 on concrete capability names to define fields or availability.
+Instrument and effect providers classify capabilities by musical family or
+processing type. Both pickers project only the focused option's group; no
+second category cursor or browser-owned filtering state exists. Every available
+capability remains reachable, with registry order preserved within each group.
+Group navigation and item navigation within a group wrap in both directions,
+skipping unavailable choices and groups. A single eligible target retains focus.
+Browsing changes only focus; confirmation uses the
+existing structural-edit path. EMPTY appears at the start of the first navigable
+effect group, including when no effect providers are available.
 Catalog validation detects duplicate choice IDs with a sorted borrowed index,
 preserving declared option order and the first repeated-ID error without
 quadratic scans of large asset catalogs.
@@ -514,6 +527,9 @@ return to that exact origin. Imports validate before storing library-relative
 references; assignment remains pending until the replacement graph activates.
 Library folders are `SysEx`, `SFZ Libraries`, `NAM Models`, and `Impulse
 Responses` beneath `~/Music/Crest Synth`.
+Read-only choices with one option explain the available count (for example,
+“1 preset available” for the bundled DX7 library). The shared projection derives
+this text from the descriptor; importing a larger library enables preset selection.
 
 SFZ import uses the upstream parser for includes and definitions, confines
 referenced files to the selected folder, and embeds their samples into a
@@ -526,6 +542,16 @@ Sample admission accounts for private PCM copies separately from shared PCM.
 This remains a memory optimization opportunity.
 
 Catalog descriptors expose native parameters through existing generic lists.
+Parameter descriptors attach names to categorical stepped values and normalized
+selector bands without changing saved identities, scalar editing, or DSP encoding.
+Adapters own names and boundaries from pinned upstream definitions, including
+model/preset tables, waveforms, switches, and combined mode/amount controls.
+Continuous bands resolve against the f32 value sent to DSP. Shared projections,
+parameter rows, and demo status use these names; named rows omit raw index bounds.
+Actual counts remain numeric, and continuous morphs retain continuous editing.
+Catalog tests require names for every stepped control except explicit count
+parameters and cover normalized selector boundaries. General upstream physical-unit
+formatting for normalized numeric controls remains separate work.
 Plaits includes all upstream models; Elements and Rings retain their native
 physical models, and Rings also accepts effect input. The unstable DaisySP
 analog and synthetic snare ports are replaced by the original Mutable Plaits
@@ -569,11 +595,10 @@ the reducer rejects stale imports by origin, generation, and graph revision.
 SoundFonts use `~/Music/Crest Synth/SoundFonts`; SF2 rows show source size and
 validation-on-selection. Hold-to-preview remains a Sample operation. SoundFont
 playback uses the active Patch's MIDI route after graph acknowledgement.
-The serialized projection schema is version 25, retaining the immutable
-`assetDescriptors` and `assetScopedChoices` added in version 24 and adding
-source-specific `NavigatePage` actions. Event-log schema version 8 adds the
-same page intent to version 7's asset-kind-correlated listings and imported
-descriptor payloads. Settings replaces the visible Patch page even when PATCH
+The serialized projection carries immutable `assetDescriptors`,
+`assetScopedChoices`, and source-specific `NavigatePage` actions. The event log
+records page intent, asset-kind-correlated listings, and imported descriptor
+payloads. Settings replaces the visible Patch page even when PATCH
 remains the suspended context: full and MIDI generation-only StateTree
 validation accept a missing Patch page only on a system surface in that context.
 
@@ -710,6 +735,7 @@ Physical bindings normalize to semantic actions before product logic:
 | Input | Meaning |
 | --- | --- |
 | unmodified arrows/WASD/D-pad | spatial semantic focus movement |
+| A / D or Left / Right in Instrument or Post FX Options | previous/next installed group, wrapping at both ends; W / S loops through items within that group |
 | Edit + Left/Right | fine decrement/increment or adjacent valid choice |
 | Edit + Up/Down | coarse increment/decrement; Up opens a choice for choice controls |
 | Edit | toggle/confirm |

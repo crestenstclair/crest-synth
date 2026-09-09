@@ -9,8 +9,11 @@ use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_track_id::{MixerTrackId, MixerTrackId as TrackId};
 use crate::mixer::mixer_track_parameters::MixerTrackParameter;
 use crate::synth::instrument_capability::{ParameterSpec, ParameterValue};
-use crate::synth::{ParameterId, ParameterKind, PatchInteraction, PostEffectConfig};
-use std::collections::HashSet;
+use crate::synth::{
+    EffectCategory, InstrumentCategory, ParameterId, ParameterKind, PatchInteraction,
+    PostEffectConfig,
+};
+use std::collections::{BTreeSet, HashSet};
 
 /// Pure descriptor-backed authority for semantic focus order and recovery.
 ///
@@ -59,6 +62,25 @@ impl ResolverPatchSource<'_> {
     }
 }
 
+/// The family of an instrument or effect in the shared picker.
+#[derive(
+    Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, serde::Deserialize, serde::Serialize,
+)]
+#[serde(tag = "kind", content = "category", rename_all = "camelCase")]
+pub enum ChoiceCategory {
+    Instrument(InstrumentCategory),
+    Effect(EffectCategory),
+}
+
+impl ChoiceCategory {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Instrument(category) => category.label(),
+            Self::Effect(category) => category.label(),
+        }
+    }
+}
+
 /// One available value in the shared trapped option modal.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -68,6 +90,8 @@ pub struct ResolvedChoiceOption {
     current: bool,
     enabled: bool,
     availability: crate::synth::CapabilityAvailability,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    category: Option<ChoiceCategory>,
 }
 
 impl ResolvedChoiceOption {
@@ -92,6 +116,7 @@ impl ResolvedChoiceOption {
             current,
             enabled: availability.is_enabled(),
             availability,
+            category: None,
         }
     }
 
@@ -114,6 +139,10 @@ impl ResolvedChoiceOption {
     pub const fn availability(&self) -> &crate::synth::CapabilityAvailability {
         &self.availability
     }
+
+    pub const fn category(&self) -> Option<ChoiceCategory> {
+        self.category
+    }
 }
 
 /// Ephemeral resolution of a generic choice subject against canonical state.
@@ -135,6 +164,81 @@ impl ResolvedChoiceSource {
 
     pub fn options(&self) -> &[ResolvedChoiceOption] {
         &self.options
+    }
+
+    fn option_path(&self, option: &ResolvedChoiceOption) -> FocusPath {
+        FocusPath::patch_choice_at(
+            self.subject.patch_position(),
+            self.subject.stable_id(),
+            option.id().to_owned(),
+        )
+    }
+
+    /// The focused stable option owns the active group, not a second cursor.
+    pub fn active_category(&self, focus: &FocusPath) -> Option<ChoiceCategory> {
+        if !matches!(
+            self.subject.control_id(),
+            PatchControlId::Engine | PatchControlId::EffectSlot(_)
+        ) {
+            return None;
+        }
+        let SemanticControlId::Modal(crate::control::ModalControlId::Choice(id)) =
+            focus.control_id()
+        else {
+            return None;
+        };
+        self.options
+            .iter()
+            .find(|option| option.id() == id)
+            .and_then(ResolvedChoiceOption::category)
+    }
+
+    pub fn visible_options<'a>(
+        &'a self,
+        focus: &FocusPath,
+    ) -> impl Iterator<Item = &'a ResolvedChoiceOption> {
+        let category = self.active_category(focus);
+        self.options
+            .iter()
+            .filter(move |option| option.category() == category)
+    }
+
+    /// Horizontal navigation loops over installed groups with an enabled row.
+    fn adjacent_category_path(&self, focus: &FocusPath, forward: bool) -> Option<FocusPath> {
+        let current = self.active_category(focus)?;
+        let categories: BTreeSet<_> = self
+            .options
+            .iter()
+            .filter(|option| option.is_enabled())
+            .filter_map(ResolvedChoiceOption::category)
+            .collect();
+        let target = if forward {
+            categories
+                .iter()
+                .find(|category| **category > current)
+                .or_else(|| categories.first())
+        } else {
+            categories
+                .iter()
+                .rev()
+                .find(|category| **category < current)
+                .or_else(|| categories.last())
+        }
+        .copied()?;
+        if target == current {
+            return Some(focus.clone());
+        }
+        let mut options = self
+            .options
+            .iter()
+            .filter(|option| option.is_enabled() && option.category() == Some(target));
+        let first = options.next()?;
+        let option = if first.is_current() {
+            first
+        } else {
+            options.find(|option| option.is_current()).unwrap_or(first)
+        };
+        Some(self.option_path(option))
     }
 }
 
@@ -202,12 +306,15 @@ impl<'a> SemanticResolver<'a> {
                         .descriptors()
                         .iter()
                         .map(|descriptor| {
-                            ResolvedChoiceOption::with_availability(
+                            let mut option = ResolvedChoiceOption::with_availability(
                                 descriptor.id().to_string(),
                                 descriptor.label(),
                                 descriptor.id() == current,
                                 descriptor.availability().clone(),
-                            )
+                            );
+                            option.category =
+                                Some(ChoiceCategory::Instrument(descriptor.instrument_category()));
+                            option
                         })
                         .collect(),
                 )
@@ -216,19 +323,38 @@ impl<'a> SemanticResolver<'a> {
                 let current = patch
                     .effect_slot(*slot)
                     .map(|effect| effect.capability_id());
-                let options: Vec<ResolvedChoiceOption> =
-                    core::iter::once(ResolvedChoiceOption::enabled(
-                        crate::control::EMPTY_OCCUPANCY_CHOICE_ID,
-                        "EMPTY",
-                        current.is_none(),
-                    ))
-                    .chain(self.state.effects().descriptors().iter().map(|descriptor| {
-                        ResolvedChoiceOption::with_availability(
+                let descriptors = self.state.effects().descriptors();
+                // EMPTY belongs to the first navigable family. Its stable
+                // identity therefore needs no separate group cursor.
+                let empty_category = descriptors
+                    .iter()
+                    .filter(|descriptor| descriptor.availability().is_enabled())
+                    .map(|descriptor| descriptor.effect_category())
+                    .min()
+                    .or_else(|| {
+                        descriptors
+                            .iter()
+                            .map(|descriptor| descriptor.effect_category())
+                            .min()
+                    })
+                    .unwrap_or_default();
+                let mut empty = ResolvedChoiceOption::enabled(
+                    crate::control::EMPTY_OCCUPANCY_CHOICE_ID,
+                    "EMPTY",
+                    current.is_none(),
+                );
+                empty.category = Some(ChoiceCategory::Effect(empty_category));
+                let options: Vec<ResolvedChoiceOption> = core::iter::once(empty)
+                    .chain(descriptors.iter().map(|descriptor| {
+                        let mut option = ResolvedChoiceOption::with_availability(
                             descriptor.id().to_string(),
                             descriptor.label(),
                             current == Some(descriptor.id()),
                             descriptor.availability().clone(),
-                        )
+                        );
+                        option.category =
+                            Some(ChoiceCategory::Effect(descriptor.effect_category()));
+                        option
                     }))
                     .collect();
                 (format!("Effect Slot {}", slot.index() + 1), options)
@@ -348,6 +474,51 @@ impl<'a> SemanticResolver<'a> {
         }
         ensure_unique(&paths)?;
         Ok(paths)
+    }
+
+    pub fn navigate_patch_choice(
+        &self,
+        direction: crate::control::Direction,
+    ) -> Result<FocusPath, EventRejection> {
+        use crate::control::Direction;
+        let Some(PatchSubordinateSession::Choice { subject, .. }) =
+            self.state.interaction().subordinate_session()
+        else {
+            return Err(EventRejection::ActionUnavailableInContext);
+        };
+        let source = self.choice_source(subject)?;
+        let focus = self.state.interaction().focus_path();
+        if matches!(direction, Direction::Left | Direction::Right) {
+            return source
+                .adjacent_category_path(focus, direction == Direction::Right)
+                .ok_or(EventRejection::ActionUnavailableInContext);
+        }
+        let paths: Vec<_> = source
+            .visible_options(focus)
+            .filter(|option| option.is_enabled())
+            .map(|option| source.option_path(option))
+            .collect();
+        let current = paths
+            .iter()
+            .position(|path| path == focus)
+            .ok_or(EventRejection::InvalidSelection)?;
+        let next = if direction == Direction::Down {
+            current.checked_add(1)
+        } else {
+            current.checked_sub(1)
+        };
+        let next = next.filter(|index| *index < paths.len()).or_else(|| {
+            source.active_category(focus).map(|_| {
+                if direction == Direction::Down {
+                    0
+                } else {
+                    paths.len() - 1
+                }
+            })
+        });
+        next.and_then(|index| paths.get(index))
+            .cloned()
+            .ok_or(EventRejection::ActionUnavailableInContext)
     }
 
     pub fn file_browser_paths(&self) -> Result<Vec<FocusPath>, EventRejection> {
@@ -1035,6 +1206,12 @@ fn action_presentation(
         }
         SemanticAction::Navigate(Direction::Up) => ("Move up", Some("W")),
         SemanticAction::Navigate(Direction::Down) => ("Move down", Some("S")),
+        SemanticAction::Navigate(Direction::Left) if surface == SurfaceId::PatchChoice => {
+            ("Previous group", Some("A"))
+        }
+        SemanticAction::Navigate(Direction::Right) if surface == SurfaceId::PatchChoice => {
+            ("Next group", Some("D"))
+        }
         SemanticAction::Navigate(Direction::Left) => ("Move left", Some("A")),
         SemanticAction::Navigate(Direction::Right) => ("Move right", Some("D")),
         SemanticAction::Adjust(Direction::Up) => ("Coarse increase", Some("K+W")),

@@ -543,7 +543,9 @@ pub struct AppState {
     /// list at all.
     capabilities: std::sync::Arc<CapabilityRegistry>,
     effects: std::sync::Arc<EffectCapabilityRegistry>,
-    patch_creation_blueprint: Option<crate::control::PatchCreationBlueprint>,
+    // Availability probes must share the immutable installed defaults and
+    // preset catalog, just as they share capability descriptors.
+    patch_creation_blueprint: Option<Arc<crate::control::PatchCreationBlueprint>>,
     patches: Arc<Vec<Patch>>,
     mixer: MixerState,
     global: GlobalParameters,
@@ -734,10 +736,8 @@ impl AppState {
         &self.effects
     }
 
-    pub const fn patch_creation_blueprint(
-        &self,
-    ) -> Option<&crate::control::PatchCreationBlueprint> {
-        self.patch_creation_blueprint.as_ref()
+    pub fn patch_creation_blueprint(&self) -> Option<&crate::control::PatchCreationBlueprint> {
+        self.patch_creation_blueprint.as_deref()
     }
 
     /// Injects immutable product composition used only for prospective Patch
@@ -746,7 +746,7 @@ impl AppState {
         mut self,
         blueprint: crate::control::PatchCreationBlueprint,
     ) -> Self {
-        self.patch_creation_blueprint = Some(blueprint);
+        self.patch_creation_blueprint = Some(Arc::new(blueprint));
         self
     }
 
@@ -2303,10 +2303,21 @@ impl AppState {
             .ok_or(EventRejection::ActionUnavailableInContext)?;
         let source = resolver.choice_source(&subject)?;
         let paths = resolver.patch_choice_paths(&subject)?;
+        let current_category = source
+            .options()
+            .iter()
+            .find(|option| option.is_current())
+            .and_then(crate::control::ResolvedChoiceOption::category);
         let focus = source
             .options()
             .iter()
             .find(|option| option.is_current() && option.is_enabled())
+            .or_else(|| {
+                source
+                    .options()
+                    .iter()
+                    .find(|option| option.is_enabled() && option.category() == current_category)
+            })
             .map(|option| {
                 FocusPath::patch_choice_at(
                     subject.patch_position(),
@@ -3953,13 +3964,9 @@ impl AppState {
                 }
             }
             SurfaceId::PatchChoice => {
-                if matches!(direction, Direction::Up | Direction::Down) {
-                    let paths =
-                        SemanticResolver::new(self).ordered_paths(SurfaceId::PatchChoice)?;
-                    self.navigate_side_nonwrapping(&paths, direction == Direction::Down)
-                } else {
-                    Err(EventRejection::ActionUnavailableInContext)
-                }
+                self.interaction.active_focus =
+                    SemanticResolver::new(self).navigate_patch_choice(direction)?;
+                Ok(())
             }
             SurfaceId::FileBrowser => {
                 if matches!(direction, Direction::Up | Direction::Down) {

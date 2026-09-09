@@ -482,10 +482,10 @@
       var parameter = value.value;
       if (parameter && typeof parameter === "object") {
         if (parameter.kind === "continuous") {
-          return numericValueText(control, Number(parameter.value));
+          return String(control.selectedLabel ?? numericValueText(control, Number(parameter.value)));
         }
         if (parameter.kind === "stepped") {
-          return String(parameter.value);
+          return String(control.selectedLabel ?? parameter.value);
         }
         if (parameter.kind === "choice") {
           // The document's own authored name for the stored id, never a name
@@ -528,6 +528,7 @@
     }
     if (
       !range ||
+      control.selectedLabel != null ||
       typeof range.minimum !== "number" ||
       typeof range.maximum !== "number"
     ) {
@@ -576,6 +577,9 @@
   }
 
   function controlUnitText(control) {
+    if (control && control.selectedLabel != null) {
+      return "";
+    }
     if (control && control.unit) {
       return String(control.unit);
     }
@@ -1048,6 +1052,7 @@
     var range = control && control.numericRange;
     if (
       !range ||
+      control.selectedLabel != null ||
       typeof range.minimum !== "number" ||
       typeof range.maximum !== "number"
     ) {
@@ -1110,8 +1115,8 @@
     }
     var browse = browsableAsset(control);
     var locked = readOnly(control);
-    // A read-only row says READ-ONLY rather than the generic "Locked": the
-    // declaration is the more specific fact and both are the same mark slot.
+    // Use the projected explanation when present; otherwise keep the generic
+    // read-only mark in the same slot.
     var mark = locked ? "" : stateMarkHtml(control, state);
     var middle;
     if (mark) {
@@ -1138,7 +1143,7 @@
       : "";
     var lockedMark = locked
       ? '<span class="prow-readonly type-hint muted" data-role="read-only">' +
-        READ_ONLY_MARK +
+        escapeHtml(control.readOnlyLabel || READ_ONLY_MARK) +
         "</span>"
       : browse
         ? '<span class="type-hint" data-role="browse">BROWSE</span>'
@@ -2216,6 +2221,16 @@
     if (!optionRows) {
       optionRows = markUnavailableRowHtml("OPTIONS");
     }
+    var categoryLabel = summary.choiceGroupLabel;
+    var groupHeader = categoryLabel
+      ? '<div class="option-group" data-role="choice-group">' +
+        '<span class="type-hint muted">A ‹</span>' +
+        '<span class="type-label" data-role="choice-group-label">' +
+        escapeHtml(String(categoryLabel).toUpperCase()) +
+        '</span><span class="type-hint muted">› D</span>' +
+        '<span class="type-hint muted option-group-help">A / D groups · W / S ' +
+        (optionKind === "postFx" ? "effects" : "instruments") + '</span></div>'
+      : "";
     return (
       '<div class="modal-shell option-modal" id="modal-shell" data-option-kind="' +
       escapeHtml(optionKind) +
@@ -2237,6 +2252,7 @@
       escapeHtml(sourceAnnotation) +
       "</div>" +
       optionOriginStatusHtml(origin) +
+      groupHeader +
       '<div class="option-rule" aria-hidden="true"></div>' +
       '<div class="modal-options" data-role="modal-options">' +
       optionRows +

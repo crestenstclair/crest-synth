@@ -149,6 +149,7 @@ impl SampleCapability {
             },
             SAMPLE_SUPPORTED_MIDI_KINDS.to_vec(),
         )?
+        .with_instrument_category(crate::synth::InstrumentCategory::Samplers)
         .with_visualizations([
             CapabilityVisualization::waveform(
                 "sample.waveform",

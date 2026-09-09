@@ -101,7 +101,9 @@ pub use semantic_graphical_view_model::{
     SemanticVisualizationData, SemanticVisualizationViewModel, SemanticWaveformLandmark,
     SemanticWaveformPair,
 };
-pub use semantic_resolver::{ResolvedChoiceOption, ResolvedChoiceSource, SemanticResolver};
+pub use semantic_resolver::{
+    ChoiceCategory, ResolvedChoiceOption, ResolvedChoiceSource, SemanticResolver,
+};
 pub use session_candidate_worker::{
     SessionCandidateFailure, SessionCandidateFailureKind, SessionCandidateRequest,
     SessionCandidateResult, SessionCandidateSource, SessionCandidateToken,

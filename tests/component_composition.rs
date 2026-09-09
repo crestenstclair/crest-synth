@@ -403,6 +403,12 @@ fn page_row_state(control: &Value, mode: &str) -> String {
 }
 
 fn page_normalized_percentage(control: &Value) -> bool {
+    if control
+        .get("selectedLabel")
+        .is_some_and(|label| !label.is_null())
+    {
+        return false;
+    }
     if control.get("unit").is_some_and(|unit| !unit.is_null()) {
         return false;
     }
@@ -485,16 +491,23 @@ fn page_value_text(control: &Value) -> String {
                 return UNAVAILABLE_MARK.to_owned();
             };
             match parameter.get("kind").and_then(Value::as_str) {
-                Some("continuous") => page_numeric_value_text(
-                    control,
-                    parameter["value"].as_f64().unwrap_or(f64::NAN),
-                ),
-                Some("stepped") => display(&parameter["value"]),
+                Some("continuous") => control
+                    .get("selectedLabel")
+                    .filter(|label| !label.is_null())
+                    .map_or_else(
+                        || {
+                            page_numeric_value_text(
+                                control,
+                                parameter["value"].as_f64().unwrap_or(f64::NAN),
+                            )
+                        },
+                        display,
+                    ),
                 // A choice reads its projected authored name, falling back to
                 // the stored id only when the descriptor declared none. The
                 // page does the same (`controlValueText`); painting the id was
                 // mission finding F-33.
-                Some("choice") => control
+                Some("stepped" | "choice") => control
                     .get("selectedLabel")
                     .filter(|label| !label.is_null())
                     .map_or_else(|| display(&parameter["value"]), display),

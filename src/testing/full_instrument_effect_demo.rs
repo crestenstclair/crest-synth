@@ -26,16 +26,17 @@ use std::{
 const BARS: usize = 8;
 const NOTES_PER_BAR: usize = 8;
 // Eighth notes at 120 BPM.
-const NOTE_LENGTH: Duration = Duration::from_millis(250);
+pub(crate) const NOTE_LENGTH: Duration = Duration::from_millis(250);
 // The longest bundled instrument resampler needs about 160 ms at 48 kHz.
 // Leave time for its output before releasing this one voice.
-const NOTE_GATE: Duration = Duration::from_millis(200);
+pub(crate) const NOTE_GATE: Duration = Duration::from_millis(200);
 // Leave most of each 16 ms window tick available to input, projection, and MIDI.
 const CONTROL_WORK_PER_TICK: Duration = Duration::from_millis(4);
 const PREPARATION_TIMEOUT: Duration = Duration::from_secs(60);
 // An original ascending/descending major-seventh arpeggio across three octaves.
+// The startup test MIDI source also uses this phrase and its note timing.
 // The same phrase, channel, velocity, and host envelope serve every audition.
-const ARPEGGIO: [u8; 24] = [
+pub(crate) const ARPEGGIO: [u8; 24] = [
     48, 52, 55, 59, 60, 64, 67, 71, 72, 76, 79, 83, 84, 83, 79, 76, 72, 71, 67, 64, 60, 59, 55, 52,
 ];
 
@@ -896,6 +897,9 @@ fn dispatch<B: ControlAudioBoundary>(
 }
 
 fn display_value(spec: &ParameterSpec, value: &ParameterValue) -> String {
+    if let Some(label) = spec.value_label(value) {
+        return label.into_owned();
+    }
     let value = match value {
         ParameterValue::Continuous(value) => value.to_string(),
         ParameterValue::Stepped(value) => value.to_string(),
@@ -1053,7 +1057,20 @@ mod tests {
                 effects.clone(),
                 GlobalParameters::new(-18.0).unwrap(),
                 GraphRevision::INITIAL,
+            )
+            .with_patch_creation_blueprint(
+                crate::control::PatchCreationBlueprint::resolve(
+                    &CapabilityId::new(crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID)
+                        .unwrap(),
+                    &factory,
+                )
+                .unwrap(),
             );
+            if let Some(listing) =
+                crate::adapter::production_instruments::production_sample_root_listing().unwrap()
+            {
+                state = state.with_sample_catalog([listing]);
+            }
             state
                 .apply(AppEvent::ReplacePersistedSession(Box::new(replacement)))
                 .unwrap();
@@ -1411,6 +1428,36 @@ mod tests {
             .unwrap_err();
         assert!(error.to_string().contains("not UTF-8"));
         assert!(!harness.demo.is_complete());
+        harness.shutdown();
+    }
+
+    #[test]
+    #[cfg_attr(debug_assertions, ignore = "production timing requires --release")]
+    fn full_demo_live_control_cost_does_not_overrun_parameter_bars() {
+        let (mut plan, factory, effects) = plan();
+        // The first Sample variation reproduces the physical-window failure.
+        plan.auditions.truncate(1);
+        let mut harness = Harness::new(plan, factory, effects);
+        let tick = Duration::from_millis(16);
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let mut last_tick = Instant::now();
+        let mut longest_control_tick = Duration::ZERO;
+        while harness.demo.bar < 2 {
+            assert!(Instant::now() < deadline, "{}", harness.demo.status);
+            let now = Instant::now();
+            // Include real reducer/projection cost in the musical clock. A
+            // fixed simulated 16 ms tick hid a 45 ms production action cost.
+            let elapsed = now.duration_since(last_tick).max(tick);
+            last_tick = now;
+            harness.demo.advance(&mut harness.app, elapsed).unwrap();
+            longest_control_tick = longest_control_tick.max(now.elapsed());
+            for _ in 0..3 {
+                harness.render();
+            }
+        }
+        eprintln!(
+            "Production catalog with elapsed control cost: longest tick {longest_control_tick:?}"
+        );
         harness.shutdown();
     }
 
