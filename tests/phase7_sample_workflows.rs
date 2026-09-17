@@ -1300,8 +1300,16 @@ fn engine_choice_keeps_prepared_waveform_after_sample_activation() {
         .dispatch_action(SemanticAction::Adjust(Direction::Up))
         .unwrap();
     app_loop
-        .dispatch_action(SemanticAction::Navigate(Direction::Down))
+        .dispatch_action(SemanticAction::Navigate(Direction::Right))
         .unwrap();
+    assert_eq!(
+        app_loop
+            .current_graphical_shell()
+            .semantic_model()
+            .focus_path()
+            .control_id(),
+        &SemanticControlId::Modal(ModalControlId::Choice(SAMPLE_CAPABILITY_ID.to_owned()))
+    );
     app_loop.dispatch_action(SemanticAction::Activate).unwrap();
     for lifecycle in [
         EngineSelectionStatusKind::Validating,

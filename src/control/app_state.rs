@@ -5749,19 +5749,28 @@ impl AppState {
             .ok()
     }
 
-    /// Repairs an active MIXER Inspector focus after a committed return
-    /// occupancy change through the one deterministic next-before-previous
-    /// recovery rule. Rows on every other surface are unaffected by return
-    /// occupancy and keep their exact identity.
+    /// Repairs an active or Settings-suspended MIXER Inspector focus after a
+    /// committed return occupancy change through the one deterministic
+    /// next-before-previous recovery rule. Settings keeps its active focus.
     fn repair_inspector_focus(
         &mut self,
         old_order: Option<&[FocusPath]>,
     ) -> Result<(), EventRejection> {
-        if self.interaction.active_surface() != SurfaceId::MixerInspector {
-            return Ok(());
-        }
+        let focus = if self.interaction.active_surface() == SurfaceId::MixerInspector {
+            self.interaction.focus_path()
+        } else {
+            let Some(focus) = self
+                .interaction
+                .settings_session()
+                .map(|session| session.suspended_focus())
+                .filter(|focus| focus.surface() == SurfaceId::MixerInspector)
+            else {
+                return Ok(());
+            };
+            focus
+        };
         let resolver = SemanticResolver::new(self);
-        if resolver.resolves(self.interaction.focus_path()) {
+        if resolver.resolves(focus) {
             return Ok(());
         }
         let old_order = old_order.ok_or(EventRejection::InvalidSelection)?;
@@ -5772,10 +5781,15 @@ impl AppState {
             .as_mixer_track_id()
             .ok_or(EventRejection::InvalidSelection)?;
         let new_order = resolver.mixer_inspector_paths(track_id)?;
-        let repaired =
-            SemanticResolver::recover(self.interaction.focus_path(), old_order, &new_order)
-                .ok_or(EventRejection::InvalidSelection)?;
-        self.interaction.active_focus = repaired;
+        let repaired = SemanticResolver::recover(focus, old_order, &new_order)
+            .ok_or(EventRejection::InvalidSelection)?;
+        if self.interaction.active_surface() == SurfaceId::MixerInspector {
+            self.interaction.active_focus = repaired;
+        } else {
+            self.interaction
+                .replace_settings_suspended_focus(repaired)
+                .map_err(|_| EventRejection::InvalidSelection)?;
+        }
         Ok(())
     }
 }

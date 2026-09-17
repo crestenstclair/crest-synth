@@ -1668,10 +1668,33 @@ body.settings-active #main-region {
 }
 
 /* Sends reuse the Patch detail rows and descriptor-ordered effect sections. */
-.send-shell { width: 100%; max-width: 940px; margin: 0 auto; padding: 16px 24px 40px; }
-.send-heading { display: flex; align-items: center; justify-content: space-between; gap: 24px; }
-.send-name { margin: 6px 0 28px; }
-.send-shell .detail-section { margin: 16px 0; }
-#send-name-form { display: flex; flex-direction: column; gap: 12px; margin-top: 24px; }
-#send-name-input { font: inherit; padding: 12px; color: inherit; background: transparent; border: 1px solid currentColor; }
+.send-shell {
+  width: 100%;
+  margin: 0 auto;
+  padding: var(--space-16) var(--space-24) var(--space-32);
+}
+.send-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-24);
+}
+.send-name {
+  margin: var(--space-8) 0 var(--space-24);
+  overflow-wrap: anywhere;
+}
+.send-shell .detail-section { margin: var(--space-16) 0; }
+#send-name-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  margin-top: var(--space-24);
+}
+#send-name-input {
+  font: inherit;
+  padding: var(--space-12);
+  color: inherit;
+  background: transparent;
+  border: var(--keyline-resting) solid currentColor;
+}
 .sends-active #workspace { overflow-y: auto; }

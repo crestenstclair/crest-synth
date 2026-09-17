@@ -1506,6 +1506,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(debug_assertions, ignore = "production timing requires --release")]
     fn full_demo_all_auditions_cross_worker_reducer_projection_and_native_render() {
         let (plan, factory, effects) = plan();
         let mut harness = Harness::new(plan, factory, effects);

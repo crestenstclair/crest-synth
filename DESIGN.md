@@ -167,7 +167,9 @@ Normal `make run` resolves the composition-root-designated Sample capability
 exactly and constructs Patch 1 `INIT`: MIDI channel 1, T00 at 0 dB Patch trim,
 neutral envelope, capability-seeded voice settings, and empty post-effect
 slots. It also installs the default Mixer, 0 dB master, and the
-default bank of sixteen empty `INIT` send chains. The captured versioned session and its complete graph
+default bank of sixteen empty `INIT` send chains. Retained effects/buses diagnostic
+scenes explicitly seed audible returns; new documents never consume that fixture.
+The captured versioned session and its complete graph
 are validated and prepared before audio or the window starts; a missing or
 invalid designated capability is a typed fatal startup error, never registry
 fallback. The initial graph receives the explicit test pattern through the same
@@ -936,6 +938,8 @@ one for another or demand an unrelated repeat of already accepted work.
 `make run`, `make play`, and `make ui` use the optimized release profile for both
 Rust and native DSP. `cargo run --bin crest-synth` remains an explicit debug
 launch; unoptimized timing is not a supported real-time performance target.
+Tour tests with real-time dispatch budgets run with `cargo test --release --lib
+full_demo_`; debug test runs skip those timing checks.
 
 `make full-instrument-effect-demo` runs a sequential listening tour in the
 production window and audio runtime, focused on the new audio catalog. The

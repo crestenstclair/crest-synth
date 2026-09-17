@@ -637,6 +637,11 @@ fn build_steps(
     // parameter sweeps so every following path has a stable origin.
     push_key_press(&mut steps, WindowKey::W);
     push_key_press(&mut steps, WindowKey::A);
+    // The vocabulary also opens Sends and advances its remembered destination
+    // with E. Restore that independent root through the same keyboard path.
+    push_key_press(&mut steps, WindowKey::Digit4);
+    push_key_press(&mut steps, WindowKey::Q);
+    push_key_press(&mut steps, WindowKey::Digit1);
     push_checkpoint(
         &mut steps,
         DemoCheckpoint::new("input.startupFocusRestored"),

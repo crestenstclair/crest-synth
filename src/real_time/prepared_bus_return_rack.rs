@@ -94,6 +94,10 @@ impl PreparedBusReturnRack {
         self.returns.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.returns.is_empty()
+    }
+
     pub fn chain_layout(
         &self,
         bus: BusId,

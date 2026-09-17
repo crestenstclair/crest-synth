@@ -1006,6 +1006,15 @@ fn async_clear_repairs_patch_utility_focus_after_leaving_sends_during_preparatio
 
 #[test]
 fn async_first_send_effect_edit_repairs_old_mixer_inspector_parameter_focus() {
+    assert_async_first_send_effect_repairs_inspector(false);
+}
+
+#[test]
+fn async_first_send_effect_edit_repairs_mixer_inspector_focus_suspended_under_settings() {
+    assert_async_first_send_effect_repairs_inspector(true);
+}
+
+fn assert_async_first_send_effect_repairs_inspector(suspend_in_settings: bool) {
     for replacement in [None, Some("effect.reverb")] {
         let effects = production_effect_registry().unwrap();
         let chorus = EffectCapabilityId::new("effect.chorus").unwrap();
@@ -1097,6 +1106,15 @@ fn async_first_send_effect_edit_repairs_old_mixer_inspector_parameter_focus() {
                 .control_id(),
             &target
         );
+        let settings_focus = suspend_in_settings.then(|| {
+            fixture
+                .app
+                .dispatch_action(SemanticAction::OpenMidiSettings)
+                .unwrap();
+            let model = fixture.app.current_semantic_model();
+            assert_eq!(model.active_surface(), SurfaceId::MidiDeviceSettings);
+            model.focus_path().clone()
+        });
         assert!(fixture.worker.advance());
         assert!(fixture
             .app
@@ -1104,14 +1122,21 @@ fn async_first_send_effect_edit_repairs_old_mixer_inspector_parameter_focus() {
             .unwrap()
             .graph_stage()
             .is_some());
-        assert_eq!(
-            fixture
-                .app
-                .current_semantic_model()
-                .focus_path()
-                .control_id(),
-            &target
-        );
+        if let Some(settings_focus) = &settings_focus {
+            assert_eq!(
+                fixture.app.current_semantic_model().focus_path(),
+                settings_focus
+            );
+        } else {
+            assert_eq!(
+                fixture
+                    .app
+                    .current_semantic_model()
+                    .focus_path()
+                    .control_id(),
+                &target
+            );
+        }
         fixture.renderer.render(&mut [0.0; FRAMES * 2]);
         assert!(fixture
             .app
@@ -1125,6 +1150,13 @@ fn async_first_send_effect_edit_repairs_old_mixer_inspector_parameter_focus() {
             if replacement.is_some() { 2 } else { 1 }
         );
         assert_eq!(send.effects().last().unwrap().slot_id(), second);
+        if let Some(settings_focus) = &settings_focus {
+            assert_eq!(
+                fixture.app.current_semantic_model().focus_path(),
+                settings_focus
+            );
+            fixture.app.dispatch_action(SemanticAction::Return).unwrap();
+        }
         let model = fixture.app.current_semantic_model();
         assert_eq!(model.focus_path().surface(), SurfaceId::MixerInspector);
         assert_ne!(model.focus_path().control_id(), &target);

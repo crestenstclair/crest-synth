@@ -595,10 +595,7 @@ impl FocusPath {
             context: TopLevelContext::Mixer,
             surface: SurfaceId::Sends,
             patch_position: None,
-            capability_id: match capability_id {
-                Some(id) => Some(FocusCapabilityId::Effect(id)),
-                None => None,
-            },
+            capability_id: capability_id.map(FocusCapabilityId::Effect),
             control_id: SemanticControlId::Send(control),
             modal_id: None,
         }

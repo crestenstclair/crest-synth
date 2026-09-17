@@ -103,16 +103,10 @@ pub fn production_startup_bus_returns(
     Ok(BusReturnBank::default())
 }
 
-/// Permissive startup occupancy for partial TEST registries only: a registry
-/// that installs some entries but cannot compose the declared production
-/// default starts with every return unoccupied instead of failing.
-///
-/// The production composition root never consumes this variant — it consumes
-/// [`production_startup_bus_returns`] and propagates the composition error as
-/// a typed startup failure
-/// (`shell::ApplicationError::DefaultBusReturns`).
-pub fn startup_bus_returns(registry: &EffectCapabilityRegistry) -> BusReturnBank {
-    production_startup_bus_returns(registry).unwrap_or_default()
+/// Compatibility factory for test fixtures using the same empty startup bank.
+/// Registry content does not select default occupants.
+pub fn startup_bus_returns(_registry: &EffectCapabilityRegistry) -> BusReturnBank {
+    BusReturnBank::default()
 }
 
 pub fn production_chorus_config(

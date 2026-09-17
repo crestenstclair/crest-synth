@@ -280,7 +280,11 @@ pub fn run_demo() -> DemoRun {
     let effects = production_effect_registry().expect("production effect registry is valid");
     let patches = scene_patches();
     let global_parameters = globals();
-    let startup_returns = crest_synth::adapter::production_effects::startup_bus_returns(&effects);
+    // The exhaustive scene measures the legacy return parameters as well as
+    // topology changes, so it needs explicit occupants before building coverage.
+    let startup_returns =
+        crest_synth::adapter::production_effects::production_default_bus_returns(&effects)
+            .expect("the exhaustive fixture composes its audible returns");
     let scene = DemoScene::exhaustive_with_effects(
         &registry,
         &effects,
