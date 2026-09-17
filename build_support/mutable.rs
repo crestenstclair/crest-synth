@@ -153,11 +153,17 @@ fn stage_elements(destination: &Path) {
         + start;
     source.replace_range(
         start..end,
-        r###"  // Keep each oscillator's upstream recurrence, but advance the independent
-  // sample positions together so the compiler can vectorize that recurrence.
+        r###"  // Keep each oscillator's upstream recurrence. A fixed center pickup has
+  // identical weights at every sample; its LFO-driven side pickup still advances.
   const float position_increment=(position_-previous_position_)/size;
   SvfBatch<kMaxModes> bank(f_,num_modes);
-  float response[kMaxModes];
+  float response[kMaxModes],fixed_center[kMaxModes];
+  const bool fixed=previous_position_+position_increment==previous_position_;
+  if(fixed) {
+    CosineOscillator osc;
+    osc.Init<COSINE_OSCILLATOR_APPROXIMATE>(previous_position_);
+    for(size_t i=0;i<num_modes;++i) fixed_center[i]=osc.Next();
+  }
   while(size) {
     const size_t take=std::min(size,kMaxBlockSize);
     CosineOscillator center_osc[kMaxBlockSize],side_osc[kMaxBlockSize];
@@ -167,16 +173,21 @@ fn stage_elements(destination: &Path) {
       if(lfo_phase_>=1.0f)lfo_phase_-=1.0f;
       previous_position_+=position_increment;
       const float lfo=lfo_phase_>0.5f?1.0f-lfo_phase_:lfo_phase_;
-      center_osc[j].Init<COSINE_OSCILLATOR_APPROXIMATE>(previous_position_);
+      if(!fixed) center_osc[j].Init<COSINE_OSCILLATOR_APPROXIMATE>(previous_position_);
       side_osc[j].Init<COSINE_OSCILLATOR_APPROXIMATE>(modulation_offset_+lfo);
+    }
+    if(!fixed) for(size_t mode=0;mode<num_modes;++mode) {
+      for(size_t j=0;j<take;++j) {
+        center_gain[j][mode]=center_osc[j].Next();
+      }
     }
     for(size_t mode=0;mode<num_modes;++mode) {
       for(size_t j=0;j<take;++j) {
-        center_gain[j][mode]=center_osc[j].Next();
         side_gain[j][mode]=side_osc[j].Next();
       }
     }
     for(size_t j=0;j<take;++j) {
+      const float* center_weights=fixed?fixed_center:center_gain[j];
       float input=*in++*0.125f;
       float sum_center=0.0f,sum_side=0.0f;
       if(bank.Process(input,response)) {
@@ -194,12 +205,12 @@ fn stage_elements(destination: &Path) {
 #if defined(__GNUC__) || defined(__clang__)
           Float4 value,cg,sg;
           std::memcpy(&value,response+i,sizeof(value));
-          std::memcpy(&cg,center_gain[j]+i,sizeof(cg));
+          std::memcpy(&cg,center_weights+i,sizeof(cg));
           std::memcpy(&sg,side_gain[j]+i,sizeof(sg));
           c+=value*cg; s+=value*sg;
 #else
           for(size_t lane=0;lane<4;++lane) {
-            c[lane]+=response[i+lane]*center_gain[j][i+lane];
+            c[lane]+=response[i+lane]*center_weights[i+lane];
             s[lane]+=response[i+lane]*side_gain[j][i+lane];
           }
 #endif
@@ -207,7 +218,7 @@ fn stage_elements(destination: &Path) {
         sum_center=((c[0]+c[1])+c[2])+c[3];
         sum_side=((s[0]+s[1])+s[2])+s[3];
         for(;i<num_modes;++i) {
-          sum_center+=response[i]*center_gain[j][i];
+          sum_center+=response[i]*center_weights[i];
           sum_side+=response[i]*side_gain[j][i];
         }
       }
@@ -219,7 +230,7 @@ fn stage_elements(destination: &Path) {
         bow_signal+=s;
         s=f_bow_[i].Process<FILTER_MODE_BAND_PASS_NORMALIZED>(input+s);
         d_bow_[i].Write(s);
-        sum_center+=s*center_gain[j][i]*8.0f;
+        sum_center+=s*center_weights[i]*8.0f;
       }
       bow_signal_=BowTable(bow_signal,*bow_strength++);
       *center++=sum_center;

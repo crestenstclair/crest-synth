@@ -37,7 +37,8 @@ output directory rather than altering the pinned source inputs.
   stack arrays for SIMD, retains ordered summation, and caches pickup weights
   only while the interpolated position is unchanged. Filter histories return
   to their original owners after each block; exact-zero shortcuts never truncate
-  a tail. Elements uses the same filter scratch, preserves each oscillator and
+  a tail. Elements uses the same filter scratch, reuses identical center-pickup
+  weights only when position is stationary, preserves each oscillator and
   bowed-feedback recurrence, and uses four partial sums for modal accumulation.
   Its unchanged coefficients are reused only after both alternating higher-mode
   update phases have observed them. The numerical witness compares against the

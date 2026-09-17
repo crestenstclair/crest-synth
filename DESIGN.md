@@ -553,7 +553,8 @@ while advancing filter history, interpolation, noise, and gain every sample. Sam
 filter methods remain visible for inlining; modal coefficient preparation runs
 when controls change. Rings batches
 independent modal filters for SIMD and reuses unchanged pickup weights, retaining
-ordered modal sums. Elements batches the same modal equations, caches coefficients
+ordered modal sums. Elements reuses fixed center-pickup weights while advancing
+its side-pickup LFO, batches the same modal equations, and caches coefficients
 only after both alternating update phases agree, and accumulates four parallel
 partial sums within the existing upstream-reference error tolerance. Its bowed
 feedback and oscillator clocks are unchanged. STK BandedWG clears only the circular delay interval written
