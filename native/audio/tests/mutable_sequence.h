@@ -39,6 +39,25 @@ std::vector<float> mutable_resonator_sequence() {
         elements.Process(bow,input,left,right,count);
         for(size_t i=0; i<count; ++i) { output.push_back(left[i]); output.push_back(right[i]); }
     }
+    // Higher Elements modes update on alternate blocks. Rapid changes followed
+    // by one or two stable blocks must never reuse the other parity's stale
+    // coefficients. Keep active filter histories throughout this sequence.
+    for(size_t block=0; block<512; ++block) {
+        const size_t count=lengths[block%5];
+        const size_t section=block/3;
+        elements.set_resolution(26+(section%39));
+        elements.set_frequency(frequencies[section%3]);
+        elements.set_geometry((section%7)/6.f);
+        elements.set_brightness((section%3)/2.f);
+        elements.set_damping((section%4)/3.f);
+        elements.set_position(positions[section%5]);
+        for(size_t i=0; i<count; ++i) {
+            input[i]=std::sin((block*31+i)*.071f)*.01f;
+            bow[i]=block%64<32 ? .15f : 0;
+        }
+        elements.Process(bow,input,left,right,count);
+        for(size_t i=0; i<count; ++i) { output.push_back(left[i]); output.push_back(right[i]); }
+    }
     return output;
 }
 

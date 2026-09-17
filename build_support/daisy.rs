@@ -4,6 +4,8 @@ use std::path::{Path, PathBuf};
 pub fn stage(output: &Path) -> PathBuf {
     let destination = output.join("daisy-source");
     copy_tree(Path::new("vendor/audio/daisysp/Source"), &destination);
+    inline_svf(&destination);
+    split_modal_preparation(&destination);
     destination
 }
 
@@ -483,3 +485,113 @@ const EDITS: &[(&str, &str, &str)] = &[
 "###,
     ),
 ];
+
+// Keep the pinned implementation visible at its sample-by-sample call sites.
+// This avoids repeated native calls and allows unused SVF outputs to disappear.
+fn inline_svf(destination: &Path) {
+    let source_path = destination.join("Filters/svf.cpp");
+    let source = std::fs::read_to_string(&source_path).unwrap();
+    let methods = source[source.find("void Svf::Init").unwrap()..]
+        .replace("void Svf::", "inline void Svf::")
+        .replace("MIN(", "std::min(");
+    let header_path = destination.join("Filters/svf.h");
+    let header = std::fs::read_to_string(&header_path)
+        .unwrap()
+        .replace(
+            "#define DSY_SVF_H",
+            "#define DSY_SVF_H\n#include <algorithm>\n#include <cmath>\n#include \"Utility/dsp.h\"",
+        )
+        .replace(
+            "} // namespace daisysp",
+            &format!("{methods}\n}} // namespace daisysp"),
+        );
+    std::fs::write(header_path, header).unwrap();
+    std::fs::write(source_path, "#include \"svf.h\"\n").unwrap();
+}
+
+fn split_modal_preparation(destination: &Path) {
+    let header_path = destination.join("PhysicalModeling/resonator.h");
+    let mut header = std::fs::read_to_string(&header_path).unwrap();
+    let start = header
+        .find("    template <FilterMode mode, bool add>")
+        .unwrap();
+    let end = header[start..].find("  private:").unwrap() + start;
+    header.replace_range(
+        start..end,
+        r###"    void Prepare(const float* f, const float* q)
+    {
+        for(int i=0; i<batch_size; ++i)
+        {
+            if(!coefficients_ready_ || f[i] != cached_f_[i] || q[i] != cached_q_[i])
+            {
+                cached_f_[i] = f[i];
+                cached_q_[i] = q[i];
+                const float g = fasttan(f[i]);
+                const float r = 1.0f / q[i];
+                cached_g_[i] = g;
+                cached_h_[i] = 1.0f / (1.0f + r * g + g * g);
+                cached_r_plus_g_[i] = r + g;
+            }
+        }
+        coefficients_ready_ = true;
+    }
+
+    template <FilterMode mode, bool add>
+    void Process(const float* f, const float* q, const float* gain,
+                 const float in, float* out)
+    {
+        Prepare(f, q);
+        ProcessPrepared<mode, add>(gain, in, out);
+    }
+
+    template <FilterMode mode, bool add>
+    void ProcessPrepared(const float* gain, const float in, float* out)
+    {
+        float sum = 0.0f;
+        for(int i=0; i<batch_size; ++i)
+        {
+            const float g = cached_g_[i];
+            const float hp = (in - cached_r_plus_g_[i] * state_1_[i] - state_2_[i]) * cached_h_[i];
+            const float bp = g * hp + state_1_[i];
+            state_1_[i] = g * hp + bp;
+            const float lp = g * bp + state_2_[i];
+            state_2_[i] = g * bp + lp;
+            sum += gain[i] * ((mode == LOW_PASS) ? lp : bp);
+        }
+        if(add) *out += sum;
+        else *out = sum;
+    }
+
+"###,
+    );
+    std::fs::write(header_path, header).unwrap();
+    let source_path = destination.join("PhysicalModeling/resonator.cpp");
+    let source = std::fs::read_to_string(&source_path).unwrap();
+    let before = r###"    }
+    for(int batch = 0; batch < resolution_ / kModeBatchSize; ++batch)
+    {
+        const int offset = batch * kModeBatchSize;
+        mode_filters_[batch].Process<ResonatorSvf<kModeBatchSize>::BAND_PASS, true>(
+            prepared_f_ + offset, prepared_q_ + offset, prepared_a_ + offset, in, &out);
+    }"###;
+    let after = r###"        // Coefficients only change with the modal controls above. Keep their
+        // comparison/preparation out of the per-sample filter-history path.
+        for(int batch = 0; batch < resolution_ / kModeBatchSize; ++batch)
+        {
+            const int offset = batch * kModeBatchSize;
+            mode_filters_[batch].Prepare(prepared_f_ + offset, prepared_q_ + offset);
+        }
+    }
+    for(int batch = 0; batch < resolution_ / kModeBatchSize; ++batch)
+    {
+        const int offset = batch * kModeBatchSize;
+        mode_filters_[batch].ProcessPrepared<ResonatorSvf<kModeBatchSize>::BAND_PASS, true>(
+            prepared_a_ + offset, in, &out);
+    }"###;
+    assert_eq!(
+        source.matches(before).count(),
+        1,
+        "DaisySP modal preparation no longer matches"
+    );
+    std::fs::write(source_path, source.replace(before, after)).unwrap();
+}

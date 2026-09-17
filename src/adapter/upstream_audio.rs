@@ -145,6 +145,7 @@ pub(crate) fn prepare_voice_bank<P: VoiceProcessor + 'static>(
         patch_id: patch.id(),
         voices,
         scratch: vec![0.; max_frames * 2],
+        gains: vec![0.; max_frames],
         rate,
         age: 0,
         sustain: false,
@@ -961,6 +962,7 @@ impl InstrumentPreparer for UpstreamInstrument {
             patch_id,
             voices,
             scratch: vec![0.0; max_frames * 2],
+            gains: vec![0.0; max_frames],
             rate,
             age: 0,
             sustain: false,
@@ -982,6 +984,7 @@ struct PreparedVoiceBank<P> {
     patch_id: PatchId,
     voices: Vec<Voice<P>>,
     scratch: Vec<f32>,
+    gains: Vec<f32>,
     rate: f32,
     age: u64,
     sustain: bool,
@@ -1113,13 +1116,17 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
                 }
                 continue;
             }
-            for (input, output) in scratch.chunks_exact(2).zip(stereo.chunks_exact_mut(2)) {
-                let gain = if voice.delay > 0 {
-                    voice.delay -= 1;
-                    0.0
-                } else {
-                    voice.envelope.next_gain(self.rate) * self.expression * self.pressure
-                };
+            let gains = &mut self.gains[..frames];
+            let delayed = voice.delay.min(frames);
+            voice.delay -= delayed;
+            gains[..delayed].fill(0.0);
+            voice.envelope.fill_gains(&mut gains[delayed..], self.rate);
+            for ((input, output), gain) in scratch
+                .chunks_exact(2)
+                .zip(stereo.chunks_exact_mut(2))
+                .zip(gains.iter())
+            {
+                let gain = gain * self.expression * self.pressure;
                 output[0] += input[0] * gain;
                 output[1] += input[1] * gain;
             }
@@ -1288,6 +1295,7 @@ mod tests {
                 })
                 .collect(),
             scratch: vec![0.0; 128],
+            gains: vec![0.0; 64],
             rate: 48_000.0,
             age: 0,
             sustain: false,

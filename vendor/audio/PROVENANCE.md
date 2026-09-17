@@ -37,7 +37,12 @@ output directory rather than altering the pinned source inputs.
   stack arrays for SIMD, retains ordered summation, and caches pickup weights
   only while the interpolated position is unchanged. Filter histories return
   to their original owners after each block; exact-zero shortcuts never truncate
-  a tail. A numerical witness compares against the retained upstream resonators.
+  a tail. Elements uses the same filter scratch, preserves each oscillator and
+  bowed-feedback recurrence, and uses four partial sums for modal accumulation.
+  Its unchanged coefficients are reused only after both alternating higher-mode
+  update phases have observed them. The numerical witness compares against the
+  retained upstream resonators without relaxing its tolerance, including rapid
+  parameter changes with active histories.
 - Airwindows/mda DSP is isolated behind a small SDK compatibility boundary;
   no VST2 SDK or foreign editor is distributed. mda ePiano's constructor-owned
   sample crossfades use private sample storage. ButterComp2's local static
@@ -57,7 +62,10 @@ output directory rather than altering the pinned source inputs.
   their setters. The SVF caches its resonance-only damping bound even while
   the frequency changes. String and ModalVoice cache parameter-only excitation
   and damping calculations while preserving delay/filter history, interpolation
-  phase, and every random draw.
+  phase, and every random draw. The staged SVF methods are inline so each caller
+  can eliminate unused output calculations. Modal coefficient preparation is
+  separate from sample processing; unchanged controls do not compare every
+  mode's coefficients again each sample.
   The original calculations run on first use and after parameter changes. Gain
   and filter history still advance every sample. The native witness compares
   these paths against retained upstream sources across changes, reset, sample

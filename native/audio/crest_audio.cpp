@@ -93,8 +93,13 @@ bool crest_audio_process(void* h, float* stereo, size_t frames) noexcept {
     for (size_t i=0; i<frames; ++i) { v.left[i+1]=stereo[2*i]; v.right[i+1]=stereo[2*i+1]; }
     v.processor->process(v.left.data()+1, v.right.data()+1, frames);
     if (!v.processor->healthy()) return false;
+    // Complete the finite-output check before exposing audio. A reduction
+    // permits SIMD without weakening validation or short-circuiting channels.
+    bool finite=true;
+    for (size_t i=0; i<frames; ++i)
+        finite &= std::isfinite(v.left[i+1]) & std::isfinite(v.right[i+1]);
+    if (!finite) return false;
     for (size_t i=0; i<frames; ++i) {
-        if (!std::isfinite(v.left[i+1]) || !std::isfinite(v.right[i+1])) return false;
         stereo[2*i]=v.left[i+1]; stereo[2*i+1]=v.right[i+1];
     }
     return true;

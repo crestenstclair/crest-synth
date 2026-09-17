@@ -16,12 +16,13 @@ static CrestProcessorState* current_state() noexcept { return static_cast<CrestP
 static void set_state(CrestProcessorState* state) noexcept { pthread_setspecific(processor_key,state); }
 #else
 // Constant-initialized POD TLS in the statically linked native library.
-static thread_local CrestProcessorState* current=nullptr;
 bool crest_processor_initialize() noexcept { return true; }
-static CrestProcessorState* current_state() noexcept { return current; }
-static void set_state(CrestProcessorState* state) noexcept { current=state; }
+static CrestProcessorState* current_state() noexcept { return crest_native_detail::current; }
+static void set_state(CrestProcessorState* state) noexcept { crest_native_detail::current=state; }
 #endif
+#ifdef __APPLE__
 CrestProcessorState& crest_processor_state() noexcept { return *current_state(); }
+#endif
 CrestProcessorState* crest_enter_processor_state(CrestProcessorState& state) noexcept {
     auto* previous=current_state();set_state(&state);return previous;
 }

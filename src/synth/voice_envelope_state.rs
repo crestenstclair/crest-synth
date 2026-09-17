@@ -110,6 +110,42 @@ impl VoiceEnvelopeState {
         }
     }
 
+    /// Fills a prepared block with the same gains and final state as repeated
+    /// `next_gain` calls. Stage dispatch occurs at boundaries, not each sample.
+    pub fn fill_gains(&mut self, mut output: &mut [f32], sample_rate: f32) {
+        while !output.is_empty() {
+            match self.stage {
+                VoiceEnvelopeStage::Idle | VoiceEnvelopeStage::Sustain => {
+                    output.fill(self.level);
+                    return;
+                }
+                VoiceEnvelopeStage::Attack
+                | VoiceEnvelopeStage::Decay
+                | VoiceEnvelopeStage::Release => {
+                    // Leave the transition sample to the scalar state machine:
+                    // it may latch decay or return the sustain/idle level.
+                    let count = output
+                        .len()
+                        .min(self.remaining_samples.saturating_sub(1) as usize);
+                    let (within_stage, remainder) = output.split_at_mut(count);
+                    let mut level = self.level;
+                    for gain in within_stage {
+                        level = (level + self.increment).clamp(0.0, 1.0);
+                        *gain = level;
+                    }
+                    self.level = level;
+                    self.remaining_samples -= count as u32;
+                    output = remainder;
+                    let Some((transition, remainder)) = output.split_first_mut() else {
+                        return;
+                    };
+                    *transition = self.next_gain(sample_rate);
+                    output = remainder;
+                }
+            }
+        }
+    }
+
     /// Immediately returns the slot to its reusable idle state.
     pub fn clear(&mut self) {
         *self = Self::IDLE;
@@ -223,6 +259,39 @@ mod tests {
         assert!(state.is_idle());
         state.note_on(VoiceEnvelope::DEFAULT, 1_000.0);
         assert_eq!(state.next_gain(1_000.0), 1.0);
+    }
+
+    #[test]
+    fn block_gains_match_scalar_clocks_across_stages_and_retriggers() {
+        let envelopes = [
+            VoiceEnvelope::DEFAULT,
+            VoiceEnvelope::new(1.3, 2.7, 0.37, 9.7).unwrap(),
+            VoiceEnvelope::new(0.0, 0.2, 0.0, 0.0).unwrap(),
+            VoiceEnvelope::new(0.2, 0.0, 1.0, 0.3).unwrap(),
+        ];
+        for envelope in envelopes {
+            for rate in [1_000.0, 44_100.0, 48_000.0, 96_000.0] {
+                let mut scalar = VoiceEnvelopeState::new();
+                let mut block = scalar;
+                for step in 0..96 {
+                    if step % 24 == 0 {
+                        scalar.note_on(envelope, rate);
+                        block.note_on(envelope, rate);
+                    }
+                    if step % 24 == 5 || step % 24 == 7 {
+                        scalar.note_off(envelope.release_milliseconds(), rate);
+                        block.note_off(envelope.release_milliseconds(), rate);
+                    }
+                    let frames = [0, 1, 7, 64, 127, 512][step % 6];
+                    let mut actual = [f32::NAN; 512];
+                    block.fill_gains(&mut actual[..frames], rate);
+                    for gain in &actual[..frames] {
+                        assert_eq!(*gain, scalar.next_gain(rate));
+                    }
+                    assert_eq!(block, scalar);
+                }
+            }
+        }
     }
 
     #[test]

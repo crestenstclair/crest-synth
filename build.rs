@@ -145,6 +145,7 @@ fn build_audio_catalog() {
     build
         .include(&generated)
         .include("vendor/audio")
+        .include(&mutable_sources)
         .include("vendor/audio/mutable")
         .define("TEST", None);
     build
@@ -211,6 +212,7 @@ fn build_audio_catalog() {
         .define("TEST", None)
         .include(&generated)
         .include("vendor/audio")
+        .include(&mutable_sources)
         .include("vendor/audio/mutable")
         .flag("-include")
         .flag("cstdio");

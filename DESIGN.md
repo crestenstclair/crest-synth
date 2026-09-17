@@ -549,16 +549,23 @@ Delay-zero MIDI updates retain normalized event state without rewriting every
 controller buffer each block. Delayed events still flush in timestamp order.
 DaisySP caches unchanged SVF and modal coefficients and drum tone/decay
 calculations, plus unchanged string/modal excitation and damping coefficients,
-while advancing filter history, interpolation, noise, and gain every sample. Rings batches
+while advancing filter history, interpolation, noise, and gain every sample. Sample
+filter methods remain visible for inlining; modal coefficient preparation runs
+when controls change. Rings batches
 independent modal filters for SIMD and reuses unchanged pickup weights, retaining
-ordered modal sums. STK BandedWG clears only the circular delay interval written
+ordered modal sums. Elements batches the same modal equations, caches coefficients
+only after both alternating update phases agree, and accumulates four parallel
+partial sums within the existing upstream-reference error tolerance. Its bowed
+feedback and oscillator clocks are unchanged. STK BandedWG clears only the circular delay interval written
 since its last clear and returns exact zero for a cleared, unexcited plucked
 model; bowed models and nonzero tails always advance. Mesh2D computes each junction and its alternate-buffer
 outgoing waves in one pass. Native witnesses compare these paths against the
 retained upstream sources. Scalar snapshots revalidate changed values before
 applying any edits; reset invalidates the validated cache. Idle host voices receive
 the current pitch bend after reset at their next note-on; held and releasing
-voices still receive every ordered bend.
+voices still receive every ordered bend. Prepared voice banks fill a reusable
+envelope-gain block with scalar-equivalent stage transitions, then mix it without
+per-sample stage dispatch; each voice retains its independent release history.
 
 Catalog descriptors expose native parameters through existing generic lists.
 Parameter descriptors attach names to categorical stepped values and normalized

@@ -46,7 +46,7 @@ command += ['-I'+str(output/'r8brain-source'),
 if subprocess.run(['c++', '-fno-lifetime-dse', '-x', 'c++', '-fsyntax-only', '-'],
                   input='', text=True, capture_output=True).returncode == 0:
     command.append('-fno-lifetime-dse')
-command += ['-DTEST', '-I'+str(root/'vendor/audio'), '-I'+str(root/'vendor/audio/mutable'),
+command += ['-DTEST', '-I'+str(output/'mutable-source'), '-I'+str(root/'vendor/audio'), '-I'+str(root/'vendor/audio/mutable'),
             str(root/'native/audio/tests/mutable_reference.cpp'),
             str(root/'native/audio/tests/mutable_resonators.cpp')]
 command += ['-I'+str(output/'stk-source'), '-I'+str(root/'vendor/audio/stk/include'),
