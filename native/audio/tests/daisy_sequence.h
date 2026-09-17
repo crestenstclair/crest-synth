@@ -66,3 +66,49 @@ void daisy_voice_sequence(float* output) {
         output[2*i+1]=body.Process(input);
     }
 }
+
+#include "processor_state.h"
+template<class Drum> void daisy_synthetic_sequence(float* output) {
+    CrestProcessorState state; CrestProcessorScope scope(state);
+    ZeroInitialized<Drum> storage; auto& drum=storage.get();
+    for(size_t i=0;i<8192;++i) {
+        if(i%1024==0) drum.Init(i<4096?48000.f:96000.f);
+        const size_t section=i/64;
+        const float frequencies[]={20,110,440,3000,10000};
+        drum.SetFreq(frequencies[section%5]);drum.SetTone((section%5)*.25f);
+        drum.SetDecay((section%3)*.5f);drum.SetAccent(.2f+(section%5)*.1f);
+        drum.SetSustain(section%7==0);drum.SetDirtiness((section%4)/3.f);
+        drum.SetFmEnvelopeAmount((section%3)*.2f);drum.SetFmEnvelopeDecay((section%3)*.1f);
+        output[i]=drum.Process(i%127==0);
+    }
+}
+
+// Long tails, the low-frequency interpolation corner, infinite-decay damping,
+// parameter changes, history reset and rate reinitialization use identical RNG.
+constexpr size_t daisy_physical_samples = 32768;
+template<class String, class Modal> void daisy_physical_sequence(float* output) {
+    CrestProcessorState state; CrestProcessorScope scope(state);
+    ZeroInitialized<String> string_storage;
+    ZeroInitialized<Modal> modal_storage;
+    auto& string = string_storage.get(); auto& modal = modal_storage.get();
+    for(size_t i=0; i<daisy_physical_samples; ++i) {
+        if(i%8192==0) {
+            const float rates[]={22050,44100,48000,96000};
+            string.Init(rates[i/8192]); modal.Init(rates[i/8192]);
+        }
+        if(i%2048==1024) string.Reset();
+        if(i%256==0) {
+            const size_t section=i/256;
+            const float frequencies[]={0.5f,8.f,110.f,440.f,3000.f,10000.f};
+            const float damping[]={0.f,.6f,.949f,.95f,1.f};
+            string.SetFreq(frequencies[section%6]); modal.SetFreq(frequencies[section%6]);
+            string.SetBrightness((section%5)*.25f); modal.SetBrightness((section%5)*.25f);
+            string.SetDamping(damping[section%5]); modal.SetDamping(damping[section%5]);
+            string.SetNonLinearity((section%5)*.25f); modal.SetStructure((section%5)*.25f);
+            modal.SetSustain(section%7==0); modal.SetAccent((section%3)*.5f);
+        }
+        const float input=i%509==0 ? .125f : 0.f;
+        output[2*i]=string.Process(input);
+        output[2*i+1]=modal.Process(i%127==0);
+    }
+}

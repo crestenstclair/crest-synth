@@ -70,6 +70,7 @@ bool r8brain_scheduling_witness();
 bool rate_adapter_witness();
 bool mutable_resonator_witness();
 bool stk_model_witness();
+bool stk_sample_rate_witness();
 static bool parameter_validation_witness() {
     size_t index=0;
     while(index<crest_audio_count() && std::strcmp(crest_audio_id(index),"daisy_AnalogBassDrum")) ++index;
@@ -173,6 +174,7 @@ int main(){
     if(!rate_adapter_witness()){return 1;}
     if(!mutable_resonator_witness()){return 1;}
     if(!stk_model_witness()){return 1;}
+    if(!stk_sample_rate_witness()){return 1;}
     if(!parameter_validation_witness()){return 1;}
     size_t failures=0,checked=0;
     for(float rate:{44100.f,48000.f,96000.f})for(size_t index=0;index<crest_audio_count();++index){

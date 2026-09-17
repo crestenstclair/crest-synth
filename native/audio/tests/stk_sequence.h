@@ -7,6 +7,17 @@ template<class Banded> struct PreparedBanded: Banded {
 template<class Banded,class Mesh> std::vector<double> stk_model_sequence() {
  std::vector<double> output;
  PreparedBanded<Banded> banded;
+ // Cleared plucked models remain exactly silent until re-excited, including
+ // long silent intervals that would wrap upstream delay pointers repeatedly.
+ for(int preset=0;preset<4;++preset) {
+  banded.setPreset(preset); banded.controlChange(2,0);
+  for(int step=0;step<70000;++step) {
+   if(step%8193==0)banded.noteOn(40.+step%1000,.7);
+   if(step%8193==127)banded.setFrequency(55.+step%1000);
+   if(step%4099==0)banded.clear();
+   output.push_back(banded.tick());
+  }
+ }
  for(int preset=0;preset<4;++preset) {
   banded.setPreset(preset);
   for(int step=0;step<40000;++step) {

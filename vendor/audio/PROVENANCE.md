@@ -19,7 +19,9 @@ output directory rather than altering the pinned source inputs.
 
 - Mutable and DaisySP objects receive the zero-initialized storage their
   firmware initialization expects. Native rate/block requirements are adapted
-  by r8brain with prepared buffers. Per-instance PRNG state is selected around
+  by r8brain with prepared buffers and contiguous circular-buffer spans; the
+  source block calls and converter clocks are unchanged. A frozen scalar
+  buffering witness checks output and clocks across wraps and resets. Per-instance PRNG state is selected around
   native calls. On Darwin, a pthread key allocated during preparation selects
   that state without C++ thread-local storage allocation on first render;
   other targets use constant-initialized pointer TLS. Mutable's staged PRNG
@@ -51,22 +53,34 @@ output directory rather than altering the pinned source inputs.
   The other selected DaisySP algorithms remain the MIT main-library versions;
   the separate LGPL subtree is not included in the build.
   Staged SVF and modal implementations cache unchanged filter coefficients;
-  AnalogBassDrum computes its unchanged tone/decay powers in their setters.
+  AnalogBassDrum and SyntheticBassDrum compute unchanged tone/decay powers in
+  their setters. The SVF caches its resonance-only damping bound even while
+  the frequency changes. String and ModalVoice cache parameter-only excitation
+  and damping calculations while preserving delay/filter history, interpolation
+  phase, and every random draw.
   The original calculations run on first use and after parameter changes. Gain
   and filter history still advance every sample. The native witness compares
   these paths against retained upstream sources across changes, reset, sample
   rates, and modal resolutions using the production optimization level.
-- STK uses its fixed native sample rate behind r8brain. Setup/retirement of its
+- STK's staged sample-rate accessor selects the prepared instance's rate through
+  Crest's native context; outside a context it retains the upstream global-rate
+  API. The host never changes STK's global rate. Voices render directly at device
+  rate using the original rate-dependent equations. Setup/retirement of the
   global observer list is serialized off callback. Raw waves are embedded and
-  loaded during preparation. Delay capacity for BandedWG is reserved during
-  construction; Shakers' selectable materials are warmed there. Mandolin's
+  loaded during preparation. BandedWG reserves delay capacity for the lowest
+  note and downward bend across its presets at the prepared rate; Shakers'
+  selectable materials are warmed there. Mandolin's
   admitted damping range avoids the upstream invalid loop-gain endpoint.
   BandedWG's staged delay type privately wraps DelayL's original scalar tick
   and clears only the contiguous circular interval written since the previous
-  clear. Delay changes, pointers, and cached outputs retain upstream semantics.
+  clear. A cleared, unexcited plucked model returns exact zero until excitation;
+  bowed state and nonzero tails always advance. Delay changes and cached
+  outputs retain upstream semantics.
   Mesh2D fuses its junction/outgoing-wave passes because all outgoing writes
   target alternate buffers. Native witnesses require bit-identical samples
   across presets, pitch bends, delay wraps/growth, mesh dimensions, and resets.
+  A separate witness compares interleaved instances at different rates with
+  upstream global-rate rendering and requires bit-identical output.
 - r8brain retains its upstream 24-bit filter design and double-precision DSP.
   Staged convolution starts at a prepared zero-padded block offset to spread
   independent voices' FFT work, retaining the original latency consumption and

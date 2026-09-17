@@ -1,6 +1,5 @@
 #include "random.h"
 #include "parameter_adapter.h"
-#include "rate_adapter.h"
 #include <mutex>
 #include "Shakers.h"
 #include "ModalBar.h"
@@ -15,13 +14,25 @@
 #include "BeeThree.h"
 #include "Rhodey.h"
 #include "Wurley.h"
-// STK retains its fixed default rate for the process lifetime. r8brain owns
-// device conversion. Only off-thread construction/destruction touches STK's
-// global sample-rate observer list; serialize those operations here.
+// STK reads the prepared instance's host rate through CrestProcessorScope.
+// Global sample rate never changes. Only off-thread construction/destruction
+// touches the upstream observer list; serialize those operations here.
 static std::mutex stk_ownership_mutex;
 class PreparedBandedWG : public stk::BandedWG {
 public:
-    PreparedBandedWG() { for (auto& delay: delay_) delay.setMaximumDelay(16384); }
+    PreparedBandedWG() {
+        // Reserve every preset's longest mode at MIDI note 0 with the full
+        // two-semitone downward bend. Capacity follows the prepared rate.
+        double lowest_mode=1.0;
+        for(int preset:{0,1,2,3}) {
+            setPreset(preset);
+            for(int i=0;i<presetModes_;++i) lowest_mode=std::min(lowest_mode,modes_[i]);
+        }
+        const double lowest_note=440.0*std::exp2(-71.0/12.0);
+        const auto capacity=static_cast<unsigned long>(std::ceil(stk::Stk::sampleRate()/(lowest_note*lowest_mode)));
+        for(auto& delay:delay_) delay.setMaximumDelay(capacity);
+        setPreset(0);
+    }
 };
 class StkShakers final : public ParameterAdapter {
     std::unique_ptr<stk::Shakers> voice_;
@@ -58,7 +69,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Shakers(float rate,size_t frames) { return new RateAdapter(new StkShakers,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Shakers(float rate,size_t frames) { return new StkShakers; }
 class StkModalBar final : public ParameterAdapter {
     std::unique_ptr<stk::ModalBar> voice_;
     float note_ = 60, bend_ = 0;
@@ -95,7 +106,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_ModalBar(float rate,size_t frames) { return new RateAdapter(new StkModalBar,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_ModalBar(float rate,size_t frames) { return new StkModalBar; }
 class StkBandedWG final : public ParameterAdapter {
     std::unique_ptr<PreparedBandedWG> voice_;
     float note_ = 60, bend_ = 0;
@@ -131,7 +142,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_BandedWG(float rate,size_t frames) { return new RateAdapter(new StkBandedWG,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_BandedWG(float rate,size_t frames) { return new StkBandedWG; }
 class StkMesh2D final : public ParameterAdapter {
     std::unique_ptr<stk::Mesh2D> voice_;
     float note_ = 60, bend_ = 0;
@@ -164,7 +175,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Mesh2D(float rate,size_t frames) { return new RateAdapter(new StkMesh2D,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Mesh2D(float rate,size_t frames) { return new StkMesh2D; }
 class StkVoicForm final : public ParameterAdapter {
     std::unique_ptr<stk::VoicForm> voice_;
     float note_ = 60, bend_ = 0;
@@ -199,7 +210,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_VoicForm(float rate,size_t frames) { return new RateAdapter(new StkVoicForm,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_VoicForm(float rate,size_t frames) { return new StkVoicForm; }
 class StkClarinet final : public ParameterAdapter {
     std::unique_ptr<stk::Clarinet> voice_;
     float note_ = 60, bend_ = 0;
@@ -234,7 +245,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Clarinet(float rate,size_t frames) { return new RateAdapter(new StkClarinet,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Clarinet(float rate,size_t frames) { return new StkClarinet; }
 class StkFlute final : public ParameterAdapter {
     std::unique_ptr<stk::Flute> voice_;
     float note_ = 60, bend_ = 0;
@@ -269,7 +280,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Flute(float rate,size_t frames) { return new RateAdapter(new StkFlute,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Flute(float rate,size_t frames) { return new StkFlute; }
 class StkBrass final : public ParameterAdapter {
     std::unique_ptr<stk::Brass> voice_;
     float note_ = 60, bend_ = 0;
@@ -304,7 +315,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Brass(float rate,size_t frames) { return new RateAdapter(new StkBrass,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Brass(float rate,size_t frames) { return new StkBrass; }
 class StkBowed final : public ParameterAdapter {
     std::unique_ptr<stk::Bowed> voice_;
     float note_ = 60, bend_ = 0;
@@ -339,7 +350,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Bowed(float rate,size_t frames) { return new RateAdapter(new StkBowed,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Bowed(float rate,size_t frames) { return new StkBowed; }
 class StkMandolin final : public ParameterAdapter {
     std::unique_ptr<stk::Mandolin> voice_;
     float note_ = 60, bend_ = 0;
@@ -374,7 +385,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Mandolin(float rate,size_t frames) { return new RateAdapter(new StkMandolin,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Mandolin(float rate,size_t frames) { return new StkMandolin; }
 class StkBeeThree final : public ParameterAdapter {
     std::unique_ptr<stk::BeeThree> voice_;
     float note_ = 60, bend_ = 0;
@@ -409,7 +420,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_BeeThree(float rate,size_t frames) { return new RateAdapter(new StkBeeThree,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_BeeThree(float rate,size_t frames) { return new StkBeeThree; }
 class StkRhodey final : public ParameterAdapter {
     std::unique_ptr<stk::Rhodey> voice_;
     float note_ = 60, bend_ = 0;
@@ -444,7 +455,7 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Rhodey(float rate,size_t frames) { return new RateAdapter(new StkRhodey,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Rhodey(float rate,size_t frames) { return new StkRhodey; }
 class StkWurley final : public ParameterAdapter {
     std::unique_ptr<stk::Wurley> voice_;
     float note_ = 60, bend_ = 0;
@@ -479,4 +490,4 @@ public:
         for (size_t i=0; i<frames; ++i) left[i]=right[i]=voice_->tick();
     }
 };
-CrestProcessor* make_stk_Wurley(float rate,size_t frames) { return new RateAdapter(new StkWurley,44100,rate,32,frames,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_stk_Wurley(float rate,size_t frames) { return new StkWurley; }

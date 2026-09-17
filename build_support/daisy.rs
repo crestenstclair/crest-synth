@@ -206,4 +206,280 @@ const EDITS: &[(&str, &str, &str)] = &[
     float cached_g_[batch_size], cached_h_[batch_size], cached_r_plus_g_[batch_size];
     float state_1_[batch_size];"###,
     ),
+    (
+        "Filters/svf.h",
+        "    float sr_, fc_, res_, drive_, freq_, damp_;",
+        "    float resonance_limit_;\n    float sr_, fc_, res_, drive_, freq_, damp_;",
+    ),
+    (
+        "Filters/svf.cpp",
+        "    res_       = 0.5f;",
+        "    res_       = 0.5f;\n    resonance_limit_ = 2.0f * (1.0f - powf(res_, 0.25f));",
+    ),
+    (
+        "Filters/svf.cpp",
+        "    res_      = res;",
+        "    res_      = res;\n    resonance_limit_ = 2.0f * (1.0f - powf(res_, 0.25f));",
+    ),
+    (
+        "Filters/svf.cpp",
+        "damp_ = MIN(2.0f * (1.0f - powf(res_, 0.25f)),",
+        "damp_ = MIN(resonance_limit_,",
+    ),
+    (
+        "Filters/svf.cpp",
+        "damp_  = MIN(2.0f * (1.0f - powf(res_, 0.25f)),",
+        "damp_  = MIN(resonance_limit_,",
+    ),
+    (
+        "Drums/synthbassdrum.h",
+        "    float accent_, new_f0_, tone_, decay_;",
+        "    float cached_decay_, cached_tone_;\n    float accent_, new_f0_, tone_, decay_;",
+    ),
+    (
+        "Drums/synthbassdrum.cpp",
+        "powf(2.f, (-decay_ * 60.0f) * kOneTwelfth)",
+        "cached_decay_",
+    ),
+    (
+        "Drums/synthbassdrum.cpp",
+        "powf(2.f, (tone_ * 108.0f) * kOneTwelfth)",
+        "cached_tone_",
+    ),
+    (
+        "Drums/synthbassdrum.cpp",
+        "    tone_ = fclamp(tone, 0.f, 1.f);",
+        "    tone_ = fclamp(tone, 0.f, 1.f);\n    cached_tone_ = powf(2.f, (tone_ * 108.0f) * kOneTwelfth);",
+    ),
+    (
+        "Drums/synthbassdrum.cpp",
+        "    decay_ = decay * decay;",
+        "    decay_ = decay * decay;\n    cached_decay_ = powf(2.f, (-decay_ * 60.0f) * kOneTwelfth);",
+    ),
+    (
+        "PhysicalModeling/KarplusString.h",
+        r###"    float sample_rate_;"###,
+        r###"    bool coefficients_ready_;
+    float cached_frequency_, cached_non_linearity_, cached_brightness_, cached_damping_;
+    float prepared_delay_, prepared_src_ratio_, prepared_damping_compensation_;
+    float prepared_stretch_point_, prepared_stretch_correction_, prepared_noise_amount_;
+    float prepared_noise_filter_, prepared_bridge_curving_, prepared_ap_gain_;
+    float sample_rate_;"###,
+    ),
+    (
+        "PhysicalModeling/KarplusString.cpp",
+        r###"void String::Reset()
+{"###,
+        r###"void String::Reset()
+{
+    coefficients_ready_ = false;"###,
+    ),
+    (
+        "PhysicalModeling/KarplusString.cpp",
+        r###"    float brightness = brightness_;
+
+    float delay = 1.0f / frequency_;
+    delay       = fclamp(delay, 4.f, kDelayLineSize - 4.0f);
+
+    // If there is not enough delay time in the delay line, we play at the
+    // lowest possible note and we upsample on the fly with a shitty linear
+    // interpolator. We don't care because it's a corner case (frequency_ < 11.7Hz)
+    float src_ratio = delay * frequency_;
+    if(src_ratio >= 0.9999f)
+    {
+        // When we are above 11.7 Hz, we make sure that the linear interpolator
+        // does not get in the way.
+        src_phase_ = 1.0f;
+        src_ratio  = 1.0f;
+    }
+
+    float damping_cutoff
+        = fmin(12.0f + damping_ * damping_ * 60.0f + brightness * 24.0f, 84.0f);
+    float damping_f
+        = fmin(frequency_ * powf(2.f, damping_cutoff * kOneTwelfth), 0.499f);
+
+    // Crossfade to infinite decay.
+    if(damping_ >= 0.95f)
+    {
+        float to_infinite = 20.0f * (damping_ - 0.95f);
+        brightness += to_infinite * (1.0f - brightness);
+        damping_f += to_infinite * (0.4999f - damping_f);
+        damping_cutoff += to_infinite * (128.0f - damping_cutoff);
+    }
+
+    float temp_f = damping_f;
+    iir_damping_filter_.SetFrequency(temp_f);
+
+    float ratio                = powf(2.f, damping_cutoff * kOneTwelfth);
+    float damping_compensation = 1.f - 2.f * atanf(1.f / ratio) / (TWOPI_F);
+
+    float stretch_point
+        = non_linearity_amount_ * (2.0f - non_linearity_amount_) * 0.225f;
+    float stretch_correction = (160.0f / sample_rate_) * delay;
+    stretch_correction       = fclamp(stretch_correction, 1.f, 2.1f);
+
+    float noise_amount_sqrt = non_linearity_amount_ > 0.75f
+                                  ? 4.0f * (non_linearity_amount_ - 0.75f)
+                                  : 0.0f;
+    float noise_amount = noise_amount_sqrt * noise_amount_sqrt * 0.1f;
+    float noise_filter = 0.06f + 0.94f * brightness * brightness;
+
+    float bridge_curving_sqrt = non_linearity_amount_;
+    float bridge_curving = bridge_curving_sqrt * bridge_curving_sqrt * 0.01f;
+
+    float ap_gain = -0.618f * non_linearity_amount_
+                    / (0.15f + fabsf(non_linearity_amount_));
+
+"###,
+        r###"    // Cache parameter-only calculations. Delay/filter histories and the
+    // low-frequency interpolation clock still advance for every sample.
+    if(!coefficients_ready_ || cached_frequency_ != frequency_
+       || cached_non_linearity_ != non_linearity_amount_
+       || cached_brightness_ != brightness_ || cached_damping_ != damping_)
+    {
+        coefficients_ready_ = true;
+        cached_frequency_ = frequency_;
+        cached_non_linearity_ = non_linearity_amount_;
+        cached_brightness_ = brightness_;
+        cached_damping_ = damping_;
+        float brightness = brightness_;
+
+        float delay = 1.0f / frequency_;
+        delay       = fclamp(delay, 4.f, kDelayLineSize - 4.0f);
+
+        // If there is not enough delay time in the delay line, we play at the
+        // lowest possible note and we upsample on the fly with a shitty linear
+        // interpolator. We don't care because it's a corner case (frequency_ < 11.7Hz)
+        float src_ratio = delay * frequency_;
+
+        float damping_cutoff
+            = fmin(12.0f + damping_ * damping_ * 60.0f + brightness * 24.0f, 84.0f);
+        float damping_f
+            = fmin(frequency_ * powf(2.f, damping_cutoff * kOneTwelfth), 0.499f);
+
+        // Crossfade to infinite decay.
+        if(damping_ >= 0.95f)
+        {
+            float to_infinite = 20.0f * (damping_ - 0.95f);
+            brightness += to_infinite * (1.0f - brightness);
+            damping_f += to_infinite * (0.4999f - damping_f);
+            damping_cutoff += to_infinite * (128.0f - damping_cutoff);
+        }
+
+        float temp_f = damping_f;
+        iir_damping_filter_.SetFrequency(temp_f);
+
+        float ratio                = powf(2.f, damping_cutoff * kOneTwelfth);
+        float damping_compensation = 1.f - 2.f * atanf(1.f / ratio) / (TWOPI_F);
+
+        float stretch_point
+            = non_linearity_amount_ * (2.0f - non_linearity_amount_) * 0.225f;
+        float stretch_correction = (160.0f / sample_rate_) * delay;
+        stretch_correction       = fclamp(stretch_correction, 1.f, 2.1f);
+
+        float noise_amount_sqrt = non_linearity_amount_ > 0.75f
+                                      ? 4.0f * (non_linearity_amount_ - 0.75f)
+                                      : 0.0f;
+        float noise_amount = noise_amount_sqrt * noise_amount_sqrt * 0.1f;
+        float noise_filter = 0.06f + 0.94f * brightness * brightness;
+
+        float bridge_curving_sqrt = non_linearity_amount_;
+        float bridge_curving = bridge_curving_sqrt * bridge_curving_sqrt * 0.01f;
+
+        float ap_gain = -0.618f * non_linearity_amount_
+                        / (0.15f + fabsf(non_linearity_amount_));
+
+        prepared_delay_ = delay;
+        prepared_src_ratio_ = src_ratio;
+        prepared_damping_compensation_ = damping_compensation;
+        prepared_stretch_point_ = stretch_point;
+        prepared_stretch_correction_ = stretch_correction;
+        prepared_noise_amount_ = noise_amount;
+        prepared_noise_filter_ = noise_filter;
+        prepared_bridge_curving_ = bridge_curving;
+        prepared_ap_gain_ = ap_gain;
+    }
+    float delay = prepared_delay_;
+    float src_ratio = prepared_src_ratio_;
+    float damping_compensation = prepared_damping_compensation_;
+    float stretch_point = prepared_stretch_point_;
+    float stretch_correction = prepared_stretch_correction_;
+    float noise_amount = prepared_noise_amount_;
+    float noise_filter = prepared_noise_filter_;
+    float bridge_curving = prepared_bridge_curving_;
+    float ap_gain = prepared_ap_gain_;
+
+    if(src_ratio >= 0.9999f)
+    {
+        // When we are above 11.7 Hz, we make sure that the linear interpolator
+        // does not get in the way.
+        src_phase_ = 1.0f;
+        src_ratio  = 1.0f;
+    }
+
+"###,
+    ),
+    (
+        "PhysicalModeling/modalvoice.h",
+        r###"    float sample_rate_;"###,
+        r###"    bool coefficients_ready_, cached_sustain_;
+    float cached_f0_, cached_brightness_, cached_damping_, cached_accent_;
+    float prepared_brightness_, prepared_damping_, prepared_cutoff_, prepared_q_;
+    float sample_rate_;"###,
+    ),
+    (
+        "PhysicalModeling/modalvoice.cpp",
+        r###"    sample_rate_ = sample_rate;"###,
+        r###"    sample_rate_ = sample_rate;
+    coefficients_ready_ = false;"###,
+    ),
+    (
+        "PhysicalModeling/modalvoice.cpp",
+        r###"    float brightness = brightness_ + 0.25f * accent_ * (1.0f - brightness_);
+    float damping    = damping_ + 0.25f * accent_ * (1.0f - damping_);
+
+    const float range  = sustain_ ? 36.0f : 60.0f;
+    const float f      = sustain_ ? 4.0f * f0_ : 2.0f * f0_;
+    const float cutoff = fmin(
+        f
+            * powf(2.f,
+                   kOneTwelfth
+                       * ((brightness * (2.0f - brightness) - 0.5f) * range)),
+        0.499f);
+    const float q = sustain_ ? 0.7f : 1.5f;
+
+"###,
+        r###"    if(!coefficients_ready_ || cached_sustain_ != sustain_ || cached_f0_ != f0_
+       || cached_brightness_ != brightness_ || cached_damping_ != damping_
+       || cached_accent_ != accent_)
+    {
+        coefficients_ready_ = true;
+        cached_sustain_ = sustain_; cached_f0_ = f0_;
+        cached_brightness_ = brightness_; cached_damping_ = damping_;
+        cached_accent_ = accent_;
+        float brightness = brightness_ + 0.25f * accent_ * (1.0f - brightness_);
+        float damping    = damping_ + 0.25f * accent_ * (1.0f - damping_);
+
+        const float range  = sustain_ ? 36.0f : 60.0f;
+        const float f      = sustain_ ? 4.0f * f0_ : 2.0f * f0_;
+        const float cutoff = fmin(
+            f
+                * powf(2.f,
+                       kOneTwelfth
+                           * ((brightness * (2.0f - brightness) - 0.5f) * range)),
+            0.499f);
+        const float q = sustain_ ? 0.7f : 1.5f;
+
+        prepared_brightness_ = brightness;
+        prepared_damping_ = damping;
+        prepared_cutoff_ = cutoff;
+        prepared_q_ = q;
+    }
+    const float brightness = prepared_brightness_;
+    const float damping = prepared_damping_;
+    const float cutoff = prepared_cutoff_;
+    const float q = prepared_q_;
+
+"###,
+    ),
 ];

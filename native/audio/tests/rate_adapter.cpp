@@ -1,13 +1,15 @@
 #include "rate_adapter.h"
+#include "rate_adapter_reference.h"
 #include <cstdio>
 
 namespace {
 struct Generator final : CrestProcessor {
     const bool stereo;
+    const bool effect;
     size_t rendered = 0;
     bool gate = false;
     float gain = 0.25f;
-    explicit Generator(bool stereo): stereo(stereo) {}
+    explicit Generator(bool stereo, bool effect): stereo(stereo), effect(effect) {}
     size_t count() const override { return 1; }
     const char* label(size_t) const override { return "Gain"; }
     float initial(size_t) const override { return 0.25f; }
@@ -16,8 +18,10 @@ struct Generator final : CrestProcessor {
     void reset() override { rendered=0; gate=false; }
     void process(float* left, float* right, size_t frames) override {
         for (size_t i=0; i<frames; ++i,++rendered) {
+            const float in_left=left[i],in_right=right[i];
             left[i]=gate ? gain*std::sin(rendered*0.172) : 0;
             right[i]=stereo ? (gate ? gain*std::cos(rendered*0.713) : 0) : left[i];
+            if(effect) { left[i]+=in_right*.2f; right[i]-=in_left*.3f; }
         }
     }
 };
@@ -28,11 +32,13 @@ bool rate_adapter_witness() {
     for (double source_rate : {32000.,44100.,48000.,96000.}) {
         for (double host_rate : {44100.,48000.,96000.}) {
             for (bool stereo : {false,true}) {
-                auto* original_source=new Generator(stereo);
-                auto* optimized_source=new Generator(stereo);
-                RateAdapter original(original_source,source_rate,host_rate,24,257);
+              for (bool effect : {false,true}) {
+                auto* original_source=new Generator(stereo,effect);
+                auto* optimized_source=new Generator(stereo,effect);
+                ScalarRateAdapter original(original_source,source_rate,host_rate,24,257);
                 RateAdapter optimized(optimized_source,source_rate,host_rate,24,257,
-                    stereo ? RateAdapter::Signal::StereoGenerator : RateAdapter::Signal::MonoGenerator,
+                    effect ? RateAdapter::Signal::StereoEffect :
+                        stereo ? RateAdapter::Signal::StereoGenerator : RateAdapter::Signal::MonoGenerator,
                     0x9e3779b9u);
                 if (original.latency()!=optimized.latency()) return false;
                 for (size_t block=0; block<768; ++block) {
@@ -64,6 +70,7 @@ bool rate_adapter_witness() {
                         worst=std::max(worst,error);
                     }
                 }
+              }
             }
         }
     }

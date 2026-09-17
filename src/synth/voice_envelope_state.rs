@@ -87,6 +87,7 @@ impl VoiceEnvelopeState {
     }
 
     /// Advances exactly one output sample and returns a finite bounded gain.
+    #[inline]
     pub fn next_gain(&mut self, sample_rate: f32) -> f32 {
         match self.stage {
             VoiceEnvelopeStage::Idle => 0.0,

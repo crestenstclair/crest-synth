@@ -90,10 +90,10 @@ fn build_audio_catalog() {
         .unwrap()
         .replace(
             "#include \"stmlib/stmlib.h\"",
-            "#include \"stmlib/stmlib.h\"\n#include \"random_state.h\"",
+            "#include \"stmlib/stmlib.h\"\n#include \"processor_state.h\"",
         )
         .replace("static uint32_t rng_state_;", "")
-        .replace("rng_state_", "crest_random_state().mutable_state");
+        .replace("rng_state_", "crest_processor_state().mutable_state");
     std::fs::write(generated.join("stmlib/utils/random.h"), random_header).unwrap();
     // mda EPiano crossfades its sample table at construction. Give each
     // prepared instance its own table, preserving the upstream sample DSP.

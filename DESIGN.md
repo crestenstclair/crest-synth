@@ -548,10 +548,12 @@ This remains a memory optimization opportunity.
 Delay-zero MIDI updates retain normalized event state without rewriting every
 controller buffer each block. Delayed events still flush in timestamp order.
 DaisySP caches unchanged SVF and modal coefficients and drum tone/decay
-calculations while advancing filter history and gain every sample. Rings batches
+calculations, plus unchanged string/modal excitation and damping coefficients,
+while advancing filter history, interpolation, noise, and gain every sample. Rings batches
 independent modal filters for SIMD and reuses unchanged pickup weights, retaining
 ordered modal sums. STK BandedWG clears only the circular delay interval written
-since its last clear; Mesh2D computes each junction and its alternate-buffer
+since its last clear and returns exact zero for a cleared, unexcited plucked
+model; bowed models and nonzero tails always advance. Mesh2D computes each junction and its alternate-buffer
 outgoing waves in one pass. Native witnesses compare these paths against the
 retained upstream sources. Scalar snapshots revalidate changed values before
 applying any edits; reset invalidates the validated cache. Idle host voices receive
@@ -586,14 +588,18 @@ are bundled from `assets/licenses/UPSTREAM_AUDIO.txt`; Eigen's MPL-covered
 source ships in the adjacent `EIGEN_SOURCE.tar.gz` resource. STK's upstream patent statements
 remain documented qualifications, separate from its embedding license.
 
-Native rate/block adapters use r8brain and prepared storage. Prepared FFT block
+Native rate/block adapters use r8brain and prepared storage with contiguous
+circular-buffer spans; upstream source blocks and converter clocks stay intact. Prepared FFT block
 phases derived from stable Patch/voice identity spread convolution work across
 voices while retaining the upstream
 filter, output counts, latency, and native note/control clock. Exact silence
 skips convolution; declared generators share their zero-input clock across
 channels, and mono generators convert their output once. Reset restores the
-prepared phase without priming DSP. Native random
-state belongs to each prepared instance. On Darwin, a pthread key allocated
+prepared phase without priming DSP. STK renders at the prepared device rate
+using its upstream rate-dependent calculations, without a rate adapter. Its
+global rate never changes: each scoped native boundary selects the prepared
+instance's rate and random state. BandedWG delay storage follows that rate and
+the lowest supported note/bend across its presets. On Darwin, a pthread key allocated
 during preparation selects that state without first-render C++ TLS allocation.
 Current graph mixing does not compensate latency between parallel paths. Warps can use its
 built-in carrier or explicitly labeled stereo input channels; mda TalkBox

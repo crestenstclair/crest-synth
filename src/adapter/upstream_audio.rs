@@ -3,7 +3,7 @@
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::PatchId;
 use crate::real_time::{RtPatchParameters, RtPostEffectParameters};
-use crate::synth::voice_envelope_state::VoiceEnvelopeState;
+use crate::synth::voice_envelope_state::{VoiceEnvelopeStage, VoiceEnvelopeState};
 use crate::synth::*;
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr::NonNull;
@@ -1102,6 +1102,16 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
             if !voice.processor.process(scratch, frames) {
                 stereo.fill(0.0);
                 return Err(PreparedInstrumentError::RenderRejected);
+            }
+            // Sustain has no sample-domain state transition. Hoisting its
+            // constant gain also permits SIMD mixing without changing the
+            // order in which independent voices contribute to the Patch.
+            if voice.delay == 0 && voice.envelope.stage() == VoiceEnvelopeStage::Sustain {
+                let gain = voice.envelope.level() * self.expression * self.pressure;
+                for (input, output) in scratch.iter().zip(stereo.iter_mut()) {
+                    *output += input * gain;
+                }
+                continue;
             }
             for (input, output) in scratch.chunks_exact(2).zip(stereo.chunks_exact_mut(2)) {
                 let gain = if voice.delay > 0 {

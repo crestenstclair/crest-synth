@@ -51,7 +51,8 @@ command += ['-DTEST', '-I'+str(root/'vendor/audio'), '-I'+str(root/'vendor/audio
             str(root/'native/audio/tests/mutable_resonators.cpp')]
 command += ['-I'+str(output/'stk-source'), '-I'+str(root/'vendor/audio/stk/include'),
             str(root/'native/audio/tests/stk_reference.cpp'),
-            str(root/'native/audio/tests/stk_models.cpp')]
+            str(root/'native/audio/tests/stk_models.cpp'),
+            str(root/'native/audio/tests/stk_sample_rate.cpp')]
 if sys.platform == 'darwin':
     interposer = output / 'libcrest_witness_interpose.dylib'
     subprocess.run(['c++', '-std=c++20', '-O1', '-dynamiclib', '-mmacosx-version-min=11.0',
