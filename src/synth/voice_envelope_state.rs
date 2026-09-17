@@ -129,9 +129,20 @@ impl VoiceEnvelopeState {
                         .min(self.remaining_samples.saturating_sub(1) as usize);
                     let (within_stage, remainder) = output.split_at_mut(count);
                     let mut level = self.level;
-                    for gain in within_stage {
-                        level = (level + self.increment).clamp(0.0, 1.0);
-                        *gain = level;
+                    // Private stage state is finite and bounded. Attack only
+                    // rises; decay/release only fall. Keep each scalar addition
+                    // and its reachable clamp, without testing the other bound
+                    // on every sample. The transition still uses next_gain.
+                    if self.stage == VoiceEnvelopeStage::Attack {
+                        for gain in within_stage {
+                            level = (level + self.increment).min(1.0);
+                            *gain = level;
+                        }
+                    } else {
+                        for gain in within_stage {
+                            level = (level + self.increment).max(0.0);
+                            *gain = level;
+                        }
                     }
                     self.level = level;
                     self.remaining_samples -= count as u32;
@@ -268,9 +279,11 @@ mod tests {
             VoiceEnvelope::new(1.3, 2.7, 0.37, 9.7).unwrap(),
             VoiceEnvelope::new(0.0, 0.2, 0.0, 0.0).unwrap(),
             VoiceEnvelope::new(0.2, 0.0, 1.0, 0.3).unwrap(),
+            VoiceEnvelope::new(0.0001, 0.0001, -0.0, 0.0001).unwrap(),
+            VoiceEnvelope::new(10_000.0, 10_000.0, 0.37, 10_000.0).unwrap(),
         ];
         for envelope in envelopes {
-            for rate in [1_000.0, 44_100.0, 48_000.0, 96_000.0] {
+            for rate in [1.0, 1_000.0, 44_100.0, 48_000.0, 96_000.0, f32::MAX] {
                 let mut scalar = VoiceEnvelopeState::new();
                 let mut block = scalar;
                 for step in 0..96 {
@@ -286,7 +299,7 @@ mod tests {
                     let mut actual = [f32::NAN; 512];
                     block.fill_gains(&mut actual[..frames], rate);
                     for gain in &actual[..frames] {
-                        assert_eq!(*gain, scalar.next_gain(rate));
+                        assert_eq!(gain.to_bits(), scalar.next_gain(rate).to_bits());
                     }
                     assert_eq!(block, scalar);
                 }
