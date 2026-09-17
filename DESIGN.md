@@ -1117,30 +1117,50 @@ Wayland input seat without a GPU; application GTK windows use Wayland exclusivel
 transport stop, native Save As/New/Open, exact session round trips, dirty edits,
 unsaved cancellation, Save, and owned shutdown on both window systems. AT-SPI
 observes native focus before the next shortcut, including compositor animations;
-session files and configuration live in a fresh temporary evidence directory.
+session files, configuration, logs, and audio captures live in a fresh evidence
+directory under the selected Cargo target directory's `linux-evidence` folder.
 WebKit uses software compositing on this GPU-less desktop to avoid software-GPU
 round trips; normal application launches retain the platform rendering defaults.
 The virtual desktop defaults to an 8192-frame audio buffer to tolerate emulation
 and container scheduling; it does not measure device latency.
 
-For Docker on a non-Linux host, use a separate target directory per architecture
-and run as the checkout owner. For example, from this checkout:
+On macOS, Docker Desktop supplies a Linux VM. `scripts/linux/dev.sh` builds the
+Ubuntu development image on first use and runs commands as the checkout owner.
+On Apple Silicon it defaults to ARM64; `--arch amd64` selects emulated x86-64
+for architecture compatibility checks. Edit source with the Mac editor as
+usual: the launcher bind-mounts this exact worktree into `/workspace`.
 
 ```sh
-docker build --platform linux/amd64 --build-arg CREST_UID="$(id -u)" \
-  -f scripts/linux/Dockerfile -t crest-linux-dev scripts/linux
-mkdir -p target/linux-amd64
-docker run --rm --init --platform linux/amd64 --security-opt seccomp=unconfined \
-  -e CARGO_BUILD_JOBS=2 -e RUST_TEST_THREADS=2 \
-  -v "$PWD:/workspace" -v "$PWD/target/linux-amd64:/workspace/target" \
-  crest-linux-dev
+make linux-shell
+# Or run commands directly from macOS:
+scripts/linux/dev.sh cargo check --locked --all-targets
+scripts/linux/dev.sh make test-linux
+scripts/linux/dev.sh make test-linux-wayland
+scripts/linux/dev.sh make test-linux-session-native
+scripts/linux/dev.sh --arch amd64 cargo test --locked --lib
 ```
+
+Containers are disposable; source and per-worktree, per-architecture build
+caches persist on the Mac under `target/linux-arm64` and `target/linux-amd64`.
+Cargo downloads persist in named Docker volumes shared by the same user.
+`CREST_LINUX_TARGET_DIR` can select an existing cache; never share one between
+architectures or concurrent worktrees. Caches from other container mount layouts
+may need cleaning because CMake stores absolute paths. Run
+`scripts/linux/dev.sh make cache-status`
+to inspect the selected cache, or `scripts/linux/dev.sh cargo clean` to remove
+only that cache's build output. Image identity includes its Dockerfile, host
+user ID, and architecture; `make linux-image` rebuilds it explicitly.
+The launcher defaults to four CPUs, 6 GiB RAM, and two build/test workers;
+`--help` lists overrides. Docker Desktop must have enough VM resources and disk
+space for the images; its VM limits bound the container allowances.
 
 WebKit's sandbox remains enabled. Docker's default seccomp profile blocks the
 user namespace creation it needs; the development container permits those
 syscalls. Native Linux hosts must likewise permit unprivileged user namespaces.
-Use `linux/arm64` with its own target directory for ARM development. Emulated
-x86-64 timings are functional evidence, not Steam Deck performance measurements.
+The automated desktops are virtual and use software rendering and monitored
+audio. Emulated x86-64 timings are functional evidence, not Steam Deck
+performance measurements. Physical controls, audio latency, and GPU behavior
+still require the target hardware.
 
 ## Change checklist
 

@@ -181,6 +181,10 @@ if __name__ == "__main__":
     args = parser.parse_args()
     if os.environ.get("CREST_LINUX_TEST_DESKTOP") != "1":
         parser.error("Run through scripts/linux/with-desktop.sh")
-    evidence = Path(tempfile.mkdtemp(prefix="crest-linux-session-"))
+    # The developer container is disposable. Keep failure logs and captures in
+    # its mounted build cache so they remain inspectable after container exit.
+    evidence_root = Path(os.environ.get("CARGO_TARGET_DIR", "target")) / "linux-evidence"
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    evidence = Path(tempfile.mkdtemp(prefix="session-", dir=evidence_root)).resolve()
     print(f"Session smoke evidence: {evidence}", flush=True)
     smoke(args.binary.resolve(), evidence)

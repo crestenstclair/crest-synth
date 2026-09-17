@@ -26,7 +26,13 @@ check: cache-guard ## Type-check all targets
 test: cache-guard ## Run all tests
 	cargo test --all-targets
 
-.PHONY: test-linux
+.PHONY: linux-shell linux-image test-linux
+linux-shell: ## Open this worktree's Linux development shell through Docker
+	scripts/linux/dev.sh
+
+linux-image: ## Build or refresh the native-architecture Linux development image
+	scripts/linux/dev.sh --build
+
 test-linux: cache-guard ## Run all Linux tests and native witnesses in an isolated virtual desktop
 	scripts/linux/with-desktop.sh scripts/linux/check.sh
 
