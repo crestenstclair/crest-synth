@@ -2,7 +2,17 @@
 // Count only the selected witness thread, with no TLS initialization in hooks.
 #include <atomic>
 #include <cstdlib>
+#include <ctime>
 #include <pthread.h>
+// STK's Noise constructor seeds from time(). Numerical and instance-isolation
+// comparisons require identical random inputs even when preparation crosses a
+// wall-clock second. Only this witness freezes that seed source; steady clocks,
+// native DSP equations, and the shipping application's randomness are intact.
+static std::time_t witness_time(std::time_t* destination) noexcept {
+    constexpr std::time_t seed_time=1700000000;
+    if(destination) *destination=seed_time;
+    return seed_time;
+}
 static std::atomic<bool> enabled{false};
 static std::atomic<pthread_t> measured_thread;
 static size_t heap_operations=0,locks=0;
@@ -35,8 +45,10 @@ INTERPOSE(tracked_free,free)
 INTERPOSE(tracked_mutex_lock,pthread_mutex_lock)
 INTERPOSE(tracked_rwlock_rdlock,pthread_rwlock_rdlock)
 INTERPOSE(tracked_rwlock_wrlock,pthread_rwlock_wrlock)
+INTERPOSE(witness_time,time)
 #elif defined(__linux__)
 extern "C" {
+std::time_t __wrap_time(std::time_t* destination) { return witness_time(destination); }
 void* __real_malloc(size_t);
 void* __real_calloc(size_t,size_t);
 void* __real_realloc(void*,size_t);

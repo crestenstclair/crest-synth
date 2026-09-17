@@ -63,7 +63,7 @@ elif sys.platform.startswith('linux'):
     command.append(str(root/'native/audio/tests/interpose.cpp'))
     command += ['-Wl,--wrap='+symbol for symbol in (
         'malloc', 'calloc', 'realloc', 'free', 'pthread_mutex_lock',
-        'pthread_rwlock_rdlock', 'pthread_rwlock_wrlock')]
+        'pthread_rwlock_rdlock', 'pthread_rwlock_wrlock', 'time')]
 for name in ['audio','mutable','daisy','stk','msfa','nam','convolution','sfizz']:
     command.append(str(output/f'libcrest_{name}.a'))
 command += ['-pthread']
