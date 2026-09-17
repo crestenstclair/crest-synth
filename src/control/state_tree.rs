@@ -185,6 +185,7 @@ impl StateTree {
     /// Version 28: descriptor-derived explanations for read-only controls.
     /// Version 29: optional display names for numeric stepped parameters.
     /// Version 32: named send chains, their full audio parameters, and send-screen interaction.
+    /// Version 33: independent Patch send levels in state and audio projections.
     ///
     /// Version 23: browser metadata distinguishes unavailable files from
     /// invalid audio and carries download-required and empty-file causes.
@@ -239,7 +240,7 @@ impl StateTree {
     /// Version 24: asset-scoped capability catalogs and file-kind-correlated browser events.
     /// Version 25: source-specific `NavigatePage` actions and Settings-only
     /// PATCH page absence in full and generation-only projections.
-    pub const SCHEMA_VERSION: u32 = 32;
+    pub const SCHEMA_VERSION: u32 = 33;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -400,6 +401,7 @@ impl StateTree {
         "patches[].envelope.sustain",
         "patches[].output.trackId",
         "patches[].output.trimGainDb",
+        "patches[].sends[]",
         "mixer.tracks[].levelDb",
         "mixer.tracks[].pan",
         "mixer.tracks[].mute",
@@ -617,6 +619,7 @@ impl StateTree {
         "parameters.patches[].effects[].scalars[]",
         "parameters.patches[].output.trackId",
         "parameters.patches[].output.trimGainDb",
+        "parameters.patches[].sends[]",
         "parameters.mixerTracks[].levelDb",
         "parameters.mixerTracks[].pan",
         "parameters.mixerTracks[].mute",
@@ -1293,6 +1296,9 @@ fn validate_parameter_projection(
         if state_patch.output != parameter_patch.output() {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
+        if state_patch.sends.as_ref() != parameter_patch.sends() {
+            return Err(StateTreeError::PatchParametersMismatch { index });
+        }
         if state_patch.envelope != *parameter_patch.envelope() {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
@@ -1474,6 +1480,7 @@ struct TreePatch<'a> {
     post_effects: &'a [PostEffectConfig],
     envelope: VoiceEnvelope,
     output: PatchOutput,
+    sends: &'a [f32],
 }
 
 impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
@@ -1486,6 +1493,7 @@ impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
             post_effects: patch.post_effects.as_ref(),
             envelope: patch.envelope,
             output: patch.output,
+            sends: patch.sends.as_ref(),
         }
     }
 }
@@ -1545,6 +1553,7 @@ mod tests {
                         "id": 7,
                         "name": "Lead",
                         "channel": 2,
+                        "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                         "instrument": create_soundfont_config(
                             &provider,
                             SoundFontInstrument::new(0, 80, false).unwrap()
@@ -1558,6 +1567,7 @@ mod tests {
                         "id": 9,
                         "name": "Drums",
                         "channel": 9,
+                        "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                         "instrument": create_soundfont_config(
                             &provider,
                             SoundFontInstrument::new(128, 0, true).unwrap()
@@ -1747,6 +1757,7 @@ mod tests {
                 "name": "Lead",
                 "channel": 2,
                 "instrument": value["patches"][0]["instrument"].clone(),
+                "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                 "postEffects": [],
                 "envelope": {
                     "attackMilliseconds": 0.0,
@@ -1896,6 +1907,7 @@ mod tests {
                 "voiceLimit": crate::synth::VoiceLimit::MAXIMUM,
                 "instrument": {"count": 0, "values": []},
                 "effects": [inactive_effect.clone(), inactive_effect.clone(), inactive_effect],
+                "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                 "output": {
                     "trackId": 9,
                     "trimGainDb": -12.0
@@ -1903,6 +1915,10 @@ mod tests {
             })
         );
         assert_eq!(value["parameters"]["mixerTracks"], value["mixer"]["tracks"]);
+        assert_eq!(
+            value["parameters"]["patches"][1]["sends"],
+            value["patches"][1]["sends"]
+        );
         // The snapshot's global object keeps only master gain; the retired
         // reverb/delay values travel as the indexed return entries.
         assert_eq!(
@@ -1952,6 +1968,8 @@ mod tests {
             "patches[].instrument.assetReferences[].reference.locator",
             "parameters.graphRevision",
             "parameters.patches[].output.trimGainDb",
+            "patches[].sends[]",
+            "parameters.patches[].sends[]",
             "parameters.mixerTracks[].levelDb",
         ] {
             assert!(unique.contains(required), "missing {required}");
@@ -2067,6 +2085,27 @@ mod tests {
             state_tree(&snapshot, &projection, &wrong_parameters),
             Err(StateTreeError::PatchParametersMismatch { index: 1 })
         );
+    }
+
+    #[test]
+    fn rejects_patch_send_level_or_bank_shape_drift() {
+        let parameters = parameters();
+        for sends in [
+            {
+                let mut levels = vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS];
+                levels[3] = 0.75;
+                levels
+            },
+            vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS + 1],
+        ] {
+            let mut state: Value = serde_json::from_str(snapshot().json()).unwrap();
+            state["patches"][1]["sends"] = json!(sends);
+            let snapshot = StateSnapshot::new(state.to_string());
+            assert_eq!(
+                state_tree(&snapshot, &projection(&snapshot), &parameters),
+                Err(StateTreeError::PatchParametersMismatch { index: 1 })
+            );
+        }
     }
 
     #[test]

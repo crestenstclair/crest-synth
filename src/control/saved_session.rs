@@ -7,6 +7,7 @@ use crate::mixer::bus_return::{BusReturn, BusReturnBank};
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_state::MixerState;
 use crate::mixer::mixer_track_id::MixerTrackId;
+use crate::mixer::mixer_track_parameters::{MixerTrackParameters, BUS_SEND_DESCRIPTOR};
 use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::{GraphPreparationError, GraphRevision, PreparedGraph, PreparedGraphBuilder};
 use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
@@ -16,7 +17,7 @@ use crate::synth::{
 };
 use serde::{Deserialize, Serialize};
 
-pub const SAVED_SESSION_VERSION: u32 = 3;
+pub const SAVED_SESSION_VERSION: u32 = 4;
 
 /// Versioned control-side session state. Runtime and interaction state are
 /// absent by construction: no focus/modal/browser/request/preview, decoded
@@ -34,6 +35,21 @@ pub struct SavedSession {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SavedPatch {
+    id: u32,
+    name: String,
+    instrument: InstrumentConfig,
+    channel: u8,
+    envelope: VoiceEnvelope,
+    output: PatchOutput,
+    effects: [Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+    voice_limit: u16,
+    sends: Vec<f32>,
+}
+
+/// Prior schemas owned sends only on Mixer tracks.
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedPatchV3 {
     id: u32,
     name: String,
     instrument: InstrumentConfig,
@@ -61,7 +77,7 @@ struct SavedReturnV2 {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SavedSessionV3 {
+struct SavedSessionV4 {
     version: u32,
     patches: Vec<SavedPatch>,
     mixer: MixerState,
@@ -71,9 +87,18 @@ struct SavedSessionV3 {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
+struct SavedSessionV3 {
+    patches: Vec<SavedPatchV3>,
+    mixer: MixerState,
+    master_gain_db: f32,
+    returns: Vec<SavedReturn>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SavedSessionV2 {
     version: u32,
-    patches: Vec<SavedPatch>,
+    patches: Vec<SavedPatchV3>,
     mixer: MixerState,
     master_gain_db: f32,
     returns: Vec<SavedReturnV2>,
@@ -121,6 +146,7 @@ impl SavedSession {
                     output: patch.output(),
                     effects: patch.effect_slots().clone(),
                     voice_limit: patch.voice_limit().value(),
+                    sends: patch.sends().to_vec(),
                 })
                 .collect(),
             mixer: state.mixer().clone(),
@@ -155,18 +181,30 @@ impl SavedSession {
         let version = value.get("version").and_then(serde_json::Value::as_u64);
         match version {
             Some(version) if version == u64::from(SAVED_SESSION_VERSION) => {
-                let decoded: SavedSessionV3 =
+                let decoded: SavedSessionV4 =
                     serde_json::from_value(value).map_err(|_| SavedSessionError::Decode)?;
                 if decoded.version != SAVED_SESSION_VERSION {
                     return Err(SavedSessionError::UnsupportedVersion(decoded.version));
                 }
-                Ok(Self {
+                let saved = Self {
                     version: decoded.version,
                     patches: decoded.patches,
                     mixer: decoded.mixer,
                     master_gain_db: decoded.master_gain_db,
                     returns: decoded.returns,
-                })
+                };
+                saved.validate_shape()?;
+                Ok(saved)
+            }
+            Some(3) => {
+                let decoded: SavedSessionV3 =
+                    serde_json::from_value(value).map_err(|_| SavedSessionError::Decode)?;
+                Self::migrate_track_sends(
+                    decoded.patches,
+                    decoded.mixer,
+                    decoded.master_gain_db,
+                    decoded.returns,
+                )
             }
             Some(2) => {
                 let decoded: SavedSessionV2 =
@@ -196,7 +234,7 @@ impl SavedSession {
                         let descriptor = capabilities
                             .descriptor_for_config(&patch.instrument)
                             .ok_or(SavedSessionError::InvalidCapability)?;
-                        Ok(SavedPatch {
+                        Ok(SavedPatchV3 {
                             id: patch.id,
                             name: patch.name,
                             instrument: patch.instrument,
@@ -222,7 +260,7 @@ impl SavedSession {
     }
 
     fn migrate_legacy(
-        patches: Vec<SavedPatch>,
+        patches: Vec<SavedPatchV3>,
         mut mixer: MixerState,
         master_gain_db: f32,
         returns: Vec<SavedReturnV2>,
@@ -259,13 +297,68 @@ impl SavedSession {
             effects: Vec::new(),
             return_level: crate::mixer::bus_return::RETURN_LEVEL_DESCRIPTOR.default(),
         });
-        Ok(Self {
+        Self::migrate_track_sends(patches, mixer, master_gain_db, returns)
+    }
+
+    fn migrate_track_sends(
+        patches: Vec<SavedPatchV3>,
+        mut mixer: MixerState,
+        master_gain_db: f32,
+        returns: Vec<SavedReturn>,
+    ) -> Result<Self, SavedSessionError> {
+        if returns.is_empty()
+            || returns.len() > usize::from(BusId::MAX) + 1
+            || mixer
+                .tracks()
+                .iter()
+                .any(|track| track.sends().len() != returns.len())
+        {
+            return Err(SavedSessionError::InvalidShape);
+        }
+        let mut routed = [false; MixerTrackId::COUNT];
+        // Read every original track before clearing any shared route, so all
+        // Patches on that track retain the same audible contribution.
+        let patches = patches
+            .into_iter()
+            .map(|patch| {
+                let track = patch.output.track_id();
+                routed[track.index()] = true;
+                SavedPatch {
+                    id: patch.id,
+                    name: patch.name,
+                    instrument: patch.instrument,
+                    channel: patch.channel,
+                    envelope: patch.envelope,
+                    output: patch.output,
+                    effects: patch.effects,
+                    voice_limit: patch.voice_limit,
+                    sends: mixer.track(track).sends().to_vec(),
+                }
+            })
+            .collect();
+        for track_id in MixerTrackId::ALL {
+            if routed[track_id.index()] {
+                let track = mixer.track(track_id);
+                let cleared = MixerTrackParameters::from_values(
+                    track.level_db(),
+                    track.pan(),
+                    track.mute(),
+                    track.solo(),
+                    vec![BUS_SEND_DESCRIPTOR.default(); returns.len()],
+                )
+                .map_err(|_| SavedSessionError::InvalidShape)?;
+                mixer.set_track(track_id, cleared);
+            }
+        }
+        let saved = Self {
             version: SAVED_SESSION_VERSION,
             patches,
             mixer,
             master_gain_db,
             returns,
-        })
+        };
+        saved.validate_shape()?;
+        Ok(saved)
     }
 
     /// Validates and prepares a complete replacement session without exposing
@@ -363,7 +456,9 @@ impl SavedSession {
             )
             .with_envelope(saved.envelope)
             .with_voice_limit(saved.voice_limit)
-            .map_err(|_| SavedSessionError::InvalidVoiceLimit)?;
+            .map_err(|_| SavedSessionError::InvalidVoiceLimit)?
+            .with_sends(saved.sends.clone())
+            .map_err(|_| SavedSessionError::InvalidPatchSend)?;
             for (index, occupant) in saved.effects.iter().enumerate() {
                 if let Some(config) = occupant {
                     effects
@@ -436,6 +531,15 @@ impl SavedSession {
         if self.patches.len() > crate::kernel::MAX_ACTIVE_PATCHES {
             return Err(SavedSessionError::InvalidPatch);
         }
+        if self.patches.iter().any(|patch| {
+            patch.sends.len() != self.returns.len()
+                || patch
+                    .sends
+                    .iter()
+                    .any(|value| !BUS_SEND_DESCRIPTOR.contains(*value))
+        }) {
+            return Err(SavedSessionError::InvalidPatchSend);
+        }
         Ok(())
     }
 }
@@ -505,6 +609,8 @@ pub enum SavedSessionError {
     InvalidShape,
     #[error("saved Patch is invalid")]
     InvalidPatch,
+    #[error("saved Patch sends have invalid values or bank shape")]
+    InvalidPatchSend,
     #[error("saved capability configuration is unavailable or invalid")]
     InvalidCapability,
     #[error("saved effect configuration is unavailable or invalid")]
@@ -994,6 +1100,163 @@ mod tests {
     }
 
     #[test]
+    fn current_session_round_trip_keeps_independent_sends_on_a_shared_track() {
+        let seed = state();
+        let bus = BusId::new(2).unwrap();
+        let mut first_sends = vec![0.0; DEFAULT_BUS_RETURNS];
+        first_sends[bus.index()] = 0.22;
+        let mut second_sends = first_sends.clone();
+        second_sends[bus.index()] = 0.81;
+        let first = seed.patches()[0].clone().with_sends(first_sends).unwrap();
+        let second = Patch::new(
+            PatchId::new(2).unwrap(),
+            "Independent".to_owned(),
+            first.instrument_config().clone(),
+            MidiChannel::new(1).unwrap(),
+            first.output(),
+        )
+        .with_sends(second_sends)
+        .unwrap();
+        let mut active = AppState::new(seed.capabilities().clone(), *seed.global());
+        active
+            .apply(AppEvent::InstallPatches(vec![first, second]))
+            .unwrap();
+
+        let saved = SavedSession::capture(&active);
+        let decoded_session =
+            SavedSession::from_json(&saved.to_json().unwrap(), active.capabilities()).unwrap();
+        assert_eq!(decoded_session, saved);
+        let prepared = decoded_session
+            .prepare_restore(
+                active.capabilities().clone(),
+                EffectCapabilityRegistry::default(),
+                &sample_preparers(Ok(vec![1]), Ok(decoded("folder/kick.wav"))),
+                &[],
+                GraphRevision::INITIAL,
+                48_000.0,
+                64,
+            )
+            .unwrap();
+        let restored = prepared.state();
+        assert_eq!(
+            restored.patches()[0].output().track_id(),
+            restored.patches()[1].output().track_id()
+        );
+        assert_eq!(restored.patches()[0].send(bus), 0.22);
+        assert_eq!(restored.patches()[1].send(bus), 0.81);
+        assert_eq!(
+            restored.mixer().track(MixerTrackId::default()).send(bus),
+            0.0
+        );
+        assert_eq!(SavedSession::capture(restored), saved);
+    }
+
+    #[test]
+    fn prior_sessions_migrate_each_shared_track_patch_without_doubling_sends() {
+        let active = state();
+        let mut saved = SavedSession::capture(&active);
+        let mut second = saved.patches[0].clone();
+        second.id = 2;
+        second.name = "Shared Route".to_owned();
+        saved.patches.push(second);
+        let routed = MixerTrackId::default();
+        let empty = MixerTrackId::new(7).unwrap();
+        let bus = BusId::new(2).unwrap();
+        let mut routed_sends = vec![0.0; DEFAULT_BUS_RETURNS];
+        routed_sends[bus.index()] = 0.62;
+        saved.mixer.set_track(
+            routed,
+            MixerTrackParameters::from_values(-8.0, 0.25, false, true, routed_sends).unwrap(),
+        );
+        saved.mixer.set_track(
+            empty,
+            MixerTrackParameters::default()
+                .with_send(bus, 0.33)
+                .unwrap(),
+        );
+
+        for version in [1, 2, 3] {
+            let migrated = SavedSession::from_json(
+                &serde_json::to_string(&legacy_document(&saved, version)).unwrap(),
+                active.capabilities(),
+            )
+            .unwrap();
+            let restored = migrated
+                .restore_candidate(
+                    active.capabilities().clone(),
+                    EffectCapabilityRegistry::default(),
+                    GraphRevision::INITIAL,
+                )
+                .unwrap();
+            for patch in restored.patches() {
+                assert_eq!(patch.output().track_id(), routed);
+                assert_eq!(patch.send(bus), 0.62);
+                assert_eq!(patch.sends().len(), DEFAULT_BUS_RETURNS);
+            }
+            let track = restored.mixer().track(routed);
+            assert!(track.sends().iter().all(|amount| *amount == 0.0));
+            assert_eq!(track.level_db(), -8.0);
+            assert_eq!(track.pan(), 0.25);
+            assert!(!track.mute());
+            assert!(track.solo());
+            assert_eq!(restored.mixer().track(empty).send(bus), 0.33);
+            assert_eq!(SavedSession::capture(&restored), migrated);
+        }
+    }
+
+    #[test]
+    fn current_patch_sends_are_required_and_validated_before_asset_preparation() {
+        let active = state();
+        let saved = SavedSession::capture(&active);
+        let mut missing = serde_json::to_value(&saved).unwrap();
+        missing["patches"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("sends");
+        assert_eq!(
+            SavedSession::from_json(&missing.to_string(), active.capabilities()),
+            Err(SavedSessionError::Decode)
+        );
+
+        for sends in [
+            serde_json::json!([]),
+            serde_json::json!([0.0]),
+            serde_json::json!(vec![0.0; DEFAULT_BUS_RETURNS + 1]),
+        ] {
+            let mut malformed = serde_json::to_value(&saved).unwrap();
+            malformed["patches"][0]["sends"] = sends;
+            assert_eq!(
+                SavedSession::from_json(&malformed.to_string(), active.capabilities()),
+                Err(SavedSessionError::InvalidPatchSend)
+            );
+        }
+        for amount in [-0.01, 1.01, f32::INFINITY, f32::NAN] {
+            let mut invalid = saved.clone();
+            invalid.patches[0].sends[0] = amount;
+            if amount.is_finite() {
+                assert_eq!(
+                    SavedSession::from_json(&invalid.to_json().unwrap(), active.capabilities()),
+                    Err(SavedSessionError::InvalidPatchSend)
+                );
+            }
+            assert!(matches!(
+                invalid.prepare_restore(
+                    active.capabilities().clone(),
+                    EffectCapabilityRegistry::default(),
+                    &[],
+                    &[],
+                    GraphRevision::INITIAL,
+                    48_000.0,
+                    64,
+                ),
+                Err(SavedSessionRestoreError::Session(
+                    SavedSessionError::InvalidPatchSend
+                ))
+            ));
+        }
+    }
+
+    #[test]
     fn named_ordered_return_chains_round_trip_beyond_default_count_and_prepare() {
         use crate::adapter::chorus_capability::{ChorusCapability, CHORUS_AMOUNT_PARAMETER_ID};
         use crate::synth::{EffectCapabilityProvider, EffectSlotId};
@@ -1088,27 +1351,30 @@ mod tests {
     fn legacy_document(saved: &SavedSession, version: u32) -> serde_json::Value {
         let mut value = serde_json::to_value(saved).unwrap();
         value["version"] = serde_json::json!(version);
-        let returns = value["returns"].as_array_mut().unwrap();
-        returns.truncate(8);
-        for bus_return in returns {
-            let object = bus_return.as_object_mut().unwrap();
-            let effects = object.remove("effects").unwrap();
-            object.remove("name");
-            object.insert(
-                "effect".to_owned(),
-                effects
-                    .as_array()
-                    .unwrap()
-                    .first()
-                    .cloned()
-                    .unwrap_or_default(),
-            );
+        if version <= 2 {
+            let returns = value["returns"].as_array_mut().unwrap();
+            returns.truncate(8);
+            for bus_return in returns {
+                let object = bus_return.as_object_mut().unwrap();
+                let effects = object.remove("effects").unwrap();
+                object.remove("name");
+                object.insert(
+                    "effect".to_owned(),
+                    effects
+                        .as_array()
+                        .unwrap()
+                        .first()
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+            }
+            for track in value["mixer"]["tracks"].as_array_mut().unwrap() {
+                track["sends"].as_array_mut().unwrap().truncate(8);
+            }
         }
-        for track in value["mixer"]["tracks"].as_array_mut().unwrap() {
-            track["sends"].as_array_mut().unwrap().truncate(8);
-        }
-        if version == 1 {
-            for patch in value["patches"].as_array_mut().unwrap() {
+        for patch in value["patches"].as_array_mut().unwrap() {
+            patch.as_object_mut().unwrap().remove("sends");
+            if version == 1 {
                 patch.as_object_mut().unwrap().remove("voiceLimit");
             }
         }
@@ -1161,7 +1427,7 @@ mod tests {
                     GraphRevision::INITIAL,
                 )
                 .unwrap();
-            assert_eq!(migrated.version(), 3);
+            assert_eq!(migrated.version(), SAVED_SESSION_VERSION);
             assert_eq!(restored.bus_returns().len(), DEFAULT_BUS_RETURNS);
             let expected_patch = if version == 1 {
                 // Version 1 did not save a voice limit. Its existing migration
@@ -1180,7 +1446,12 @@ mod tests {
             } else {
                 active.patches()[0].clone()
             };
-            assert_eq!(restored.patches(), &[expected_patch]);
+            let mut expected_sends = vec![0.0; DEFAULT_BUS_RETURNS];
+            expected_sends[2] = 0.61;
+            assert_eq!(
+                restored.patches(),
+                &[expected_patch.with_sends(expected_sends).unwrap()]
+            );
             assert_eq!(
                 restored
                     .bus_returns()
@@ -1197,8 +1468,9 @@ mod tests {
             );
             assert_eq!(
                 restored.mixer().track(track).send(BusId::new(2).unwrap()),
-                0.61
+                0.0
             );
+            assert_eq!(restored.patches()[0].send(BusId::new(2).unwrap()), 0.61);
             assert!(restored
                 .bus_returns()
                 .returns()

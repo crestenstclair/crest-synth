@@ -974,6 +974,12 @@ enum PatchProjectionSource<'a> {
 }
 
 impl PatchProjectionSource<'_> {
+    fn send(&self, bus: crate::mixer::bus_id::BusId) -> f32 {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.send(bus),
+            Self::Prospective(_) => 0.0,
+        }
+    }
     fn instrument_config(&self) -> &crate::synth::InstrumentConfig {
         match self {
             Self::Created(patch) | Self::Pending(patch) => patch.instrument_config(),
@@ -1440,30 +1446,28 @@ impl PatchPageProjection {
                 )
             })
             .collect();
-        if !prospective {
-            if let Some(route) = source.output() {
-                let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
-                for send in state
-                    .bus_returns()
-                    .returns()
-                    .iter()
-                    .filter(|send| send.is_occupied())
-                {
-                    output.push(PatchPageOutputRow {
-                        control_id: PatchControlId::Send(send.id()),
-                        id: format!("send.{}", send.id().value()),
-                        label: format!("Send {} · {}", send.id().index() + 1, send.name()),
-                        kind: "continuous".to_owned(),
-                        scalar_value: Some(state.mixer().track(route.track_id()).send(send.id())),
-                        choice_value: None,
-                        minimum: Some(descriptor.minimum()),
-                        maximum: Some(descriptor.maximum()),
-                        fine_step: Some(descriptor.fine_step()),
-                        coarse_step: Some(descriptor.coarse_step()),
-                        unit: None,
-                        editable: true,
-                    });
-                }
+        if !prospective && source.output().is_some() {
+            let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
+            for send in state
+                .bus_returns()
+                .returns()
+                .iter()
+                .filter(|send| send.is_occupied())
+            {
+                output.push(PatchPageOutputRow {
+                    control_id: PatchControlId::Send(send.id()),
+                    id: format!("send.{}", send.id().value()),
+                    label: format!("Send {} · {}", send.id().index() + 1, send.name()),
+                    kind: "continuous".to_owned(),
+                    scalar_value: Some(source.send(send.id())),
+                    choice_value: None,
+                    minimum: Some(descriptor.minimum()),
+                    maximum: Some(descriptor.maximum()),
+                    fine_step: Some(descriptor.fine_step()),
+                    coarse_step: Some(descriptor.coarse_step()),
+                    unit: None,
+                    editable: true,
+                });
             }
         }
         let engine_selection = state.engine_selection();

@@ -123,6 +123,7 @@ impl SessionCandidateFailure {
             Self::Saved(
                 SavedSessionError::InvalidShape
                 | SavedSessionError::InvalidPatch
+                | SavedSessionError::InvalidPatchSend
                 | SavedSessionError::InvalidReturn
                 | SavedSessionError::InvalidGlobal
                 | SavedSessionError::InvalidVoiceLimit,

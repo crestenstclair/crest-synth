@@ -2761,7 +2761,7 @@
       ? settings.id === "controllerSettings"
         ? controllerSettingsInspectorHtml(model)
         : midiInputInspectorHtml(model)
-      : sends ? '<span class="type-label muted">SEND CHAIN</span><p class="type-value">' + escapeHtml(sends.summary.name) + '</p><p class="type-hint muted">Shared effects for routed tracks</p>' : sideRegionHtml(model);
+      : sends ? '<span class="type-label muted">SEND CHAIN</span><p class="type-value">' + escapeHtml(sends.summary.name) + '</p><p class="type-hint muted">Shared effects for Patch sends</p>' : sideRegionHtml(model);
     doc.getElementById("footer").innerHTML = footerHtml(model);
     // Final step, after ALL five region insertions: apply the dynamic
     // geometry in the same paint, on the initial render and every re-render

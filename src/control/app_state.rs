@@ -728,6 +728,12 @@ impl AppState {
     /// composition root. Occupancy is composition, not identity: the reducer
     /// itself installs nothing by default.
     pub fn with_initial_returns(mut self, returns: BusReturnBank) -> Self {
+        for patch in Arc::make_mut(&mut self.patches) {
+            *patch = patch
+                .clone()
+                .with_send_count(returns.len())
+                .expect("validated return bank fits Patch send storage");
+        }
         for track in MixerTrackId::ALL {
             let values = self
                 .mixer
@@ -2249,6 +2255,10 @@ impl AppState {
         // engine-managed ceiling — including a Braids Patch whose capability
         // declares far fewer voices.
         for patch in &mut patches {
+            *patch = patch
+                .clone()
+                .with_send_count(self.returns.len())
+                .map_err(|_| EventRejection::InvalidParameterValue)?;
             let policy = self
                 .capabilities
                 .descriptor_for_config(patch.instrument_config())
@@ -3845,6 +3855,9 @@ impl AppState {
         &mut self,
         candidate: Patch,
     ) -> Result<EngineSelectionEffect, EventRejection> {
+        let candidate = candidate
+            .with_send_count(self.returns.len())
+            .map_err(|_| EventRejection::InvalidParameterValue)?;
         if self.engine_selection.is_in_flight() {
             return Err(EventRejection::StructuralEditBusy);
         }
@@ -4291,14 +4304,24 @@ impl AppState {
                         .interaction
                         .patch_focus()
                         .ok_or(EventRejection::InvalidSelection)?;
-                    let track_id = self
-                        .patches
-                        .iter()
+                    if self.returns.get(bus).is_none() {
+                        return Err(EventRejection::InvalidSelection);
+                    }
+                    let patch = Arc::make_mut(&mut self.patches)
+                        .iter_mut()
                         .find(|patch| patch.id() == patch_id)
-                        .ok_or(EventRejection::UnknownPatch)?
-                        .output()
-                        .track_id();
-                    self.adjust_send(track_id, bus, direction)?;
+                        .ok_or(EventRejection::UnknownPatch)?;
+                    let value = adjusted_value(
+                        patch.send(bus),
+                        BUS_SEND_DESCRIPTOR.minimum(),
+                        BUS_SEND_DESCRIPTOR.maximum(),
+                        direction,
+                        BUS_SEND_DESCRIPTOR.fine_step(),
+                        BUS_SEND_DESCRIPTOR.coarse_step(),
+                    )?;
+                    patch
+                        .set_send(bus, value)
+                        .map_err(|_| EventRejection::InvalidParameterValue)?;
                 }
 
                 crate::control::PatchControlId::Output(parameter) => {

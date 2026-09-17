@@ -170,7 +170,10 @@ impl MixEngine {
             track[..sample_count].fill(0.0);
         }
 
-        // Patch trim and many-to-one destination accumulation.
+        let any_solo = parameters.mixer_tracks().iter().any(|track| track.solo());
+        // Patch trim and many-to-one dry destination accumulation. Each Patch
+        // independently feeds shared returns before its identity is lost in
+        // the track sum, using that track's fader, pan, and mute/solo gate.
         let mut occupied_tracks = [false; MixerTrackId::COUNT];
         for (index, patch) in parameters.patches().iter().enumerate() {
             let Some(patch_id) = patch.patch_id() else {
@@ -189,9 +192,26 @@ impl MixEngine {
             for sample_index in 0..sample_count {
                 track[sample_index] += audio[sample_index] * trim;
             }
+            let track_parameters = parameters.mixer_track(patch_output.track_id());
+            if !track_parameters.mute() && (!any_solo || track_parameters.solo()) {
+                let gain = db_to_linear(track_parameters.level_db());
+                let (left_pan, right_pan) = pan_gains(track_parameters.pan());
+                let left_gain = gain * left_pan;
+                let right_gain = gain * right_pan;
+                for (bus_input, send) in self.bus_inputs.iter_mut().zip(patch.sends()) {
+                    if *send == 0.0 {
+                        continue;
+                    }
+                    for frame in 0..frame_count {
+                        let left = frame * 2;
+                        let right = left + 1;
+                        bus_input[left] += finite_or_zero(audio[left] * trim * left_gain) * send;
+                        bus_input[right] += finite_or_zero(audio[right] * trim * right_gain) * send;
+                    }
+                }
+            }
         }
 
-        let any_solo = parameters.mixer_tracks().iter().any(|track| track.solo());
         let mut track_meters = [TrackMeter::default(); MixerTrackId::COUNT];
         let mut non_finite_samples = 0_u64;
 

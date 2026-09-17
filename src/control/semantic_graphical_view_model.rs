@@ -2285,6 +2285,12 @@ enum SemanticPatchSource<'a> {
 }
 
 impl SemanticPatchSource<'_> {
+    fn send(&self, bus: crate::mixer::bus_id::BusId) -> f32 {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.send(bus),
+            Self::Prospective(_) => 0.0,
+        }
+    }
     fn instrument_config(&self) -> &crate::synth::InstrumentConfig {
         match self {
             Self::Created(patch) | Self::Pending(patch) => patch.instrument_config(),
@@ -2585,16 +2591,11 @@ fn project_patch_surfaces(
                         .bus_returns()
                         .get(*bus)
                         .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
-                    let output = patch
-                        .output()
-                        .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
                     let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
                     (
                         format!("Send {} · {}", bus.index() + 1, send.name()),
                         SemanticControlKind::Continuous,
-                        SemanticControlValue::Scalar(
-                            state.mixer().track(output.track_id()).send(*bus) as f64,
-                        ),
+                        SemanticControlValue::Scalar(patch.send(*bus) as f64),
                         Some(SemanticNumericRange::new(
                             descriptor.minimum() as f64,
                             descriptor.maximum() as f64,

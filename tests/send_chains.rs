@@ -342,7 +342,7 @@ fn send_convolution_asset_browser_navigation_and_cancel_restore_stable_origin() 
 }
 
 #[test]
-fn patch_utility_hides_empty_chains_and_edits_canonical_track_send() {
+fn patch_utility_hides_empty_chains_and_edits_independent_patch_sends() {
     let effects = production_effect_registry().unwrap();
     let mut bank = BusReturnBank::default();
     let bus = BusId::new(5).unwrap();
@@ -351,7 +351,36 @@ fn patch_utility_hides_empty_chains_and_edits_canonical_track_send() {
     bank.set_effect_slot(&effects, bus, slot, Some(&entry))
         .unwrap();
     bank.set_name(bus, "Wide room").unwrap();
-    let mut state = state(bank);
+    let seed = state(bank);
+    let first = seed.patches()[0].clone();
+    let second = Patch::new(
+        PatchId::new(8).unwrap(),
+        "Second".to_owned(),
+        first.instrument_config().clone(),
+        first.channel(),
+        first.output(),
+    );
+    let mut state = AppState::new_with_effects(
+        seed.capabilities().clone(),
+        seed.effects().clone(),
+        *seed.global(),
+    )
+    .with_initial_returns(seed.bus_returns().clone());
+    state
+        .apply(AppEvent::InstallPatches(vec![
+            first.clone(),
+            second.clone(),
+        ]))
+        .unwrap();
+    state
+        .apply(AppEvent::SelectContext(TopLevelContext::Patch))
+        .unwrap();
+    let second = state.patches()[1].clone();
+    assert!(state
+        .patches()
+        .iter()
+        .all(|patch| patch.sends().iter().all(|send| *send == 0.0)));
+    let mixer = state.mixer().clone();
     let projected = model(&state);
     let rows = projected
         .surface(SurfaceId::PatchUtility)
@@ -379,23 +408,53 @@ fn patch_utility_hides_empty_chains_and_edits_canonical_track_send() {
         &mut state,
         SemanticControlId::Patch(PatchControlId::Send(bus)),
     );
-    let original = state.patches()[0].clone();
     state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
-    let track = original.output().track_id();
-    let send = state.mixer().track(track).send(bus);
+    let send = state.patches()[0].send(bus);
     assert!(send > 0.0);
-    assert_eq!(&state.patches()[0], &original);
-    for other in MixerTrackId::ALL
-        .into_iter()
-        .filter(|other| *other != track)
-    {
-        assert_eq!(state.mixer().track(other).send(bus), 0.0);
-    }
+    assert_eq!(&state.patches()[1], &second);
+    assert_eq!(state.mixer(), &mixer);
     let (_, _, _, shell, parameters) = StateProjector::new().project_with_shell(&state).unwrap();
-    assert_eq!(parameters.mixer_track(track).send(bus), send);
+    assert_eq!(
+        parameters.patch(first.id()).unwrap().sends()[bus.index()],
+        send
+    );
+    assert_eq!(
+        parameters.patch(second.id()).unwrap().sends()[bus.index()],
+        0.0
+    );
     assert_eq!(
         shell.semantic_model().focused_control().unwrap().value(),
         &SemanticControlValue::Scalar(f64::from(send))
+    );
+    state.apply(AppEvent::Return).unwrap();
+    state
+        .apply(AppEvent::SelectPatch(Direction::Right))
+        .unwrap();
+    state
+        .apply(AppEvent::EnterSurface(SurfaceId::PatchUtility))
+        .unwrap();
+    navigate_to(
+        &mut state,
+        SemanticControlId::Patch(PatchControlId::Send(bus)),
+    );
+    assert_eq!(
+        model(&state).focused_control().unwrap().value(),
+        &SemanticControlValue::Scalar(0.0)
+    );
+    state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
+    let second_send = state.patches()[1].send(bus);
+    assert!(second_send > send);
+    assert_eq!(state.patches()[0].send(bus), send);
+    assert_eq!(state.patches()[0].output(), state.patches()[1].output());
+    assert_eq!(state.mixer(), &mixer);
+    let parameters = StateProjector::new().parameter_snapshot(&state).unwrap();
+    assert_eq!(
+        parameters.patch(first.id()).unwrap().sends()[bus.index()],
+        send
+    );
+    assert_eq!(
+        parameters.patch(second.id()).unwrap().sends()[bus.index()],
+        second_send
     );
 }
 

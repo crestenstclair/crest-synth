@@ -268,6 +268,13 @@ impl PreparedBusReturnRack {
     /// never repositioned.
     pub fn matches_parameters(&self, parameters: &ParameterSnapshot) -> bool {
         self.returns.len() == parameters.returns().len()
+            && parameters.patches().iter().all(|patch| {
+                patch
+                    .sends()
+                    .iter()
+                    .skip(self.returns.len())
+                    .all(|send| *send == 0.0)
+            })
             && self
                 .returns
                 .iter()

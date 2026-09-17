@@ -125,6 +125,13 @@ impl<'a> PreparedGraphBuilder<'a> {
                 .iter()
                 .zip(patches)
                 .any(|(parameters, patch)| parameters.patch_id() != Some(patch.id()))
+            || parameters.patches().iter().any(|patch| {
+                patch
+                    .sends()
+                    .iter()
+                    .skip(parameters.returns().len())
+                    .any(|send| *send != 0.0)
+            })
         {
             return Err(GraphPreparationError::ParameterLayoutMismatch);
         }

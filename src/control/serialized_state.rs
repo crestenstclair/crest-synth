@@ -151,6 +151,8 @@ pub(crate) struct SerializedPatch<'a> {
     #[serde(default)]
     pub(crate) envelope: VoiceEnvelope,
     pub(crate) output: PatchOutput,
+    #[serde(borrow, default)]
+    pub(crate) sends: Cow<'a, [f32]>,
 }
 
 impl<'a> From<&'a Patch> for SerializedPatch<'a> {
@@ -168,6 +170,7 @@ impl<'a> From<&'a Patch> for SerializedPatch<'a> {
             post_effects: Cow::Owned(patch.effect_slots().iter().flatten().cloned().collect()),
             envelope: *patch.envelope(),
             output: patch.output(),
+            sends: Cow::Borrowed(patch.sends()),
         }
     }
 }
@@ -268,6 +271,21 @@ mod tests {
             MidiChannel::new(0).unwrap(),
             PatchOutput::new(MixerTrackId::new(0).unwrap(), -6.0).unwrap(),
         )
+    }
+
+    #[test]
+    fn patch_sends_preserve_configured_count_and_levels_in_serialization() {
+        let mut sends = vec![0.0; 20];
+        sends[0] = 0.125;
+        sends[19] = 0.75;
+        let patch = test_patch().with_sends(sends.clone()).unwrap();
+        let serialized = SerializedPatch::from(&patch);
+        assert_eq!(serialized.sends.as_ref(), sends.as_slice());
+        let json = serde_json::to_string(&serialized).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value["sends"], serde_json::json!(sends));
+        let restored: SerializedPatch<'_> = serde_json::from_str(&json).unwrap();
+        assert_eq!(restored.sends, serialized.sends);
     }
 
     #[test]

@@ -1153,7 +1153,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // physical MIDI lifecycle facts while excluding handles and observations.
     // Version 20 adds the explicit tagged trailing-empty Patch shape and its
     // prospective/capacity ownership facts without inventing a Patch ID.
-    assert_eq!(StateTree::SCHEMA_VERSION, 32);
+    assert_eq!(StateTree::SCHEMA_VERSION, 33);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

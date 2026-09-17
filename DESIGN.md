@@ -376,7 +376,7 @@ status and are formatted/handled off callback.
 
 - A Patch owns a stable `PatchId`, label/MIDI mapping, instrument config,
   per-note `VoiceEnvelope`, ordered post-effect slots, output
-  `MixerTrackId`, Patch-local trim, and voice settings.
+  `MixerTrackId`, Patch-local trim and send amounts, and voice settings.
 - A Patch MIDI channel is a subscription, never an exclusive owner. Multiple
   Patches may subscribe to the same channel; one incoming message fans out to
   every current subscriber in stable installation order. Changing a
@@ -385,8 +385,9 @@ status and are formatted/handled off callback.
 - Mixer state owns persistent tracks independently of the
   Patch collection. Multiple Patches may share a track and empty tracks remain
   configurable.
-- Patch trim and route are not track controls. A Patch never owns track level,
-  pan, mute, solo, send, or meter state.
+- Patch trim, route, and send amounts are Patch controls. A Patch never owns
+  track level, pan, mute, solo, or meter state. Mixer Inspector retains its
+  separate sends from the summed track signal.
 - Master gain has one canonical owner, projected in PATCH Utility and MIXER
   Inspector.
 - Prepared storage, voice admission, and parameter layouts belong to the
@@ -406,9 +407,10 @@ status and are formatted/handled off callback.
   on Name opens keyboard text entry (Return commits, Escape cancels). Effect
   rows open the shared categorized registry choices; parameter rows use the
   existing descriptor controls and asset browser.
-- Patch Utility exposes only occupied send chains. These controls edit the
-  focused Patch's routed Mixer track sends, so Patches sharing a track also
-  share send amounts. Names, chains, and send amounts persist in sessions.
+- Patch Utility exposes only occupied send chains and edits the focused
+  Patch's independent send amounts. Each destination sums incoming audio,
+  processes its ordered effects once, and adds the result at its own return
+  volume to the master mix. Names, chains, and send amounts persist in sessions.
 - Voice admission must honor the configured hardware budget and expose
   resource exhaustion. Existing admission and engine-native stealing behavior
   remain source-level behavior to account for when making that configurable.
@@ -451,14 +453,17 @@ Patch instrument
 ordered Patch post FX
   ↓
 Patch trim
+  ├──→ Patch sends through routed track level/pan/gate ─┐
   ↓
 route and sum into a Mixer track
   ↓
 track level / pan
   ├──→ pre-gate meter
   ↓
-mute / solo gate
-  ├──→ post-gate sends → returns            ─┐
+mute / solo gate                                       │
+  ├──→ track sends ──→ sum each send input ←────────────┘
+  │                          ↓
+  │                   effects / return volume ─┐
   ↓                                           │
 track dry mix    ←────────────────────────────┘
   ↓
@@ -468,13 +473,15 @@ stereo device
 ```
 
 Mute always wins. If any track is soloed, only soloed, non-muted tracks
-contribute dry signal or sends. Sends are post-fader and post-gate. Meters are
+contribute dry signal or sends. Patch sends tap individual post-FX/trim stems
+through the routed track's fader, pan, and gate before track accumulation loses
+Patch identity. Track sends tap the summed post-fader, post-gate track. Meters are
 post-level/pan but pre-gate so muted tracks remain diagnosable. Feedback may
 exist only inside bounded effect implementations, never as an arbitrary graph
 cycle.
 
 Mixer processing skips tracks with no routed Patch stems and accumulates only
-nonzero sends, once per bus per block. It retains the same sample and Patch
+nonzero sends per source and bus. It retains the same sample and Patch
 accumulation order, pre-gate meters, mute/solo rules, and independently processed
 return tails. Audio command draining has a per-block work budget;
 queue capacity alone cannot bound a concurrently replenished
@@ -491,10 +498,13 @@ macOS, `$XDG_CONFIG_HOME/crest-synth` or `~/.config/crest-synth` on Linux, and
 schema/value and last-known display name, using a temporary file plus rename.
 Manual disconnect, runtime connection state, descriptors, handles, queues,
 timestamps, diagnostics, and activity are never persisted. `SavedSession`
-uses version 3 and contains none of those device fields. Versions 1 and 2
+uses version 4 and contains none of those device fields. Versions 1 and 2
 migrate their eight returns and send levels without changing effect values,
 padding the bank with empty sends. Version 3 stores return names and ordered
-effect chains and preserves configured bank sizes.
+effect chains and preserves configured bank sizes. Version 4 stores independent
+Patch send amounts. Loading versions 1–3 copies each routed track's sends to its
+Patches and clears those track sends to prevent doubling; unused-track sends
+remain intact. Current documents require valid, bank-sized Patch send arrays.
 
 SoundFont and Sample file work is off callback: resolve, validate, read, parse,
 decode, resample/precompute, allocate/warm voices, then publish a complete
