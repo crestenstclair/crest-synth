@@ -1221,17 +1221,27 @@ where
         let engine_selection_effect = outcome.engine_selection_effect().cloned();
         let midi_device_effects = outcome.midi_device_effects().to_vec();
         let record_sequence = self.event_log.next_sequence();
-        let published_parameters = if midi_generation_only {
-            self.last_published_parameters
-                .clone()
-                .with_generation(self.state.generation())
-        } else if parameters_published
-            && self.state.engine_selection().kind() == EngineSelectionStatusKind::Activating
-        {
-            self.latest_pending_candidate_parameters()
-                .expect("an accepted activating state has one valid candidate scalar projection")
+        let replacement_parameters =
+            if midi_generation_only {
+                // MIDI changes only generation. Retain the already published
+                // values, including the active graph during a pending activation.
+                None
+            } else if parameters_published
+                && self.state.engine_selection().kind() == EngineSelectionStatusKind::Activating
+            {
+                Some(self.latest_pending_candidate_parameters().expect(
+                    "an accepted activating state has one valid candidate scalar projection",
+                ))
+            } else {
+                Some(parameters.clone())
+            };
+        let published_parameters = replacement_parameters
+            .as_ref()
+            .unwrap_or(&self.last_published_parameters);
+        let published_generation = if midi_generation_only {
+            self.state.generation()
         } else {
-            parameters.clone()
+            published_parameters.generation()
         };
         let record = EventRecord::accepted(
             record_sequence,
@@ -1241,7 +1251,7 @@ where
             state_hash_before,
             accepted,
             &snapshot,
-            published_parameters.generation(),
+            published_generation,
             published_parameters.graph_revision(),
             parameters_published,
             &text,
@@ -1251,9 +1261,14 @@ where
         .expect("accepted reducer output and projections must form one coherent record");
 
         if parameters_published {
+            if let Some(parameters) = replacement_parameters {
+                self.last_published_parameters = parameters;
+            } else {
+                self.last_published_parameters
+                    .update_generation(published_generation);
+            }
             self.boundary
-                .publish_parameters(published_parameters.clone());
-            self.last_published_parameters = published_parameters;
+                .publish_parameters(self.last_published_parameters.clone());
         }
         let boundary_full =
             audio_command.and_then(|command| self.boundary.push_command(command).err());

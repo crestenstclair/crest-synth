@@ -901,8 +901,13 @@ impl ParameterSnapshot {
 
     /// Reuses identical bounded parameter values for a MIDI-only generation.
     pub(crate) const fn with_generation(mut self, generation: u64) -> Self {
-        self.generation = generation;
+        self.update_generation(generation);
         self
+    }
+
+    /// Advances control-owned metadata without copying unchanged scalar storage.
+    pub(crate) const fn update_generation(&mut self, generation: u64) {
+        self.generation = generation;
     }
 }
 
