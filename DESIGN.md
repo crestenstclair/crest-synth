@@ -140,7 +140,7 @@ The application currently provides:
 - one effect registry containing the legacy effects plus Airwindows, DaisySP,
   Mutable Clouds/Warps/Rings resonator, mda, Neural Amp Modeler, FFTConvolver,
   and Signalsmith pitch/formant processing;
-- ordered Patch post-effect slots, bus returns, and persistent Mixer tracks;
+- ordered Patch post-effect slots, named send-effect chains, and persistent Mixer tracks;
 - descriptor-driven Patch Overview, Detail, generic Choice, shared File Browser,
   waveform/playhead projection, persistent Utility, and persistent Mixer
   Inspector surfaces;
@@ -167,7 +167,7 @@ Normal `make run` resolves the composition-root-designated Sample capability
 exactly and constructs Patch 1 `INIT`: MIDI channel 1, T00 at 0 dB Patch trim,
 neutral envelope, capability-seeded voice settings, and empty post-effect
 slots. It also installs the default Mixer, 0 dB master, and the
-production return bank. The captured versioned session and its complete graph
+default bank of sixteen empty `INIT` send chains. The captured versioned session and its complete graph
 are validated and prepared before audio or the window starts; a missing or
 invalid designated capability is a typed fatal startup error, never registry
 fallback. The initial graph receives the explicit test pattern through the same
@@ -392,8 +392,21 @@ status and are formatted/handled off callback.
   they do not constrain the intended product or technology selection.
 - Effect slot order is render order. Topology edits prepare and exchange a
   complete graph; there is no silent bypass or render-time graph mutation.
-- Reverb occupies return 0 and Delay return 1 by default; other returns start
-  empty. Registry failure is typed rather than substituted.
+- Send returns start empty, named `INIT`, with sixteen destinations by default.
+  The saved bank count and prepared vectors configure routing capacity; sixteen
+  is not an admission limit. Each return owns an ordered chain drawn from the
+  same effect registry as Patch post FX, plus its name and output level. Slot
+  identities survive other slots being removed. Empty chains contribute silence.
+  The existing decimated meter bank observes the first sixteen returns; queries
+  beyond that report unavailable without limiting audio routing or chain count.
+- The Mixer-owned Sends screen opens with `4` or `Ctrl+4`; Q/E selects a
+  destination using the same bounded adjacent navigation as Patches. Return
+  on Name opens keyboard text entry (Return commits, Escape cancels). Effect
+  rows open the shared categorized registry choices; parameter rows use the
+  existing descriptor controls and asset browser.
+- Patch Utility exposes only occupied send chains. These controls edit the
+  focused Patch's routed Mixer track sends, so Patches sharing a track also
+  share send amounts. Names, chains, and send amounts persist in sessions.
 - Voice admission must honor the configured hardware budget and expose
   resource exhaustion. Existing admission and engine-native stealing behavior
   remain source-level behavior to account for when making that configurable.
@@ -476,7 +489,10 @@ macOS, `$XDG_CONFIG_HOME/crest-synth` or `~/.config/crest-synth` on Linux, and
 schema/value and last-known display name, using a temporary file plus rename.
 Manual disconnect, runtime connection state, descriptors, handles, queues,
 timestamps, diagnostics, and activity are never persisted. `SavedSession`
-remains version 2 and contains none of those device fields.
+uses version 3 and contains none of those device fields. Versions 1 and 2
+migrate their eight returns and send levels without changing effect values,
+padding the bank with empty sends. Version 3 stores return names and ordered
+effect chains and preserves configured bank sizes.
 
 SoundFont and Sample file work is off callback: resolve, validate, read, parse,
 decode, resample/precompute, allocate/warm voices, then publish a complete

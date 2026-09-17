@@ -1,5 +1,5 @@
 use crate::kernel::patch_id::PatchId;
-use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
+use crate::mixer::bus_id::BusId;
 use crate::mixer::mix_engine::MixEngine;
 use crate::real_time::callback_safety::record_callback_owned_destruction;
 use crate::real_time::graph_revision::GraphRevision;
@@ -208,7 +208,7 @@ impl PreparedGraphResources {
 /// the engine per Patch, the effect per Patch-slot, the occupant per bus
 /// return — populated at build time from the validated candidate
 /// configuration, with an explicit empty for every unoccupied position.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedGraphLayout {
     sample_rate_bits: u32,
     max_frames: usize,
@@ -220,9 +220,9 @@ pub struct PreparedGraphLayout {
     effect_scalar_counts: [[usize; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
     effect_capability_identities:
         [[Option<PositionCapabilityIdentity>; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
-    return_slot_ids: [Option<EffectSlotId>; MAX_BUS_RETURNS],
-    return_scalar_counts: [usize; MAX_BUS_RETURNS],
-    return_capability_identities: [Option<PositionCapabilityIdentity>; MAX_BUS_RETURNS],
+    return_slot_ids: Vec<Vec<Option<EffectSlotId>>>,
+    return_scalar_counts: Vec<Vec<usize>>,
+    return_capability_identities: Vec<Vec<Option<PositionCapabilityIdentity>>>,
 }
 
 impl PreparedGraph {
@@ -337,19 +337,16 @@ impl PreparedGraph {
             }
             index += 1;
         }
-        let mut return_slot_ids = [None; MAX_BUS_RETURNS];
-        let mut return_scalar_counts = [0; MAX_BUS_RETURNS];
-        let mut return_capability_identities = [None; MAX_BUS_RETURNS];
-        for bus in BusId::ALL {
-            return_slot_ids[bus.index()] = self.inner.mixer.bus_returns().slot_id(bus);
-            return_scalar_counts[bus.index()] = self
-                .inner
-                .mixer
-                .bus_returns()
-                .scalar_count(bus)
-                .unwrap_or(0);
-            return_capability_identities[bus.index()] =
-                self.inner.mixer.bus_returns().capability_identity(bus);
+        let rack = self.inner.mixer.bus_returns();
+        let mut return_slot_ids = Vec::with_capacity(rack.len());
+        let mut return_scalar_counts = Vec::with_capacity(rack.len());
+        let mut return_capability_identities = Vec::with_capacity(rack.len());
+        for index in 0..rack.len() {
+            let bus = BusId::new(index as u16).expect("prepared bus identity");
+            let chain = rack.chain_layout(bus);
+            return_slot_ids.push(chain.iter().map(|entry| entry.0).collect());
+            return_scalar_counts.push(chain.iter().map(|entry| entry.1).collect());
+            return_capability_identities.push(chain.iter().map(|entry| entry.2).collect());
         }
         PreparedGraphLayout {
             sample_rate_bits: self.inner.sample_rate.to_bits(),
@@ -606,11 +603,18 @@ impl PreparedGraphLayout {
         &self,
         bus_index: usize,
     ) -> Option<PositionCapabilityIdentity> {
-        self.return_capability_identities.get(bus_index).copied()?
+        self.return_capability_identities
+            .get(bus_index)?
+            .first()
+            .copied()?
     }
 
     /// Admits one selected capability/scalar-layout change and nothing else.
-    pub fn permits_selected_replacement(self, candidate: Self, selected_patch_id: PatchId) -> bool {
+    pub fn permits_selected_replacement(
+        &self,
+        candidate: Self,
+        selected_patch_id: PatchId,
+    ) -> bool {
         self.permits_replacement(
             candidate,
             GraphReplacementScope::SelectedEngine(selected_patch_id),
@@ -623,7 +627,7 @@ impl PreparedGraphLayout {
     /// scoped position, every prepared position's recorded identity must
     /// agree exactly — a same-scalar-shape candidate carrying a different
     /// capability at an unscoped position is refused.
-    pub fn permits_replacement(self, candidate: Self, scope: GraphReplacementScope) -> bool {
+    pub fn permits_replacement(&self, candidate: Self, scope: GraphReplacementScope) -> bool {
         if self.sample_rate_bits != candidate.sample_rate_bits
             || self.max_frames != candidate.max_frames
         {
@@ -631,6 +635,9 @@ impl PreparedGraphLayout {
         }
         if scope == GraphReplacementScope::WholeSession {
             return true;
+        }
+        if self.return_slot_ids.len() != candidate.return_slot_ids.len() {
+            return false;
         }
         if !matches!(scope, GraphReplacementScope::AppendPatch(_))
             && (self.patch_count != candidate.patch_count || self.patch_ids != candidate.patch_ids)
@@ -711,7 +718,7 @@ impl PreparedGraphLayout {
                     return false;
                 }
                 let mut index = 0;
-                while index < MAX_BUS_RETURNS {
+                while index < self.return_slot_ids.len() {
                     if index != bus.index()
                         && (self.return_slot_ids[index] != candidate.return_slot_ids[index]
                             || self.return_scalar_counts[index]
@@ -843,9 +850,9 @@ mod tests {
             effect_slot_ids: [[None; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
             effect_scalar_counts: [[0; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
             effect_capability_identities: [[None; MAX_EFFECT_SLOTS]; MAX_ACTIVE_PATCHES],
-            return_slot_ids: [None; MAX_BUS_RETURNS],
-            return_scalar_counts: [0; MAX_BUS_RETURNS],
-            return_capability_identities: [None; MAX_BUS_RETURNS],
+            return_slot_ids: vec![Vec::new(); MAX_BUS_RETURNS],
+            return_scalar_counts: vec![Vec::new(); MAX_BUS_RETURNS],
+            return_capability_identities: vec![Vec::new(); MAX_BUS_RETURNS],
         }
     }
 
@@ -878,10 +885,10 @@ mod tests {
             !active.permits_selected_replacement(wrong_effect_scalars, PatchId::new(1).unwrap())
         );
         let mut wrong_return = layout([3, 3]);
-        wrong_return.return_slot_ids[3] = EffectSlotId::new(4).ok();
+        wrong_return.return_slot_ids[3] = vec![EffectSlotId::new(4).ok()];
         assert!(!active.permits_selected_replacement(wrong_return, PatchId::new(1).unwrap()));
         let mut wrong_return_scalars = layout([3, 3]);
-        wrong_return_scalars.return_scalar_counts[7] = 2;
+        wrong_return_scalars.return_scalar_counts[7] = vec![2];
         assert!(
             !active.permits_selected_replacement(wrong_return_scalars, PatchId::new(1).unwrap())
         );
@@ -891,25 +898,25 @@ mod tests {
     fn append_scope_admits_one_exact_final_patch_and_no_other_layout_delta() {
         let active = layout([2, 3]);
         let appended_id = PatchId::new(9).unwrap();
-        let mut candidate = active;
+        let mut candidate = active.clone();
         candidate.patch_count = 3;
         candidate.patch_ids[2] = Some(appended_id);
         candidate.scalar_counts[2] = 4;
         candidate.engine_capability_identities[2] = identity("instrument.new");
         let scope = GraphReplacementScope::AppendPatch(appended_id);
-        assert!(active.permits_replacement(candidate, scope));
+        assert!(active.permits_replacement(candidate.clone(), scope));
 
-        let mut inserted = candidate;
+        let mut inserted = candidate.clone();
         inserted.patch_ids.swap(1, 2);
         assert!(!active.permits_replacement(inserted, scope));
-        let mut changed_prior = candidate;
+        let mut changed_prior = candidate.clone();
         changed_prior.scalar_counts[0] += 1;
         assert!(!active.permits_replacement(changed_prior, scope));
-        let mut changed_return = candidate;
-        changed_return.return_slot_ids[0] = EffectSlotId::new(1).ok();
+        let mut changed_return = candidate.clone();
+        changed_return.return_slot_ids[0] = vec![EffectSlotId::new(1).ok()];
         assert!(!active.permits_replacement(changed_return, scope));
         assert!(!active.permits_replacement(
-            candidate,
+            candidate.clone(),
             GraphReplacementScope::AppendPatch(PatchId::new(10).unwrap())
         ));
 
@@ -948,23 +955,28 @@ mod tests {
             patch_id: selected,
             slot: EffectSlotIndex::new(1).unwrap(),
         };
-        let mut scoped_change = occupied;
+        let mut scoped_change = occupied.clone();
         scoped_change.effect_capability_identities[0][1] = identity("effect.reverb");
         assert!(occupied.permits_replacement(scoped_change, scope));
-        let mut unscoped_change = occupied;
+        let mut unscoped_change = occupied.clone();
         unscoped_change.effect_capability_identities[1][2] = identity("effect.reverb");
         assert!(!occupied.permits_replacement(unscoped_change, scope));
 
         // A bus-return identity change is admitted only at the scoped return.
         let mut returned = layout([3, 3]);
-        returned.return_slot_ids[2] = EffectSlotId::new(9).ok();
-        returned.return_capability_identities[2] = identity("effect.reverb");
+        returned.return_slot_ids[2] = vec![EffectSlotId::new(9).ok(), EffectSlotId::new(10).ok()];
+        returned.return_scalar_counts[2] = vec![2, 2];
+        returned.return_capability_identities[2] =
+            vec![identity("effect.reverb"), identity("effect.chorus")];
+        returned.return_slot_ids[5] = returned.return_slot_ids[2].clone();
+        returned.return_scalar_counts[5] = returned.return_scalar_counts[2].clone();
+        returned.return_capability_identities[5] = returned.return_capability_identities[2].clone();
         let return_scope = GraphReplacementScope::BusReturn(BusId::new(2).unwrap());
-        let mut scoped_return = returned;
-        scoped_return.return_capability_identities[2] = identity("effect.delay");
+        let mut scoped_return = returned.clone();
+        scoped_return.return_capability_identities[2][1] = identity("effect.delay");
         assert!(returned.permits_replacement(scoped_return, return_scope));
-        let mut unscoped_return = returned;
-        unscoped_return.return_capability_identities[5] = identity("effect.delay");
+        let mut unscoped_return = returned.clone();
+        unscoped_return.return_capability_identities[5][1] = identity("effect.delay");
         assert!(!returned.permits_replacement(unscoped_return, return_scope));
 
         // The recorded identity is exact and readable per position.
@@ -982,6 +994,34 @@ mod tests {
             "effect.reverb"
         );
         assert_eq!(returned.return_capability_identity(3), None);
+    }
+
+    #[test]
+    fn return_scope_checks_every_later_chain_slot_and_scalar_shape() {
+        let mut active = layout([3, 3]);
+        active.return_slot_ids[5] = vec![EffectSlotId::new(1).ok(), EffectSlotId::new(2).ok()];
+        active.return_scalar_counts[5] = vec![2, 3];
+        active.return_capability_identities[5] =
+            vec![identity("effect.reverb"), identity("effect.delay")];
+        let unrelated_scope = GraphReplacementScope::BusReturn(BusId::new(2).unwrap());
+        let selected_scope = GraphReplacementScope::BusReturn(BusId::new(5).unwrap());
+
+        let mut changed_slot = active.clone();
+        changed_slot.return_slot_ids[5][1] = EffectSlotId::new(3).ok();
+        assert!(!active.permits_replacement(changed_slot.clone(), unrelated_scope));
+        assert!(active.permits_replacement(changed_slot, selected_scope));
+
+        let mut changed_scalars = active.clone();
+        changed_scalars.return_scalar_counts[5][1] += 1;
+        assert!(!active.permits_replacement(changed_scalars.clone(), unrelated_scope));
+        assert!(active.permits_replacement(changed_scalars, selected_scope));
+
+        let mut extended_chain = active.clone();
+        extended_chain.return_slot_ids[5].push(EffectSlotId::new(3).ok());
+        extended_chain.return_scalar_counts[5].push(2);
+        extended_chain.return_capability_identities[5].push(identity("effect.chorus"));
+        assert!(!active.permits_replacement(extended_chain.clone(), unrelated_scope));
+        assert!(active.permits_replacement(extended_chain, selected_scope));
     }
 
     /// The fixed identity record is exact at its own edge: an identity of

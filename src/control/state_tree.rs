@@ -184,6 +184,7 @@ impl StateTree {
     /// Version 27: effect families and the shared instrument/effect picker label.
     /// Version 28: descriptor-derived explanations for read-only controls.
     /// Version 29: optional display names for numeric stepped parameters.
+    /// Version 32: named send chains, their full audio parameters, and send-screen interaction.
     ///
     /// Version 23: browser metadata distinguishes unavailable files from
     /// invalid audio and carries download-required and empty-file causes.
@@ -238,7 +239,7 @@ impl StateTree {
     /// Version 24: asset-scoped capability catalogs and file-kind-correlated browser events.
     /// Version 25: source-specific `NavigatePage` actions and Settings-only
     /// PATCH page absence in full and generation-only projections.
-    pub const SCHEMA_VERSION: u32 = 31;
+    pub const SCHEMA_VERSION: u32 = 32;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -251,6 +252,9 @@ impl StateTree {
         "interaction.activeFocus",
         "interaction.rememberedPatchMain",
         "interaction.rememberedMixerMain",
+        "interaction.rememberedSend",
+        "interaction.sendChoiceOrigin",
+        "interaction.sendNameEditing",
         "interaction.mode",
         "interaction.returnPath",
         "interaction.detailSubject",
@@ -402,6 +406,15 @@ impl StateTree {
         "mixer.tracks[].solo",
         "mixer.tracks[].sends[]",
         "global.masterGainDb",
+        "returns[].name",
+        "returns[].effects[].slotId",
+        "returns[].effects[].capabilityId",
+        "returns[].effects[].values[].parameterId",
+        "returns[].effects[].values[].value.kind",
+        "returns[].effects[].values[].value.value",
+        "returns[].effects[].assetReferences[].parameterId",
+        "returns[].effects[].assetReferences[].reference.kind",
+        "returns[].effects[].assetReferences[].reference.locator",
         "returns[].effect",
         "returns[].effect.slotId",
         "returns[].effect.capabilityId",
@@ -457,6 +470,7 @@ impl StateTree {
         "engineSelection.correlation.intent.targetCapabilityId",
         "engineSelection.correlation.intent.patchId",
         "engineSelection.correlation.intent.slot",
+        "engineSelection.correlation.intent.slotId",
         "engineSelection.correlation.intent.bus",
         "engineSelection.correlation.intent.entry",
         "engineSelection.correlation.intent.reference.kind",
@@ -613,6 +627,10 @@ impl StateTree {
         "parameters.returns[].scalarCount",
         "parameters.returns[].scalars[]",
         "parameters.returns[].returnLevel",
+        "parameters.returns[].tail[].active",
+        "parameters.returns[].tail[].slotId",
+        "parameters.returns[].tail[].scalarCount",
+        "parameters.returns[].tail[].scalars[]",
         "parameters.global.masterGainDb",
         "controller.devices[].id",
         "controller.devices[].name",
@@ -706,11 +724,13 @@ impl StateTree {
                 "interaction.activeFocus.context",
                 "interaction.activeFocus.controlId.id",
                 "interaction.activeFocus.controlId.id.bus",
+                "interaction.activeFocus.controlId.id.entry",
                 "interaction.activeFocus.controlId.id.id",
                 "interaction.activeFocus.controlId.id.identity",
                 "interaction.activeFocus.controlId.id.identitySchema",
                 "interaction.activeFocus.controlId.id.kind",
                 "interaction.activeFocus.controlId.id.parameter",
+                "interaction.activeFocus.controlId.id.slotId",
                 "interaction.activeFocus.controlId.id.trackId",
                 "interaction.activeFocus.controlId.kind",
                 "interaction.activeFocus.modalId",
@@ -738,6 +758,29 @@ impl StateTree {
                 "interaction.rememberedPatchMain.modalId",
                 "interaction.rememberedPatchMain.patchId",
                 "interaction.rememberedPatchMain.surface",
+                "interaction.rememberedSend.capabilityId",
+                "interaction.rememberedSend.capabilityId.id",
+                "interaction.rememberedSend.capabilityId.kind",
+                "interaction.rememberedSend.context",
+                "interaction.rememberedSend.controlId.id.bus",
+                "interaction.rememberedSend.controlId.id.kind",
+                "interaction.rememberedSend.controlId.id.parameter",
+                "interaction.rememberedSend.controlId.id.slotId",
+                "interaction.rememberedSend.controlId.kind",
+                "interaction.rememberedSend.modalId",
+                "interaction.rememberedSend.patchId",
+                "interaction.rememberedSend.surface",
+                "interaction.sendChoiceOrigin",
+                "interaction.sendChoiceOrigin.capabilityId",
+                "interaction.sendChoiceOrigin.context",
+                "interaction.sendChoiceOrigin.controlId.id.bus",
+                "interaction.sendChoiceOrigin.controlId.id.kind",
+                "interaction.sendChoiceOrigin.controlId.id.slotId",
+                "interaction.sendChoiceOrigin.controlId.kind",
+                "interaction.sendChoiceOrigin.modalId",
+                "interaction.sendChoiceOrigin.patchId",
+                "interaction.sendChoiceOrigin.surface",
+                "interaction.sendNameEditing",
                 "interaction.returnPath",
                 "interaction.returnPath.enteredSurface",
                 "interaction.returnPath.origin.capabilityId",
@@ -745,8 +788,10 @@ impl StateTree {
                 "interaction.returnPath.origin.capabilityId.kind",
                 "interaction.returnPath.origin.context",
                 "interaction.returnPath.origin.controlId.id",
+                "interaction.returnPath.origin.controlId.id.bus",
                 "interaction.returnPath.origin.controlId.id.kind",
                 "interaction.returnPath.origin.controlId.id.parameter",
+                "interaction.returnPath.origin.controlId.id.slotId",
                 "interaction.returnPath.origin.controlId.id.trackId",
                 "interaction.returnPath.origin.controlId.kind",
                 "interaction.returnPath.origin.modalId",
@@ -1323,7 +1368,7 @@ fn validate_parameter_projection(
     // Every live return entry must attest exactly the serialized return-owned
     // state at its bus: occupancy, instance identity, scalar layout and
     // values, and the return-owned level.
-    if !state.returns.is_complete() {
+    if !state.returns.is_complete() || state.returns.entries().len() != parameters.returns().len() {
         return Err(StateTreeError::ReturnParametersMismatch { index: 0 });
     }
     for (index, (serialized, live)) in state
@@ -1333,32 +1378,35 @@ fn validate_parameter_projection(
         .zip(parameters.returns())
         .enumerate()
     {
-        match &serialized.effect {
-            None => {
-                if live.is_active() {
-                    return Err(StateTreeError::ReturnParametersMismatch { index });
-                }
-            }
-            Some(config) => {
-                let descriptor = state
-                    .effects
-                    .descriptor(config.capability_id())
-                    .ok_or(StateTreeError::ReturnParametersMismatch { index })?;
-                if live.slot_id() != Some(config.slot_id())
-                    || live.scalar_count() != descriptor.scalar_parameter_count()
-                    || live.return_level() != serialized.return_level
-                    || descriptor
-                        .scalar_parameters()
-                        .enumerate()
-                        .any(|(scalar_index, spec)| {
-                            let Some(value) = config.value(spec.id()) else {
-                                return true;
-                            };
-                            spec.scalar_value(value).ok() != live.scalar(scalar_index)
-                        })
-                {
-                    return Err(StateTreeError::ReturnParametersMismatch { index });
-                }
+        // Old observational snapshots carry only the first effect.
+        let configs: Vec<_> = if serialized.effects.is_empty() {
+            serialized.effect.iter().collect()
+        } else {
+            serialized.effects.iter().collect()
+        };
+        if configs.len() != live.effect_count()
+            || (!configs.is_empty() && live.return_level() != serialized.return_level)
+        {
+            return Err(StateTreeError::ReturnParametersMismatch { index });
+        }
+        for (config, values) in configs.iter().zip(live.effects()) {
+            let descriptor = state
+                .effects
+                .descriptor(config.capability_id())
+                .ok_or(StateTreeError::ReturnParametersMismatch { index })?;
+            if values.slot_id() != Some(config.slot_id())
+                || values.scalar_count() != descriptor.scalar_parameter_count()
+                || descriptor
+                    .scalar_parameters()
+                    .enumerate()
+                    .any(|(scalar_index, spec)| {
+                        config
+                            .value(spec.id())
+                            .and_then(|value| spec.scalar_value(value).ok())
+                            != values.scalar(scalar_index)
+                    })
+            {
+                return Err(StateTreeError::ReturnParametersMismatch { index });
             }
         }
     }
@@ -1401,7 +1449,7 @@ impl<'a> SerializableStateTree<'a> {
             capabilities: state.capabilities.as_ref(),
             effects: state.effects.as_ref(),
             patches: state.patches.iter().map(TreePatch::from).collect(),
-            mixer: state.mixer,
+            mixer: state.mixer.clone(),
             global: TreeGlobalParameters::from(&state.global),
             returns: &state.returns,
             interaction: &state.interaction,
@@ -1741,7 +1789,10 @@ mod tests {
                 "masterGainDb": -3.0
             })
         );
-        assert_eq!(value["returns"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            value["returns"].as_array().unwrap().len(),
+            fixture_bank().len()
+        );
         assert_eq!(value["returns"][0]["returnLevel"], json!(0.25));
         assert_eq!(
             value["returns"][1]["effect"]["capabilityId"],
@@ -1767,6 +1818,19 @@ mod tests {
                     "modalId": null
                 },
                 "rememberedPatchMain": null,
+                "rememberedSend": {
+                    "context": "mixer",
+                    "surface": "sends",
+                    "patchId": null,
+                    "capabilityId": null,
+                    "controlId": {
+                        "kind": "send",
+                        "id": { "kind": "name", "bus": 0 }
+                    },
+                    "modalId": null
+                },
+                "sendChoiceOrigin": null,
+                "sendNameEditing": false,
                 "rememberedMixerMain": {
                     "context": "mixer",
                     "surface": "mixerMain",
@@ -1845,7 +1909,10 @@ mod tests {
             value["parameters"]["global"],
             json!({"masterGainDb": value["global"]["masterGainDb"]})
         );
-        assert_eq!(value["parameters"]["returns"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            value["parameters"]["returns"].as_array().unwrap().len(),
+            fixture_bank().len()
+        );
         assert_eq!(
             value["parameters"]["returns"][0]["scalars"][0],
             value["returns"][0]["effect"]["values"][0]["value"]["value"]
@@ -1955,7 +2022,7 @@ mod tests {
             43,
             revision,
             global(),
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             parameters().patches(),
         )
         .unwrap();
@@ -1972,7 +2039,7 @@ mod tests {
             42,
             revision,
             global(),
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             &reversed,
         )
         .unwrap();
@@ -1992,7 +2059,7 @@ mod tests {
             42,
             revision,
             global(),
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             &wrong_values,
         )
         .unwrap();
@@ -2018,7 +2085,7 @@ mod tests {
             42,
             crate::real_time::GraphRevision::new(7).unwrap(),
             different_global,
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             parameters().patches(),
         )
         .unwrap();

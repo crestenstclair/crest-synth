@@ -1155,6 +1155,10 @@ where
                     | AppEvent::Activate
                     | AppEvent::SetSlotOccupancy { .. }
                     | AppEvent::SetReturnOccupancy { .. }
+                    | AppEvent::Send(
+                        crate::control::SendAction::Rename { .. }
+                            | crate::control::SendAction::SetEffect { .. }
+                    )
                     | AppEvent::EngineSelectionLifecycleAdvanced { .. }
                     | AppEvent::EnginePrepared { .. }
                     | AppEvent::EnginePreparationFailed { .. }
@@ -1333,7 +1337,7 @@ where
                 self.state.bus_returns(),
                 self.state.generation(),
                 *self.state.global(),
-                *self.state.mixer(),
+                self.state.mixer().clone(),
                 runtime.audio_config,
                 runtime.factory.registry(),
                 self.state.effects(),
@@ -1372,7 +1376,7 @@ where
                 self.state.bus_returns(),
                 self.state.generation(),
                 *self.state.global(),
-                *self.state.mixer(),
+                self.state.mixer().clone(),
                 runtime.audio_config,
                 runtime.factory.registry(),
                 self.state.effects(),
@@ -1439,6 +1443,7 @@ where
             StructuralEditIntent::SetVoiceBudget { .. }
             | StructuralEditIntent::ReplaceEffectAsset { .. }
             | StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 unreachable!("occupancy intents were submitted above")
@@ -1474,7 +1479,7 @@ where
             candidate_config,
             self.state.generation(),
             *self.state.global(),
-            *self.state.mixer(),
+            self.state.mixer().clone(),
             runtime.audio_config,
             runtime.factory.registry(),
             self.state.effects(),
@@ -1979,6 +1984,19 @@ where
                         )
                     })?;
             }
+            StructuralEditIntent::SetSendEffect {
+                bus,
+                slot_id,
+                entry,
+            } => {
+                returns
+                    .set_effect_slot(self.state.effects(), *bus, *slot_id, entry.as_ref())
+                    .map_err(|_| {
+                        StructuralAdvanceError::CandidateParameters(
+                            ParameterSnapshotError::InvalidEffectConfig { index: 0 },
+                        )
+                    })?;
+            }
             StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
                 returns
                     .set_return_occupancy(self.state.effects(), *bus, entry.as_ref())
@@ -2009,7 +2027,7 @@ where
             self.state.generation(),
             correlation.target_graph_revision(),
             *self.state.global(),
-            *self.state.mixer(),
+            self.state.mixer().clone(),
             &patches,
             self.state.capabilities(),
             self.state.effects(),
@@ -4584,7 +4602,7 @@ mod tests {
         );
         let mut target_state =
             AppState::for_graph(registry.clone(), global_parameters(), target_revision)
-                .with_initial_mixer(target_mixer);
+                .with_initial_mixer(target_mixer.clone());
         target_state
             .apply(AppEvent::InstallPatches(vec![patch(1, 0.0), patch(2, 0.0)]))
             .unwrap();

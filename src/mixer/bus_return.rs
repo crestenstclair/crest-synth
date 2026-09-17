@@ -1,4 +1,4 @@
-use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
+use crate::mixer::bus_id::{BusId, DEFAULT_BUS_RETURNS};
 use crate::synth::{EffectCapabilityId, EffectCapabilityRegistry, EffectSlotId, PostEffectConfig};
 use core::fmt;
 
@@ -43,7 +43,7 @@ impl std::error::Error for EffectError {}
 ///
 /// Copied exactly from the retired `ReverbReturn`/`DelayReturn` global
 /// descriptors so the generalization changes no bound: 0.0..=1.0, fine 0.01,
-/// coarse 0.1. All eight returns share this one descriptor.
+/// coarse 0.1. All returns share this one descriptor.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ReturnLevelDescriptor {
     minimum: f32,
@@ -100,8 +100,18 @@ pub enum BusReturnError {
     UnknownRegistryEntry { id: EffectCapabilityId },
     /// The registry rejected building a default configuration for the entry.
     ConfigurationRejected { id: EffectCapabilityId },
-    /// A value edit targeted a return that holds no effect.
+    /// A value edit targeted a missing effect instance.
     Unoccupied { id: BusId },
+    /// The return name is empty after trimming or contains control characters.
+    InvalidName,
+    /// The requested bank cannot be represented by nonempty positional storage.
+    InvalidReturnCount { count: usize },
+    /// The identity is not installed in this bank.
+    UnknownReturn { id: BusId },
+    /// A restored chain repeats an instance identity.
+    DuplicateEffectSlot { slot_id: EffectSlotId },
+    /// The bank could not reserve its control-side storage.
+    StorageAllocationFailed,
 }
 
 impl fmt::Display for BusReturnError {
@@ -120,7 +130,25 @@ impl fmt::Display for BusReturnError {
                 write!(formatter, "registry entry {id} rejected its default config")
             }
             Self::Unoccupied { id } => {
-                write!(formatter, "bus return {id} holds no effect to edit")
+                write!(
+                    formatter,
+                    "bus return {id} holds no matching effect to edit"
+                )
+            }
+            Self::InvalidName => formatter
+                .write_str("return name must be nonempty and contain no control characters"),
+            Self::InvalidReturnCount { count } => write!(
+                formatter,
+                "return count must be in 1..={}, got {count}",
+                usize::from(u16::MAX) + 1
+            ),
+            Self::UnknownReturn { id } => write!(formatter, "bus return {id} is not installed"),
+            Self::DuplicateEffectSlot { slot_id } => write!(
+                formatter,
+                "return effect slot {slot_id} appears more than once"
+            ),
+            Self::StorageAllocationFailed => {
+                formatter.write_str("bus return storage allocation failed")
             }
         }
     }
@@ -128,48 +156,36 @@ impl fmt::Display for BusReturnError {
 
 impl std::error::Error for BusReturnError {}
 
-/// One bounded routing destination holding zero or one registry effect and its
-/// own output level.
+/// One named routing destination holding an ordered effect chain and output level.
 ///
-/// The effect is drawn from the same `EffectCapabilityRegistry` that fills
-/// Patch effect slots; there is no role marker, send-suitability flag, or
-/// return-only registry (FR-010). The return level is owned by the return
-/// rather than declared as an effect descriptor scalar, so replacing the
-/// occupying effect neither resets nor loses it (C-BR-10, R-04). An unoccupied
-/// return contributes silence and never passes its accumulated input through
-/// (C-BR-6).
+/// Effects use the same registry as Patch effects. The name and output level
+/// belong to the return and survive chain edits. An empty return contributes
+/// silence; it never passes accumulated input through.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BusReturn {
     id: BusId,
-    effect: Option<PostEffectConfig>,
+    name: String,
+    effects: Vec<PostEffectConfig>,
     return_level: f32,
 }
 
 impl BusReturn {
-    /// Creates one validated return; the level is checked against the shared
-    /// descriptor and never clamped.
+    /// Creates a validated return using the legacy single-effect representation.
     pub fn new(
         id: BusId,
         effect: Option<PostEffectConfig>,
         return_level: f32,
     ) -> Result<Self, BusReturnError> {
-        if !RETURN_LEVEL_DESCRIPTOR.contains(return_level) {
-            return Err(BusReturnError::InvalidReturnLevel {
-                value: return_level,
-            });
-        }
-        Ok(Self {
-            id,
-            effect,
-            return_level,
-        })
+        Self::unoccupied(id)
+            .with_effect(effect)
+            .with_return_level(return_level)
     }
 
-    /// Creates the canonical unoccupied return for one bus.
     pub fn unoccupied(id: BusId) -> Self {
         Self {
             id,
-            effect: None,
+            name: "INIT".to_owned(),
+            effects: Vec::new(),
             return_level: RETURN_LEVEL_DESCRIPTOR.default(),
         }
     }
@@ -178,25 +194,78 @@ impl BusReturn {
         self.id
     }
 
-    pub const fn effect(&self) -> Option<&PostEffectConfig> {
-        self.effect.as_ref()
+    pub fn name(&self) -> &str {
+        &self.name
     }
 
-    pub const fn is_occupied(&self) -> bool {
-        self.effect.is_some()
+    pub fn set_name(&mut self, name: &str) -> Result<(), BusReturnError> {
+        if name.chars().any(char::is_control) || name.trim().is_empty() {
+            return Err(BusReturnError::InvalidName);
+        }
+        self.name = name.trim().to_owned();
+        Ok(())
+    }
+
+    pub fn with_name(mut self, name: &str) -> Result<Self, BusReturnError> {
+        self.set_name(name)?;
+        Ok(self)
+    }
+
+    /// Compatibility accessor for the first effect in the chain.
+    pub fn effect(&self) -> Option<&PostEffectConfig> {
+        self.effects.first()
+    }
+
+    pub fn effects(&self) -> &[PostEffectConfig] {
+        &self.effects
+    }
+
+    pub fn effect_at(&self, slot_id: EffectSlotId) -> Option<&PostEffectConfig> {
+        self.effects
+            .iter()
+            .find(|effect| effect.slot_id() == slot_id)
+    }
+
+    /// Finds an unused identity without renumbering any surviving instance.
+    /// Identities are local to a return, so empty chains retain the legacy seed.
+    pub fn next_slot_id(&self) -> Option<EffectSlotId> {
+        let seed = Self::slot_id(self.id).value();
+        (seed..=u16::MAX)
+            .chain(1..seed)
+            .filter_map(|value| EffectSlotId::new(value).ok())
+            .find(|slot_id| self.effect_at(*slot_id).is_none())
+    }
+
+    pub fn is_occupied(&self) -> bool {
+        !self.effects.is_empty()
     }
 
     pub const fn return_level(&self) -> f32 {
         self.return_level
     }
 
-    /// Replaces the occupying effect while preserving the return-owned level.
+    /// Legacy occupancy edit: replaces the entire chain, preserving metadata.
     pub fn with_effect(mut self, effect: Option<PostEffectConfig>) -> Self {
-        self.effect = effect;
+        self.effects = effect.into_iter().collect();
         self
     }
 
-    /// Replaces the return level after validating it against the shared descriptor.
+    /// Restores an ordered chain, rejecting duplicate stable instance identities.
+    pub fn with_effects(mut self, effects: Vec<PostEffectConfig>) -> Result<Self, BusReturnError> {
+        for (index, effect) in effects.iter().enumerate() {
+            if effects[..index]
+                .iter()
+                .any(|prior| prior.slot_id() == effect.slot_id())
+            {
+                return Err(BusReturnError::DuplicateEffectSlot {
+                    slot_id: effect.slot_id(),
+                });
+            }
+        }
+        self.effects = effects;
+        Ok(self)
+    }
+
     pub fn with_return_level(mut self, return_level: f32) -> Result<Self, BusReturnError> {
         if !RETURN_LEVEL_DESCRIPTOR.contains(return_level) {
             return Err(BusReturnError::InvalidReturnLevel {
@@ -207,113 +276,174 @@ impl BusReturn {
         Ok(self)
     }
 
-    /// Returns the slot identity a return derives for its prepared effect.
-    ///
-    /// Slot ids are non-zero, so the bus index shifts by one. The value is a
-    /// preparation detail; the routing identity remains the `BusId`.
+    /// Legacy first-effect identity. Instance identities are scoped to each bus.
+    /// The final representable bus wraps to one, avoiding a zero slot identity.
     pub const fn slot_id(id: BusId) -> EffectSlotId {
-        match EffectSlotId::new(id.value() as u16 + 1) {
+        let value = (id.value() as u32 % u16::MAX as u32 + 1) as u16;
+        match EffectSlotId::new(value) {
             Ok(slot) => slot,
-            // Unreachable: every BusId value is in 0..=7, so value + 1 is non-zero.
             Err(_) => panic!("bus-derived slot ids are always non-zero"),
         }
     }
 }
 
-/// The canonical fixed bank of eight bus returns.
-///
-/// All eight returns exist before any Patch is installed and remain
-/// addressable whether occupied or empty. Array position is a bounded storage
-/// detail whose canonical semantic identity is the matching `BusId` (B-2).
+/// A configured bank of positional returns, with sixteen empty sends by default.
+/// Bank size is independent of the startup default and validated against only
+/// the identity representation and available control-side storage.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BusReturnBank {
-    returns: [BusReturn; MAX_BUS_RETURNS],
+    returns: Vec<BusReturn>,
 }
 
 impl BusReturnBank {
-    pub fn returns(&self) -> &[BusReturn; MAX_BUS_RETURNS] {
+    pub fn with_count(count: usize) -> Result<Self, BusReturnError> {
+        if count == 0 || count > usize::from(u16::MAX) + 1 {
+            return Err(BusReturnError::InvalidReturnCount { count });
+        }
+        let mut returns = Vec::new();
+        returns
+            .try_reserve_exact(count)
+            .map_err(|_| BusReturnError::StorageAllocationFailed)?;
+        for index in 0..count {
+            let id = BusId::new(index as u16).expect("validated bank count fits bus identities");
+            returns.push(BusReturn::unoccupied(id));
+        }
+        Ok(Self { returns })
+    }
+
+    pub fn returns(&self) -> &[BusReturn] {
         &self.returns
     }
 
+    pub fn len(&self) -> usize {
+        self.returns.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.returns.is_empty()
+    }
+
+    pub fn contains(&self, id: BusId) -> bool {
+        self.get(id).is_some()
+    }
+
+    pub fn get(&self, id: BusId) -> Option<&BusReturn> {
+        self.returns.get(id.index())
+    }
+
+    /// Indexes an identity already checked against this bank.
     pub fn bus_return(&self, id: BusId) -> &BusReturn {
         &self.returns[id.index()]
     }
 
-    /// The `SetReturnOccupancy(BusId, Option<RegistryEntryId>)` domain
-    /// operation: occupies, replaces, or clears one return's contents.
-    ///
-    /// The entry resolves through the same shared registry that fills Patch
-    /// effect slots — no role filter is applied (FR-010). The return-owned
-    /// level is deliberately untouched by every occupancy transition
-    /// (C-BR-10). Callers reach this operation through the reducer's
-    /// `SetReturnOccupancy` semantic action, never from a view adapter.
+    fn get_mut(&mut self, id: BusId) -> Result<&mut BusReturn, BusReturnError> {
+        self.returns
+            .get_mut(id.index())
+            .ok_or(BusReturnError::UnknownReturn { id })
+    }
+
+    pub fn set_name(&mut self, id: BusId, name: &str) -> Result<(), BusReturnError> {
+        self.get_mut(id)?.set_name(name)
+    }
+
+    /// Restores a validated return at its stable bank position.
+    pub fn replace_return(&mut self, bus_return: BusReturn) -> Result<(), BusReturnError> {
+        *self.get_mut(bus_return.id())? = bus_return.clone();
+        Ok(())
+    }
+
+    /// Legacy occupancy operation: replaces or clears the entire return chain.
     pub fn set_return_occupancy(
         &mut self,
         registry: &EffectCapabilityRegistry,
         id: BusId,
         entry: Option<&EffectCapabilityId>,
     ) -> Result<(), BusReturnError> {
-        let effect = match entry {
-            None => None,
-            Some(entry_id) => {
-                let descriptor = registry.descriptor(entry_id).ok_or_else(|| {
-                    BusReturnError::UnknownRegistryEntry {
-                        id: entry_id.clone(),
-                    }
-                })?;
-                let config = descriptor
-                    .default_config(BusReturn::slot_id(id))
-                    .map_err(|_| BusReturnError::ConfigurationRejected {
-                        id: entry_id.clone(),
-                    })?;
-                Some(config)
+        self.get_mut(id)?;
+        let effect = Self::default_effect(registry, BusReturn::slot_id(id), entry)?;
+        self.get_mut(id)?.effects = effect.into_iter().collect();
+        Ok(())
+    }
+
+    /// Replaces an existing instance in place, appends a new identity, or clears
+    /// only the requested identity. Surviving identities and order never change.
+    pub fn set_effect_slot(
+        &mut self,
+        registry: &EffectCapabilityRegistry,
+        id: BusId,
+        slot_id: EffectSlotId,
+        entry: Option<&EffectCapabilityId>,
+    ) -> Result<(), BusReturnError> {
+        self.get_mut(id)?;
+        let effect = Self::default_effect(registry, slot_id, entry)?;
+        let current = self.get_mut(id)?;
+        let index = current
+            .effects
+            .iter()
+            .position(|effect| effect.slot_id() == slot_id);
+        match (index, effect) {
+            (Some(index), Some(effect)) => current.effects[index] = effect,
+            (Some(index), None) => {
+                current.effects.remove(index);
             }
-        };
-        let current = self.returns[id.index()].clone();
-        self.returns[id.index()] = current.with_effect(effect);
+            (None, Some(effect)) => current.effects.push(effect),
+            (None, None) => {}
+        }
         Ok(())
     }
 
-    /// Replaces one return-owned level after validation.
+    fn default_effect(
+        registry: &EffectCapabilityRegistry,
+        slot_id: EffectSlotId,
+        entry: Option<&EffectCapabilityId>,
+    ) -> Result<Option<PostEffectConfig>, BusReturnError> {
+        entry
+            .map(|id| {
+                let descriptor = registry
+                    .descriptor(id)
+                    .ok_or_else(|| BusReturnError::UnknownRegistryEntry { id: id.clone() })?;
+                descriptor
+                    .default_config(slot_id)
+                    .map_err(|_| BusReturnError::ConfigurationRejected { id: id.clone() })
+            })
+            .transpose()
+    }
+
     pub fn set_return_level(&mut self, id: BusId, return_level: f32) -> Result<(), BusReturnError> {
-        let current = self.returns[id.index()].clone();
-        self.returns[id.index()] = current.with_return_level(return_level)?;
+        if !RETURN_LEVEL_DESCRIPTOR.contains(return_level) {
+            return Err(BusReturnError::InvalidReturnLevel {
+                value: return_level,
+            });
+        }
+        self.get_mut(id)?.return_level = return_level;
         Ok(())
     }
 
-    /// Replaces the occupying instance's configuration values in place.
-    ///
-    /// This is the scalar-value edit path: the replacement must preserve the
-    /// occupant's identity (slot id and registry entry). Occupancy transitions
-    /// — changing what exists — go through `set_return_occupancy` and the
-    /// prepared structural path instead.
+    /// Updates one chain instance without changing its slot or capability.
     pub fn replace_occupant_values(
         &mut self,
         id: BusId,
         config: PostEffectConfig,
     ) -> Result<(), BusReturnError> {
-        let current = self.returns[id.index()].clone();
-        let Some(existing) = current.effect() else {
-            return Err(BusReturnError::Unoccupied { id });
-        };
-        if existing.slot_id() != config.slot_id()
-            || existing.capability_id() != config.capability_id()
-        {
+        let current = self.get_mut(id)?;
+        let existing = current
+            .effects
+            .iter_mut()
+            .find(|effect| effect.slot_id() == config.slot_id())
+            .ok_or(BusReturnError::Unoccupied { id })?;
+        if existing.capability_id() != config.capability_id() {
             return Err(BusReturnError::ConfigurationRejected {
                 id: config.capability_id().clone(),
             });
         }
-        self.returns[id.index()] = current.with_effect(Some(config));
+        *existing = config;
         Ok(())
     }
 }
 
 impl Default for BusReturnBank {
-    /// Eight unoccupied returns; occupancy is composition, not identity.
     fn default() -> Self {
-        Self {
-            returns: BusId::ALL.map(BusReturn::unoccupied),
-        }
+        Self::with_count(DEFAULT_BUS_RETURNS).expect("default return bank storage is available")
     }
 }
 
@@ -374,7 +504,7 @@ mod tests {
     }
 
     #[test]
-    fn occupancy_can_be_set_replaced_and_cleared_on_each_of_eight_returns() {
+    fn legacy_occupancy_can_be_set_replaced_and_cleared_on_each_default_return() {
         let registry = production_effect_registry().unwrap();
         let first = EffectCapabilityId::new("effect.reverb").unwrap();
         let second = EffectCapabilityId::new("effect.delay").unwrap();
@@ -433,9 +563,150 @@ mod tests {
     }
 
     #[test]
+    fn default_bank_has_sixteen_init_chains_and_larger_banks_are_supported() {
+        let bank = BusReturnBank::default();
+        assert_eq!(bank.len(), 16);
+        assert!(bank
+            .returns()
+            .iter()
+            .all(|bus| bus.name() == "INIT" && bus.effects().is_empty()));
+        let expanded = BusReturnBank::with_count(257).unwrap();
+        let beyond_default = BusId::new(256).unwrap();
+        assert!(expanded.contains(beyond_default));
+        assert_eq!(expanded.get(beyond_default).unwrap().id(), beyond_default);
+        assert!(!bank.contains(beyond_default));
+        assert_eq!(
+            BusReturnBank::with_count(0),
+            Err(BusReturnError::InvalidReturnCount { count: 0 })
+        );
+        let too_many = usize::from(u16::MAX) + 2;
+        assert_eq!(
+            BusReturnBank::with_count(too_many),
+            Err(BusReturnError::InvalidReturnCount { count: too_many })
+        );
+    }
+
+    #[test]
+    fn names_are_trimmed_and_invalid_edits_leave_prior_name_intact() {
+        let bus = BusId::default();
+        let mut bank = BusReturnBank::default();
+        bank.set_name(bus, "  Hall & Echo  ").unwrap();
+        assert_eq!(bank.bus_return(bus).name(), "Hall & Echo");
+        for invalid in ["", "   ", "Hall\n", "\tHall", "Hall\0Echo"] {
+            assert_eq!(
+                bank.set_name(bus, invalid),
+                Err(BusReturnError::InvalidName)
+            );
+            assert_eq!(bank.bus_return(bus).name(), "Hall & Echo");
+        }
+        assert_eq!(
+            BusReturn::unoccupied(bus).with_name("Echo").unwrap().name(),
+            "Echo"
+        );
+    }
+
+    #[test]
+    fn chain_edits_preserve_order_surviving_identities_name_and_level() {
+        let registry = production_effect_registry().unwrap();
+        let reverb = EffectCapabilityId::new("effect.reverb").unwrap();
+        let delay = EffectCapabilityId::new("effect.delay").unwrap();
+        let chorus = EffectCapabilityId::new("effect.chorus").unwrap();
+        let bus = BusId::new(2).unwrap();
+        let mut bank = BusReturnBank::default();
+        bank.set_name(bus, "Echo room").unwrap();
+        bank.set_return_level(bus, 0.7).unwrap();
+        let first = bank.bus_return(bus).next_slot_id().unwrap();
+        bank.set_effect_slot(&registry, bus, first, Some(&reverb))
+            .unwrap();
+        let second = bank.bus_return(bus).next_slot_id().unwrap();
+        bank.set_effect_slot(&registry, bus, second, Some(&delay))
+            .unwrap();
+        assert_ne!(first, second);
+        bank.set_effect_slot(&registry, bus, first, Some(&chorus))
+            .unwrap();
+        assert_eq!(
+            bank.bus_return(bus)
+                .effects()
+                .iter()
+                .map(|effect| effect.slot_id())
+                .collect::<Vec<_>>(),
+            vec![first, second]
+        );
+        let delay_config = bank.bus_return(bus).effect_at(second).unwrap().clone();
+        bank.replace_occupant_values(bus, delay_config.clone())
+            .unwrap();
+        assert_eq!(bank.bus_return(bus).effects().len(), 2);
+        bank.set_effect_slot(&registry, bus, first, None).unwrap();
+        assert_eq!(bank.bus_return(bus).effects(), &[delay_config]);
+        assert_eq!(bank.bus_return(bus).effect().unwrap().slot_id(), second);
+        assert_eq!(bank.bus_return(bus).name(), "Echo room");
+        assert_eq!(bank.bus_return(bus).return_level(), 0.7);
+        let next = bank.bus_return(bus).next_slot_id().unwrap();
+        assert_ne!(next, second);
+    }
+
+    #[test]
+    fn restoring_chain_rejects_duplicate_ids_and_replacement_checks_bank_membership() {
+        let registry = production_effect_registry().unwrap();
+        let entry = EffectCapabilityId::new("effect.delay").unwrap();
+        let bus = BusId::default();
+        let config = registry
+            .descriptor(&entry)
+            .unwrap()
+            .default_config(BusReturn::slot_id(bus))
+            .unwrap();
+        assert_eq!(
+            BusReturn::unoccupied(bus).with_effects(vec![config.clone(), config.clone()]),
+            Err(BusReturnError::DuplicateEffectSlot {
+                slot_id: config.slot_id()
+            })
+        );
+        let restored = BusReturn::unoccupied(bus)
+            .with_effects(vec![config])
+            .unwrap()
+            .with_name("Restored")
+            .unwrap();
+        let mut bank = BusReturnBank::default();
+        bank.replace_return(restored.clone()).unwrap();
+        assert_eq!(bank.bus_return(bus), &restored);
+        let unknown = BusId::new(256).unwrap();
+        assert_eq!(
+            bank.set_return_occupancy(&registry, unknown, Some(&entry)),
+            Err(BusReturnError::UnknownReturn { id: unknown })
+        );
+        assert_eq!(
+            bank.replace_return(BusReturn::unoccupied(unknown)),
+            Err(BusReturnError::UnknownReturn { id: unknown })
+        );
+        assert_eq!(bank.bus_return(bus), &restored);
+    }
+
+    #[test]
+    fn compatibility_occupancy_replaces_entire_chain_preserving_metadata() {
+        let registry = production_effect_registry().unwrap();
+        let entry = EffectCapabilityId::new("effect.delay").unwrap();
+        let bus = BusId::default();
+        let mut bank = BusReturnBank::default();
+        bank.set_name(bus, "Echo").unwrap();
+        for _ in 0..2 {
+            let slot = bank.bus_return(bus).next_slot_id().unwrap();
+            bank.set_effect_slot(&registry, bus, slot, Some(&entry))
+                .unwrap();
+        }
+        assert_eq!(bank.bus_return(bus).effects().len(), 2);
+        bank.set_return_occupancy(&registry, bus, Some(&entry))
+            .unwrap();
+        assert_eq!(bank.bus_return(bus).effects().len(), 1);
+        bank.set_return_occupancy(&registry, bus, None).unwrap();
+        assert!(bank.bus_return(bus).effects().is_empty());
+        assert_eq!(bank.bus_return(bus).name(), "Echo");
+    }
+
+    #[test]
     fn derived_slot_identity_is_stable_and_non_zero() {
         for bus in BusId::ALL {
-            assert_eq!(BusReturn::slot_id(bus).value(), u16::from(bus.value()) + 1);
+            assert_eq!(BusReturn::slot_id(bus).value(), bus.value() + 1);
         }
+        assert_eq!(BusReturn::slot_id(BusId::new(u16::MAX).unwrap()).value(), 1);
     }
 }

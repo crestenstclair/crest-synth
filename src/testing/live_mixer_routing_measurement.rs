@@ -198,19 +198,31 @@ impl LiveMixerDspEvidence {
         let sounding_meter = sends.observation.track(shared_track);
         let post_gate_sends_exact = samples_equal(&sends.output, &[0.35, 0.175, 0.35, 0.175])
             && approximately(
-                sends.observation.bus_input_rms(send_buses[0]),
+                sends
+                    .observation
+                    .bus_input_rms(send_buses[0])
+                    .expect("bus belongs to observed default bank"),
                 rms(&[0.05, 0.025, 0.05, 0.025]),
             )
             && approximately(
-                sends.observation.bus_input_rms(send_buses[1]),
+                sends
+                    .observation
+                    .bus_input_rms(send_buses[1])
+                    .expect("bus belongs to observed default bank"),
                 rms(&[0.1, 0.05, 0.1, 0.05]),
             )
             && approximately(
-                sends.observation.bus_output_rms(send_buses[0]),
+                sends
+                    .observation
+                    .bus_output_rms(send_buses[0])
+                    .expect("bus belongs to observed default bank"),
                 rms(&[0.05, 0.025, 0.05, 0.025]),
             )
             && approximately(
-                sends.observation.bus_output_rms(send_buses[1]),
+                sends
+                    .observation
+                    .bus_output_rms(send_buses[1])
+                    .expect("bus belongs to observed default bank"),
                 rms(&[0.1, 0.05, 0.1, 0.05]),
             );
         let sounding_meter_exact = approximately(sounding_meter.left_peak(), 0.2)
@@ -232,12 +244,20 @@ impl LiveMixerDspEvidence {
             &send_buses,
         )?;
         let mute_wins = samples_equal(&muted.output, &[0.0; SAMPLE_COUNT])
-            && BusId::ALL
-                .iter()
-                .all(|bus| muted.observation.bus_input_rms(*bus) == 0.0)
-            && BusId::ALL
-                .iter()
-                .all(|bus| muted.observation.bus_output_rms(*bus) == 0.0);
+            && BusId::ALL.iter().all(|bus| {
+                muted
+                    .observation
+                    .bus_input_rms(*bus)
+                    .expect("bus belongs to observed default bank")
+                    == 0.0
+            })
+            && BusId::ALL.iter().all(|bus| {
+                muted
+                    .observation
+                    .bus_output_rms(*bus)
+                    .expect("bus belongs to observed default bank")
+                    == 0.0
+            });
         let pre_gate_meters_exact = sounding_meter_exact
             && meters_equal(muted.observation, sends.observation, shared_track);
 
@@ -280,10 +300,16 @@ impl LiveMixerDspEvidence {
             )?;
             let expected_bus = [0.32, 0.16, 0.32, 0.16];
             send_isolation_exact &= approximately(
-                isolated.observation.bus_input_rms(target),
+                isolated
+                    .observation
+                    .bus_input_rms(target)
+                    .expect("bus belongs to observed default bank"),
                 rms(&expected_bus),
             ) && approximately(
-                isolated.observation.bus_output_rms(target),
+                isolated
+                    .observation
+                    .bus_output_rms(target)
+                    .expect("bus belongs to observed default bank"),
                 rms(&expected_bus),
             ) && samples_equal(&isolated.output, &[0.72, 0.36, 0.72, 0.36]);
             for other in BusId::ALL {
@@ -291,7 +317,13 @@ impl LiveMixerDspEvidence {
                     let off_target = isolated
                         .observation
                         .bus_input_rms(other)
-                        .max(isolated.observation.bus_output_rms(other));
+                        .expect("bus belongs to observed default bank")
+                        .max(
+                            isolated
+                                .observation
+                                .bus_output_rms(other)
+                                .expect("bus belongs to observed default bank"),
+                        );
                     send_isolation_exact &= off_target == 0.0;
                     max_off_target_linear = max_off_target_linear.max(off_target);
                 }
@@ -328,7 +360,10 @@ impl LiveMixerDspEvidence {
             0.4 * 0.5 + 0.1 * 0.25,
         ];
         let accumulation_exact = approximately(
-            accumulated.observation.bus_input_rms(accumulation_bus),
+            accumulated
+                .observation
+                .bus_input_rms(accumulation_bus)
+                .expect("bus belongs to observed default bank"),
             rms(&accumulated_bus),
         ) && samples_equal(
             &accumulated.output,
@@ -376,9 +411,25 @@ impl LiveMixerDspEvidence {
                 gated_muted
                     .observation
                     .bus_output_rms(*bus)
-                    .max(gated_excluded.observation.bus_output_rms(*bus))
-                    .max(gated_muted.observation.bus_input_rms(*bus))
-                    .max(gated_excluded.observation.bus_input_rms(*bus))
+                    .expect("bus belongs to observed default bank")
+                    .max(
+                        gated_excluded
+                            .observation
+                            .bus_output_rms(*bus)
+                            .expect("bus belongs to observed default bank"),
+                    )
+                    .max(
+                        gated_muted
+                            .observation
+                            .bus_input_rms(*bus)
+                            .expect("bus belongs to observed default bank"),
+                    )
+                    .max(
+                        gated_excluded
+                            .observation
+                            .bus_input_rms(*bus)
+                            .expect("bus belongs to observed default bank"),
+                    )
             })
             .fold(0.0_f32, f32::max);
 
@@ -397,9 +448,15 @@ impl LiveMixerDspEvidence {
             &[],
         )?;
         let unoccupied_return_silent = approximately(
-            unoccupied.observation.bus_input_rms(unoccupied_bus),
+            unoccupied
+                .observation
+                .bus_input_rms(unoccupied_bus)
+                .expect("bus belongs to observed default bank"),
             rms(&send_stem),
-        ) && unoccupied.observation.bus_output_rms(unoccupied_bus)
+        ) && unoccupied
+            .observation
+            .bus_output_rms(unoccupied_bus)
+            .expect("bus belongs to observed default bank")
             == 0.0
             && samples_equal(&unoccupied.output, &send_stem);
 

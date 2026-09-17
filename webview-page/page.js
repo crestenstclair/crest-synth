@@ -695,6 +695,10 @@
         "</span>"
       );
     }
+    var sendSurface = surfaceById(model, "sends");
+    if (sendSurface) {
+      return '<span class="type-display">SENDS</span><span class="type-label muted">/ ' + String(sendSurface.summary.count) + ' CHAINS</span><span class="spring"></span><span class="type-value focus">' + escapeHtml(focusIdentity(model)) + '</span>';
+    }
     var metadata;
     if (model.context === "patch") {
       var main = surfaceById(model, "patchMain");
@@ -901,7 +905,7 @@
     return (
       '<div class="caption-row">' +
       leftHtml +
-      meterHtml(model) +
+      (surfaceById(model, "sends") ? "" : meterHtml(model)) +
       '<span class="spring"></span>' +
       rightHtml +
       "</div>" +
@@ -2092,6 +2096,66 @@
   // keeps its waveform/preview behavior; Engine and Post FX share the one
   // Figma-authored option hierarchy below. Neither branch owns an option or
   // file index.
+  function choiceOptionRowsHtml(controls) {
+    var optionRows = "";
+    for (var optionIndex = 0; optionIndex < controls.length; optionIndex += 1) {
+      var option = controls[optionIndex];
+      if (option.visible !== true) {
+        continue;
+      }
+      var current = String(option.selectedLabel || "") === "CURRENT";
+      var availability = option.availabilityLabel
+        ? "unavailable"
+        : option.enabled
+          ? "available"
+          : "disabled";
+      var availabilityText =
+        availability === "unavailable"
+          ? "UNAVAILABLE" + HINT_SEPARATOR + String(option.availabilityLabel)
+          : availability.toUpperCase();
+      var optionIdentity =
+        option.value && option.value.kind === "identity"
+          ? String(option.value.value)
+          : "";
+      optionRows +=
+        '<div class="modal-option option-row' +
+        (option.focused ? " is-focused" : "") +
+        (current ? " is-current" : "") +
+        (!option.enabled ? " is-disabled" : "") +
+        (availability === "unavailable" ? " is-unavailable" : "") +
+        '" data-focus-path="' +
+        escapeHtml(JSON.stringify(option.path || null)) +
+        '" data-option-id="' +
+        escapeHtml(optionIdentity) +
+        '" data-option-state="' +
+        availability +
+        '" data-enabled="' +
+        String(option.enabled === true) +
+        '" data-current="' +
+        String(current) +
+        '" data-valid-actions="' +
+        escapeHtml(JSON.stringify(option.validActions || [])) +
+        '">' +
+        '<span class="modal-option-shape" aria-hidden="true">' +
+        (option.focused ? "&gt;" : "&nbsp;") +
+        "</span>" +
+        '<span class="type-value modal-option-label">' +
+        escapeHtml(String(option.label || UNAVAILABLE_MARK)) +
+        "</span>" +
+        '<span class="type-hint modal-option-availability">' +
+        escapeHtml(availabilityText) +
+        "</span>" +
+        (current
+          ? '<span class="type-hint muted modal-option-current"><span aria-hidden="true">■</span> CURRENT</span>'
+          : "") +
+        "</div>";
+    }
+    if (!optionRows) {
+      optionRows = markUnavailableRowHtml("OPTIONS");
+    }
+    return optionRows;
+  }
+
   function modalShellHtml(model) {
     var modal = surfaceByRole(model, "modal");
     if (!modal) {
@@ -2251,62 +2315,7 @@
         String((returnOrigin && returnOrigin.label) || UNAVAILABLE_MARK).toUpperCase();
     }
 
-    var optionRows = "";
-    for (var optionIndex = 0; optionIndex < controls.length; optionIndex += 1) {
-      var option = controls[optionIndex];
-      if (option.visible !== true) {
-        continue;
-      }
-      var current = String(option.selectedLabel || "") === "CURRENT";
-      var availability = option.availabilityLabel
-        ? "unavailable"
-        : option.enabled
-          ? "available"
-          : "disabled";
-      var availabilityText =
-        availability === "unavailable"
-          ? "UNAVAILABLE" + HINT_SEPARATOR + String(option.availabilityLabel)
-          : availability.toUpperCase();
-      var optionIdentity =
-        option.value && option.value.kind === "identity"
-          ? String(option.value.value)
-          : "";
-      optionRows +=
-        '<div class="modal-option option-row' +
-        (option.focused ? " is-focused" : "") +
-        (current ? " is-current" : "") +
-        (!option.enabled ? " is-disabled" : "") +
-        (availability === "unavailable" ? " is-unavailable" : "") +
-        '" data-focus-path="' +
-        escapeHtml(JSON.stringify(option.path || null)) +
-        '" data-option-id="' +
-        escapeHtml(optionIdentity) +
-        '" data-option-state="' +
-        availability +
-        '" data-enabled="' +
-        String(option.enabled === true) +
-        '" data-current="' +
-        String(current) +
-        '" data-valid-actions="' +
-        escapeHtml(JSON.stringify(option.validActions || [])) +
-        '">' +
-        '<span class="modal-option-shape" aria-hidden="true">' +
-        (option.focused ? "&gt;" : "&nbsp;") +
-        "</span>" +
-        '<span class="type-value modal-option-label">' +
-        escapeHtml(String(option.label || UNAVAILABLE_MARK)) +
-        "</span>" +
-        '<span class="type-hint modal-option-availability">' +
-        escapeHtml(availabilityText) +
-        "</span>" +
-        (current
-          ? '<span class="type-hint muted modal-option-current"><span aria-hidden="true">■</span> CURRENT</span>'
-          : "") +
-        "</div>";
-    }
-    if (!optionRows) {
-      optionRows = markUnavailableRowHtml("OPTIONS");
-    }
+    var optionRows = choiceOptionRowsHtml(controls);
     var categoryLabel = summary.choiceGroupLabel;
     var groupHeader = categoryLabel
       ? '<div class="option-group" data-role="choice-group">' +
@@ -2375,6 +2384,53 @@
       annotation,
       body
     );
+  }
+
+  function sendsWorkspaceHtml(model) {
+    var surface = surfaceById(model, "sends");
+    if (surfaceByRole(model, "modal")) {
+      return workspaceScaffold(model, '<span class="type-label muted">FILE BROWSER</span>', "", modalShellHtml(model));
+    }
+    var summary = surface.summary;
+    var controls = surface.controls || [];
+    var body = '<div class="send-shell"><div class="send-heading"><span class="type-hint muted">Q ‹</span><h2 class="type-heading">SEND ' + String(summary.bus + 1).padStart(2, "0") + ' / ' + String(summary.count) + '</h2><span class="type-hint muted">› E</span></div><div class="type-value send-name">' + escapeHtml(summary.name) + '</div>';
+    if (summary.choosingEffect) {
+      body += '<div class="option-group"><span class="type-hint muted">A ‹</span><span class="type-label">' + escapeHtml(summary.choiceGroupLabel || "Effects") + '</span><span class="type-hint muted">› D</span></div>';
+      body += '<div class="type-hint muted">W / S effects · Return choose · Shift+Down cancel</div>';
+      body += '<div class="modal-options">' + choiceOptionRowsHtml(controls) + '</div>';
+    } else {
+      surface.sections.forEach(function (section) {
+        body += '<section class="detail-section"><h3 class="type-label muted detail-section-heading">' + escapeHtml(section.label) + '</h3>';
+        section.controlPaths.forEach(function (path) {
+          var control = controlByPath(surface, path);
+          if (control && control.visible) { body += patchRowHtml(control, model.interactionMode, "detail"); }
+        });
+        body += '</section>';
+      });
+      if (summary.editingName) {
+        body += '<form id="send-name-form" data-bus="' + String(summary.bus) + '"><label class="type-label" for="send-name-input">Send name</label><input id="send-name-input" autocomplete="off" required value="' + escapeHtml(summary.name) + '" /><span class="type-hint muted">Return save · Escape cancel</span></form>';
+      }
+    }
+    body += '</div>';
+    return workspaceScaffold(model, '<span class="type-label muted">SENDS</span>', '', body);
+  }
+
+  function attachSendNameInput(draft) {
+    var form = window.document.getElementById("send-name-form");
+    if (!form) { return; }
+    var input = window.document.getElementById("send-name-input");
+    if (draft && draft.bus === form.dataset.bus) { input.value = draft.value; }
+    input.focus();
+    if (draft && draft.bus === form.dataset.bus) { input.setSelectionRange(draft.start, draft.end); } else { input.select(); }
+    function emit(action) { var tauri = window.__TAURI__; if (tauri && tauri.event) { tauri.event.emit("crest://send-name", action); } }
+    form.addEventListener("submit", function (event) {
+      event.preventDefault();
+      var name = input.value.trim();
+      if (!name || /[\u0000-\u001f\u007f]/.test(name)) { input.setCustomValidity("Enter a name without control characters."); input.reportValidity(); return; }
+      input.setCustomValidity(""); emit({ kind: "rename", bus: Number(form.dataset.bus), name: name });
+    });
+    input.addEventListener("input", function () { input.setCustomValidity(""); });
+    input.addEventListener("keydown", function (event) { if (event.key === "Escape") { event.preventDefault(); emit({ kind: "cancelRename" }); } });
   }
 
   // ---- the persistent side region -----------------------------------------
@@ -2596,7 +2652,7 @@
   function footerHtml(model) {
     var breadcrumb = settingsSurface(model)
       ? "SETTINGS"
-      : String(model.context || "").toUpperCase();
+      : surfaceById(model, "sends") ? "SENDS" : String(model.context || "").toUpperCase();
     if (hasWaveform(surfaceByRole(model, "detail")) && !surfaceByRole(model, "modal")) {
       var origin = controlByPath(surfaceById(model, "patchMain"), model.returnPath && model.returnPath.origin);
       breadcrumb += " / DETAIL / " + (origin ? controlValueText(origin) : UNAVAILABLE_MARK);
@@ -2677,11 +2733,16 @@
   // body and the side reading follow the document's own context.
   function render(model) {
     var doc = window.document;
+    var priorInput = doc.getElementById("send-name-input");
+    var priorForm = doc.getElementById("send-name-form");
+    var nameDraft = priorInput && priorForm ? { bus: priorForm.dataset.bus, value: priorInput.value, start: priorInput.selectionStart, end: priorInput.selectionEnd } : null;
     latestModel = model;
     var main = surfaceById(model, "mixerMain");
     var columns = trackColumns(main);
     var settings = settingsSurface(model);
+    var sends = surfaceById(model, "sends");
     doc.body.classList.toggle("settings-active", Boolean(settings));
+    doc.body.classList.toggle("sends-active", Boolean(sends));
     doc.getElementById("context-line").innerHTML = contextLineHtml(model);
     doc.getElementById("identity-header").innerHTML = identityHeaderHtml(
       model,
@@ -2692,6 +2753,7 @@
         ? settings.id === "controllerSettings"
           ? controllerSettingsWorkspaceHtml(model)
           : midiSettingsWorkspaceHtml(model)
+        : sends ? sendsWorkspaceHtml(model)
         : model.context === "patch"
         ? patchWorkspaceHtml(model)
         : mixerWorkspaceHtml(model, columns);
@@ -2699,13 +2761,14 @@
       ? settings.id === "controllerSettings"
         ? controllerSettingsInspectorHtml(model)
         : midiInputInspectorHtml(model)
-      : sideRegionHtml(model);
+      : sends ? '<span class="type-label muted">SEND CHAIN</span><p class="type-value">' + escapeHtml(sends.summary.name) + '</p><p class="type-hint muted">Shared effects for routed tracks</p>' : sideRegionHtml(model);
     doc.getElementById("footer").innerHTML = footerHtml(model);
     // Final step, after ALL five region insertions: apply the dynamic
     // geometry in the same paint, on the initial render and every re-render
     // alike. render() is the single place projection content enters the DOM.
     applyDynamicGeometry(doc);
     revealSemanticFocus(doc, model);
+    attachSendNameInput(nameDraft);
   }
 
   // ---- the structural observation (acceptance harness contract) -----------

@@ -620,7 +620,7 @@ fn static_patch_effect() {
         target_config,
         app_loop.current_parameters().generation(),
         globals(),
-        MixerState::new(*app_loop.current_parameters().mixer_tracks()),
+        MixerState::new(app_loop.current_parameters().mixer_tracks().clone()),
         crest_synth::shell::audio_output::AudioDeviceConfig::new(
             CHORUS_SAMPLE_RATE,
             2,

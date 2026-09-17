@@ -319,7 +319,6 @@ mod tests {
         SavedSession, SavedSessionRestoreError, SessionReplacementPayload, StateProjector,
     };
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
-    use crate::mixer::bus_id::BusId;
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::real_time::{
         AudioBoundary, AudioRenderer, GraphHandoffStatus, GraphRevision, StructuralGraphBoundary,
@@ -399,17 +398,12 @@ mod tests {
         assert!(patch.effect_slots().iter().all(Option::is_none));
         assert_eq!(state.mixer(), &MixerState::default());
         assert_eq!(state.global().master_gain_db(), 0.0);
-        assert_eq!(state.bus_returns().returns().len(), 8);
+        assert_eq!(state.bus_returns().returns().len(), 16);
         assert!(state
             .bus_returns()
-            .bus_return(BusId::new(0).unwrap())
-            .effect()
-            .is_some());
-        assert!(state
-            .bus_returns()
-            .bus_return(BusId::new(1).unwrap())
-            .effect()
-            .is_some());
+            .returns()
+            .iter()
+            .all(|bus_return| { bus_return.name() == "INIT" && bus_return.effects().is_empty() }));
         assert_eq!(patch.output().track_id(), MixerTrackId::new(0).unwrap());
         assert_eq!(state.context(), TopLevelContext::Mixer);
         // Preparation reconstructs persisted content only. The atomic

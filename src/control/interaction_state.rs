@@ -172,6 +172,9 @@ impl SettingsSession {
 /// at most one PATCH subordinate session.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InteractionState {
+    pub(super) remembered_send: FocusPath,
+    pub(super) send_choice_origin: Option<FocusPath>,
+    pub(super) send_name_editing: bool,
     pub(super) active_focus: FocusPath,
     pub(super) remembered_patch_main: Option<FocusPath>,
     pub(super) remembered_mixer_main: FocusPath,
@@ -190,6 +193,14 @@ impl InteractionState {
     pub fn new() -> Self {
         let mixer = FocusPath::mixer_track(MixerTrackId::default(), MixerTrackParameter::Level);
         Self {
+            remembered_send: FocusPath::send(
+                crate::control::SendControlId::Name {
+                    bus: crate::mixer::bus_id::BusId::default(),
+                },
+                None,
+            ),
+            send_choice_origin: None,
+            send_name_editing: false,
             active_focus: mixer.clone(),
             remembered_patch_main: None,
             remembered_mixer_main: mixer,
@@ -197,6 +208,22 @@ impl InteractionState {
             return_path: None,
             subordinate_session: None,
             settings_session: None,
+        }
+    }
+
+    pub fn send_choice_origin(&self) -> Option<&FocusPath> {
+        self.send_choice_origin.as_ref()
+    }
+    pub const fn send_name_editing(&self) -> bool {
+        self.send_name_editing
+    }
+    pub fn selected_send(&self) -> crate::mixer::bus_id::BusId {
+        match self.active_focus.control_id() {
+            SemanticControlId::Send(control) => control.bus(),
+            _ => match self.remembered_send.control_id() {
+                SemanticControlId::Send(control) => control.bus(),
+                _ => crate::mixer::bus_id::BusId::default(),
+            },
         }
     }
 
@@ -364,6 +391,7 @@ impl InteractionState {
                 .and_then(|path| match path.origin().control_id() {
                     SemanticControlId::Patch(control) => Some(control.clone()),
                     SemanticControlId::Mixer(_)
+                    | SemanticControlId::Send(_)
                     | SemanticControlId::Modal(_)
                     | SemanticControlId::MidiInputDevice(_)
                     | SemanticControlId::ControllerSetting(_)
@@ -381,6 +409,7 @@ impl InteractionState {
         match path.control_id() {
             SemanticControlId::Patch(control) => Some(control.clone()),
             SemanticControlId::Mixer(_)
+            | SemanticControlId::Send(_)
             | SemanticControlId::Modal(_)
             | SemanticControlId::MidiInputDevice(_)
             | SemanticControlId::ControllerSetting(_)
@@ -392,6 +421,7 @@ impl InteractionState {
     pub fn mixer_control_focus(&self) -> &MixerControlId {
         let path = if !self.active_focus.surface().is_system()
             && self.active_focus.context() == TopLevelContext::Mixer
+            && self.active_focus.surface() != SurfaceId::Sends
         {
             &self.active_focus
         } else {
@@ -400,6 +430,7 @@ impl InteractionState {
         match path.control_id() {
             SemanticControlId::Mixer(control) => control,
             SemanticControlId::Patch(_)
+            | SemanticControlId::Send(_)
             | SemanticControlId::Modal(_)
             | SemanticControlId::MidiInputDevice(_)
             | SemanticControlId::ControllerSetting(_)
@@ -458,6 +489,9 @@ impl InteractionState {
         }
         match focus.context() {
             TopLevelContext::Patch => self.remembered_patch_main = Some(focus.clone()),
+            TopLevelContext::Mixer if focus.surface() == SurfaceId::Sends => {
+                self.remembered_send = focus.clone()
+            }
             TopLevelContext::Mixer => self.remembered_mixer_main = focus.clone(),
         }
         self.active_focus = focus;
@@ -473,6 +507,8 @@ impl InteractionState {
         if self.settings_session.is_some() {
             return Err(FocusPathError::ControlSurfaceMismatch);
         }
+        self.send_choice_origin = None;
+        self.send_name_editing = false;
         self.active_focus = match context {
             TopLevelContext::Patch => self
                 .remembered_patch_main
@@ -495,7 +531,8 @@ impl InteractionState {
         let modal_surface = matches!(
             self.active_focus.surface(),
             SurfaceId::PatchChoice | SurfaceId::FileBrowser
-        );
+        ) || (self.active_focus.surface() == SurfaceId::Sends
+            && self.send_choice_origin.is_some());
         let allowed = if modal_surface {
             mode == InteractionMode::Modal
         } else {
@@ -548,6 +585,7 @@ impl InteractionState {
             | SurfaceId::PatchChoice
             | SurfaceId::FileBrowser
             | SurfaceId::PatchMain
+            | SurfaceId::Sends
             | SurfaceId::MixerMain
             | SurfaceId::MidiDeviceSettings
             | SurfaceId::ControllerSettings => return Err(FocusPathError::ControlSurfaceMismatch),
@@ -735,7 +773,10 @@ impl InteractionState {
             self.active_focus.surface(),
             SurfaceId::PatchMain | SurfaceId::PatchUtility | SurfaceId::PatchDetail
         ) || (focus.surface() == SurfaceId::FileBrowser
-            && self.active_focus.surface() == SurfaceId::MixerInspector);
+            && matches!(
+                self.active_focus.surface(),
+                SurfaceId::MixerInspector | SurfaceId::Sends
+            ));
         if !allowed_origin
             || self.active_focus.context() != focus.context()
             || self.active_focus.patch_position() != patch_position

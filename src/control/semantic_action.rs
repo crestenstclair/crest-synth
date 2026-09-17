@@ -57,6 +57,7 @@ impl InteractionMode {
     rename_all_fields = "camelCase"
 )]
 pub enum SemanticAction {
+    Send(crate::control::SendAction),
     SelectContext(TopLevelContext),
     /// Moves the focused Patch one position along the installed order. This is
     /// the only way the focused Patch changes: every installed instrument is
@@ -97,6 +98,7 @@ pub enum SemanticAction {
 /// The variant-level descriptor for the closed semantic action union.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum SemanticActionKind {
+    Send,
     SelectContext,
     SelectPatch,
     NavigatePage,
@@ -116,7 +118,8 @@ pub enum SemanticActionKind {
 }
 
 impl SemanticActionKind {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
+        Self::Send,
         Self::SelectContext,
         Self::SelectPatch,
         Self::NavigatePage,
@@ -140,7 +143,8 @@ impl SemanticActionKind {
     }
 }
 
-const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 28] = [
+const SEMANTIC_ACTION_SURFACE_DESCRIPTOR: [SemanticAction; 29] = [
+    SemanticAction::Send(crate::control::SendAction::Open),
     SemanticAction::SelectContext(TopLevelContext::Patch),
     SemanticAction::SelectContext(TopLevelContext::Mixer),
     // Only the horizontal pair: moving along the installed Patch order is an
@@ -185,7 +189,10 @@ impl SemanticAction {
     pub const fn may_change_saved_session(&self) -> bool {
         matches!(
             self,
-            Self::Adjust(_)
+            Self::Send(
+                crate::control::SendAction::Rename { .. }
+                    | crate::control::SendAction::SetEffect { .. }
+            ) | Self::Adjust(_)
                 | Self::Activate
                 | Self::SetSlotOccupancy { .. }
                 | Self::SetReturnOccupancy { .. }
@@ -204,6 +211,7 @@ impl SemanticAction {
 
     pub const fn kind(&self) -> SemanticActionKind {
         match self {
+            Self::Send(_) => SemanticActionKind::Send,
             Self::SelectContext(_) => SemanticActionKind::SelectContext,
             Self::SelectPatch(_) => SemanticActionKind::SelectPatch,
             Self::NavigatePage(_) => SemanticActionKind::NavigatePage,
@@ -276,7 +284,7 @@ impl ValidAction {
 #[cfg(test)]
 mod tests {
     use super::{InteractionMode, SemanticAction, SemanticActionKind, ValidAction};
-    use crate::control::{Direction, SurfaceId};
+    use crate::control::{Direction, SendAction, SurfaceId};
     use crate::kernel::PatchId;
     use crate::mixer::bus_id::BusId;
     use crate::synth::effect_slot_id::EffectSlotIndex;
@@ -285,7 +293,7 @@ mod tests {
 
     #[test]
     fn semantic_action_descriptors_are_closed_unique_and_phase_two_safe() {
-        assert_eq!(SemanticActionKind::surface_descriptor().len(), 16);
+        assert_eq!(SemanticActionKind::surface_descriptor().len(), 17);
         assert_eq!(InteractionMode::surface_descriptor().len(), 4);
         assert_eq!(InteractionMode::PHASE_TWO.len(), 2);
         assert_eq!(InteractionMode::PHASE_SEVEN.len(), 3);
@@ -299,6 +307,14 @@ mod tests {
         assert_eq!(unique.len(), SemanticAction::surface_descriptor().len());
         assert!(!SemanticAction::SetInteractionMode(InteractionMode::Modal).is_phase_two_admitted());
         assert!(!SemanticAction::EnterSurface(SurfaceId::PatchMain).is_phase_two_admitted());
+        assert!(!SemanticAction::EnterSurface(SurfaceId::Sends).is_phase_two_admitted());
+        assert!(
+            SemanticAction::surface_descriptor().contains(&SemanticAction::Send(SendAction::Open))
+        );
+        assert_eq!(
+            SemanticAction::Send(SendAction::Open).kind(),
+            SemanticActionKind::Send
+        );
         // The subordinate detail surface is offered now that a detail focus
         // projects. The descriptor lists the admitted surfaces, so it must
         // carry the action as well as admit it — one without the other is the
@@ -314,7 +330,42 @@ mod tests {
                 "{surface:?}: the descriptor lists exactly the admitted surfaces"
             );
         }
-        assert_eq!(SemanticAction::surface_descriptor().len(), 28);
+        assert_eq!(SemanticAction::surface_descriptor().len(), 29);
+    }
+
+    #[test]
+    fn sends_shortcut_opens_a_mixer_main_surface_without_editing_the_session() {
+        use crate::control::{AppEvent, AppState, SavedSession, SendControlId, TopLevelContext};
+        use crate::mixer::global_parameters::GlobalParameters;
+        use crate::shell::{KeyboardInputTranslator, WindowInput, WindowKey};
+        use crate::synth::{CapabilityRegistry, InstrumentCapabilityProvider};
+
+        let action = KeyboardInputTranslator::new()
+            .translate(WindowInput::key_down(WindowKey::Digit4))
+            .unwrap();
+        assert_eq!(action, SemanticAction::Send(SendAction::Open));
+        assert!(!action.may_change_saved_session());
+        let mut state = AppState::new(
+            CapabilityRegistry::new(vec![
+                crate::adapter::braids_capability::BraidsCapability::new()
+                    .unwrap()
+                    .descriptor(),
+            ])
+            .unwrap(),
+            GlobalParameters::new(0.0).unwrap(),
+        );
+        let saved = SavedSession::capture(&state);
+        state.apply(AppEvent::from_semantic_action(action)).unwrap();
+        assert_eq!(state.context(), TopLevelContext::Mixer);
+        assert_eq!(state.interaction().active_surface(), SurfaceId::Sends);
+        assert!(state.interaction().active_surface().is_main());
+        assert_eq!(
+            state.interaction().focus_path().control_id(),
+            &crate::control::SemanticControlId::Send(SendControlId::Name {
+                bus: BusId::default(),
+            })
+        );
+        assert_eq!(SavedSession::capture(&state), saved);
     }
 
     #[test]
@@ -348,8 +399,27 @@ mod tests {
         .may_change_saved_session());
         assert!(SemanticAction::SetReturnOccupancy {
             bus: BusId::new(0).unwrap(),
-            entry: Some(effect),
+            entry: Some(effect.clone()),
         }
         .may_change_saved_session());
+        for action in [
+            SendAction::Rename {
+                bus: BusId::default(),
+                name: "Room".to_owned(),
+            },
+            SendAction::SetEffect {
+                bus: BusId::default(),
+                slot_id: crate::synth::EffectSlotId::new(1).unwrap(),
+                entry: Some(effect),
+            },
+            SendAction::SetEffect {
+                bus: BusId::default(),
+                slot_id: crate::synth::EffectSlotId::new(1).unwrap(),
+                entry: None,
+            },
+        ] {
+            assert!(SemanticAction::Send(action).may_change_saved_session());
+        }
+        assert!(!SemanticAction::Send(SendAction::CancelRename).may_change_saved_session());
     }
 }

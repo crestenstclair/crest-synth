@@ -55,7 +55,7 @@ pub enum MixerTrackParameterKind {
 
 /// Bounds and edit steps shared by every indexed bus send.
 ///
-/// All eight sends share this one descriptor; its values are copied exactly
+/// All sends share this one descriptor; its values are copied exactly
 /// from the retired per-name send descriptors so the generalization changes no
 /// bound: 0.0..=1.0, default 0.0, fine 0.01, coarse 0.1.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -93,7 +93,7 @@ impl BusSendDescriptor {
     }
 }
 
-/// The one shared descriptor for all eight indexed sends.
+/// The one shared descriptor for all indexed sends.
 pub const BUS_SEND_DESCRIPTOR: BusSendDescriptor = BusSendDescriptor {
     minimum: 0.0,
     maximum: 1.0,
@@ -219,17 +219,17 @@ const MIXER_TRACK_SURFACE_DESCRIPTOR: [MixerTrackParameterDescriptor; 4] = [
 
 /// Canonical scalar and toggle state owned by one persistent mixer track.
 ///
-/// Sends are one indexed array over the eight bus returns: a send is a level
+/// Sends are one indexed vector over the configured bus returns: a send is a level
 /// pointed at a `BusId`, never a named field, so adding a registry entry to a
-/// return changes no field of this value. All eight sends share
+/// return changes no field of this value. All sends share
 /// [`BUS_SEND_DESCRIPTOR`].
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct MixerTrackParameters {
     level_db: f32,
     pan: f32,
     mute: bool,
     solo: bool,
-    sends: [f32; MAX_BUS_RETURNS],
+    sends: Vec<f32>,
 }
 
 impl MixerTrackParameters {
@@ -239,12 +239,14 @@ impl MixerTrackParameters {
         pan: f32,
         mute: bool,
         solo: bool,
-        sends: [f32; MAX_BUS_RETURNS],
+        sends: impl Into<Vec<f32>>,
     ) -> Result<Self, MixerTrackParametersError> {
         validate(MixerTrackParameter::Level, level_db)?;
         validate(MixerTrackParameter::Pan, pan)?;
+        let sends = sends.into();
+        validate_send_count(sends.len())?;
         for (index, send) in sends.iter().enumerate() {
-            let bus = BusId::new(index as u8).expect("send storage is indexed by valid BusId");
+            let bus = BusId::new(index as u16).expect("validated send count fits BusId");
             validate_send(bus, *send)?;
         }
         Ok(Self {
@@ -260,40 +262,53 @@ impl MixerTrackParameters {
         &MIXER_TRACK_SURFACE_DESCRIPTOR
     }
 
-    pub const fn level_db(self) -> f32 {
+    pub const fn level_db(&self) -> f32 {
         self.level_db
     }
 
-    pub const fn pan(self) -> f32 {
+    pub const fn pan(&self) -> f32 {
         self.pan
     }
 
-    pub const fn mute(self) -> bool {
+    pub const fn mute(&self) -> bool {
         self.mute
     }
 
-    pub const fn solo(self) -> bool {
+    pub const fn solo(&self) -> bool {
         self.solo
     }
 
     /// Returns the send level directed at one bus return.
-    pub const fn send(self, bus: BusId) -> f32 {
-        self.sends[bus.index()]
+    pub fn send(&self, bus: BusId) -> f32 {
+        self.sends.get(bus.index()).copied().unwrap_or(0.0)
     }
 
     /// Returns every send level in ascending `BusId` order.
-    pub const fn sends(self) -> [f32; MAX_BUS_RETURNS] {
-        self.sends
+    pub fn sends(&self) -> &[f32] {
+        &self.sends
     }
 
     /// Replaces one send level after validating it against the shared descriptor.
+    ///
+    /// This control-side edit grows storage when the destination is newly configured.
     pub fn with_send(mut self, bus: BusId, value: f32) -> Result<Self, MixerTrackParametersError> {
         validate_send(bus, value)?;
+        if bus.index() >= self.sends.len() {
+            self.sends
+                .resize(bus.index() + 1, BUS_SEND_DESCRIPTOR.default());
+        }
         self.sends[bus.index()] = value;
         Ok(self)
     }
 
-    pub const fn scalar_value(self, parameter: MixerTrackParameter) -> Option<f32> {
+    /// Shapes the control-side send bank for a prepared graph's return count.
+    pub fn with_send_count(mut self, count: usize) -> Result<Self, MixerTrackParametersError> {
+        validate_send_count(count)?;
+        self.sends.resize(count, BUS_SEND_DESCRIPTOR.default());
+        Ok(self)
+    }
+
+    pub const fn scalar_value(&self, parameter: MixerTrackParameter) -> Option<f32> {
         match parameter {
             MixerTrackParameter::Level => Some(self.level_db),
             MixerTrackParameter::Pan => Some(self.pan),
@@ -301,7 +316,7 @@ impl MixerTrackParameters {
         }
     }
 
-    pub const fn toggle_value(self, parameter: MixerTrackParameter) -> Option<bool> {
+    pub const fn toggle_value(&self, parameter: MixerTrackParameter) -> Option<bool> {
         match parameter {
             MixerTrackParameter::Mute => Some(self.mute),
             MixerTrackParameter::Solo => Some(self.solo),
@@ -348,7 +363,7 @@ impl Default for MixerTrackParameters {
             pan: 0.0,
             mute: false,
             solo: false,
-            sends: [BUS_SEND_DESCRIPTOR.default(); MAX_BUS_RETURNS],
+            sends: vec![BUS_SEND_DESCRIPTOR.default(); MAX_BUS_RETURNS],
         }
     }
 }
@@ -385,7 +400,7 @@ impl<'de> Deserialize<'de> for MixerTrackParameters {
             pan: f32,
             mute: bool,
             solo: bool,
-            sends: [f32; MAX_BUS_RETURNS],
+            sends: Vec<f32>,
         }
 
         // Deliberately routes through `from_values` so validation cannot be
@@ -421,6 +436,9 @@ pub enum MixerTrackParametersError {
         bus: BusId,
         value: f32,
     },
+    SendCountOutOfRange {
+        count: usize,
+    },
 }
 
 impl fmt::Display for MixerTrackParametersError {
@@ -448,6 +466,10 @@ impl fmt::Display for MixerTrackParametersError {
                 BUS_SEND_DESCRIPTOR.minimum(),
                 BUS_SEND_DESCRIPTOR.maximum()
             ),
+            Self::SendCountOutOfRange { count } => write!(
+                formatter,
+                "send count must fit the bus identity range, got {count}"
+            ),
         }
     }
 }
@@ -474,6 +496,13 @@ fn validate_send(bus: BusId, value: f32) -> Result<(), MixerTrackParametersError
     Ok(())
 }
 
+fn validate_send_count(count: usize) -> Result<(), MixerTrackParametersError> {
+    if count > usize::from(u16::MAX) + 1 {
+        return Err(MixerTrackParametersError::SendCountOutOfRange { count });
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -496,7 +525,7 @@ mod tests {
     }
 
     #[test]
-    fn all_eight_sends_share_the_one_bus_send_descriptor_exactly() {
+    fn all_sends_share_the_one_bus_send_descriptor_exactly() {
         assert_eq!(BUS_SEND_DESCRIPTOR.minimum(), 0.0);
         assert_eq!(BUS_SEND_DESCRIPTOR.maximum(), 1.0);
         assert_eq!(BUS_SEND_DESCRIPTOR.default(), 0.0);
@@ -547,10 +576,10 @@ mod tests {
     }
 
     #[test]
-    fn every_one_of_eight_sends_validates_its_range() {
+    fn every_default_send_validates_its_range() {
         let parameters = MixerTrackParameters::default();
         for bus in BusId::ALL {
-            let raised = parameters.with_send(bus, 1.0).unwrap();
+            let raised = parameters.clone().with_send(bus, 1.0).unwrap();
             assert_eq!(raised.send(bus), 1.0);
             for other in BusId::ALL {
                 if other != bus {
@@ -558,15 +587,15 @@ mod tests {
                 }
             }
             assert_eq!(
-                parameters.with_send(bus, 1.1),
+                parameters.clone().with_send(bus, 1.1),
                 Err(MixerTrackParametersError::OutOfRangeSend { bus, value: 1.1 })
             );
             assert_eq!(
-                parameters.with_send(bus, -0.1),
+                parameters.clone().with_send(bus, -0.1),
                 Err(MixerTrackParametersError::OutOfRangeSend { bus, value: -0.1 })
             );
             assert_eq!(
-                parameters.with_send(bus, f32::NAN),
+                parameters.clone().with_send(bus, f32::NAN),
                 Err(MixerTrackParametersError::NonFiniteSend { bus })
             );
         }
@@ -596,22 +625,76 @@ mod tests {
         assert_eq!(parameters.pan(), 0.5);
         assert!(parameters.mute());
         assert!(parameters
+            .clone()
             .with_scalar_value(MixerTrackParameter::Solo, 1.0)
             .is_err());
         assert!(parameters.toggled(MixerTrackParameter::Level).is_err());
     }
 
     #[test]
-    fn serialized_shape_stays_byte_identical_to_the_declared_leaves() {
+    fn serialized_shape_retains_declared_leaves_and_configured_count() {
         // The pinned shape is the one indexed sends array, matching the
         // SERIALIZED_LEAF_DESCRIPTOR tables.
         let json = serde_json::to_string(&MixerTrackParameters::default()).unwrap();
         assert_eq!(
             json,
-            r#"{"levelDb":0.0,"pan":0.0,"mute":false,"solo":false,"sends":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]}"#
+            r#"{"levelDb":0.0,"pan":0.0,"mute":false,"solo":false,"sends":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]}"#
         );
         let round_tripped = serde_json::from_str::<MixerTrackParameters>(&json).unwrap();
         assert_eq!(round_tripped, MixerTrackParameters::default());
+    }
+
+    #[test]
+    fn legacy_eight_send_documents_remain_valid_and_missing_sends_are_silent() {
+        let parameters = serde_json::from_str::<MixerTrackParameters>(
+            r#"{"levelDb":0.0,"pan":0.0,"mute":false,"solo":false,"sends":[0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.5]}"#,
+        )
+        .unwrap();
+        assert_eq!(parameters.sends().len(), 8);
+        assert_eq!(parameters.send(BusId::new(7).unwrap()), 0.5);
+        assert_eq!(parameters.send(BusId::new(15).unwrap()), 0.0);
+    }
+
+    #[test]
+    fn control_side_edits_support_more_than_sixteen_sends() {
+        let bus = BusId::new(31).unwrap();
+        let parameters = MixerTrackParameters::default();
+        assert_eq!(parameters.sends().len(), 16);
+        assert_eq!(parameters.send(bus), 0.0);
+        let extended = parameters.with_send(bus, 0.75).unwrap();
+        assert_eq!(extended.sends().len(), 32);
+        assert_eq!(extended.send(bus), 0.75);
+        assert!(extended.sends()[..31].iter().all(|level| *level == 0.0));
+        let expanded = extended.with_send_count(48).unwrap();
+        assert_eq!(expanded.send(bus), 0.75);
+        assert!(expanded.sends()[32..].iter().all(|level| *level == 0.0));
+        let narrowed = expanded.with_send_count(16).unwrap();
+        assert_eq!(narrowed.sends().len(), 16);
+        assert_eq!(narrowed.send(bus), 0.0);
+    }
+
+    #[test]
+    fn send_bank_limit_is_only_the_bus_identity_representable_range() {
+        let largest_count = usize::from(u16::MAX) + 1;
+        let largest_bus = BusId::new(u16::MAX).unwrap();
+        let parameters =
+            MixerTrackParameters::from_values(0.0, 0.0, false, false, vec![0.0; largest_count])
+                .unwrap()
+                .with_send(largest_bus, 1.0)
+                .unwrap();
+        assert_eq!(parameters.send(largest_bus), 1.0);
+        assert_eq!(
+            parameters.with_send_count(largest_count + 1),
+            Err(MixerTrackParametersError::SendCountOutOfRange {
+                count: largest_count + 1
+            })
+        );
+        assert_eq!(
+            MixerTrackParameters::from_values(0.0, 0.0, false, false, vec![0.0; largest_count + 1]),
+            Err(MixerTrackParametersError::SendCountOutOfRange {
+                count: largest_count + 1
+            })
+        );
     }
 
     #[test]

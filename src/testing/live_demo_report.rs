@@ -81,7 +81,7 @@ impl LiveShellCoverage {
             }
             SurfaceId::PatchUtility => self.patch_utility_observed = true,
             SurfaceId::PatchDetail => self.patch_detail_observed = true,
-            SurfaceId::PatchChoice | SurfaceId::FileBrowser => {}
+            SurfaceId::Sends | SurfaceId::PatchChoice | SurfaceId::FileBrowser => {}
             SurfaceId::MixerMain => {
                 self.mixer_main_observed = true;
                 if self.mixer_inspector_observed && frame.return_path().is_none() {
@@ -1937,6 +1937,7 @@ fn measure_mixer_routing(
                     }) => Some((*track_id, *parameter)),
                     SemanticControlId::Mixer(_)
                     | SemanticControlId::Patch(_)
+                    | SemanticControlId::Send(_)
                     | SemanticControlId::Modal(_)
                     | SemanticControlId::MidiInputDevice(_)
                     | SemanticControlId::ControllerSetting(_)

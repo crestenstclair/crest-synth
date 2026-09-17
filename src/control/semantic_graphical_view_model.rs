@@ -1,3 +1,4 @@
+mod sends;
 use crate::control::{
     AppState, EngineSelectionFailure, EngineSelectionRequestId, EngineSelectionStatusKind,
     FocusCapabilityId, FocusPath, FocusRepairStatus, MidiConnectionRevision,
@@ -492,6 +493,14 @@ impl MidiInputInspectorViewModel {
     rename_all_fields = "camelCase"
 )]
 pub enum SemanticSurfaceSummary {
+    Sends {
+        bus: crate::mixer::bus_id::BusId,
+        name: String,
+        count: usize,
+        editing_name: bool,
+        choosing_effect: bool,
+        choice_group_label: Option<String>,
+    },
     Patch {
         patch_id: PatchId,
         patch_name: String,
@@ -578,6 +587,7 @@ impl SemanticSurfaceSummary {
             }
             Self::EmptyPatch { .. }
             | Self::EmptyPatchUtility { .. }
+            | Self::Sends { .. }
             | Self::Mixer { .. }
             | Self::MixerInspector { .. }
             | Self::MidiDeviceSettings { .. }
@@ -600,7 +610,8 @@ impl SemanticSurfaceSummary {
             Self::PatchDetail { patch_position, .. } | Self::PatchChoice { patch_position, .. } => {
                 Some(*patch_position)
             }
-            Self::Mixer { .. }
+            Self::Sends { .. }
+            | Self::Mixer { .. }
             | Self::MixerInspector { .. }
             | Self::MidiDeviceSettings { .. }
             | Self::ControllerSettings { .. } => None,
@@ -920,6 +931,23 @@ impl SemanticGraphicalViewModel {
         "focusRepair.patchId",
         "focusRepair.removedControlId",
         "focusRepair.replacementControlId",
+        "focusPath.controlId.id.entry",
+        "focusPath.controlId.id.slotId",
+        "returnPath.origin.controlId.id.bus",
+        "returnPath.origin.controlId.id.slotId",
+        "surfaces[].controls[].path.controlId.id.entry",
+        "surfaces[].controls[].path.controlId.id.slotId",
+        "surfaces[].controls[].validActions[].action.payload.kind",
+        "surfaces[].sections[].controlPaths[].controlId.id.bus",
+        "surfaces[].sections[].controlPaths[].controlId.id.kind",
+        "surfaces[].sections[].controlPaths[].controlId.id.parameter",
+        "surfaces[].sections[].controlPaths[].controlId.id.slotId",
+        "surfaces[].summary.bus",
+        "surfaces[].summary.choosingEffect",
+        "surfaces[].summary.count",
+        "surfaces[].summary.editingName",
+        "surfaces[].summary.name",
+        "validActions[].action.payload.kind",
         "generation",
         "interactionMode",
         "returnPath",
@@ -1390,6 +1418,15 @@ impl SemanticGraphicalViewModel {
         let focus_repair = project_focus_repair(state)?;
         let errors = project_errors(state, &resolver, &status)?;
         let mut surfaces = match state.interaction().active_surface() {
+            SurfaceId::Sends => sends::project(state, &resolver, &status, &errors)?,
+            SurfaceId::FileBrowser
+                if state
+                    .file_browser()
+                    .origin()
+                    .is_some_and(|origin| origin.surface() == SurfaceId::Sends) =>
+            {
+                sends::project(state, &resolver, &status, &errors)?
+            }
             SurfaceId::MidiDeviceSettings => project_midi_device_settings_surface(state)?,
             SurfaceId::ControllerSettings => project_controller_settings_surface(state),
             _ => match state.context() {
@@ -1749,6 +1786,16 @@ fn project_requested_value(
             SemanticControlValue::Identity(occupancy_value(entry.as_ref())?),
         ),
         (
+            SemanticControlId::Send(crate::control::SendControlId::EffectSlot { bus, slot_id }),
+            crate::control::StructuralEditIntent::SetSendEffect {
+                bus: target_bus,
+                slot_id: target_slot,
+                entry,
+            },
+        ) if bus == target_bus && slot_id == target_slot => Some(SemanticControlValue::Identity(
+            occupancy_value(entry.as_ref())?,
+        )),
+        (
             crate::control::SemanticControlId::Mixer(MixerControlId::ReturnOccupancy { bus }),
             crate::control::StructuralEditIntent::SetReturnOccupancy {
                 bus: target_bus,
@@ -1773,9 +1820,11 @@ fn project_requested_value(
         ) if state.effect_asset_target(path) == Some(*target)
             && match control {
                 SemanticControlId::Patch(PatchControlId::Effect(_, id)) => id == parameter_id,
-                SemanticControlId::Mixer(MixerControlId::ReturnEffect { parameter, .. }) => {
-                    parameter == parameter_id
-                }
+                SemanticControlId::Mixer(MixerControlId::ReturnEffect { parameter, .. })
+                | SemanticControlId::Send(crate::control::SendControlId::EffectParameter {
+                    parameter,
+                    ..
+                }) => parameter == parameter_id,
                 _ => false,
             } =>
         {
@@ -2150,6 +2199,14 @@ fn project_errors(
                         PatchControlId::Effect(config.slot_id(), parameter_id.clone()),
                     )
                 }
+                crate::control::EffectAssetTarget::SendSlot { bus, slot_id } => FocusPath::send(
+                    crate::control::SendControlId::EffectParameter {
+                        bus: *bus,
+                        slot_id: *slot_id,
+                        parameter: parameter_id.clone(),
+                    },
+                    Some(config.capability_id().clone()),
+                ),
                 crate::control::EffectAssetTarget::BusReturn { bus } => {
                     FocusPath::mixer_return_effect(
                         *bus,
@@ -2161,6 +2218,15 @@ fn project_errors(
         crate::control::StructuralEditIntent::SetSlotOccupancy { patch_id, slot, .. } => Some(
             FocusPath::patch_main(*patch_id, None, PatchControlId::EffectSlot(*slot)),
         ),
+        crate::control::StructuralEditIntent::SetSendEffect { bus, slot_id, .. } => {
+            Some(FocusPath::send(
+                crate::control::SendControlId::EffectSlot {
+                    bus: *bus,
+                    slot_id: *slot_id,
+                },
+                None,
+            ))
+        }
         crate::control::StructuralEditIntent::SetReturnOccupancy { bus, .. } => {
             Some(FocusPath::mixer_return_occupancy(*bus))
         }
@@ -2514,6 +2580,31 @@ fn project_patch_surfaces(
             // canonical descriptor the reducer edits through, so the panel
             // cannot present a range the reducer will not honour.
             let (label, kind, value, numeric_range, unit) = match control {
+                PatchControlId::Send(bus) => {
+                    let send = state
+                        .bus_returns()
+                        .get(*bus)
+                        .ok_or(SemanticGraphicalViewModelError::InvalidFocusPath)?;
+                    let output = patch
+                        .output()
+                        .ok_or(SemanticGraphicalViewModelError::MissingPatch)?;
+                    let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
+                    (
+                        format!("Send {} · {}", bus.index() + 1, send.name()),
+                        SemanticControlKind::Continuous,
+                        SemanticControlValue::Scalar(
+                            state.mixer().track(output.track_id()).send(*bus) as f64,
+                        ),
+                        Some(SemanticNumericRange::new(
+                            descriptor.minimum() as f64,
+                            descriptor.maximum() as f64,
+                            descriptor.fine_step() as f64,
+                            descriptor.coarse_step() as f64,
+                        )),
+                        None,
+                    )
+                }
+
                 PatchControlId::Output(parameter) => {
                     let descriptor = parameter.descriptor();
                     let (kind, value, numeric_range, unit) = match parameter {
@@ -3411,9 +3502,9 @@ fn project_mixer_surfaces(
     let active = state.interaction().focus_path();
     let mut controls = Vec::with_capacity(MixerTrackId::COUNT * MixerTrackParameter::MAIN.len());
     for track_id in MixerTrackId::ALL {
-        let values = *state.mixer().track(track_id);
+        let values = state.mixer().track(track_id).clone();
         for parameter in MixerTrackParameter::MAIN {
-            controls.push(track_control(track_id, parameter, values, active));
+            controls.push(track_control(track_id, parameter, values.clone(), active));
         }
     }
 
@@ -3444,7 +3535,12 @@ fn project_mixer_surfaces(
             MixerControlId::Track {
                 track_id,
                 parameter,
-            } => track_control(track_id, parameter, *state.mixer().track(track_id), active),
+            } => track_control(
+                track_id,
+                parameter,
+                state.mixer().track(track_id).clone(),
+                active,
+            ),
             MixerControlId::Send { track_id, bus } => {
                 let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
                 SemanticControlViewModel {
@@ -5125,6 +5221,15 @@ mod projection_enrichment_tests {
             .apply_semantic_action(SemanticAction::OpenMidiSettings)
             .expect("the fixture opens the global MIDI device Settings surface");
 
+        let mut controller_settings = midi_settings.clone();
+        controller_settings
+            .apply(AppEvent::Navigate(Direction::Right))
+            .unwrap();
+        let mut sends = mixed_state();
+        sends
+            .apply(AppEvent::Send(crate::control::SendAction::Open))
+            .unwrap();
+
         let sample_provider = crate::adapter::sample_capability::SampleCapability::new(
             crate::synth::AssetFileId::new("Factory.wav").unwrap(),
         )
@@ -5183,6 +5288,8 @@ mod projection_enrichment_tests {
             ("PATCH Utility", entered(SurfaceId::PatchUtility)),
             ("PATCH Utility master gain", utility_global),
             ("generic Patch choice", choice),
+            ("Controller Settings", controller_settings),
+            ("Sends", sends),
             ("MIDI Device Settings", midi_settings),
             ("Sample Browser", browser),
             ("braids PATCH Main", braids(None)),
@@ -5255,8 +5362,10 @@ mod projection_enrichment_tests {
                 .project_with_shell(&state)
                 .expect("the fixture state must project");
             let model = shell.semantic_model();
-            let root = if model.active_surface() == SurfaceId::MidiDeviceSettings {
+            let root = if model.active_surface().is_system() {
                 "SETTINGS"
+            } else if model.surface(SurfaceId::Sends).is_some() {
+                "SENDS"
             } else {
                 model.context().label()
             };

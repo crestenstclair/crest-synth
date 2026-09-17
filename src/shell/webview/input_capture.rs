@@ -225,9 +225,12 @@ mod platform {
             let observed = unsafe { event.as_ref() };
             // AppKit owns menu/text shortcuts; Cmd+S must never also move
             // semantic focus down, nor Cmd+W up, before the menu handles it.
-            if observed
-                .modifierFlags()
-                .intersects(NSEventModifierFlags((1 << 20) | (1 << 19) | (1 << 18)))
+            let flags = observed.modifierFlags();
+            let send_shortcut = observed.keyCode() == 21
+                && flags.contains(NSEventModifierFlags(1 << 18))
+                && !flags.intersects(NSEventModifierFlags((1 << 20) | (1 << 19)));
+            if flags.intersects(NSEventModifierFlags((1 << 20) | (1 << 19) | (1 << 18)))
+                && !send_shortcut
             {
                 return event.as_ptr();
             }

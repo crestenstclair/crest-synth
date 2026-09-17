@@ -3,7 +3,7 @@ use crate::control::{
     EngineSelectionStatus, FocusPath, InteractionMode, MidiInputState, PatchDetailSubject,
     ReturnPath,
 };
-use crate::mixer::bus_id::MAX_BUS_RETURNS;
+use crate::mixer::bus_id::BusId;
 use crate::mixer::bus_return::BusReturnBank;
 use crate::mixer::global_parameters::GlobalParameters;
 use crate::mixer::mixer_state::MixerState;
@@ -51,7 +51,7 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
             capabilities: Cow::Borrowed(state.capabilities()),
             effects: Cow::Borrowed(state.effects()),
             patches: state.patches().iter().map(SerializedPatch::from).collect(),
-            mixer: *state.mixer(),
+            mixer: state.mixer().clone(),
             global: SerializedGlobalParameters::from(state.global()),
             returns: SerializedBusReturns::from(state.bus_returns()),
             interaction: SerializedInteractionState::from_state(state),
@@ -65,6 +65,12 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SerializedInteractionState {
+    #[serde(default = "default_send_focus")]
+    pub(crate) remembered_send: FocusPath,
+    #[serde(default)]
+    pub(crate) send_choice_origin: Option<FocusPath>,
+    #[serde(default)]
+    pub(crate) send_name_editing: bool,
     #[serde(default = "default_mixer_focus")]
     pub(crate) active_focus: FocusPath,
     #[serde(default)]
@@ -88,6 +94,9 @@ pub(crate) struct SerializedInteractionState {
 impl Default for SerializedInteractionState {
     fn default() -> Self {
         Self {
+            remembered_send: default_send_focus(),
+            send_choice_origin: None,
+            send_name_editing: false,
             active_focus: default_mixer_focus(),
             remembered_patch_main: None,
             remembered_mixer_main: default_mixer_focus(),
@@ -102,6 +111,9 @@ impl SerializedInteractionState {
     fn from_state(state: &AppState) -> Self {
         let interaction = state.interaction();
         Self {
+            remembered_send: interaction.remembered_send.clone(),
+            send_choice_origin: interaction.send_choice_origin().cloned(),
+            send_name_editing: interaction.send_name_editing(),
             active_focus: interaction.focus_path().clone(),
             remembered_patch_main: interaction.remembered_patch_main().cloned(),
             remembered_mixer_main: interaction.remembered_mixer_main().clone(),
@@ -110,6 +122,15 @@ impl SerializedInteractionState {
             detail_subject: interaction.detail_subject().cloned(),
         }
     }
+}
+
+fn default_send_focus() -> FocusPath {
+    FocusPath::send(
+        crate::control::SendControlId::Name {
+            bus: crate::mixer::bus_id::BusId::default(),
+        },
+        None,
+    )
 }
 
 fn default_mixer_focus() -> FocusPath {
@@ -169,17 +190,25 @@ impl From<&GlobalParameters> for SerializedGlobalParameters {
     }
 }
 
-/// One serialized bus return: zero-or-one occupying registry configuration
-/// plus the return-owned output level. Array position is the `BusId`.
+/// One named ordered return chain plus its output level. Array position is the
+/// `BusId`; `effect` preserves the first-occupant observation for older readers.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SerializedBusReturn {
+    #[serde(default = "default_return_name")]
+    pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) effects: Vec<PostEffectConfig>,
     #[serde(default)]
     pub(crate) effect: Option<PostEffectConfig>,
     pub(crate) return_level: f32,
 }
 
-/// The canonical serialized eight-return bank in ascending `BusId` order.
+fn default_return_name() -> String {
+    "INIT".to_owned()
+}
+
+/// The configured serialized return bank in ascending `BusId` order.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(transparent)]
 pub(crate) struct SerializedBusReturns(pub(crate) Vec<SerializedBusReturn>);
@@ -196,6 +225,8 @@ impl From<&BusReturnBank> for SerializedBusReturns {
             bank.returns()
                 .iter()
                 .map(|bus_return| SerializedBusReturn {
+                    name: bus_return.name().to_owned(),
+                    effects: bus_return.effects().to_vec(),
                     effect: bus_return.effect().cloned(),
                     return_level: bus_return.return_level(),
                 })
@@ -210,15 +241,15 @@ impl SerializedBusReturns {
         &self.0
     }
 
-    /// Reports whether the serialized bank carries exactly eight entries.
+    /// Reports whether every entry has a representable positional identity.
     pub(crate) fn is_complete(&self) -> bool {
-        self.0.len() == MAX_BUS_RETURNS
+        !self.0.is_empty() && self.0.len() <= usize::from(BusId::MAX) + 1
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SerializedPatch;
+    use super::{SerializedBusReturns, SerializedPatch};
     use crate::adapter::braids_capability::BraidsCapability;
     use crate::adapter::production_effects::production_chorus_config;
     use crate::kernel::midi_channel::MidiChannel;
@@ -287,5 +318,37 @@ mod tests {
         assert_eq!(serialized.post_effects.len(), 2);
         assert_eq!(serialized.post_effects[0].slot_id().value(), 1);
         assert_eq!(serialized.post_effects[1].slot_id().value(), 3);
+    }
+
+    #[test]
+    fn named_return_chain_preserves_order_and_first_effect_observation() {
+        use crate::mixer::bus_id::BusId;
+        use crate::mixer::bus_return::{BusReturn, BusReturnBank};
+
+        let bus = BusId::new(18).unwrap();
+        let effects = [9, 2]
+            .into_iter()
+            .map(|id| production_chorus_config(EffectSlotId::new(id).unwrap()).unwrap())
+            .collect::<Vec<_>>();
+        let mut bank = BusReturnBank::with_count(19).unwrap();
+        bank.replace_return(
+            BusReturn::unoccupied(bus)
+                .with_name("Room")
+                .unwrap()
+                .with_effects(effects.clone())
+                .unwrap(),
+        )
+        .unwrap();
+        let serialized = SerializedBusReturns::from(&bank);
+        assert!(serialized.is_complete());
+        assert_eq!(serialized.entries().len(), 19);
+        assert_eq!(serialized.entries()[18].name, "Room");
+        assert_eq!(serialized.entries()[18].effects, effects);
+        assert_eq!(serialized.entries()[18].effect.as_ref(), effects.first());
+        let json = serde_json::to_string(&serialized).unwrap();
+        assert_eq!(
+            serde_json::from_str::<SerializedBusReturns>(&json).unwrap(),
+            serialized
+        );
     }
 }

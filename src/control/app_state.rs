@@ -1,3 +1,4 @@
+mod sends;
 use crate::control::app_event::{AppEvent, Direction};
 use crate::control::engine_selection::{
     EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
@@ -727,6 +728,15 @@ impl AppState {
     /// composition root. Occupancy is composition, not identity: the reducer
     /// itself installs nothing by default.
     pub fn with_initial_returns(mut self, returns: BusReturnBank) -> Self {
+        for track in MixerTrackId::ALL {
+            let values = self
+                .mixer
+                .track(track)
+                .clone()
+                .with_send_count(returns.len())
+                .expect("validated return bank fits send storage");
+            self.mixer.set_track(track, values);
+        }
         self.returns = Arc::new(returns);
         self
     }
@@ -1194,7 +1204,37 @@ impl AppState {
         ) {
             self.focus_repair_status = None;
         }
+        if self.interaction.active_surface() == SurfaceId::Sends {
+            match &event {
+                AppEvent::Navigate(direction) => return self.navigate_send(*direction),
+                AppEvent::Adjust(direction) => return self.adjust_send_control(*direction),
+                AppEvent::SelectPatch(direction) => return self.select_send(*direction),
+                AppEvent::Activate | AppEvent::OpenRelated => return self.activate_send(),
+                AppEvent::NavigatePage(Direction::Down) | AppEvent::Return => {
+                    if self.interaction.send_name_editing {
+                        self.interaction.send_name_editing = false;
+                    } else if self.interaction.send_choice_origin.is_some() {
+                        self.close_send_choice()?;
+                    } else {
+                        self.select_context(TopLevelContext::Patch)?;
+                    }
+                    return Ok(ReducerEffects::default());
+                }
+                AppEvent::NavigatePage(direction @ (Direction::Left | Direction::Right)) => {
+                    return self.select_send(*direction)
+                }
+                AppEvent::NavigatePage(Direction::Up) => return self.activate_send(),
+                AppEvent::SetInteractionMode(_)
+                    if self.interaction.send_choice_origin.is_some()
+                        || self.interaction.send_name_editing =>
+                {
+                    return Err(EventRejection::ActionUnavailableInContext)
+                }
+                _ => {}
+            }
+        }
         match event {
+            AppEvent::Send(action) => self.reduce_send_action(action),
             AppEvent::Controller(event) => self.reduce_controller(event),
             AppEvent::SelectContext(context) => {
                 self.select_context(context)?;
@@ -1211,7 +1251,9 @@ impl AppState {
                 } else {
                     None
                 };
-                if self.interaction.active_surface().is_system() {
+                if self.interaction.active_surface() == SurfaceId::FileBrowser {
+                    self.navigate_patch_control(direction)?;
+                } else if self.interaction.active_surface().is_system() {
                     self.navigate_settings(direction)?;
                 } else {
                     match self.context() {
@@ -2352,7 +2394,9 @@ impl AppState {
     fn open_related_surface(&mut self) -> Result<(), EventRejection> {
         match self.interaction.active_surface() {
             SurfaceId::PatchMain => self.enter_patch_detail(),
-            SurfaceId::PatchDetail | SurfaceId::MixerInspector => self.open_file_browser(),
+            SurfaceId::Sends | SurfaceId::PatchDetail | SurfaceId::MixerInspector => {
+                self.open_file_browser()
+            }
             SurfaceId::PatchUtility
             | SurfaceId::PatchChoice
             | SurfaceId::FileBrowser
@@ -2438,6 +2482,14 @@ impl AppState {
         origin: &FocusPath,
     ) -> Option<crate::control::EffectAssetTarget> {
         match origin.control_id() {
+            SemanticControlId::Send(crate::control::SendControlId::EffectParameter {
+                bus,
+                slot_id,
+                ..
+            }) => Some(crate::control::EffectAssetTarget::SendSlot {
+                bus: *bus,
+                slot_id: *slot_id,
+            }),
             SemanticControlId::Patch(PatchControlId::Effect(slot_id, _)) => {
                 let patch_id = origin.patch_id()?;
                 let patch = self.patches.iter().find(|p| p.id() == patch_id)?;
@@ -2462,7 +2514,7 @@ impl AppState {
     ) -> Result<(Option<PatchId>, ParameterId), EventRejection> {
         if !matches!(
             origin.surface(),
-            SurfaceId::PatchDetail | SurfaceId::MixerInspector
+            SurfaceId::PatchDetail | SurfaceId::MixerInspector | SurfaceId::Sends
         ) {
             return Err(EventRejection::ActionUnavailableInContext);
         }
@@ -2471,7 +2523,11 @@ impl AppState {
             SemanticControlId::Patch(
                 PatchControlId::Capability(p) | PatchControlId::Effect(_, p),
             ) => p,
-            SemanticControlId::Mixer(MixerControlId::ReturnEffect { parameter, .. }) => parameter,
+            SemanticControlId::Send(crate::control::SendControlId::EffectParameter {
+                parameter,
+                ..
+            })
+            | SemanticControlId::Mixer(MixerControlId::ReturnEffect { parameter, .. }) => parameter,
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
         let reference = if let Some(target) = self.effect_asset_target(origin) {
@@ -2793,6 +2849,7 @@ impl AppState {
                 | PatchControlId::Envelope(_)
                 | PatchControlId::Global(_)
                 | PatchControlId::MidiInput
+                | PatchControlId::Send(_)
                 | PatchControlId::VoiceLimit => return Err(EventRejection::InvalidSelection),
             }
             let effect = self.begin_patch_creation(candidate)?;
@@ -2880,6 +2937,7 @@ impl AppState {
             | crate::control::PatchControlId::Envelope(_)
             | crate::control::PatchControlId::Global(_)
             | crate::control::PatchControlId::MidiInput
+            | crate::control::PatchControlId::Send(_)
             | crate::control::PatchControlId::VoiceLimit => {
                 return Err(EventRejection::InvalidSelection)
             }
@@ -3585,12 +3643,25 @@ impl AppState {
                 reference.clone(),
             )?;
             self.file_browser.assignment_ready(request_id);
+        } else if let StructuralEditIntent::SetSendEffect {
+            bus,
+            slot_id,
+            entry,
+        } = intent
+        {
+            let old_inspector_order = self.mixer_inspector_order();
+            Arc::make_mut(&mut self.returns)
+                .set_effect_slot(&self.effects, *bus, *slot_id, entry.as_ref())
+                .map_err(|_| EventRejection::MismatchedEngineSelection)?;
+            self.repair_send_focus()?;
+            self.repair_inspector_focus(old_inspector_order.as_deref())?;
         } else if let StructuralEditIntent::SetReturnOccupancy { bus, entry } = intent {
             let old_inspector_order = self.mixer_inspector_order();
             Arc::make_mut(&mut self.returns)
                 .set_return_occupancy(&self.effects, *bus, entry.as_ref())
                 .map_err(|_| EventRejection::MismatchedEngineSelection)?;
             self.repair_inspector_focus(old_inspector_order.as_deref())?;
+            self.repair_send_focus()?;
         } else if let StructuralEditIntent::AppendPatch { patch_id } = intent {
             let candidate = self
                 .pending_patch_creation
@@ -3707,7 +3778,29 @@ impl AppState {
                         .map_err(|_| EventRejection::InvalidEffectConfig)?;
                 }
             }
+            StructuralEditIntent::SetSendEffect {
+                bus,
+                slot_id,
+                entry,
+            } => {
+                if let Some(id) = entry {
+                    if !self
+                        .effects
+                        .descriptor(id)
+                        .is_some_and(|descriptor| descriptor.availability().is_enabled())
+                    {
+                        return Err(EventRejection::InvalidEffectConfig);
+                    }
+                }
+                let mut probe = (*self.returns).clone();
+                probe
+                    .set_effect_slot(&self.effects, *bus, *slot_id, entry.as_ref())
+                    .map_err(|_| EventRejection::InvalidEffectConfig)?;
+            }
             StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
+                if !self.returns.contains(*bus) {
+                    return Err(EventRejection::InvalidSelection);
+                }
                 if let Some(entry_id) = entry {
                     if self.effects.descriptor(entry_id).is_none() {
                         return Err(EventRejection::InvalidEffectConfig);
@@ -3817,6 +3910,7 @@ impl AppState {
             StructuralEditIntent::SetVoiceBudget { .. }
             | StructuralEditIntent::ReplaceEffectAsset { .. }
             | StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 let status = self
@@ -3936,7 +4030,8 @@ impl AppState {
                 correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
                     && patch.id() == *patch_id
             }
-            StructuralEditIntent::SetReturnOccupancy { .. } => {
+            StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. } => {
                 correlation.source_graph_revision() == self.engine_selection.active_graph_revision()
             }
             StructuralEditIntent::AppendPatch { patch_id } => {
@@ -4018,6 +4113,7 @@ impl AppState {
             | SurfaceId::PatchChoice
             | SurfaceId::FileBrowser
             | SurfaceId::MidiDeviceSettings
+            | SurfaceId::Sends
             | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
@@ -4146,6 +4242,7 @@ impl AppState {
             SurfaceId::MixerMain
             | SurfaceId::MixerInspector
             | SurfaceId::MidiDeviceSettings
+            | SurfaceId::Sends
             | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
@@ -4189,6 +4286,21 @@ impl AppState {
                 return Err(EventRejection::InvalidSelection);
             };
             match control.clone() {
+                PatchControlId::Send(bus) => {
+                    let patch_id = self
+                        .interaction
+                        .patch_focus()
+                        .ok_or(EventRejection::InvalidSelection)?;
+                    let track_id = self
+                        .patches
+                        .iter()
+                        .find(|patch| patch.id() == patch_id)
+                        .ok_or(EventRejection::UnknownPatch)?
+                        .output()
+                        .track_id();
+                    self.adjust_send(track_id, bus, direction)?;
+                }
+
                 crate::control::PatchControlId::Output(parameter) => {
                     self.adjust_patch_output(parameter, direction)?;
                 }
@@ -4270,6 +4382,7 @@ impl AppState {
             Some(crate::control::PatchControlId::Output(_))
             | Some(crate::control::PatchControlId::Global(_))
             | Some(crate::control::PatchControlId::MidiInput)
+            | Some(crate::control::PatchControlId::Send(_))
             | Some(crate::control::PatchControlId::VoiceLimit) => {
                 Err(EventRejection::InvalidSelection)
             }
@@ -4433,6 +4546,7 @@ impl AppState {
             }
             PatchControlId::EffectSlot(_)
             | PatchControlId::Effect(_, _)
+            | PatchControlId::Send(_)
             | PatchControlId::Global(_) => return Err(EventRejection::ActionUnavailableInContext),
         }
         self.begin_patch_creation(candidate)
@@ -4650,6 +4764,7 @@ impl AppState {
             | crate::control::PatchControlId::EffectSlot(_)
             | crate::control::PatchControlId::Global(_)
             | crate::control::PatchControlId::MidiInput
+            | crate::control::PatchControlId::Send(_)
             | crate::control::PatchControlId::VoiceLimit => Err(EventRejection::InvalidSelection),
         }
     }
@@ -5191,7 +5306,7 @@ impl AppState {
         bus: BusId,
         direction: Direction,
     ) -> Result<(), EventRejection> {
-        let current = *self.mixer.track(track_id);
+        let current = self.mixer.track(track_id).clone();
         let value = adjusted_value(
             current.send(bus),
             BUS_SEND_DESCRIPTOR.minimum(),
@@ -5374,7 +5489,7 @@ impl AppState {
         parameter: MixerTrackParameter,
         direction: Direction,
     ) -> Result<(), EventRejection> {
-        let current = *self.mixer.track(track_id);
+        let current = self.mixer.track(track_id).clone();
         let updated = if parameter.descriptor().kind() == MixerTrackParameterKind::Toggle {
             current
                 .toggled(parameter)
@@ -5476,6 +5591,7 @@ impl AppState {
                 | SurfaceId::FileBrowser
                 | SurfaceId::MixerInspector
                 | SurfaceId::MidiDeviceSettings
+                | SurfaceId::Sends
                 | SurfaceId::ControllerSettings => return Err(EventRejection::InvalidSelection),
             };
             SemanticResolver::recover(path, old_order, new_order)
@@ -5736,6 +5852,7 @@ fn candidate_matches_intent(
         StructuralEditIntent::SetVoiceBudget { .. }
         | StructuralEditIntent::ReplaceEffectAsset { .. }
         | StructuralEditIntent::SetSlotOccupancy { .. }
+        | StructuralEditIntent::SetSendEffect { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. }
         | StructuralEditIntent::AppendPatch { .. } => false,
         StructuralEditIntent::ReplaceCapability {
@@ -7369,7 +7486,7 @@ mod tests {
 
             let mut patch = installed_state();
             Arc::make_mut(&mut patch.patches)[0].set_envelope(middle);
-            let mixer_before = *patch.mixer();
+            let mixer_before = patch.mixer().clone();
             let unrelated_before = patch.patches()[1].clone();
             patch
                 .apply(AppEvent::SelectContext(TopLevelContext::Patch))
@@ -7579,7 +7696,7 @@ mod tests {
     fn app_state_navigation_changes_selection_without_parameters() {
         let mut state = installed_state();
         let patches = state.patches().to_vec();
-        let mixer = *state.mixer();
+        let mixer = state.mixer().clone();
         let global = *state.global();
 
         state.apply(AppEvent::Navigate(Direction::Down)).unwrap();
@@ -7602,7 +7719,7 @@ mod tests {
     fn app_state_adjusts_exactly_one_value_and_rejects_at_the_bound() {
         let mut state = installed_state();
         let patches = state.patches().to_vec();
-        let second_track = *state.mixer().track(MixerTrackId::new(1).unwrap());
+        let second_track = state.mixer().track(MixerTrackId::new(1).unwrap()).clone();
         let global = *state.global();
 
         state.apply(AppEvent::Adjust(Direction::Right)).unwrap();
@@ -7642,7 +7759,7 @@ mod tests {
         ));
 
         let original_output = state.patches()[0].output();
-        let original_mixer = *state.mixer();
+        let original_mixer = state.mixer().clone();
         let original_config = state.patches()[0].instrument_config().clone();
         let other_patch = state.patches()[1].clone();
         state
@@ -7863,7 +7980,7 @@ mod tests {
         let channel = state.patches()[0].channel();
         let envelope = *state.patches()[0].envelope();
         let output = state.patches()[0].output();
-        let mixer = *state.mixer();
+        let mixer = state.mixer().clone();
         let unrelated = state.patches()[1].clone();
         let original_soundfont = state.patches()[0].instrument_config().clone();
         assert_eq!(

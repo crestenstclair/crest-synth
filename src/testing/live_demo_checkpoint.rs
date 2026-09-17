@@ -978,6 +978,7 @@ impl LiveEngineCheckpoint {
             StructuralEditIntent::SetVoiceBudget { .. }
             | StructuralEditIntent::ReplaceEffectAsset { .. }
             | StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::PrepareAudition { .. }
             | StructuralEditIntent::AppendPatch { .. } => return false,
@@ -997,6 +998,7 @@ impl LiveEngineCheckpoint {
             StructuralEditIntent::SetVoiceBudget { .. }
             | StructuralEditIntent::ReplaceEffectAsset { .. }
             | StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => return false,
             StructuralEditIntent::ReplaceCapability {

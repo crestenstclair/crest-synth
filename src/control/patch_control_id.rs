@@ -29,6 +29,7 @@ use std::cmp::Ordering;
 /// selection rather than persisting as surface-local values.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum PatchControlId {
+    Send(crate::mixer::bus_id::BusId),
     Engine,
     Output(PatchOutputParameter),
     Envelope(VoiceEnvelopeParameter),
@@ -83,11 +84,12 @@ impl PatchControlId {
     /// predicate is the one place that split is decided, so `FocusPath`
     /// validation and the resolvers cannot disagree about where a row lives.
     pub fn is_utility(&self) -> bool {
-        Self::UTILITY.contains(self)
+        matches!(self, Self::Send(_)) || Self::UTILITY.contains(self)
     }
 
     pub fn as_str(&self) -> Cow<'_, str> {
         match self {
+            Self::Send(bus) => Cow::Owned(format!("patch.send.{}", bus.value())),
             Self::Engine => Cow::Borrowed("patch.engine"),
             Self::Output(PatchOutputParameter::TrimGain) => {
                 Cow::Borrowed("patch.output.trimGainDb")
@@ -192,6 +194,12 @@ impl FromStr for PatchControlId {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
+            value if value.starts_with("patch.send.") => value[11..]
+                .parse::<u16>()
+                .ok()
+                .and_then(|value| crate::mixer::bus_id::BusId::new(value).ok())
+                .map(Self::Send)
+                .ok_or(ParsePatchControlIdError),
             "patch.engine" => Ok(Self::Engine),
             "patch.output.trimGainDb" => Ok(Self::Output(PatchOutputParameter::TrimGain)),
             "patch.output.outputTrack" => Ok(Self::Output(PatchOutputParameter::OutputTrack)),

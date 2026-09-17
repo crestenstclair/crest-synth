@@ -1365,7 +1365,7 @@ fn push_mixer_control_steps(
                 steps,
                 track_id,
                 parameter,
-                default_track,
+                &default_track,
                 boundary_probed,
             );
             if parameter_index + 1 < MixerTrackParameter::MAIN.len() {
@@ -1373,7 +1373,7 @@ fn push_mixer_control_steps(
             }
         }
 
-        // The Inspector's first region is the selected track's eight indexed
+        // The Inspector's first region is the selected track's indexed
         // sends in ascending BusId order; entry focuses Send(trackId, B0).
         steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
             SurfaceId::MixerInspector,
@@ -1406,7 +1406,7 @@ fn push_mixer_control_steps(
     steps.push(DemoSceneStep::PassiveAction(SemanticAction::EnterSurface(
         SurfaceId::MixerInspector,
     )));
-    // Skip the eight sends; focus lands on the first return's occupancy row.
+    // Skip the sends; focus lands on the first return's occupancy row.
     for _ in crate::mixer::bus_id::BusId::ALL {
         push_key_press(steps, WindowKey::S);
     }
@@ -1556,7 +1556,7 @@ fn push_mixer_track_parameter_steps(
     steps: &mut Vec<DemoSceneStep>,
     track_id: MixerTrackId,
     parameter: MixerTrackParameter,
-    initial_parameters: MixerTrackParameters,
+    initial_parameters: &MixerTrackParameters,
     boundary_probed: &mut BTreeSet<String>,
 ) {
     let descriptor = parameter.descriptor();
@@ -2344,6 +2344,10 @@ fn build_expected_coverage(
     let mut expected = Vec::new();
     for descriptor in AppEvent::surface_descriptor() {
         match descriptor {
+            crate::control::app_event::AppEventSurfaceDescriptor::Send { .. } => {
+                // The physical digit sweep opens Sends; chain edits have dedicated witnesses.
+                expected.push("event.send".to_owned());
+            }
             crate::control::app_event::AppEventSurfaceDescriptor::SelectContext { context } => {
                 expected.push("event.selectContext".to_owned());
                 expected.push(format!("context.{}", context.label().to_ascii_lowercase()));
@@ -3123,7 +3127,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 49);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            55
+            57
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

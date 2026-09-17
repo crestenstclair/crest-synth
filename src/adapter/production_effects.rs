@@ -95,22 +95,12 @@ pub fn production_default_bus_returns(
     Ok(bank)
 }
 
-/// Startup bus-return occupancy for the production composition root.
-///
-/// A registry composed without any effect entries declares no default
-/// occupancy: every return starts unoccupied, exactly as composed. A
-/// registry that does install effect entries must compose the declared
-/// production default (reverb on return 0, delay on return 1) exactly — any
-/// failure is a composition defect that propagates to the caller. Nothing is
-/// ever substituted on error; the production root surfaces this as a typed
-/// startup failure.
+/// A new production document starts with an empty INIT send bank.
+/// Effects are selected from the shared registry through prepared graph edits.
 pub fn production_startup_bus_returns(
-    registry: &EffectCapabilityRegistry,
+    _registry: &EffectCapabilityRegistry,
 ) -> Result<BusReturnBank, ProductionEffectCompositionError> {
-    if registry.descriptors().is_empty() {
-        return Ok(BusReturnBank::default());
-    }
-    production_default_bus_returns(registry)
+    Ok(BusReturnBank::default())
 }
 
 /// Permissive startup occupancy for partial TEST registries only: a registry
@@ -282,43 +272,36 @@ mod tests {
     }
 
     #[test]
-    fn startup_returns_split_is_strict_for_production_and_permissive_for_tests() {
+    fn startup_returns_are_sixteen_empty_init_chains_for_every_registry() {
         use crate::adapter::chorus_capability::ChorusCapability;
         use crate::adapter::chorus_preparer::ChorusPreparer;
         use crate::synth::{compose_effect_registry, EffectCapabilityProvider, EffectPreparer};
 
-        // A composition without effect entries declares no default occupancy.
         let empty = compose_effect_registry(&[], &[]).unwrap();
-        let bank = super::production_startup_bus_returns(&empty).unwrap();
-        assert!(bank.returns().iter().all(|entry| entry.effect().is_none()));
-
-        // A registry with entries that cannot compose the declared default
-        // propagates the composition error instead of substituting.
         let providers: Vec<Box<dyn EffectCapabilityProvider>> =
             vec![Box::new(ChorusCapability::new().unwrap())];
         let preparers: Vec<Box<dyn EffectPreparer>> =
             vec![Box::new(ChorusPreparer::new().unwrap())];
         let partial = compose_effect_registry(&providers, &preparers).unwrap();
+        let full = production_effect_registry().unwrap();
+
+        for registry in [&empty, &partial, &full] {
+            let bank = super::production_startup_bus_returns(registry).unwrap();
+            assert_eq!(bank.len(), 16);
+            for (index, bus_return) in bank.returns().iter().enumerate() {
+                assert_eq!(bus_return.id().index(), index);
+                assert_eq!(bus_return.name(), "INIT");
+                assert!(bus_return.effects().is_empty());
+                assert_eq!(bus_return.return_level(), 0.5);
+            }
+            assert_eq!(super::startup_bus_returns(registry), bank);
+        }
+
+        // Legacy demo composition still requires its declared effects.
         assert!(matches!(
-            super::production_startup_bus_returns(&partial),
+            super::production_default_bus_returns(&partial),
             Err(super::ProductionEffectCompositionError::ReturnOccupancy(_))
         ));
-        // The permissive test-registry variant starts the same partial
-        // registry with every return unoccupied.
-        let permissive = super::startup_bus_returns(&partial);
-        assert!(permissive
-            .returns()
-            .iter()
-            .all(|entry| entry.effect().is_none()));
-
-        // The full production registry composes the declared default exactly
-        // through the strict variant.
-        let full = production_effect_registry().unwrap();
-        let declared = super::production_startup_bus_returns(&full).unwrap();
-        assert_eq!(
-            declared,
-            super::production_default_bus_returns(&full).unwrap()
-        );
     }
 
     #[test]
@@ -786,12 +769,11 @@ mod tests {
     /// values travel as the snapshot's indexed return entries.
     #[test]
     fn global_effects_parameter_sensitivity() {
-        use crate::mixer::bus_id::MAX_BUS_RETURNS;
         use crate::mixer::global_parameters::GlobalParameters;
         use crate::mixer::mix_engine::MixEngine;
         use crate::real_time::{ParameterSnapshot, PatchAudioBlock, RtBusReturnParameters};
 
-        fn render(global: GlobalParameters, returns: [RtBusReturnParameters; 8]) -> Vec<f32> {
+        fn render(global: GlobalParameters, returns: Vec<RtBusReturnParameters>) -> Vec<f32> {
             const FRAME_COUNT: usize = 256;
             let patch_id = PatchId::new(1).unwrap();
             let snapshot = full_mix_snapshot(global).with_returns(returns);
@@ -821,11 +803,11 @@ mod tests {
         }
 
         fn with_scalar(
-            returns: [RtBusReturnParameters; MAX_BUS_RETURNS],
+            returns: Vec<RtBusReturnParameters>,
             bus: usize,
             position: usize,
             value: f32,
-        ) -> [RtBusReturnParameters; MAX_BUS_RETURNS] {
+        ) -> Vec<RtBusReturnParameters> {
             let mut edited = returns.clone();
             let entry = &returns[bus];
             let mut scalars: Vec<f32> = entry.scalars().to_vec();
@@ -840,10 +822,10 @@ mod tests {
         }
 
         fn with_level(
-            returns: [RtBusReturnParameters; MAX_BUS_RETURNS],
+            returns: Vec<RtBusReturnParameters>,
             bus: usize,
             value: f32,
-        ) -> [RtBusReturnParameters; MAX_BUS_RETURNS] {
+        ) -> Vec<RtBusReturnParameters> {
             let mut edited = returns.clone();
             let entry = &returns[bus];
             edited[bus] =
@@ -865,7 +847,7 @@ mod tests {
         let baseline = GlobalParameters::new(0.0).unwrap();
         let baseline_output = render(baseline, defaults.clone());
 
-        let variants: [(&str, GlobalParameters, [RtBusReturnParameters; 8]); 7] = [
+        let variants: [(&str, GlobalParameters, Vec<RtBusReturnParameters>); 7] = [
             (
                 "masterGainDb",
                 GlobalParameters::new(6.0).unwrap(),

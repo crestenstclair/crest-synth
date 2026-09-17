@@ -1360,6 +1360,7 @@ impl LiveEngineTransition {
             StructuralEditIntent::SetVoiceBudget { .. }
             | StructuralEditIntent::ReplaceEffectAsset { .. }
             | StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 unreachable!("live demo engine transitions carry instrument intents")
@@ -1515,7 +1516,7 @@ fn build_mixer_track_steps(
         TopLevelContext::Mixer,
     )));
     for track_id in MixerTrackId::ALL {
-        let values = *state.mixer.track(track_id);
+        let values = state.mixer.track(track_id).clone();
         for parameter in MixerTrackParameter::MAIN {
             let descriptor = parameter.descriptor();
             let (before, after, direction) = match descriptor.kind() {
@@ -2296,7 +2297,7 @@ pub(crate) fn selected_parameter_value(
             {
                 return Err(LiveDemoSceneError::SelectedParameterMismatch);
             }
-            let values = *state.mixer.track(*track_id);
+            let values = state.mixer.track(*track_id).clone();
             values
                 .scalar_value(*parameter)
                 .or_else(|| {
@@ -2452,9 +2453,9 @@ pub(crate) fn projected_parameter_values(
                         .map(|value| if value { 1.0 } else { 0.0 })
                 })
             };
-            let state_value = value(*state.mixer.track(*track_id))
+            let state_value = value(state.mixer.track(*track_id).clone())
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
-            let projected_value = value(state.parameters.mixer_tracks[track_id.index()])
+            let projected_value = value(state.parameters.mixer_tracks[track_id.index()].clone())
                 .ok_or(LiveDemoSceneError::SelectedParameterMismatch)?;
             Ok((state_value, projected_value))
         }

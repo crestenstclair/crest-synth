@@ -34,7 +34,7 @@ impl SessionReplacementPayload {
         Self {
             patches: state.patches().to_vec(),
             asset_descriptors: state.capabilities().asset_descriptors().to_vec(),
-            mixer: *state.mixer(),
+            mixer: state.mixer().clone(),
             global: *state.global(),
             returns: state.bus_returns().clone(),
             target_graph_revision,

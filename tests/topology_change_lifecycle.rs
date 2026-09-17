@@ -424,7 +424,6 @@ fn occupancy_changes_travel_the_canonical_structural_path_and_become_audible() {
 fn invalid_occupancy_changes_are_refused_before_publication_without_mutation() {
     // Out-of-range positions cannot even be constructed (rejected, not clamped).
     assert!(EffectSlotIndex::new(MAX_EFFECT_SLOTS).is_err());
-    assert!(BusId::new(8).is_err());
 
     let mut fixture = fixture();
     let before_hash = fixture
@@ -433,6 +432,19 @@ fn invalid_occupancy_changes_are_refused_before_publication_without_mutation() {
         .state_hash()
         .to_owned();
     let before_generation = fixture.app_loop.current_state_tree().generation();
+
+    // Bus identities are representable independently of configured capacity.
+    let absent_bus = BusId::new(fixture.app_loop.bus_returns().len() as u16).unwrap();
+    assert_eq!(
+        fixture.app_loop.dispatch_action_from(
+            SemanticAction::SetReturnOccupancy {
+                bus: absent_bus,
+                entry: Some(entry("effect.chorus"))
+            },
+            EventSource::Keyboard,
+        ),
+        Err(EventRejection::InvalidSelection)
+    );
 
     // Unknown Patch identity.
     assert_eq!(

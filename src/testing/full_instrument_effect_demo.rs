@@ -1076,7 +1076,7 @@ mod tests {
                 .unwrap();
             let (control, audio) = LockFreeAudioBoundary::new(
                 1024,
-                ParameterSnapshot::new(0, *state.global(), *state.mixer(), &[]).unwrap(),
+                ParameterSnapshot::new(0, *state.global(), state.mixer().clone(), &[]).unwrap(),
             )
             .into_handles();
             let (structural_control, structural_audio) = LockFreeStructuralGraphBoundary::new(

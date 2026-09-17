@@ -279,6 +279,9 @@ impl From<&crate::synth::PreparedSampleVisualization> for PreparedSampleVisualiz
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EventInput {
+    Send {
+        action: crate::control::SendAction,
+    },
     Controller {
         event: crate::control::ControllerEvent,
     },
@@ -621,6 +624,9 @@ impl From<&AppEvent> for EventInput {
                 slot: *slot,
                 entry: entry.clone(),
             },
+            AppEvent::Send(action) => Self::Send {
+                action: action.clone(),
+            },
             AppEvent::SetReturnOccupancy { bus, entry } => Self::SetReturnOccupancy {
                 bus: *bus,
                 entry: entry.clone(),
@@ -937,6 +943,11 @@ impl EventRecord {
         "emittedEvents[].kind",
         "generationAfter",
         "generationBefore",
+        "input.action.bus",
+        "input.action.entry",
+        "input.action.kind",
+        "input.action.name",
+        "input.action.slotId",
         "input.assetKind",
         "input.candidateConfig.assetReferences[].parameterId",
         "input.candidateConfig.assetReferences[].reference.kind",
@@ -1025,22 +1036,21 @@ impl EventRecord {
         "input.selection.descriptor.assetRequirements[].parameterId",
         "input.selection.descriptor.assetRequirements[].required",
         "input.selection.descriptor.assetScopedChoices",
-        "input.selection.descriptor.instrumentCategory",
         "input.selection.descriptor.availability.kind",
         "input.selection.descriptor.id",
+        "input.selection.descriptor.instrumentCategory",
         "input.selection.descriptor.label",
         "input.selection.descriptor.sections[].id",
         "input.selection.descriptor.sections[].label",
         "input.selection.descriptor.sections[].parameters[].choices[].id",
         "input.selection.descriptor.sections[].parameters[].choices[].label",
-        "input.selection.descriptor.sections[].parameters[].steppedLabels[]",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.minimum",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.maximum",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].label",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueScale",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueOffset",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueUnit",
         "input.selection.descriptor.sections[].parameters[].coarseStep",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].label",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.maximum",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.minimum",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueOffset",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueScale",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueUnit",
         "input.selection.descriptor.sections[].parameters[].defaultValue.kind",
         "input.selection.descriptor.sections[].parameters[].defaultValue.value.kind",
         "input.selection.descriptor.sections[].parameters[].defaultValue.value.locator",
@@ -1053,6 +1063,9 @@ impl EventRecord {
         "input.selection.descriptor.sections[].parameters[].label",
         "input.selection.descriptor.sections[].parameters[].patchInteraction",
         "input.selection.descriptor.sections[].parameters[].range",
+        "input.selection.descriptor.sections[].parameters[].range.maximum",
+        "input.selection.descriptor.sections[].parameters[].range.minimum",
+        "input.selection.descriptor.sections[].parameters[].steppedLabels[]",
         "input.selection.descriptor.sections[].parameters[].unit",
         "input.selection.descriptor.sections[].parameters[].update",
         "input.selection.descriptor.sections[].parameters[].visibleWhen",
@@ -1343,8 +1356,8 @@ mod tests {
     use crate::control::text_projection::TextProjection;
     use crate::control::{
         EngineSelectionEffect, EngineSelectionEffectKind, EngineSelectionFailure,
-        EngineSelectionRequestId, EngineSelectionStatus, InteractionMode, StructuralEditIntent,
-        SurfaceId, TopLevelContext,
+        EngineSelectionRequestId, EngineSelectionStatus, InteractionMode, SendAction,
+        StructuralEditIntent, SurfaceId, TopLevelContext,
     };
     use crate::kernel::midi_channel::MidiChannel;
     use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
@@ -1825,7 +1838,142 @@ mod tests {
             Vec::new(),
             None,
         ));
+        let mut labeled = records
+            .iter()
+            .find_map(|record| match &record.input {
+                EventInput::AssetImported { selection } => Some(selection.clone()),
+                _ => None,
+            })
+            .unwrap();
+        labeled.descriptor = Some(labeled_schema_descriptor());
+        records.push(schema_record(
+            EventSource::Worker,
+            EventInput::AssetImported { selection: labeled },
+            EventOutcome::Accepted,
+            Vec::new(),
+            None,
+        ));
+        records.extend(send_action_witnesses().into_iter().map(|(action, _)| {
+            schema_record(
+                EventSource::Keyboard,
+                EventInput::from(&AppEvent::Send(action)),
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            )
+        }));
         records
+    }
+
+    fn labeled_schema_descriptor() -> crate::synth::CapabilityDescriptor {
+        use crate::synth::{
+            CapabilityDescriptor, CapabilityId, CapabilitySection, ContinuousValueLabel,
+            ParameterDefault, ParameterKind, ParameterRange, ParameterSpec, ParameterUpdate,
+            VoicePolicy,
+        };
+        let range = ParameterRange::new(0.0, 1.0).unwrap();
+        let mut parameters = Vec::new();
+        for (name, kind, default) in [
+            ("step", ParameterKind::Stepped, ParameterValue::Stepped(0)),
+            (
+                "continuous",
+                ParameterKind::Continuous,
+                ParameterValue::continuous(0.5).unwrap(),
+            ),
+        ] {
+            let parameter = ParameterSpec::new(
+                ParameterId::new(format!("schema.{name}")).unwrap(),
+                name,
+                kind,
+                ParameterUpdate::Scalar,
+                ParameterDefault::Value(default),
+                Some(range),
+                Vec::new(),
+                Some(1.0),
+                Some(1.0),
+                None,
+                "number",
+                None,
+                None,
+            )
+            .unwrap();
+            parameters.push(if kind == ParameterKind::Stepped {
+                parameter
+                    .with_stepped_labels(vec!["First".into(), "Second".into()])
+                    .unwrap()
+            } else {
+                parameter
+                    .with_continuous_labels(vec![
+                        ContinuousValueLabel::new(range, "Amount").with_amount(100.0, 0.0, "%")
+                    ])
+                    .unwrap()
+            });
+        }
+        CapabilityDescriptor::new(
+            CapabilityId::new("instrument.schema-labels").unwrap(),
+            "Schema Labels",
+            "schema",
+            vec![CapabilitySection::new("schema.labels", "Labels", parameters).unwrap()],
+            Vec::new(),
+            VoicePolicy::Configurable { default_voices: 1 },
+            vec![MidiMessageKind::NoteOn],
+        )
+        .unwrap()
+    }
+
+    fn send_action_witnesses() -> Vec<(SendAction, Value)> {
+        let bus = crate::mixer::bus_id::BusId::new(15).unwrap();
+        let slot_id = crate::synth::EffectSlotId::new(3).unwrap();
+        vec![
+            (SendAction::Open, serde_json::json!({ "kind": "open" })),
+            (
+                SendAction::Rename {
+                    bus,
+                    name: "Long Hall".to_owned(),
+                },
+                serde_json::json!({ "kind": "rename", "bus": 15, "name": "Long Hall" }),
+            ),
+            (
+                SendAction::CancelRename,
+                serde_json::json!({ "kind": "cancelRename" }),
+            ),
+            (
+                SendAction::SetEffect {
+                    bus,
+                    slot_id,
+                    entry: Some(crate::synth::EffectCapabilityId::new("effect.reverb").unwrap()),
+                },
+                serde_json::json!({
+                    "kind": "setEffect", "bus": 15, "slotId": 3, "entry": "effect.reverb"
+                }),
+            ),
+            (
+                SendAction::SetEffect {
+                    bus,
+                    slot_id,
+                    entry: None,
+                },
+                serde_json::json!({
+                    "kind": "setEffect", "bus": 15, "slotId": 3, "entry": null
+                }),
+            ),
+        ]
+    }
+
+    #[test]
+    fn send_event_inputs_preserve_event_kind_and_every_typed_action_payload() {
+        for (action, expected) in send_action_witnesses() {
+            let input = EventInput::from(&AppEvent::Send(action.clone()));
+            let serialized = serde_json::to_value(input).unwrap();
+            assert_eq!(
+                serialized,
+                serde_json::json!({ "kind": "send", "action": expected })
+            );
+            assert_eq!(
+                serde_json::from_value::<SendAction>(serialized["action"].clone()).unwrap(),
+                action
+            );
+        }
     }
 
     fn collect_leaf_paths(value: &Value, prefix: &str, paths: &mut BTreeSet<String>) {
@@ -1937,7 +2085,7 @@ mod tests {
     #[test]
     fn event_source_surface_includes_physical_midi_with_stable_serialized_names() {
         let descriptor = EventSource::surface_descriptor();
-        assert_eq!(descriptor.len(), 7);
+        assert_eq!(descriptor.len(), 8);
         for (index, source) in descriptor.iter().enumerate() {
             assert!(!descriptor[..index].contains(source));
             assert_eq!(
@@ -1947,6 +2095,7 @@ mod tests {
         }
         assert!(descriptor.contains(&EventSource::Worker));
         assert!(descriptor.contains(&EventSource::PhysicalMidi));
+        assert!(descriptor.contains(&EventSource::System));
         assert_ne!(EventSource::PhysicalMidi, EventSource::AutomaticMidi);
     }
 

@@ -186,6 +186,7 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     assert_eq!(
         SurfaceId::surface_descriptor(),
         &[
+            SurfaceId::Sends,
             SurfaceId::PatchMain,
             SurfaceId::PatchUtility,
             SurfaceId::PatchDetail,
@@ -802,13 +803,19 @@ fn slot_occupancy_cycles_adjacent_choices_without_wrapping() {
 #[test]
 fn return_occupancy_uses_the_same_adjacent_choice_contract() {
     let mut state = installed_state();
-    // Enter the Inspector and walk to the first empty return's occupancy row
-    // (bus 2): eight sends, then bus 0 (occupancy, level, two scalars), then
-    // bus 1 (occupancy, level, two scalars), then bus 2 occupancy.
+    // Reach the same stable return identity independent of configured bank size.
     state
         .apply_semantic_action(SemanticAction::EnterSurface(SurfaceId::MixerInspector))
         .unwrap();
-    for _ in 0..(8 + 4 + 4) {
+    let target = FocusPath::mixer_return_occupancy(BusId::new(2).unwrap());
+    for _ in 0..crest_synth::control::SemanticResolver::new(&state)
+        .ordered_paths(SurfaceId::MixerInspector)
+        .unwrap()
+        .len()
+    {
+        if state.interaction().focus_path() == &target {
+            break;
+        }
         state
             .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
             .unwrap();

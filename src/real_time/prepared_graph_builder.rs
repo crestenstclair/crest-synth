@@ -194,7 +194,7 @@ impl<'a> PreparedGraphBuilder<'a> {
             PatchAudioBlock::prepare(max_frames).map_err(GraphPreparationError::PatchAudio)?;
         let mut mixer = MixEngine::new();
         mixer
-            .prepare(sample_rate, max_frames)
+            .prepare_with_returns(sample_rate, max_frames, parameters.returns().len())
             .map_err(GraphPreparationError::Effects)?;
         // Return occupancy comes exclusively from the injected canonical
         // bank. `prepare` empties the rack, so occupancy is (re-)installed
@@ -202,71 +202,71 @@ impl<'a> PreparedGraphBuilder<'a> {
         // cannot satisfy refuses the complete graph with the failing bus.
         if let Some(bank) = self.returns {
             for bus_return in bank.returns() {
-                let Some(config) = bus_return.effect() else {
-                    continue;
-                };
-                let bus = bus_return.id();
-                let descriptor = effect_registry.descriptor(config.capability_id()).ok_or(
-                    GraphPreparationError::BusReturn {
+                for config in bus_return.effects() {
+                    let bus = bus_return.id();
+                    let descriptor = effect_registry.descriptor(config.capability_id()).ok_or(
+                        GraphPreparationError::BusReturn {
+                            bus,
+                            source: BusReturnPreparationError::UnknownRegistryEntry,
+                        },
+                    )?;
+                    let invalid = |_| GraphPreparationError::BusReturn {
                         bus,
-                        source: BusReturnPreparationError::UnknownRegistryEntry,
-                    },
-                )?;
-                let invalid = |_| GraphPreparationError::BusReturn {
-                    bus,
-                    source: BusReturnPreparationError::InvalidConfiguration,
-                };
-                let scalars = descriptor
-                    .scalar_parameters()
-                    .map(|spec| {
-                        let value =
-                            config
-                                .value(spec.id())
-                                .ok_or(GraphPreparationError::BusReturn {
+                        source: BusReturnPreparationError::InvalidConfiguration,
+                    };
+                    let scalars = descriptor
+                        .scalar_parameters()
+                        .map(|spec| {
+                            let value = config.value(spec.id()).ok_or(
+                                GraphPreparationError::BusReturn {
                                     bus,
                                     source: BusReturnPreparationError::InvalidConfiguration,
-                                })?;
-                        spec.scalar_value(value).map_err(invalid)
-                    })
-                    .collect::<Result<Vec<_>, _>>()?;
-                let live =
-                    crate::real_time::RtPostEffectParameters::new(config.slot_id(), &scalars)
-                        .map_err(|_| GraphPreparationError::BusReturn {
+                                },
+                            )?;
+                            spec.scalar_value(value).map_err(invalid)
+                        })
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let live =
+                        crate::real_time::RtPostEffectParameters::new(config.slot_id(), &scalars)
+                            .map_err(|_| GraphPreparationError::BusReturn {
                             bus,
                             source: BusReturnPreparationError::InvalidConfiguration,
                         })?;
-                let preparer = self
-                    .effect_preparers
-                    .iter()
-                    .find(|preparer| preparer.capability_id() == config.capability_id())
-                    .ok_or(GraphPreparationError::BusReturn {
+                    let preparer = self
+                        .effect_preparers
+                        .iter()
+                        .find(|preparer| preparer.capability_id() == config.capability_id())
+                        .ok_or(GraphPreparationError::BusReturn {
+                            bus,
+                            source: BusReturnPreparationError::MissingPreparer,
+                        })?;
+                    let prepared = preparer
+                        .prepare(RETURN_OCCUPANT_PATCH_ID, config, sample_rate, max_frames)
+                        .map_err(|source| GraphPreparationError::BusReturn {
+                            bus,
+                            source: BusReturnPreparationError::Preparation(source),
+                        })?;
+                    mixer
+                        .bus_returns_mut()
+                        .append(bus, prepared, live, bus_return.return_level())
+                        .map_err(|source| GraphPreparationError::BusReturn {
+                            bus,
+                            source: BusReturnPreparationError::Install(source),
+                        })?;
+                    // Record the occupant's capability identity from the
+                    // validated candidate bank entry, exactly as the engine and
+                    // effect positions record theirs.
+                    let identity = PositionCapabilityIdentity::from_effect_capability_id(
+                        config.capability_id(),
+                    )
+                    .ok_or(GraphPreparationError::UnrecordableCapabilityIdentity)?;
+                    if !mixer.bus_returns_mut().record_occupant_identity(
                         bus,
-                        source: BusReturnPreparationError::MissingPreparer,
-                    })?;
-                let prepared = preparer
-                    .prepare(RETURN_OCCUPANT_PATCH_ID, config, sample_rate, max_frames)
-                    .map_err(|source| GraphPreparationError::BusReturn {
-                        bus,
-                        source: BusReturnPreparationError::Preparation(source),
-                    })?;
-                mixer
-                    .install_bus_return(bus, prepared, live, bus_return.return_level())
-                    .map_err(|source| GraphPreparationError::BusReturn {
-                        bus,
-                        source: BusReturnPreparationError::Install(source),
-                    })?;
-                // Record the occupant's capability identity from the
-                // validated candidate bank entry, exactly as the engine and
-                // effect positions record theirs.
-                let identity =
-                    PositionCapabilityIdentity::from_effect_capability_id(config.capability_id())
-                        .ok_or(GraphPreparationError::UnrecordableCapabilityIdentity)?;
-                if !mixer.bus_returns_mut().record_occupant_identity(
-                    bus,
-                    config.slot_id(),
-                    identity,
-                ) {
-                    return Err(GraphPreparationError::ParameterLayoutMismatch);
+                        config.slot_id(),
+                        identity,
+                    ) {
+                        return Err(GraphPreparationError::ParameterLayoutMismatch);
+                    }
                 }
             }
         }

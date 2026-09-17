@@ -741,6 +741,7 @@ impl DemoSceneObservation {
                 | EventInput::Controller { .. }
                 | EventInput::MidiInputShutdownRequested
                 | EventInput::AssetImported { .. }
+                | EventInput::Send { .. }
                 | EventInput::ToggleTestMidi => {}
             }
         }

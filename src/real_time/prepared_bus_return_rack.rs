@@ -11,13 +11,17 @@ use core::fmt;
 /// identity, the install-time return level, and preallocated input scratch.
 /// Live scalar values and the live return level arrive per block from the
 /// `ParameterSnapshot`.
-struct PreparedBusReturn {
+struct PreparedReturnEffect {
     effect: Box<dyn PreparedPostEffect>,
     parameters: RtPostEffectParameters,
     /// The effect capability identity this occupant was prepared from,
     /// recorded at build time from the validated candidate configuration.
     /// Fixed-size and copyable; compared only at carry-over decision time.
     capability_identity: Option<PositionCapabilityIdentity>,
+}
+
+struct PreparedBusReturn {
+    effects: Vec<PreparedReturnEffect>,
     return_level: f32,
     input_scratch: Vec<f32>,
 }
@@ -46,7 +50,7 @@ struct PreparedBusReturn {
 /// `process_return` runs on the audio thread and is allocation-free,
 /// lock-free, non-blocking, and free of I/O, logging, panic, and destruction.
 pub struct PreparedBusReturnRack {
-    returns: [Option<PreparedBusReturn>; MAX_BUS_RETURNS],
+    returns: Vec<Option<PreparedBusReturn>>,
     max_frames: usize,
 }
 
@@ -56,20 +60,65 @@ impl PreparedBusReturnRack {
     #[must_use]
     pub fn empty() -> Self {
         Self {
-            returns: std::array::from_fn(|_| None),
+            returns: (0..MAX_BUS_RETURNS).map(|_| None).collect(),
             max_frames: 0,
         }
     }
 
     /// Creates an empty rack bounded to `max_frames` per block.
     pub fn new(max_frames: usize) -> Result<Self, EffectError> {
+        Self::with_count(max_frames, MAX_BUS_RETURNS)
+    }
+
+    pub fn with_count(max_frames: usize, count: usize) -> Result<Self, EffectError> {
         if max_frames == 0 {
             return Err(EffectError::InvalidMaxFrames);
         }
+        // Every prepared position must have a distinct representable BusId.
+        // Validate before allocation so later positional casts cannot wrap.
+        if count > usize::from(BusId::MAX) + 1 {
+            return Err(EffectError::StorageAllocationFailed);
+        }
+        let mut returns = Vec::new();
+        returns
+            .try_reserve_exact(count)
+            .map_err(|_| EffectError::StorageAllocationFailed)?;
+        returns.resize_with(count, || None);
         Ok(Self {
-            returns: std::array::from_fn(|_| None),
+            returns,
             max_frames,
         })
+    }
+
+    pub fn len(&self) -> usize {
+        self.returns.len()
+    }
+
+    pub fn chain_layout(
+        &self,
+        bus: BusId,
+    ) -> Vec<(
+        Option<EffectSlotId>,
+        usize,
+        Option<PositionCapabilityIdentity>,
+    )> {
+        self.returns
+            .get(bus.index())
+            .and_then(Option::as_ref)
+            .map(|entry| {
+                entry
+                    .effects
+                    .iter()
+                    .map(|effect| {
+                        (
+                            effect.parameters.slot_id(),
+                            effect.parameters.scalar_count(),
+                            effect.capability_identity,
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     pub const fn max_frames(&self) -> usize {
@@ -101,14 +150,40 @@ impl PreparedBusReturnRack {
             .try_reserve_exact(sample_capacity)
             .map_err(|_| EffectError::StorageAllocationFailed)?;
         input_scratch.resize(sample_capacity, 0.0);
-        self.returns[bus.index()] = Some(PreparedBusReturn {
-            effect,
-            parameters,
-            capability_identity: None,
+        let target = self
+            .returns
+            .get_mut(bus.index())
+            .ok_or(EffectError::StorageAllocationFailed)?;
+        *target = Some(PreparedBusReturn {
+            effects: vec![PreparedReturnEffect {
+                effect,
+                parameters,
+                capability_identity: None,
+            }],
             return_level,
             input_scratch,
         });
         Ok(())
+    }
+
+    /// Appends a prepared processor in signal order. Preparation thread only.
+    pub fn append(
+        &mut self,
+        bus: BusId,
+        effect: Box<dyn PreparedPostEffect>,
+        parameters: RtPostEffectParameters,
+        return_level: f32,
+    ) -> Result<(), EffectError> {
+        if let Some(Some(prepared)) = self.returns.get_mut(bus.index()) {
+            prepared.effects.push(PreparedReturnEffect {
+                effect,
+                parameters,
+                capability_identity: None,
+            });
+            Ok(())
+        } else {
+            self.install(bus, effect, parameters, return_level)
+        }
     }
 
     /// Records the validated effect capability identity prepared at one
@@ -127,10 +202,14 @@ impl PreparedBusReturnRack {
         let Some(prepared) = self.returns[bus.index()].as_mut() else {
             return false;
         };
-        if prepared.parameters.slot_id() != Some(slot_id) {
+        let Some(effect) = prepared
+            .effects
+            .iter_mut()
+            .find(|effect| effect.parameters.slot_id() == Some(slot_id))
+        else {
             return false;
-        }
-        prepared.capability_identity = Some(identity);
+        };
+        effect.capability_identity = Some(identity);
         true
     }
 
@@ -138,7 +217,8 @@ impl PreparedBusReturnRack {
     pub fn capability_identity(&self, bus: BusId) -> Option<PositionCapabilityIdentity> {
         self.returns[bus.index()]
             .as_ref()
-            .and_then(|prepared| prepared.capability_identity)
+            .and_then(|prepared| prepared.effects.first())
+            .and_then(|effect| effect.capability_identity)
     }
 
     /// Empties one return. Prepare-time only: drops the prepared effect.
@@ -146,7 +226,7 @@ impl PreparedBusReturnRack {
         self.returns[bus.index()] = None;
     }
 
-    pub const fn occupied(&self, bus: BusId) -> bool {
+    pub fn occupied(&self, bus: BusId) -> bool {
         self.returns[bus.index()].is_some()
     }
 
@@ -164,14 +244,16 @@ impl PreparedBusReturnRack {
     pub fn slot_id(&self, bus: BusId) -> Option<EffectSlotId> {
         self.returns[bus.index()]
             .as_ref()
-            .and_then(|prepared| prepared.parameters.slot_id())
+            .and_then(|prepared| prepared.effects.first())
+            .and_then(|effect| effect.parameters.slot_id())
     }
 
     /// Returns the scalar layout prepared at one return.
     pub fn scalar_count(&self, bus: BusId) -> Option<usize> {
         self.returns[bus.index()]
             .as_ref()
-            .map(|prepared| prepared.parameters.scalar_count())
+            .and_then(|prepared| prepared.effects.first())
+            .map(|effect| effect.parameters.scalar_count())
     }
 
     /// Proves the snapshot's return bank and this prepared rack agree exactly.
@@ -181,16 +263,25 @@ impl PreparedBusReturnRack {
     /// `scalar_count` both match the prepared instance — nothing weaker, and
     /// never repositioned.
     pub fn matches_parameters(&self, parameters: &ParameterSnapshot) -> bool {
-        self.returns
-            .iter()
-            .zip(parameters.returns())
-            .all(|(prepared, entry)| match prepared {
-                None => !entry.is_active(),
-                Some(prepared) => {
-                    entry.slot_id() == prepared.parameters.slot_id()
-                        && entry.scalar_count() == prepared.parameters.scalar_count()
-                }
-            })
+        self.returns.len() == parameters.returns().len()
+            && self
+                .returns
+                .iter()
+                .zip(parameters.returns())
+                .all(|(prepared, entry)| match prepared {
+                    None => !entry.is_active(),
+                    Some(prepared) => {
+                        prepared.effects.len() == entry.effect_count()
+                            && prepared
+                                .effects
+                                .iter()
+                                .zip(entry.effects())
+                                .all(|(effect, live)| {
+                                    effect.parameters.slot_id() == live.slot_id()
+                                        && effect.parameters.scalar_count() == live.scalar_count()
+                                })
+                    }
+                })
     }
 
     /// Exchanges the still-live prepared effect instance from the superseded
@@ -215,23 +306,34 @@ impl PreparedBusReturnRack {
         superseded: &mut Self,
         exclude: Option<BusId>,
     ) {
-        for bus in BusId::ALL {
-            if Some(bus) == exclude {
+        for (index, (target, source)) in self
+            .returns
+            .iter_mut()
+            .zip(&mut superseded.returns)
+            .enumerate()
+        {
+            if exclude.is_some_and(|bus| bus.index() == index) {
                 continue;
             }
-            let (Some(target), Some(source)) = (
-                self.returns[bus.index()].as_mut(),
-                superseded.returns[bus.index()].as_mut(),
-            ) else {
+            let (Some(target), Some(source)) = (target.as_mut(), source.as_mut()) else {
                 continue;
             };
-            if target.parameters.slot_id() != source.parameters.slot_id()
-                || target.parameters.scalar_count() != source.parameters.scalar_count()
-                || target.capability_identity != source.capability_identity
+            if target.effects.len() != source.effects.len()
+                || !target
+                    .effects
+                    .iter()
+                    .zip(&source.effects)
+                    .all(|(target, source)| {
+                        target.parameters.slot_id() == source.parameters.slot_id()
+                            && target.parameters.scalar_count() == source.parameters.scalar_count()
+                            && target.capability_identity == source.capability_identity
+                    })
             {
                 continue;
             }
-            core::mem::swap(&mut target.effect, &mut source.effect);
+            for (target, source) in target.effects.iter_mut().zip(&mut source.effects) {
+                core::mem::swap(&mut target.effect, &mut source.effect);
+            }
         }
     }
 
@@ -259,8 +361,15 @@ impl PreparedBusReturnRack {
         let Some(prepared) = self.returns[bus.index()].as_mut() else {
             return 0.0;
         };
-        if live.slot_id() != prepared.parameters.slot_id()
-            || live.scalar_count() != prepared.parameters.scalar_count()
+        if prepared.effects.len() != live.effect_count()
+            || !prepared
+                .effects
+                .iter()
+                .zip(live.effects())
+                .all(|(effect, live)| {
+                    effect.parameters.slot_id() == live.slot_id()
+                        && effect.parameters.scalar_count() == live.scalar_count()
+                })
         {
             return 0.0;
         }
@@ -270,16 +379,18 @@ impl PreparedBusReturnRack {
             return 0.0;
         }
         prepared.input_scratch[..sample_count].copy_from_slice(&input[..sample_count]);
-        if prepared
-            .effect
-            .process(
-                &mut prepared.input_scratch[..sample_count],
-                frame_count,
-                live.effect_parameters(),
-            )
-            .is_err()
-        {
-            return 0.0;
+        for (effect, values) in prepared.effects.iter_mut().zip(live.effects()) {
+            if effect
+                .effect
+                .process(
+                    &mut prepared.input_scratch[..sample_count],
+                    frame_count,
+                    values,
+                )
+                .is_err()
+            {
+                return 0.0;
+            }
         }
         let return_level = live.return_level();
         let mut energy = 0.0_f64;
@@ -406,16 +517,41 @@ mod tests {
     }
 
     #[test]
-    fn rack_prepares_eight_returns_with_preallocated_scratch() {
+    fn rack_prepares_default_returns_with_preallocated_scratch() {
         let mut rack = PreparedBusReturnRack::new(4).unwrap();
         for bus in BusId::ALL {
             rack.install(bus, Box::new(UnityEffect), parameters(), 0.5)
                 .unwrap();
         }
-        assert_eq!(rack.occupied_count(), 8);
+        assert_eq!(rack.occupied_count(), MAX_BUS_RETURNS);
         for bus in BusId::ALL {
             assert!(rack.occupied(bus));
             assert_eq!(rack.return_level(bus), Some(0.5));
+        }
+    }
+
+    #[test]
+    fn return_count_accepts_full_identity_range_and_rejects_wrapping_counts() {
+        let maximum_count = usize::from(BusId::MAX) + 1;
+        let mut rack = PreparedBusReturnRack::with_count(1, maximum_count).unwrap();
+        assert_eq!(rack.len(), maximum_count);
+        let final_bus = BusId::new(BusId::MAX).unwrap();
+        rack.install(final_bus, Box::new(UnityEffect), parameters(), 1.0)
+            .unwrap();
+        assert!(rack.occupied(final_bus));
+        assert!(!rack.occupied(BusId::default()));
+        let mut output = [0.0; 2];
+        assert_eq!(
+            rack.process_return(final_bus, &[0.5; 2], &mut output, &live(1.0)),
+            0.5
+        );
+        assert_eq!(output, [0.5; 2]);
+
+        for count in [maximum_count + 1, usize::MAX] {
+            assert_eq!(
+                PreparedBusReturnRack::with_count(1, count).unwrap_err(),
+                EffectError::StorageAllocationFailed
+            );
         }
     }
 

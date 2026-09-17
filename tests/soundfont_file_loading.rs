@@ -266,7 +266,7 @@ impl Rig {
         let state = fixture.state();
         let (control, callback) = LockFreeAudioBoundary::new(
             128,
-            ParameterSnapshot::new(0, *state.global(), *state.mixer(), &[]).unwrap(),
+            ParameterSnapshot::new(0, *state.global(), state.mixer().clone(), &[]).unwrap(),
         )
         .into_handles();
         let mut app = AppLoop::new(state, StateProjector::new(), control).unwrap();
@@ -565,7 +565,7 @@ fn bank_replacement_rejects_a_valid_but_unrequested_preset() {
             tampered,
             state.generation(),
             *state.global(),
-            *state.mixer(),
+            state.mixer().clone(),
             AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 256).unwrap(),
             &registry,
         ),

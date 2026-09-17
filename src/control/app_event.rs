@@ -39,6 +39,7 @@ impl Direction {
 /// deterministic demos and acceptance tests.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppEventPayloadShape {
+    SendAction,
     ControllerEvent,
     PatchList,
     SessionReplacement,
@@ -83,6 +84,9 @@ pub enum AppEventPayloadShape {
 /// variants retain the complete names and types of their payload fields.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppEventSurfaceDescriptor {
+    Send {
+        action: AppEventPayloadShape,
+    },
     Controller {
         event: AppEventPayloadShape,
     },
@@ -240,7 +244,10 @@ pub enum AppEventSurfaceDescriptor {
     MidiInputShutdownRequested,
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 56] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 57] = [
+    AppEventSurfaceDescriptor::Send {
+        action: AppEventPayloadShape::SendAction,
+    },
     AppEventSurfaceDescriptor::Controller {
         event: AppEventPayloadShape::ControllerEvent,
     },
@@ -446,6 +453,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 56] = [
 /// event reaches the control layer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    Send(crate::control::SendAction),
     Controller(crate::control::ControllerEvent),
     /// Select one of the two reducer-owned top-level contexts directly.
     SelectContext(TopLevelContext),
@@ -642,6 +650,7 @@ impl AppEvent {
     /// Performs the single typed user-intent to reducer-event translation.
     pub fn from_semantic_action(action: SemanticAction) -> Self {
         match action {
+            SemanticAction::Send(action) => Self::Send(action),
             SemanticAction::SelectContext(context) => Self::SelectContext(context),
             SemanticAction::SelectPatch(direction) => Self::SelectPatch(direction),
             SemanticAction::NavigatePage(direction) => Self::NavigatePage(direction),
@@ -831,6 +840,9 @@ impl AppEvent {
                 slot: AppEventPayloadShape::EffectSlotIndex,
                 entry: AppEventPayloadShape::OptionalEffectEntry,
             },
+            Self::Send(_) => AppEventSurfaceDescriptor::Send {
+                action: AppEventPayloadShape::SendAction,
+            },
             Self::SetReturnOccupancy { .. } => AppEventSurfaceDescriptor::SetReturnOccupancy {
                 bus: AppEventPayloadShape::BusId,
                 entry: AppEventPayloadShape::OptionalEffectEntry,
@@ -961,7 +973,7 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 55);
+        assert_eq!(descriptor.len(), 57);
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),
@@ -973,6 +985,14 @@ mod tests {
             assert!(descriptor
                 .contains(&AppEventSurfaceDescriptor::SelectContext { context: *context }));
         }
+        let send = AppEvent::Send(crate::control::SendAction::Open).surface_entry();
+        assert_eq!(
+            send,
+            AppEventSurfaceDescriptor::Send {
+                action: AppEventPayloadShape::SendAction,
+            }
+        );
+        assert!(descriptor.contains(&send));
 
         for direction in [
             Direction::Up,

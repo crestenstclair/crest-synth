@@ -24,7 +24,7 @@ use crate::synth::PreparedPostEffect;
 pub struct MixEngine {
     returns: PreparedBusReturnRack,
     track_scratch: [Vec<f32>; MixerTrackId::COUNT],
-    bus_inputs: [Vec<f32>; MAX_BUS_RETURNS],
+    bus_inputs: Vec<Vec<f32>>,
     wet_scratch: Vec<f32>,
     dry_output: Vec<f32>,
     max_frames: usize,
@@ -44,7 +44,7 @@ impl MixEngine {
         Self {
             returns: PreparedBusReturnRack::empty(),
             track_scratch: std::array::from_fn(|_| Vec::new()),
-            bus_inputs: std::array::from_fn(|_| Vec::new()),
+            bus_inputs: Vec::new(),
             wet_scratch: Vec::new(),
             dry_output: Vec::new(),
             max_frames: 0,
@@ -57,12 +57,24 @@ impl MixEngine {
     /// Re-preparation empties the bus-return rack; occupancy is installed
     /// afterward through [`Self::install_bus_return`].
     pub fn prepare(&mut self, _sample_rate: f32, max_frames: usize) -> Result<(), EffectError> {
+        self.prepare_with_returns(_sample_rate, max_frames, MAX_BUS_RETURNS)
+    }
+
+    pub fn prepare_with_returns(
+        &mut self,
+        _sample_rate: f32,
+        max_frames: usize,
+        return_count: usize,
+    ) -> Result<(), EffectError> {
         self.prepared = false;
 
+        // The rack owns return-count validation. Check it before allocating
+        // per-bus scratch so every later index fits the BusId representation.
+        let returns = PreparedBusReturnRack::with_count(max_frames, return_count)?;
         let sample_capacity = max_frames
             .checked_mul(2)
             .ok_or(EffectError::StorageAllocationFailed)?;
-        let mut bus_inputs = std::array::from_fn(|_| Vec::new());
+        let mut bus_inputs = vec![Vec::new(); return_count];
         for bus_input in &mut bus_inputs {
             *bus_input = allocate_zeros(sample_capacity)?;
         }
@@ -72,7 +84,6 @@ impl MixEngine {
         for track in &mut track_scratch {
             *track = allocate_zeros(sample_capacity)?;
         }
-        let returns = PreparedBusReturnRack::new(max_frames)?;
 
         self.bus_inputs = bus_inputs;
         self.wet_scratch = wet_scratch;
@@ -195,7 +206,7 @@ impl MixEngine {
             if !occupied_tracks[track_id.index()] {
                 continue;
             }
-            let track_parameters = *parameters.mixer_track(track_id);
+            let track_parameters = parameters.mixer_track(track_id);
             let gain = db_to_linear(track_parameters.level_db());
             let (left_pan, right_pan) = pan_gains(track_parameters.pan());
             let left_gain = gain * left_pan;
@@ -236,7 +247,7 @@ impl MixEngine {
                 // Iterate each nonzero send once per block. Sample and track
                 // accumulation order stay identical to the interleaved loop.
                 for (bus_input, send) in self.bus_inputs.iter_mut().zip(sends) {
-                    if send != 0.0 {
+                    if *send != 0.0 {
                         for (destination, sample) in bus_input[..sample_count]
                             .iter_mut()
                             .zip(&track[..sample_count])
@@ -261,13 +272,24 @@ impl MixEngine {
         // entries — the latest-value transport, exactly as every other scalar.
         let mut bus_output_rms = [0.0_f32; MAX_BUS_RETURNS];
         self.wet_scratch[..sample_count].fill(0.0);
-        for bus in BusId::ALL {
-            bus_output_rms[bus.index()] = self.returns.process_return(
+        for (index, live) in parameters
+            .returns()
+            .iter()
+            .enumerate()
+            .take(self.bus_inputs.len())
+        {
+            let Ok(bus) = BusId::new(index as u16) else {
+                continue;
+            };
+            let measured = self.returns.process_return(
                 bus,
                 &self.bus_inputs[bus.index()][..sample_count],
                 &mut self.wet_scratch[..sample_count],
-                parameters.bus_return(bus),
+                live,
             );
+            if let Some(meter) = bus_output_rms.get_mut(index) {
+                *meter = measured;
+            }
         }
         if self.returns.occupied_count() > 0 {
             for (output_sample, wet_sample) in output[..sample_count]
@@ -300,7 +322,7 @@ impl MixEngine {
 fn observe_mix(
     tracks: [TrackMeter; MixerTrackId::COUNT],
     prior_non_finite_samples: u64,
-    bus_inputs: &[Vec<f32>; MAX_BUS_RETURNS],
+    bus_inputs: &[Vec<f32>],
     sample_count: usize,
     bus_output_rms: [f32; MAX_BUS_RETURNS],
     dry_output: &[f32],
@@ -498,7 +520,7 @@ mod tests {
             let track_id = MixerTrackId::new(index as u8).unwrap();
             *slot =
                 RtPatchParameters::new(PatchId::new(*id).unwrap(), PatchOutput::to_track(track_id));
-            mixer.set_track(track_id, *track);
+            mixer.set_track(track_id, track.clone());
         }
         ParameterSnapshot::new(1, global, mixer, &patches[..ids_and_tracks.len()]).unwrap()
     }
@@ -516,6 +538,46 @@ mod tests {
         }
 
         block
+    }
+
+    #[test]
+    fn preparation_rejects_unrepresentable_return_counts_before_scratch_allocation() {
+        let maximum_count = usize::from(BusId::MAX) + 1;
+        let mut mixer = MixEngine::new();
+        for count in [maximum_count + 1, usize::MAX] {
+            assert_eq!(
+                mixer.prepare_with_returns(48_000.0, 1, count),
+                Err(crate::mixer::bus_return::EffectError::StorageAllocationFailed)
+            );
+            assert!(mixer.bus_inputs.is_empty());
+            assert!(!mixer.prepared);
+        }
+    }
+
+    #[test]
+    fn highest_representable_return_renders_without_wrapping_to_bus_zero() {
+        let return_count = usize::from(BusId::MAX) + 1;
+        let bus = BusId::new(BusId::MAX).unwrap();
+        let mut mixer = MixEngine::new();
+        mixer
+            .prepare_with_returns(48_000.0, 1, return_count)
+            .unwrap();
+        install_unity_returns(&mut mixer, &[bus]);
+        let sends_track = track(0.0, 0.0, 0.0, 0.0).with_send(bus, 1.0).unwrap();
+        let mut returns = vec![RtBusReturnParameters::EMPTY; return_count];
+        returns[bus.index()] =
+            RtBusReturnParameters::new(EffectSlotId::new(1).unwrap(), &[], 1.0).unwrap();
+        let parameters = snapshot(&[(7, sends_track)], globals(0.0)).with_returns(returns);
+        let patch = [1.0, 1.0];
+        let block = audio_block(&parameters, &[&patch]);
+        let mut output = [0.0; 2];
+
+        mixer.mix(&block, &parameters, &mut output);
+
+        assert_eq!(mixer.bus_inputs.len(), return_count);
+        assert_eq!(mixer.bus_inputs[bus.index()], [1.0, 1.0]);
+        assert_eq!(mixer.bus_inputs[0], [0.0, 0.0]);
+        assert_eq!(output, [2.0, 2.0]);
     }
 
     #[test]
@@ -709,7 +771,14 @@ mod tests {
 
         let observation = mixer.mix(&block, &parameters, &mut output);
 
-        assert!((observation.bus_input_rms(bus) - 0.4).abs() < 0.000_001);
+        assert!(
+            (observation
+                .bus_input_rms(bus)
+                .expect("bus belongs to observed default bank")
+                - 0.4)
+                .abs()
+                < 0.000_001
+        );
         assert!((output[0] - 0.9).abs() < 0.000_001);
         assert!((output[1] - 0.9).abs() < 0.000_001);
     }
@@ -743,8 +812,18 @@ mod tests {
 
         assert_eq!(output, [0.0; 2]);
         for bus in BusId::ALL {
-            assert_eq!(observation.bus_input_rms(bus), 0.0);
-            assert_eq!(observation.bus_output_rms(bus), 0.0);
+            assert_eq!(
+                observation
+                    .bus_input_rms(bus)
+                    .expect("bus belongs to observed default bank"),
+                0.0
+            );
+            assert_eq!(
+                observation
+                    .bus_output_rms(bus)
+                    .expect("bus belongs to observed default bank"),
+                0.0
+            );
         }
         // Meters stay pre-gate: the muted track remains diagnosable.
         assert!(observation.track(MixerTrackId::default()).left_peak() > 0.0);
@@ -779,8 +858,18 @@ mod tests {
         // send never reached the bus.
         assert!((output[0] - 0.5).abs() < 0.000_001);
         assert!((output[1] - 0.5).abs() < 0.000_001);
-        assert_eq!(observation.bus_input_rms(bus), 0.0);
-        assert_eq!(observation.bus_output_rms(bus), 0.0);
+        assert_eq!(
+            observation
+                .bus_input_rms(bus)
+                .expect("bus belongs to observed default bank"),
+            0.0
+        );
+        assert_eq!(
+            observation
+                .bus_output_rms(bus)
+                .expect("bus belongs to observed default bank"),
+            0.0
+        );
     }
 
     /// C-BR-3 / C-BR-5 / NFR-007: raising one send toward one bus leaves the
@@ -805,12 +894,34 @@ mod tests {
         let observation = mixer.mix(&block, &parameters, &mut output);
 
         let minus_sixty_dbfs = 0.8 * 0.001;
-        assert!((observation.bus_input_rms(bus) - 0.8).abs() < 0.000_001);
+        assert!(
+            (observation
+                .bus_input_rms(bus)
+                .expect("bus belongs to observed default bank")
+                - 0.8)
+                .abs()
+                < 0.000_001
+        );
         for other in BusId::ALL {
             if other != bus {
-                assert!(observation.bus_input_rms(other) < minus_sixty_dbfs);
-                assert!(observation.bus_output_rms(other) < minus_sixty_dbfs);
-                assert_eq!(observation.bus_input_rms(other), 0.0);
+                assert!(
+                    observation
+                        .bus_input_rms(other)
+                        .expect("bus belongs to observed default bank")
+                        < minus_sixty_dbfs
+                );
+                assert!(
+                    observation
+                        .bus_output_rms(other)
+                        .expect("bus belongs to observed default bank")
+                        < minus_sixty_dbfs
+                );
+                assert_eq!(
+                    observation
+                        .bus_input_rms(other)
+                        .expect("bus belongs to observed default bank"),
+                    0.0
+                );
             }
         }
     }
@@ -837,7 +948,14 @@ mod tests {
         let observation = mixer.mix(&block, &parameters, &mut output);
 
         // Dry 2.0 plus the summed sends 0.5 + 0.25 through a unity return.
-        assert!((observation.bus_input_rms(bus) - 0.75).abs() < 0.000_001);
+        assert!(
+            (observation
+                .bus_input_rms(bus)
+                .expect("bus belongs to observed default bank")
+                - 0.75)
+                .abs()
+                < 0.000_001
+        );
         assert!((output[0] - 2.75).abs() < 0.000_001);
         assert!((output[1] - 2.75).abs() < 0.000_001);
     }
@@ -858,8 +976,20 @@ mod tests {
 
         // The send accumulated at the bus, but the empty return added nothing:
         // the output is exactly the dry signal.
-        assert!((observation.bus_input_rms(bus) - 1.0).abs() < 0.000_001);
-        assert_eq!(observation.bus_output_rms(bus), 0.0);
+        assert!(
+            (observation
+                .bus_input_rms(bus)
+                .expect("bus belongs to observed default bank")
+                - 1.0)
+                .abs()
+                < 0.000_001
+        );
+        assert_eq!(
+            observation
+                .bus_output_rms(bus)
+                .expect("bus belongs to observed default bank"),
+            0.0
+        );
         assert!((output[0] - 1.0).abs() < 0.000_001);
         assert!((output[1] - 1.0).abs() < 0.000_001);
     }
@@ -888,9 +1018,24 @@ mod tests {
 
         // The fed return produced wet signal, and that wet signal excited no
         // other return: output is exactly dry + one return's wet.
-        assert!(observation.bus_output_rms(fed) > 0.0);
-        assert_eq!(observation.bus_input_rms(idle), 0.0);
-        assert_eq!(observation.bus_output_rms(idle), 0.0);
+        assert!(
+            observation
+                .bus_output_rms(fed)
+                .expect("bus belongs to observed default bank")
+                > 0.0
+        );
+        assert_eq!(
+            observation
+                .bus_input_rms(idle)
+                .expect("bus belongs to observed default bank"),
+            0.0
+        );
+        assert_eq!(
+            observation
+                .bus_output_rms(idle)
+                .expect("bus belongs to observed default bank"),
+            0.0
+        );
         assert!((output[0] - 2.0).abs() < 0.000_001);
         assert!((output[1] - 2.0).abs() < 0.000_001);
     }
