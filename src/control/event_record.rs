@@ -1025,22 +1025,21 @@ impl EventRecord {
         "input.selection.descriptor.assetRequirements[].parameterId",
         "input.selection.descriptor.assetRequirements[].required",
         "input.selection.descriptor.assetScopedChoices",
-        "input.selection.descriptor.instrumentCategory",
         "input.selection.descriptor.availability.kind",
         "input.selection.descriptor.id",
+        "input.selection.descriptor.instrumentCategory",
         "input.selection.descriptor.label",
         "input.selection.descriptor.sections[].id",
         "input.selection.descriptor.sections[].label",
         "input.selection.descriptor.sections[].parameters[].choices[].id",
         "input.selection.descriptor.sections[].parameters[].choices[].label",
-        "input.selection.descriptor.sections[].parameters[].steppedLabels[]",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.minimum",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.maximum",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].label",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueScale",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueOffset",
-        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueUnit",
         "input.selection.descriptor.sections[].parameters[].coarseStep",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].label",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.maximum",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].range.minimum",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueOffset",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueScale",
+        "input.selection.descriptor.sections[].parameters[].continuousLabels[].valueUnit",
         "input.selection.descriptor.sections[].parameters[].defaultValue.kind",
         "input.selection.descriptor.sections[].parameters[].defaultValue.value.kind",
         "input.selection.descriptor.sections[].parameters[].defaultValue.value.locator",
@@ -1053,6 +1052,9 @@ impl EventRecord {
         "input.selection.descriptor.sections[].parameters[].label",
         "input.selection.descriptor.sections[].parameters[].patchInteraction",
         "input.selection.descriptor.sections[].parameters[].range",
+        "input.selection.descriptor.sections[].parameters[].range.maximum",
+        "input.selection.descriptor.sections[].parameters[].range.minimum",
+        "input.selection.descriptor.sections[].parameters[].steppedLabels[]",
         "input.selection.descriptor.sections[].parameters[].unit",
         "input.selection.descriptor.sections[].parameters[].update",
         "input.selection.descriptor.sections[].parameters[].visibleWhen",
@@ -1816,6 +1818,28 @@ mod tests {
                 _ => None,
             })
             .unwrap();
+        // SoundFont alone has choice metadata, but cannot witness numeric
+        // ranges or the catalog's stepped/continuous display-label payloads.
+        let registry =
+            crate::adapter::production_instruments::production_capability_registry().unwrap();
+        for id in ["instrument.mutable.tides", "instrument.mda.jx10"] {
+            let mut labelled = failed.clone();
+            labelled.descriptor = Some(
+                registry
+                    .descriptor(&crate::synth::CapabilityId::new(id).unwrap())
+                    .unwrap()
+                    .clone(),
+            );
+            records.push(schema_record(
+                EventSource::Worker,
+                EventInput::AssetImported {
+                    selection: labelled,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ));
+        }
         failed.descriptor = None;
         failed.result = Err(SampleAssetError::MalformedSoundFont);
         records.push(schema_record(
@@ -1937,7 +1961,7 @@ mod tests {
     #[test]
     fn event_source_surface_includes_physical_midi_with_stable_serialized_names() {
         let descriptor = EventSource::surface_descriptor();
-        assert_eq!(descriptor.len(), 7);
+        assert_eq!(descriptor.len(), 8);
         for (index, source) in descriptor.iter().enumerate() {
             assert!(!descriptor[..index].contains(source));
             assert_eq!(
@@ -1947,6 +1971,7 @@ mod tests {
         }
         assert!(descriptor.contains(&EventSource::Worker));
         assert!(descriptor.contains(&EventSource::PhysicalMidi));
+        assert!(descriptor.contains(&EventSource::Controller));
         assert_ne!(EventSource::PhysicalMidi, EventSource::AutomaticMidi);
     }
 

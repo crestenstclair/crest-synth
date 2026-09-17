@@ -15,7 +15,7 @@ static size_t allocations=0,destructions=0,heap_operations=0,locks=0;
 static bool is_measuring() {
     return measuring.load(std::memory_order_acquire) && pthread_equal(measured_thread.load(std::memory_order_relaxed),pthread_self());
 }
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
 #include <pthread.h>
 extern "C" void crest_witness_begin();
 extern "C" void crest_witness_end(size_t*,size_t*);
@@ -24,12 +24,12 @@ static void begin_measurement() {
     allocations=destructions=heap_operations=locks=0;
     measured_thread.store(pthread_self(),std::memory_order_relaxed);
     measuring.store(true,std::memory_order_release);
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     crest_witness_begin();
 #endif
 }
 static void end_measurement() {
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     crest_witness_end(&heap_operations,&locks);
 #endif
     measuring.store(false,std::memory_order_release);
@@ -64,6 +64,8 @@ bool crest_audio_process(void*,float*,size_t);
 bool crest_audio_load_sample(void*,const uint8_t*,size_t,size_t);
 }
 #include "crest_sample_default.h"
+bool sfizz_midi_flush_witness();
+bool daisy_coefficient_witness();
 // Verify instrumentation before accepting a zero-operation measurement.
 static bool counter_self_test() {
     allocations=destructions=heap_operations=locks=0;
@@ -72,7 +74,7 @@ static bool counter_self_test() {
     ::operator delete(cpp);
     end_measurement();
     if(allocations!=1||destructions!=1){std::printf("SELF C++ new=%zu delete=%zu\n",allocations,destructions);return false;}
-#ifdef __APPLE__
+#if defined(__APPLE__) || defined(__linux__)
     pthread_mutex_t mutex=PTHREAD_MUTEX_INITIALIZER;
     pthread_rwlock_t rwlock=PTHREAD_RWLOCK_INITIALIZER;
     void* (*volatile allocate)(size_t)=malloc;
@@ -94,6 +96,8 @@ static bool counter_self_test() {
 }
 int main(){
     if(!counter_self_test()){std::printf("COUNTER SELF-TEST FAILED\n");return 1;}
+    if(!sfizz_midi_flush_witness()){std::printf("SFIZZ MIDI FLUSH FAILED\n");return 1;}
+    if(!daisy_coefficient_witness()){return 1;}
     size_t failures=0,checked=0;
     for(float rate:{44100.f,48000.f,96000.f})for(size_t index=0;index<crest_audio_count();++index){
         const char* id=crest_audio_id(index);auto* p=crest_audio_create(index,rate,256);

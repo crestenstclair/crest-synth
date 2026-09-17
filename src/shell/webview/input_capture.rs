@@ -1,14 +1,9 @@
 //! Rust-side native key capture for the webview shell.
 //!
-//! This is the input-capture path selected by the original probe:
-//! an `NSEvent` local monitor installed from the Rust side at window setup.
-//! The monitor observes every key event delivered to this process *before*
-//! dispatch to the responder chain, so capture is independent of which view
-//! (in practice the focused WKWebView) is first responder. The tao/Tauri
-//! window-event path lost: `tauri::WindowEvent` carries no keyboard variant
-//! at all, so window-level key capture through `on_window_event` is
-//! structurally impossible under Tauri v2. The losing path is deliberately
-//! absent from this module.
+//! macOS uses an `NSEvent` local monitor; Linux uses a GTK capture-phase key
+//! controller on the owned window. Both observe native input before WebKit
+//! dispatch. `tauri::WindowEvent` has no keyboard variant, so input capture
+//! belongs at this native boundary, never in the projection page.
 //!
 //! The module emits [`RawKeyEvent`] values only. It owns no translator, no
 //! modifier state, and no application state: the sink is expected to
@@ -17,11 +12,11 @@
 //! adapter does — that wiring belongs to the webview window composition
 //! (WP02), not here.
 //!
-//! Threading contract (macOS): [`install`] must be called on the main thread,
+//! Threading contract: [`install_for_window`] must be called on the main thread,
 //! and the sink is invoked on the main thread — the same thread that runs the
 //! Tauri event loop — so a `KeyboardInputTranslator` living in main-thread
 //! state needs no synchronization. Dropping the returned handle removes the
-//! monitor.
+//! native capture.
 
 use crate::shell::window_input::WindowKey;
 use core::fmt;
@@ -73,7 +68,7 @@ impl RawKeyEvent {
 /// A failure installing the native key monitor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum InputCaptureError {
-    /// [`install`] was called off the main thread.
+    /// Capture was installed off the main thread.
     NotMainThread,
     /// The platform rejected the monitor installation.
     MonitorRejected,
@@ -297,9 +292,30 @@ mod platform {
 #[cfg(target_os = "macos")]
 pub use platform::{install, InputCaptureHandle};
 
-#[cfg(not(target_os = "macos"))]
-/// Native capture is macOS-first (WKWebView); other platforms are declared
-/// unsupported rather than silently degraded.
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(target_os = "linux")]
+pub use linux::{install_for_window, window_key_from_linux_key_code, InputCaptureHandle};
+
+/// Installs capture on the owned native window, before webview key dispatch.
+#[cfg(target_os = "macos")]
+pub fn install_for_window(
+    _window: &tauri::WebviewWindow,
+    sink: impl FnMut(RawKeyEvent) + 'static,
+) -> Result<InputCaptureHandle, InputCaptureError> {
+    install(sink)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn install_for_window(
+    _window: &tauri::WebviewWindow,
+    _sink: impl FnMut(RawKeyEvent) + 'static,
+) -> Result<(), InputCaptureError> {
+    Err(InputCaptureError::UnsupportedPlatform)
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// Platforms without a native capture adapter fail explicitly.
 pub fn install(_sink: impl FnMut(RawKeyEvent) + 'static) -> Result<(), InputCaptureError> {
     Err(InputCaptureError::UnsupportedPlatform)
 }

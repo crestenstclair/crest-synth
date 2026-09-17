@@ -1,11 +1,15 @@
 //! Bounded actual AppKit capture followed by the production reducer and page.
 use super::*;
 use crest_synth::control::{SavedSession, SemanticAction};
+#[cfg(target_os = "macos")]
 use objc2::MainThreadMarker;
+#[cfg(target_os = "macos")]
 use objc2_app_kit::{NSApplication, NSEvent, NSEventModifierFlags, NSEventType};
+#[cfg(target_os = "macos")]
 use objc2_foundation::{NSPoint, NSString};
 use tauri::Manager;
 
+#[cfg(target_os = "macos")]
 fn post_key(
     app: &NSApplication,
     window_number: isize,
@@ -35,6 +39,7 @@ fn post_key(
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 fn capture(
     handle: &tauri::AppHandle,
     keys: &mpsc::Receiver<SemanticAction>,
@@ -80,6 +85,77 @@ fn capture(
     received
         .recv_timeout(Duration::from_secs(5))
         .map_err(|error| error.to_string())??;
+    let action = keys
+        .recv_timeout(Duration::from_secs(5))
+        .map_err(|error| format!("{tag}: native input missing: {error}"))?;
+    if &action != expected {
+        return Err(format!("{tag}: expected {expected:?}, captured {action:?}"));
+    }
+    Ok(action)
+}
+
+#[cfg(target_os = "linux")]
+fn capture(
+    _handle: &tauri::AppHandle,
+    keys: &mpsc::Receiver<SemanticAction>,
+    code: u16,
+    shift: bool,
+    expected: &SemanticAction,
+    tag: &str,
+) -> Result<SemanticAction, String> {
+    // Preserve the existing journey's physical-key fixtures on X11/XWayland.
+    // Explicit window 0 uses XTest on the active window; a search result would
+    // otherwise select XSendEvent, which GTK does not treat as physical input.
+    let key = match code {
+        14 => "e",
+        12 => "q",
+        126 => "Up",
+        125 => "Down",
+        123 => "Left",
+        124 => "Right",
+        13 => "w",
+        1 => "s",
+        0 => "a",
+        2 => "d",
+        _ => return Err(format!("{tag}: unmapped native fixture {code}")),
+    };
+    if shift {
+        let repeat = Command::new("xset")
+            .args(["r", "rate", "150", "2"])
+            .status()
+            .map_err(|error| error.to_string())?;
+        if !repeat.success() {
+            return Err(format!("{tag}: configuring native autorepeat failed"));
+        }
+    }
+    let mut command = Command::new("xdotool");
+    command.args([
+        "search",
+        "--sync",
+        "--onlyvisible",
+        "--name",
+        "crest-synth WP06 acceptance harness",
+        "windowactivate",
+        "--sync",
+    ]);
+    if shift {
+        command.args(["keydown", "--window", "0", "Shift_L"]);
+    }
+    command.args(["keydown", "--window", "0", key]);
+    if shift {
+        command.args(["sleep", "0.3"]);
+    }
+    command.args(["keyup", "--window", "0", key]);
+    if shift {
+        command.args(["keyup", "--window", "0", "Shift_L"]);
+    }
+    let output = command.output().map_err(|error| error.to_string())?;
+    if !output.status.success() {
+        return Err(format!(
+            "{tag}: native injection failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
     let action = keys
         .recv_timeout(Duration::from_secs(5))
         .map_err(|error| format!("{tag}: native input missing: {error}"))?;

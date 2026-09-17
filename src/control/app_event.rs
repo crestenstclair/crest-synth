@@ -961,7 +961,10 @@ mod tests {
     fn surface_descriptor_is_unique_and_exhaustive() {
         let descriptor = AppEvent::surface_descriptor();
 
-        assert_eq!(descriptor.len(), 55);
+        assert_eq!(descriptor.len(), 56);
+        assert!(descriptor.contains(&AppEventSurfaceDescriptor::Controller {
+            event: AppEventPayloadShape::ControllerEvent,
+        }));
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),

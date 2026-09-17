@@ -2,6 +2,10 @@
 #include <cstdlib>
 #include <cstdint>
 #include <random>
+#include <algorithm>
+#include <stdlib.h>
+// Parse both standard-library interfaces before adapting upstream rand calls.
+// libstdc++'s algorithm and C compatibility headers still refer to std::rand.
 // Each prepared instance owns its generators. The scoped accessor only selects
 // that state; it does not introduce a new noise algorithm or libc rand lock.
 struct CrestRandomState {

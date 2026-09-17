@@ -1,6 +1,8 @@
 #include "parameter_adapter.h"
-#include "fftconvolver/FFTConvolver.h"
+// r8brain includes SSE intrinsics at global scope. Load it before FFTConvolver,
+// whose upstream header includes xmmintrin.h inside its own namespace.
 #include "CDSPResampler.h"
+#include "fftconvolver/FFTConvolver.h"
 
 class ConvolutionEffect final : public ParameterAdapter {
     fftconvolver::FFTConvolver left_,right_;

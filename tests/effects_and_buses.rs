@@ -31,7 +31,8 @@ use crest_synth::control::event_log::EventLog;
 use crest_synth::control::event_record::EventOutcome;
 use crest_synth::control::state_projector::StateProjector;
 use crest_synth::control::{
-    GraphicalShellProjection, MixerControlId, PatchControlId, SemanticAction,
+    EngineSelectionStatusKind, GraphicalShellProjection, MixerControlId, PatchControlId,
+    SemanticAction,
 };
 use crest_synth::real_time::audio_boundary::AudioBoundary;
 use crest_synth::real_time::audio_observation::AudioObservation;
@@ -298,6 +299,18 @@ fn effects_and_buses_scene_completes_with_measured_topology_and_responsiveness()
             runner
                 .observe_shell_frame(shell_frame(&app_loop.current_graphical_shell()))
                 .expect("the production-rendered shell frame correlates");
+        }
+        // Preparation runs on a real worker. Do not spend seconds of its
+        // virtual deadline in a tight, optimized polling loop: give it the
+        // same 5 ms as the simulated tick while continuing to render and
+        // observe every block. All transition and timeout gates stay active.
+        if matches!(
+            app_loop.engine_selection_status().kind(),
+            EngineSelectionStatusKind::Loading
+                | EngineSelectionStatusKind::Validating
+                | EngineSelectionStatusKind::Preparing
+        ) {
+            std::thread::sleep(Duration::from_millis(5));
         }
         if runner.completed_report().is_some() {
             break;

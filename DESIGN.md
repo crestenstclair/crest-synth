@@ -112,8 +112,9 @@ sample row and stopping on release; Start is reserved elsewhere.
 ## Product as built
 
 Crest Synth is a standalone, controller-first MIDI instrument host. The
-production composition is a Rust application using a Tauri v2/WKWebView shell
-and CPAL stereo audio output. Normal startup opens one clean, playable Sample
+production composition is a Rust application using Tauri v2 with WKWebView on
+macOS and WebKitGTK on Linux, plus CPAL stereo audio output. Normal startup
+opens one clean, playable Sample
 `INIT` document and starts a bounded repeating test MIDI pattern on channel 1:
 the catalog demo's ascending/descending major-seventh arpeggio across three
 octaves, played as eighth notes at 120 BPM with 200 ms gates.
@@ -399,6 +400,8 @@ status and are formatted/handled off callback.
   remain source-level behavior to account for when making that configurable.
 - Every engine applies the Patch-owned ADSR to independent native note voices;
   one post-stem envelope is nonconforming.
+  Repeated note-offs preserve an older voice's already-latched release rather
+  than restarting its tail when another note on the same key ends.
 - SoundFont uses one full upstream RustySynth synthesizer per prepared host
   voice, sharing an immutable parsed SoundFont. Each synthesizer admits the
   maximum overlapping regions for its selected preset. Native envelopes and
@@ -542,6 +545,10 @@ Crest maintains these adaptations because the selected sfizz repository is
 archived. sfizz currently duplicates resident samples across host voices;
 Sample admission accounts for private PCM copies separately from shared PCM.
 This remains a memory optimization opportunity.
+Delay-zero MIDI updates retain normalized event state without rewriting every
+controller buffer each block. Delayed events still flush in timestamp order.
+DaisySP caches unchanged SVF coefficients while advancing filter history and
+gain every sample; the native witness compares against the upstream sources.
 
 Catalog descriptors expose native parameters through existing generic lists.
 Parameter descriptors attach names to categorical stepped values and normalized
@@ -863,8 +870,15 @@ including when Shift is released first; Q/E also require release before another
 Patch step. Bare focus/edit repeats retain their existing behavior. Controller
 page gestures require release or disconnect before another activation.
 
-`make test-webview-page-navigation-native` exercises actual AppKit Q/E,
-Shift+arrows, repeats, and WASD through the production reducer and native paint.
+Linux captures physical XKB keys with a GTK key controller on the owned
+window, before WebKit dispatch. Ctrl/Alt/Super shortcuts remain native;
+held-key tracking clears on focus loss. The translator and reducer are shared
+with macOS. Linux native witnesses use XTest on an isolated X11 desktop;
+Wayland hardware input remains a separate acceptance check.
+
+`make test-webview-page-navigation-native` exercises actual AppKit or Linux
+XTest Q/E, Shift+arrows, repeats, and WASD through the production reducer and
+native paint.
 Its accepted journey includes Settings entry/return, exact Instrument/effect
 Detail origins, remembered context roots, singular focus, footer guidance,
 and owned shutdown. It does not establish an attached-gamepad handoff or broad visual parity.
@@ -920,6 +934,16 @@ one for another or demand an unrelated repeat of already accepted work.
 `make run`, `make play`, and `make ui` use the optimized release profile for both
 Rust and native DSP. `cargo run --bin crest-synth` remains an explicit debug
 launch; unoptimized timing is not a supported real-time performance target.
+The test profile optimizes execution while retaining debug assertions and native fault
+injection seams. `CREST_AUDIO_BUFFER_FRAMES` explicitly selects a positive device
+buffer size; unsupported requests fail instead of silently changing latency.
+Without it, the existing preferred device configuration applies. Larger buffers
+can accommodate VM scheduling at the cost of latency; graph preparation sizes
+its storage from the selected buffer before starting audio.
+The pinned CPAL source retries interrupted ALSA waits through its existing
+worker loop. Signals do not become device failures; other backend errors keep
+their typed reporting. The Linux device witness injects signals into the real
+audio worker and verifies continued callbacks without runtime failures.
 
 `make full-instrument-effect-demo` runs a sequential listening tour in the
 production window and audio runtime, focused on the new audio catalog. The
@@ -981,6 +1005,12 @@ Fixture sizes are not product limits. Each case has independent unprofiled
 timing trials and a separate Samply diagnostic execution. The existing audio,
 note-delivery, timing and Rust callback allocation/destruction gates remain
 authoritative; profiled matrix timings do not count as timing-budget proof.
+The largest native stress cases still exceed callback budgets on current
+development hardware, particularly fixed-rate resampling and resonant models.
+These timing gaps remain unresolved; ordinary suite passes do not establish a
+complete stress-matrix pass. Rapid retrigger fixtures prepare storage for held
+notes and overlapping release tails through the production session restore
+path. Voice admission still refuses exhaustion without truncating sounding voices.
 
 Every run retains commands, build/host/source fingerprints, raw latency samples,
 per-child CPU/RSS/fault/context-switch measurements, scene observations, logs,
@@ -1027,8 +1057,9 @@ Normal startup plays the bounded test pattern on MIDI channel 1; T toggles it.
 Return opens highlighted Detail. Return on Sample/SoundFont File opens the
 in-app browser. W/S navigates; Return enters or assigns; Shift+S cancels.
 Hold Space on a Sample file to preview; SoundFont preview is unavailable.
-K with W/S/A/D edits controls; K+W opens an eligible choice. Cmd+S/Cmd+O use
-native session Save/Open dialogs. Assets use the in-app file page.
+K with W/S/A/D edits controls; K+W opens an eligible choice. Cmd+S/Cmd+O on
+macOS and Ctrl+S/Ctrl+O on Linux use native session Save/Open dialogs. Assets
+use the in-app file page.
 
 To choose an existing Sample library and initial asset, configure both
 `CREST_SAMPLE_LIBRARY_ROOT` (absolute root) and `CREST_SAMPLE_DEFAULT_ASSET`
@@ -1037,11 +1068,41 @@ To choose an existing Sample library and initial asset, configure both
 Native window, physical-input, and physical-audio witnesses require an
 interactive host. An unavailable environment is incomplete evidence, not a
 pass. Building the bundled SDL3 library requires CMake and a C toolchain. Linux
-input builds require ALSA development headers and SDL platform dependencies;
-optional JACK is an explicit MIDI packaging choice. Windows MIDI defaults to
-WinMM; optional WinRT is also
-an explicit choice. Broader packaging remains unverified; maintain platform
+builds require GTK3, WebKitGTK 4.1, ALSA and SDL platform development libraries.
+Session file dialogs use the desktop portal (or Zenity); unsaved-change prompts
+require Zenity. Optional JACK is an explicit MIDI packaging choice. Windows
+MIDI defaults to WinMM; optional WinRT is also an explicit choice. Broader
+packaging remains unverified; maintain platform
 adapter boundaries without assuming a small-device target.
+
+`scripts/linux/Dockerfile` provides Ubuntu 24.04 and the pinned Rust toolchain.
+`make test-linux` runs the ordinary suite, doc tests, Clippy, Python checks,
+native DSP allocation/lock instrumentation, and native UI witnesses. Its
+virtual desktop uses Xvfb/Openbox and a PulseAudio null sink; this validates
+Linux integration without claiming physical speaker or Steam Deck acceptance.
+WebKit uses software compositing on this GPU-less desktop to avoid software-GPU
+round trips; normal application launches retain the platform rendering defaults.
+The virtual desktop defaults to an 8192-frame audio buffer to tolerate emulation
+and container scheduling; it does not measure device latency.
+
+For Docker on a non-Linux host, use a separate target directory per architecture
+and run as the checkout owner. For example, from this checkout:
+
+```sh
+docker build --platform linux/amd64 --build-arg CREST_UID="$(id -u)" \
+  -f scripts/linux/Dockerfile -t crest-linux-dev scripts/linux
+mkdir -p target/linux-amd64
+docker run --rm --init --platform linux/amd64 --security-opt seccomp=unconfined \
+  -e CARGO_BUILD_JOBS=2 -e RUST_TEST_THREADS=2 \
+  -v "$PWD:/workspace" -v "$PWD/target/linux-amd64:/workspace/target" \
+  crest-linux-dev
+```
+
+WebKit's sandbox remains enabled. Docker's default seccomp profile blocks the
+user namespace creation it needs; the development container permits those
+syscalls. Native Linux hosts must likewise permit unprivileged user namespaces.
+Use `linux/arm64` with its own target directory for ARM development. Emulated
+x86-64 timings are functional evidence, not Steam Deck performance measurements.
 
 ## Change checklist
 

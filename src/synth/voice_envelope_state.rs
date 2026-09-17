@@ -71,8 +71,9 @@ impl VoiceEnvelopeState {
     }
 
     /// Begins release from the exact current level and latches this duration.
+    /// Repeated note-offs cannot restart an older voice's latched release.
     pub fn note_off(&mut self, release_milliseconds: f32, sample_rate: f32) {
-        if self.is_idle() {
+        if self.is_idle() || self.is_releasing() {
             return;
         }
         let release_samples = milliseconds_to_samples(release_milliseconds, sample_rate);
@@ -202,6 +203,25 @@ mod tests {
         first.note_off(note_off.release_milliseconds(), 1_000.0);
         assert_eq!(first.next_gain(1_000.0), 0.375);
         assert_eq!(second.next_gain(1_000.0), 1.0);
+    }
+
+    #[test]
+    fn repeated_note_off_preserves_the_original_release_and_reclaims_its_voice() {
+        let mut state = VoiceEnvelopeState::new();
+        state.note_on(VoiceEnvelope::DEFAULT, 1_000.0);
+        state.note_off(40.0, 1_000.0);
+        let mut reference = state;
+        for sample in 0..40 {
+            if sample % 8 == 0 {
+                // A later note on the same key can end while this older voice
+                // is still releasing. It must not relatch or extend this tail.
+                state.note_off(10_000.0, 1_000.0);
+            }
+            assert_eq!(state.next_gain(1_000.0), reference.next_gain(1_000.0));
+        }
+        assert!(state.is_idle());
+        state.note_on(VoiceEnvelope::DEFAULT, 1_000.0);
+        assert_eq!(state.next_gain(1_000.0), 1.0);
     }
 
     #[test]

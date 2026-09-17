@@ -5125,6 +5125,15 @@ mod projection_enrichment_tests {
             .apply_semantic_action(SemanticAction::OpenMidiSettings)
             .expect("the fixture opens the global MIDI device Settings surface");
 
+        let mut controller_settings = midi_settings.clone();
+        controller_settings
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
+            .expect("the fixture opens Controller Settings from MIDI Settings");
+        assert_eq!(
+            controller_settings.interaction().active_surface(),
+            SurfaceId::ControllerSettings
+        );
+
         let sample_provider = crate::adapter::sample_capability::SampleCapability::new(
             crate::synth::AssetFileId::new("Factory.wav").unwrap(),
         )
@@ -5184,6 +5193,7 @@ mod projection_enrichment_tests {
             ("PATCH Utility master gain", utility_global),
             ("generic Patch choice", choice),
             ("MIDI Device Settings", midi_settings),
+            ("Controller Settings", controller_settings),
             ("Sample Browser", browser),
             ("braids PATCH Main", braids(None)),
             (
@@ -5222,7 +5232,7 @@ mod projection_enrichment_tests {
                 );
             }
         }
-        // The guard is only as wide as the surfaces it saw. All five, or the
+        // The guard is only as wide as the surfaces it saw. All surfaces, or the
         // row that was reported is the only one anybody ever checks.
         assert_eq!(
             covered,
@@ -5255,7 +5265,7 @@ mod projection_enrichment_tests {
                 .project_with_shell(&state)
                 .expect("the fixture state must project");
             let model = shell.semantic_model();
-            let root = if model.active_surface() == SurfaceId::MidiDeviceSettings {
+            let root = if model.active_surface().is_system() {
                 "SETTINGS"
             } else {
                 model.context().label()

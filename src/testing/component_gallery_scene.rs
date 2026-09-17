@@ -3109,38 +3109,6 @@ impl ComponentGalleryScene {
         let ack_inbox: Arc<Mutex<Vec<GalleryPaintedAck>>> = Arc::new(Mutex::new(Vec::new()));
         let page_ready = Arc::new(AtomicBool::new(false));
 
-        // Keys are captured Rust-side, exactly as the product webview shell
-        // captures them — but the sink is the scene-local page selection, and
-        // nothing here reaches `KeyboardInputTranslator`, so no key press can
-        // become a `SemanticAction`.
-        let capture_selection = Rc::clone(&selection);
-        let capture_ledger = Rc::clone(&ledger);
-        let _capture_handle = input_capture::install(move |raw| {
-            let input = if raw.pressed() {
-                WindowInput::key_down(raw.key())
-            } else {
-                WindowInput::key_up(raw.key())
-            };
-            let before = capture_selection.borrow().active();
-            let outcome = capture_selection.borrow_mut().apply(input);
-            let mut ledger = capture_ledger.borrow_mut();
-            match outcome {
-                PageSelection::Changed(page) => ledger.record_digit_request(page),
-                PageSelection::Stepped(page) => ledger.record_step_request(page),
-                PageSelection::Retained(page) => {
-                    // A step that ran into an end is a bound key declining to
-                    // move, which is a different fact from a key that binds
-                    // nothing; only the latter is what the retention field
-                    // reports.
-                    let bound_nothing = PageStep::for_key(input.key()).is_none();
-                    if bound_nothing && input.kind() == WindowInputKind::KeyDown {
-                        ledger.record_unbound_key(page != before);
-                    }
-                }
-            }
-        })
-        .map_err(|error| ComponentGalleryError::Window(format!("input capture failed: {error}")))?;
-
         // FR-006 / OBS-1 — this handler attaches `Content-Type` and NO
         // content security policy, and that is a recorded decision, not an
         // oversight. Do not "fix" it by adding a CSP here.
@@ -3232,6 +3200,38 @@ impl ComponentGalleryScene {
                 ComponentGalleryError::Window(format!("window creation failed: {error}"))
             })?;
         let _ = window.set_focus();
+
+        // Keys are captured Rust-side, exactly as the product webview shell
+        // captures them — but the sink is the scene-local page selection, and
+        // nothing here reaches `KeyboardInputTranslator`, so no key press can
+        // become a `SemanticAction`.
+        let capture_selection = Rc::clone(&selection);
+        let capture_ledger = Rc::clone(&ledger);
+        let _capture_handle = input_capture::install_for_window(&window, move |raw| {
+            let input = if raw.pressed() {
+                WindowInput::key_down(raw.key())
+            } else {
+                WindowInput::key_up(raw.key())
+            };
+            let before = capture_selection.borrow().active();
+            let outcome = capture_selection.borrow_mut().apply(input);
+            let mut ledger = capture_ledger.borrow_mut();
+            match outcome {
+                PageSelection::Changed(page) => ledger.record_digit_request(page),
+                PageSelection::Stepped(page) => ledger.record_step_request(page),
+                PageSelection::Retained(page) => {
+                    // A step that ran into an end is a bound key declining to
+                    // move, which is a different fact from a key that binds
+                    // nothing; only the latter is what the retention field
+                    // reports.
+                    let bound_nothing = PageStep::for_key(input.key()).is_none();
+                    if bound_nothing && input.kind() == WindowInputKind::KeyDown {
+                        ledger.record_unbound_key(page != before);
+                    }
+                }
+            }
+        })
+        .map_err(|error| ComponentGalleryError::Window(format!("input capture failed: {error}")))?;
 
         // The tao loop waits when idle; a detached waker keeps the main loop
         // draining acks and pushing page changes at the idle-frame cadence.

@@ -3,8 +3,8 @@
 //!
 //! Composition follows the original input-capture probe verdict:
 //!
-//! - keys are captured Rust-side by [`input_capture::install`] (NSEvent local
-//!   monitor, installed on the main thread before the event loop starts) and
+//! - keys are captured Rust-side by [`input_capture::install_for_window`]
+//!   (AppKit monitor or GTK capture controller on the event thread) and
 //!   normalized through the same [`KeyboardInputTranslator`] the retired native
 //!   window uses — one shared key state machine, no page key handler;
 //! - the event loop runs through `run_return`, never `run`, so
@@ -652,21 +652,6 @@ impl AppWindow for TauriWebviewWindow {
             on_input,
         }));
 
-        // The winning WP01 path: the NSEvent local monitor, installed from
-        // the Rust side on the main thread before the event loop starts. The
-        // sink runs on the main thread; events pass through unchanged so the
-        // webview still receives them (the page registers no key handler).
-        let capture_pipeline = Rc::clone(&pipeline);
-        let _capture_handle = input_capture::install(move |raw| {
-            let input = if raw.pressed() {
-                WindowInput::key_down(raw.key())
-            } else {
-                WindowInput::key_up(raw.key())
-            };
-            capture_pipeline.borrow_mut().feed(input);
-        })
-        .map_err(|error| WindowError::from(WebviewShellError::InputCapture(error)))?;
-
         let app = tauri::Builder::default()
             .register_uri_scheme_protocol("crest", move |_context, request| {
                 protocol_response(request.uri().path(), &page)
@@ -780,6 +765,20 @@ impl AppWindow for TauriWebviewWindow {
             .build()
             .map_err(|error| WindowError::from(WebviewShellError::WindowCreation(error)))?;
         let _ = window.set_focus();
+
+        // Native capture runs on the event thread before WebKit dispatch:
+        // an AppKit monitor on macOS and a GTK capture controller on Linux.
+        // The page owns no keyboard handling or product state.
+        let capture_pipeline = Rc::clone(&pipeline);
+        let _capture_handle = input_capture::install_for_window(&window, move |raw| {
+            let input = if raw.pressed() {
+                WindowInput::key_down(raw.key())
+            } else {
+                WindowInput::key_up(raw.key())
+            };
+            capture_pipeline.borrow_mut().feed(input);
+        })
+        .map_err(|error| WindowError::from(WebviewShellError::InputCapture(error)))?;
 
         // The tao loop waits when idle; a detached waker keeps control-side
         // ticks flowing (fixture MIDI, structural advance, device status) at

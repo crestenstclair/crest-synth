@@ -1,3 +1,5 @@
+#[path = "build_support/daisy.rs"]
+mod daisy_build;
 #[path = "build_support/sfizz.rs"]
 mod sfizz_build;
 fn main() {
@@ -71,6 +73,7 @@ fn main() {
 
 fn build_audio_catalog() {
     let generated = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let msfa_sources = stage_msfa(&generated);
     std::fs::create_dir_all(generated.join("stmlib/utils")).unwrap();
     // Select each instance's original Mutable generator through the prepared
     // native scope; no first-use C++ TLS allocation occurs on Darwin audio.
@@ -129,7 +132,7 @@ fn build_audio_catalog() {
         .include("vendor/audio/sfizz/external/simde");
     build
         .include("vendor/audio/mda/plugins")
-        .include("vendor/audio/msfa/app/src/main/jni");
+        .include(&msfa_sources);
     build
         .include(&generated)
         .include("vendor/audio")
@@ -138,6 +141,10 @@ fn build_audio_catalog() {
     build
         .cpp(true)
         .std("c++20")
+        // Embedded DSP assumes zeroed static storage before its constructors.
+        // GCC lifetime DSE otherwise erases ZeroInitialized's pre-constructor
+        // stores, leaving histories indeterminate in optimized heap voices.
+        .flag_if_supported("-fno-lifetime-dse")
         .include("vendor/audio/nam/Dependencies/eigen")
         .include("vendor/audio/nam/Dependencies/nlohmann")
         .define("NAM_SAMPLE_FLOAT", None)
@@ -148,7 +155,9 @@ fn build_audio_catalog() {
         .warnings(false);
     for entry in std::fs::read_dir("native/audio").unwrap() {
         let path = entry.unwrap().path();
-        if path.extension().and_then(|s| s.to_str()) == Some("cpp") {
+        if path.extension().and_then(|s| s.to_str()) == Some("cpp")
+            && path.file_name().and_then(|s| s.to_str()) != Some("stk_waves.cpp")
+        {
             build.file(path);
         }
     }
@@ -174,9 +183,9 @@ fn build_audio_catalog() {
         }
         std::fs::write(butter.join(name), source).unwrap();
     }
-    let daisy = std::path::Path::new("vendor/audio/daisysp/Source");
-    build.include(daisy);
-    for folder in std::fs::read_dir(daisy).unwrap() {
+    let daisy = daisy_build::stage(&generated);
+    build.include(&daisy);
+    for folder in std::fs::read_dir(&daisy).unwrap() {
         let path = folder.unwrap().path();
         if path.is_dir() {
             build.include(path);
@@ -232,8 +241,8 @@ fn build_audio_catalog() {
         .warnings(false)
         .flag("-include")
         .flag("native/audio/random.h")
-        .include(daisy);
-    for folder in std::fs::read_dir(daisy).unwrap() {
+        .include(&daisy);
+    for folder in std::fs::read_dir(&daisy).unwrap() {
         let path = folder.unwrap().path();
         if path.is_dir() {
             dsp.include(&path);
@@ -261,6 +270,9 @@ fn build_audio_catalog() {
     }
     dsp.compile("crest_daisy");
     let mut stk = native_build();
+    // Keep STK's resident FileRead implementation beside its callers so
+    // one-pass ELF archive extraction does not leave a backwards dependency.
+    stk.file("native/audio/stk_waves.cpp");
     stk.cpp(true)
         .std("c++17")
         .include("vendor/audio/stk/include")
@@ -278,7 +290,7 @@ fn build_audio_catalog() {
     msfa.cpp(true)
         .std("c++17")
         .warnings(false)
-        .include("vendor/audio/msfa/app/src/main/jni");
+        .include(&msfa_sources);
     for source in [
         "dx7note",
         "env",
@@ -291,7 +303,7 @@ fn build_audio_catalog() {
         "lfo",
         "patch",
     ] {
-        msfa.file(format!("vendor/audio/msfa/app/src/main/jni/{source}.cc"));
+        msfa.file(msfa_sources.join(format!("{source}.cc")));
     }
     msfa.compile("crest_msfa");
     let mut nam = native_build();
@@ -315,6 +327,38 @@ fn build_audio_catalog() {
         convolution.file(std::path::Path::new("vendor/audio/fftconvolver").join(source));
     }
     convolution.compile("crest_convolution");
+}
+
+/// Keep pinned MSFA sources intact while making their declarations portable.
+fn stage_msfa(output: &std::path::Path) -> std::path::PathBuf {
+    let staged = output.join("msfa-source");
+    std::fs::create_dir_all(&staged).unwrap();
+    for entry in std::fs::read_dir("vendor/audio/msfa/app/src/main/jni").unwrap() {
+        let source = entry.unwrap().path();
+        if !matches!(
+            source.extension().and_then(|s| s.to_str()),
+            Some("h" | "cc")
+        ) {
+            continue;
+        }
+        let mut text = std::fs::read_to_string(&source).unwrap();
+        match source.file_name().and_then(|s| s.to_str()).unwrap() {
+            "aligned_buf.h" => {
+                text = text.replace(
+                    "#define __ALIGNED_BUF_H",
+                    "#define __ALIGNED_BUF_H\n#include <stddef.h>\n#include <stdint.h>",
+                );
+            }
+            "dx7note.cc" => {
+                // Select the original helpers, not libstdc++ overloads pulled
+                // into scope by the upstream `using namespace std` directive.
+                text = text.replace("min(", "::min(").replace("max(", "::max(");
+            }
+            _ => {}
+        }
+        std::fs::write(staged.join(source.file_name().unwrap()), text).unwrap();
+    }
+    staged
 }
 
 fn add_cpp_tree(build: &mut cc::Build, directory: &std::path::Path) {

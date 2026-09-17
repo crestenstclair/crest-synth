@@ -222,7 +222,7 @@ const PERFORMANCE_WITNESS_ENV: &str = "CREST_WEBVIEW_PERFORMANCE_WITNESS";
 const CONTROLLER_WITNESS_ENV: &str = "CREST_WEBVIEW_CONTROLLER_WITNESS";
 #[path = "support/controller_settings_native.rs"]
 mod controller_settings_native;
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 #[path = "support/page_navigation_native.rs"]
 mod page_navigation_native;
 
@@ -4076,8 +4076,13 @@ fn evidence_dir() -> PathBuf {
 
 fn screenshot(name: &str) -> PathBuf {
     let path = evidence_dir().join(name);
+    #[cfg(not(target_os = "linux"))]
     let captured = Command::new("screencapture")
         .args(["-x", &path.to_string_lossy()])
+        .status();
+    #[cfg(target_os = "linux")]
+    let captured = Command::new("import")
+        .args(["-window", "root", &path.to_string_lossy()])
         .status();
     if captured.is_ok_and(|status| status.success()) && path.is_file() {
         println!("  evidence screenshot: {}", path.display());
@@ -4205,10 +4210,10 @@ fn run_live_sections(
         .unwrap_or_else(|error| panic!("the live harness seats its witness viewport: {error}"));
 
     let (key_sender, key_receiver) = mpsc::channel::<crest_synth::control::SemanticAction>();
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let _page_input_monitor = page_witness.then(|| {
         let mut keyboard = KeyboardInputTranslator::new();
-        crest_synth::shell::webview::input_capture::install(move |raw| {
+        crest_synth::shell::webview::input_capture::install_for_window(&window, move |raw| {
             let input = if raw.pressed() {
                 WindowInput::key_down(raw.key())
             } else {
@@ -4220,7 +4225,7 @@ fn run_live_sections(
         })
         .expect("page witness requires production native capture")
     });
-    #[cfg(not(target_os = "macos"))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
         let _ = key_sender;
         assert!(!page_witness, "native page input witness requires macOS");
@@ -4263,7 +4268,7 @@ fn run_live_sections(
                     &driver_render_errors,
                 );
             }
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", target_os = "linux"))]
             if page_witness {
                 return page_navigation_native::drive(
                     &handle,
@@ -4598,6 +4603,10 @@ fn keyboard_open_options(
         crest_synth::control::SemanticAction::Adjust(Direction::Up),
         true,
         &format!("{label} Edit+Up"),
+    );
+    assert_eq!(
+        translator.translate(WindowInput::key_up(WindowKey::W)),
+        None
     );
     apply_keyboard_gesture(
         state,
@@ -5021,6 +5030,9 @@ fn prove_native_option_input_journeys(
         true,
         "native Engine option Down",
     );
+    // Finish the navigation tap before a later Shift+Down page chord. A held
+    // direction must not acquire a second action when Shift is pressed.
+    assert_eq!(keyboard.translate(WindowInput::key_up(WindowKey::S)), None);
     apply_keyboard_gesture(
         &mut engine,
         &mut keyboard,
@@ -5052,6 +5064,10 @@ fn prove_native_option_input_journeys(
                 crest_synth::control::SemanticAction::Navigate(Direction::Down),
                 true,
                 &format!("native occupied slot {position} Overview step {step}"),
+            );
+            assert_eq!(
+                translator.translate(WindowInput::key_up(WindowKey::S)),
+                None
             );
         }
         let origin = state.interaction().focus_path().clone();
@@ -5092,6 +5108,10 @@ fn prove_native_option_input_journeys(
                 crest_synth::control::SemanticAction::Navigate(Direction::Down),
                 true,
                 &format!("native empty slot {position} Overview step {step}"),
+            );
+            assert_eq!(
+                translator.translate(WindowInput::key_up(WindowKey::S)),
+                None
             );
         }
         let origin = state.interaction().focus_path().clone();
@@ -9938,6 +9958,7 @@ fn prove_shutdown_parity_on_real_runs() {
 
         // The owned path: the native close button, exactly what an operator
         // clicks. Targeted by unix id.
+        #[cfg(not(target_os = "linux"))]
         let click = Command::new("osascript")
             .args([
                 "-e",
@@ -9948,9 +9969,28 @@ fn prove_shutdown_parity_on_real_runs() {
             ])
             .output()
             .expect("osascript runs");
+        #[cfg(target_os = "linux")]
+        let click = Command::new("xdotool")
+            .args([
+                "search",
+                "--sync",
+                "--onlyvisible",
+                "--pid",
+                &pid.to_string(),
+                "--name",
+                ".",
+                "windowactivate",
+                "--sync",
+                "key",
+                "--window",
+                "0",
+                "alt+F4",
+            ])
+            .output()
+            .expect("xdotool requests the owned window-manager close");
         assert!(
             click.status.success(),
-            "System Events must close the {shell} window (accessibility?): {}",
+            "native window manager must close the {shell} window: {}",
             String::from_utf8_lossy(&click.stderr)
         );
 

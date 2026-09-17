@@ -61,7 +61,38 @@ pub fn capture(window: &tauri::WebviewWindow, path: &std::path::Path) -> Result<
     std::fs::write(path, bytes).map_err(|error| error.to_string())
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(target_os = "linux")]
+pub fn capture(window: &tauri::WebviewWindow, path: &std::path::Path) -> Result<(), String> {
+    use webkit2gtk::WebViewExt;
+    let (sender, receiver) = std::sync::mpsc::channel();
+    window
+        .with_webview(move |webview| {
+            webview.inner().snapshot(
+                webkit2gtk::SnapshotRegion::Visible,
+                webkit2gtk::SnapshotOptions::NONE,
+                None::<&gtk::gio::Cancellable>,
+                move |result| {
+                    let result = result
+                        .map_err(|error| error.to_string())
+                        .and_then(|surface| {
+                            let mut bytes = Vec::new();
+                            surface
+                                .write_to_png(&mut bytes)
+                                .map_err(|error| error.to_string())?;
+                            Ok(bytes)
+                        });
+                    let _ = sender.send(result);
+                },
+            );
+        })
+        .map_err(|error| error.to_string())?;
+    let bytes = receiver
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .map_err(|_| "native snapshot did not finish within 10s".to_owned())??;
+    std::fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn capture(_: &tauri::WebviewWindow, _: &std::path::Path) -> Result<(), String> {
     Err("Sample native capture requires WKWebView on macOS".to_owned())
 }

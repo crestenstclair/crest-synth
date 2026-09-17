@@ -3123,7 +3123,7 @@ mod tests {
         assert_eq!(WindowInput::surface_descriptor().len(), 49);
         assert_eq!(
             crate::control::app_event::AppEvent::surface_descriptor().len(),
-            55
+            56
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),

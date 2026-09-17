@@ -960,7 +960,7 @@ mod tests {
     fn performance_and_system_surfaces_are_classified_without_a_third_context() {
         use crate::control::TopLevelContext;
 
-        assert_eq!(SurfaceId::surface_descriptor().len(), 8);
+        assert_eq!(SurfaceId::surface_descriptor().len(), 9);
         assert_eq!(SurfaceId::PatchMain.context(), Some(TopLevelContext::Patch));
         assert_eq!(
             SurfaceId::MixerInspector.context(),
@@ -968,6 +968,8 @@ mod tests {
         );
         assert_eq!(SurfaceId::MidiDeviceSettings.context(), None);
         assert!(SurfaceId::MidiDeviceSettings.is_system());
+        assert_eq!(SurfaceId::ControllerSettings.context(), None);
+        assert!(SurfaceId::ControllerSettings.is_system());
         assert!(SurfaceId::PatchUtility.is_persistent_side());
         assert!(SurfaceId::MixerMain.is_main());
 

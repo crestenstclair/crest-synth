@@ -26,6 +26,10 @@ check: cache-guard ## Type-check all targets
 test: cache-guard ## Run all tests
 	cargo test --all-targets
 
+.PHONY: test-linux
+test-linux: cache-guard ## Run all Linux tests and native witnesses in an isolated virtual desktop
+	scripts/linux/with-desktop.sh scripts/linux/check.sh
+
 test-session-lifecycle: cache-guard ## Run the automated New/Open/Save/Save As/close acceptance suite
 	cargo test shell::session_lifecycle --lib
 	cargo test shell::standalone_application::tests::normal_ --lib
