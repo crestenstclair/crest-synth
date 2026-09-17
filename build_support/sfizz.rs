@@ -33,6 +33,12 @@ fn adapted(source: &Path) -> Vec<u8> {
         ("src/sfizz/FilePool.h","std::thread dispatchThread { &FilePool::dispatchingJob, this };","std::thread dispatchThread;"),
         ("src/sfizz/FilePool.h","std::thread garbageThread { &FilePool::garbageJob, this };","std::thread garbageThread;"),
         ("src/sfizz/FilePool.cpp","threadPool(globalThreadPool())","threadPool()"),
+        // Crest owns callback observations and measures acceptance outside the
+        // renderer. sfizz's unused per-stage profiler otherwise reads the host
+        // clock for every voice stage. Keep its disabled durations at zero;
+        // unrelated clock users and every synthesis operation remain intact.
+        ("src/sfizz/utility/Timing.h","(highResNow() - creationTime).count()","0.0"),
+        ("src/sfizz/utility/Timing.h","const TimePoint creationTime { highResNow() };","const TimePoint creationTime {};"),
         ("src/sfizz/FilePool.cpp","garbageThread.join();","if (garbageThread.joinable()) garbageThread.join();"),
         ("src/sfizz/FilePool.cpp","dispatchThread.join();","if (dispatchThread.joinable()) dispatchThread.join();"),
         // At delay zero, insertion only updates the already-normalized first

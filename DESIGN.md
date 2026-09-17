@@ -547,6 +547,8 @@ Sample admission accounts for private PCM copies separately from shared PCM.
 This remains a memory optimization opportunity.
 Delay-zero MIDI updates retain normalized event state without rewriting every
 controller buffer each block. Delayed events still flush in timestamp order.
+The embedded sfizz stage profiler is disabled; Crest owns callback observations
+and external acceptance timing, avoiding clock reads in each native voice stage.
 DaisySP caches unchanged SVF and modal coefficients and drum tone/decay
 calculations, plus unchanged string/modal excitation and damping coefficients,
 while advancing filter history, interpolation, noise, and gain every sample. Sample

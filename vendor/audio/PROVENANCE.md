@@ -126,6 +126,9 @@ MIDI block normalization skips its controller-table scan when every event is
 already a current value at delay zero. Delayed events retain upstream ordering
 and collapse semantics; a native witness covers controls, pitch, aftertouch,
 and reset against the staged library.
+The unused stage profiler reports disabled zero durations instead of reading
+the clock at every voice stage. Other clock users remain upstream; Crest's
+callback observations and external timing witnesses remain authoritative.
 
 Import enables strict parsing, rejects unknown opcodes and discarded regions,
 checks sample-decoder failures, and rejects invalid embedded samples. An
