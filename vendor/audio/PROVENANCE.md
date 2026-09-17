@@ -54,6 +54,14 @@ output directory rather than altering the pinned source inputs.
   loaded during preparation. Delay capacity for BandedWG is reserved during
   construction; Shakers' selectable materials are warmed there. Mandolin's
   admitted damping range avoids the upstream invalid loop-gain endpoint.
+- r8brain retains its upstream 24-bit filter design and double-precision DSP.
+  Staged convolution starts at a prepared zero-padded block offset to spread
+  independent voices' FFT work, retaining the original latency consumption and
+  sample alignment. All-zero input and overlap skip the FFT. Native witnesses
+  compare output, counts, latency, and reset against the retained upstream
+  sources across integer and fractional rates. Generator adapters preserve the
+  input converter clock while omitting unused channels and duplicate mono
+  output conversion; stereo effects still convert both input/output channels.
 - MSFA is Google's original Apache-2.0 DX7 core. The bundled electric-piano
   voice comes from its `synth_unit.cc`. Crest supplies validated SysEx framing,
   checksums, stable bank/voice identities, and preset selection. No GPL Dexed

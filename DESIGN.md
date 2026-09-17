@@ -578,7 +578,13 @@ are bundled from `assets/licenses/UPSTREAM_AUDIO.txt`; Eigen's MPL-covered
 source ships in the adjacent `EIGEN_SOURCE.tar.gz` resource. STK's upstream patent statements
 remain documented qualifications, separate from its embedding license.
 
-Native rate/block adapters use r8brain and prepared storage. Native random
+Native rate/block adapters use r8brain and prepared storage. Prepared FFT block
+phases derived from stable Patch/voice identity spread convolution work across
+voices while retaining the upstream
+filter, output counts, latency, and native note/control clock. Exact silence
+skips convolution; declared generators share their zero-input clock across
+channels, and mono generators convert their output once. Reset restores the
+prepared phase without priming DSP. Native random
 state belongs to each prepared instance. On Darwin, a pthread key allocated
 during preparation selects that state without first-render C++ TLS allocation.
 Current graph mixing does not compensate latency between parallel paths. Warps can use its

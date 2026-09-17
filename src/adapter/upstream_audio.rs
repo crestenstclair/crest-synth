@@ -14,7 +14,12 @@ extern "C" {
     fn crest_audio_id(index: usize) -> *const c_char;
     fn crest_audio_name(index: usize) -> *const c_char;
     fn crest_audio_is_instrument(index: usize) -> bool;
-    fn crest_audio_create(index: usize, rate: f32, frames: usize) -> *mut c_void;
+    fn crest_audio_create_scheduled(
+        index: usize,
+        rate: f32,
+        frames: usize,
+        phase: u32,
+    ) -> *mut c_void;
     fn crest_audio_load_sample(
         handle: *mut c_void,
         bytes: *const u8,
@@ -59,7 +64,10 @@ struct Processor {
 unsafe impl Send for Processor {}
 impl Processor {
     fn new(index: usize, rate: f32, max_frames: usize) -> Option<Self> {
-        NonNull::new(unsafe { crest_audio_create(index, rate, max_frames) })
+        Self::new_scheduled(index, rate, max_frames, 0)
+    }
+    fn new_scheduled(index: usize, rate: f32, max_frames: usize, phase: u32) -> Option<Self> {
+        NonNull::new(unsafe { crest_audio_create_scheduled(index, rate, max_frames, phase) })
             .map(|handle| Self { handle, max_frames })
     }
     fn load_ir(&mut self, decoded: &DecodedSample) -> bool {
@@ -921,8 +929,14 @@ impl InstrumentPreparer for UpstreamInstrument {
         voices
             .try_reserve_exact(capacity)
             .map_err(|_| InstrumentPreparationError::StorageAllocationFailed { patch_id })?;
-        for _ in 0..capacity {
-            let mut processor = Processor::new(self.index, rate, max_frames)
+        for voice in 0..capacity {
+            // Stable preparation identity spreads FFT boundaries without
+            // making output depend on unrelated instance creation or threads.
+            let phase = patch_id
+                .value()
+                .wrapping_mul(0x85eb_ca6b)
+                .wrapping_add((voice as u32).wrapping_mul(0x9e37_79b9));
+            let mut processor = Processor::new_scheduled(self.index, rate, max_frames, phase)
                 .ok_or(InstrumentPreparationError::PreparationFailed { patch_id })?;
             if let Some(data) = &patch_data {
                 if !processor.load(data) {

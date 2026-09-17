@@ -36,6 +36,11 @@ command += ['-I'+str(output/'daisy-source'),
             '-I'+str(output/'daisy-source/Utility'),
             str(root/'native/audio/tests/daisy_reference.cpp'),
             str(root/'native/audio/tests/daisy_coefficients.cpp')]
+command += ['-I'+str(output/'r8brain-source'),
+            '-I'+str(root/'native/audio'),
+            str(root/'native/audio/tests/rate_adapter.cpp'),
+            str(root/'native/audio/tests/r8brain_reference.cpp'),
+            str(root/'native/audio/tests/r8brain_scheduling.cpp')]
 if sys.platform == 'darwin':
     interposer = output / 'libcrest_witness_interpose.dylib'
     subprocess.run(['c++', '-std=c++20', '-O1', '-dynamiclib', '-mmacosx-version-min=11.0',

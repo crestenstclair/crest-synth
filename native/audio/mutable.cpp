@@ -220,16 +220,16 @@ public:
         for(size_t i=0;i<n;++i) { left[i]=output_[i].l/32768.f; right[i]=output_[i].r/32768.f; }
     }
 };
-CrestProcessor* make_mutable_Plaits(float rate,size_t n) { return new RateAdapter(new MutablePlaits,48000,rate,24,n); }
-CrestProcessor* make_mutable_Rings(float rate,size_t n) { return new RateAdapter(new MutableRings,48000,rate,24,n); }
-CrestProcessor* make_mutable_Elements(float rate,size_t n) { return new RateAdapter(new MutableElements,32000,rate,16,n); }
-CrestProcessor* make_mutable_Tides(float rate,size_t n) { return new RateAdapter(new MutableTides,48000,rate,24,n); }
-CrestProcessor* make_mutable_PeaksBass(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::BassDrum>({{"Frequency",.5},{"Punch",.6},{"Tone",.5},{"Decay",.5}}),48000,rate,24,n); }
-CrestProcessor* make_mutable_PeaksSnare(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::SnareDrum>({{"Frequency",.5},{"Tone",.5},{"Snappy",.5},{"Decay",.5}}),48000,rate,24,n); }
-CrestProcessor* make_mutable_PeaksFM(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::FmDrum>({{"Frequency",.5},{"FM Amount",.5},{"Decay",.5},{"Noise",.5}}),48000,rate,24,n); }
+CrestProcessor* make_mutable_Plaits(float rate,size_t n) { return new RateAdapter(new MutablePlaits,48000,rate,24,n,RateAdapter::Signal::StereoGenerator); }
+CrestProcessor* make_mutable_Rings(float rate,size_t n) { return new RateAdapter(new MutableRings,48000,rate,24,n,RateAdapter::Signal::StereoGenerator); }
+CrestProcessor* make_mutable_Elements(float rate,size_t n) { return new RateAdapter(new MutableElements,32000,rate,16,n,RateAdapter::Signal::StereoGenerator); }
+CrestProcessor* make_mutable_Tides(float rate,size_t n) { return new RateAdapter(new MutableTides,48000,rate,24,n,RateAdapter::Signal::StereoGenerator); }
+CrestProcessor* make_mutable_PeaksBass(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::BassDrum>({{"Frequency",.5},{"Punch",.6},{"Tone",.5},{"Decay",.5}}),48000,rate,24,n,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_mutable_PeaksSnare(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::SnareDrum>({{"Frequency",.5},{"Tone",.5},{"Snappy",.5},{"Decay",.5}}),48000,rate,24,n,RateAdapter::Signal::MonoGenerator); }
+CrestProcessor* make_mutable_PeaksFM(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::FmDrum>({{"Frequency",.5},{"FM Amount",.5},{"Decay",.5},{"Noise",.5}}),48000,rate,24,n,RateAdapter::Signal::MonoGenerator); }
 // HighHat::Configure is empty upstream. Its native voice has no editable DSP
 // controls; velocity and the canonical Patch ADSR provide performance control.
-CrestProcessor* make_mutable_PeaksHat(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::HighHat>({}),48000,rate,24,n); }
+CrestProcessor* make_mutable_PeaksHat(float rate,size_t n) { return new RateAdapter(new MutablePeaks<peaks::HighHat>({}),48000,rate,24,n,RateAdapter::Signal::MonoGenerator); }
 CrestProcessor* make_mutable_CloudsGranular(float rate,size_t n) { return new RateAdapter(new MutableClouds(0),32000,rate,32,n); }
 CrestProcessor* make_mutable_CloudsStretch(float rate,size_t n) { return new RateAdapter(new MutableClouds(1),32000,rate,32,n); }
 CrestProcessor* make_mutable_CloudsDelay(float rate,size_t n) { return new RateAdapter(new MutableClouds(2),32000,rate,32,n); }

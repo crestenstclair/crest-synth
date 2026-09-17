@@ -1,5 +1,7 @@
 #[path = "build_support/daisy.rs"]
 mod daisy_build;
+#[path = "build_support/r8brain.rs"]
+mod r8brain_build;
 #[path = "build_support/sfizz.rs"]
 mod sfizz_build;
 fn main() {
@@ -73,6 +75,7 @@ fn main() {
 
 fn build_audio_catalog() {
     let generated = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
+    let r8brain_sources = r8brain_build::stage(&generated);
     let msfa_sources = stage_msfa(&generated);
     std::fs::create_dir_all(generated.join("stmlib/utils")).unwrap();
     // Select each instance's original Mutable generator through the prepared
@@ -150,7 +153,7 @@ fn build_audio_catalog() {
         .define("NAM_SAMPLE_FLOAT", None)
         .define("EIGEN_MPL2_ONLY", None)
         .include("native/audio")
-        .include("vendor/audio/r8brain")
+        .include(&r8brain_sources)
         .include("vendor/audio/stk/include")
         .warnings(false);
     for entry in std::fs::read_dir("native/audio").unwrap() {

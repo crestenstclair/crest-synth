@@ -66,6 +66,8 @@ bool crest_audio_load_sample(void*,const uint8_t*,size_t,size_t);
 #include "crest_sample_default.h"
 bool sfizz_midi_flush_witness();
 bool daisy_coefficient_witness();
+bool r8brain_scheduling_witness();
+bool rate_adapter_witness();
 // Verify instrumentation before accepting a zero-operation measurement.
 static bool counter_self_test() {
     allocations=destructions=heap_operations=locks=0;
@@ -98,6 +100,8 @@ int main(){
     if(!counter_self_test()){std::printf("COUNTER SELF-TEST FAILED\n");return 1;}
     if(!sfizz_midi_flush_witness()){std::printf("SFIZZ MIDI FLUSH FAILED\n");return 1;}
     if(!daisy_coefficient_witness()){return 1;}
+    if(!r8brain_scheduling_witness()){return 1;}
+    if(!rate_adapter_witness()){return 1;}
     size_t failures=0,checked=0;
     for(float rate:{44100.f,48000.f,96000.f})for(size_t index=0;index<crest_audio_count();++index){
         const char* id=crest_audio_id(index);auto* p=crest_audio_create(index,rate,256);

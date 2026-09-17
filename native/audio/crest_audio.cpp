@@ -1,4 +1,5 @@
 #include "processor.h"
+#include "rate_adapter.h"
 #include <cmath>
 #include <algorithm>
 #include <cstring>
@@ -36,16 +37,20 @@ size_t crest_audio_count() noexcept { return sizeof(factories)/sizeof(Factory); 
 const char* crest_audio_id(size_t i) noexcept { return i < crest_audio_count() ? factories[i].id : nullptr; }
 const char* crest_audio_name(size_t i) noexcept { return i < crest_audio_count() ? factories[i].name : nullptr; }
 bool crest_audio_is_instrument(size_t i) noexcept { return i < crest_audio_count() && factories[i].instrument; }
-void* crest_audio_create(size_t i, float rate, size_t frames) noexcept {
+void* crest_audio_create_scheduled(size_t i, float rate, size_t frames, unsigned phase) noexcept {
     if (i >= crest_audio_count() || !std::isfinite(rate) || rate < 8000 || frames == 0 || frames > INT32_MAX) return nullptr;
     if (!crest_random_initialize()) return nullptr;
     try {
+        RateAdapter::PreparationScope scheduling(phase);
         CrestRandomState random;
         std::unique_ptr<CrestProcessor> processor;
         { CrestRandomScope scope(random); processor.reset(factories[i].make(rate,frames)); }
         return new Handle(std::move(processor),frames,random);
     }
     catch (...) { return nullptr; }
+}
+void* crest_audio_create(size_t i, float rate, size_t frames) noexcept {
+    return crest_audio_create_scheduled(i, rate, frames, 0);
 }
 bool crest_audio_load_sample(void* h,const uint8_t* bytes,size_t size,size_t frames) noexcept {
     try { auto& v=*static_cast<Handle*>(h); CrestRandomScope scope(v.random); return v.processor->load_sample(bytes,size,frames); } catch (...) {return false;}
