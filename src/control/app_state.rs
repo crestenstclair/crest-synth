@@ -15,6 +15,10 @@ use crate::control::{
     PatchPositionId, PatchSubordinateSession, SamplePreviewState, SemanticAction,
     SemanticControlId, SemanticResolver, SurfaceId,
 };
+use crate::control::{
+    ControllerEvent, ControllerPreferenceStatus, ControllerRole, ControllerSettingId,
+    ControllerState,
+};
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::patch_id::PatchId;
 use crate::kernel::MAX_ACTIVE_PATCHES;
@@ -464,6 +468,7 @@ pub(crate) fn exercise_reducer_table_rejections(
         file_browser: FileBrowserState::default(),
         test_midi_enabled: false,
         midi_input: MidiInputState::default(),
+        controller: ControllerState::default(),
         pending_instrument_config: None,
         pending_patch_creation: None,
         sample_visualizations: std::collections::BTreeMap::new(),
@@ -557,6 +562,7 @@ pub struct AppState {
     file_browser: FileBrowserState,
     test_midi_enabled: bool,
     midi_input: MidiInputState,
+    controller: ControllerState,
     /// Complete prepared instrument candidate retained off callback until the
     /// corresponding graph activation is acknowledged. This is transient
     /// control-thread state and is never serialized as acknowledged product state.
@@ -700,6 +706,7 @@ impl AppState {
             file_browser: FileBrowserState::default(),
             test_midi_enabled: false,
             midi_input: MidiInputState::default(),
+            controller: ControllerState::default(),
             pending_instrument_config: None,
             pending_patch_creation: None,
             sample_visualizations: std::collections::BTreeMap::new(),
@@ -810,6 +817,10 @@ impl AppState {
 
     pub const fn file_browser(&self) -> &FileBrowserState {
         &self.file_browser
+    }
+
+    pub const fn controller(&self) -> &ControllerState {
+        &self.controller
     }
 
     pub const fn midi_input(&self) -> &MidiInputState {
@@ -958,7 +969,9 @@ impl AppState {
             }
             candidate.interaction.active_focus = path.clone();
         }
-        candidate.interaction.set_mode(mode).ok()?;
+        if candidate.interaction.mode() != mode {
+            candidate.interaction.set_mode(mode).ok()?;
+        }
         debug_assert!(
             candidate.interaction.detail_invariant_holds(),
             "a counterfactual focus must leave the detail facts agreeing"
@@ -1081,6 +1094,85 @@ impl AppState {
         })
     }
 
+    fn reduce_controller(
+        &mut self,
+        event: ControllerEvent,
+    ) -> Result<ReducerEffects, EventRejection> {
+        match event {
+            ControllerEvent::DevicesChanged { devices } => {
+                if devices.iter().enumerate().any(|(i, device)| {
+                    device.name.is_empty()
+                        || device.name.chars().any(char::is_control)
+                        || devices[..i].iter().any(|other| other.id == device.id)
+                }) {
+                    return Err(EventRejection::InvalidParameterValue);
+                }
+                // A removed device cannot leave capture waiting on a stale input stream.
+                if self
+                    .controller
+                    .devices
+                    .iter()
+                    .any(|old| !devices.iter().any(|new| new.id == old.id))
+                {
+                    self.controller.capture = None;
+                }
+                self.controller.devices = devices;
+            }
+            ControllerEvent::BackendFailed { failure } => {
+                self.controller.backend_failure = Some(failure);
+                self.controller.devices.clear();
+                self.controller.capture = None;
+            }
+            ControllerEvent::PreferencesLoaded { result } => {
+                if self.controller.preference_status != ControllerPreferenceStatus::Loading {
+                    return Err(EventRejection::ActionUnavailableInContext);
+                }
+                match result {
+                    Ok(bindings) => {
+                        self.controller.bindings = bindings.unwrap_or_default();
+                        self.controller.ready = true;
+                        self.controller.preference_status = ControllerPreferenceStatus::Saved;
+                    }
+                    Err(failure) => {
+                        self.controller.preference_status =
+                            ControllerPreferenceStatus::Failed(failure)
+                    }
+                }
+            }
+            ControllerEvent::PreferencesSaved { bindings, result } => {
+                if bindings != self.controller.bindings
+                    || self.controller.preference_status != ControllerPreferenceStatus::Saving
+                {
+                    return Err(EventRejection::ActionUnavailableInContext);
+                }
+                self.controller.preference_status = match result {
+                    Ok(()) => ControllerPreferenceStatus::Saved,
+                    Err(failure) => ControllerPreferenceStatus::Failed(failure),
+                };
+            }
+            ControllerEvent::ButtonCaptured { device_id, button } => {
+                if self.interaction.active_surface() != SurfaceId::ControllerSettings
+                    || !self
+                        .controller
+                        .devices
+                        .iter()
+                        .any(|device| device.id == device_id)
+                {
+                    return Err(EventRejection::ActionUnavailableInContext);
+                }
+                let role = self
+                    .controller
+                    .capture
+                    .take()
+                    .ok_or(EventRejection::ActionUnavailableInContext)?;
+                self.controller.bindings.assign(role, button);
+                self.controller.ready = true;
+                self.controller.preference_status = ControllerPreferenceStatus::Saving;
+            }
+        }
+        Ok(ReducerEffects::default())
+    }
+
     fn reduce(&mut self, event: AppEvent) -> Result<ReducerEffects, EventRejection> {
         if matches!(
             &event,
@@ -1103,6 +1195,7 @@ impl AppState {
             self.focus_repair_status = None;
         }
         match event {
+            AppEvent::Controller(event) => self.reduce_controller(event),
             AppEvent::SelectContext(context) => {
                 self.select_context(context)?;
                 Ok(ReducerEffects::default())
@@ -1118,8 +1211,8 @@ impl AppState {
                 } else {
                     None
                 };
-                if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
-                    self.navigate_midi_settings(direction)?;
+                if self.interaction.active_surface().is_system() {
+                    self.navigate_settings(direction)?;
                 } else {
                     match self.context() {
                         TopLevelContext::Mixer => self.navigate(direction)?,
@@ -1484,10 +1577,13 @@ impl AppState {
         let surface = self.interaction.active_surface();
         if matches!(
             surface,
-            SurfaceId::PatchChoice | SurfaceId::FileBrowser | SurfaceId::MidiDeviceSettings
+            SurfaceId::PatchChoice
+                | SurfaceId::FileBrowser
+                | SurfaceId::MidiDeviceSettings
+                | SurfaceId::ControllerSettings
         ) {
             return if direction == Direction::Down
-                || (surface == SurfaceId::MidiDeviceSettings && direction == Direction::Right)
+                || (surface.is_system() && direction == Direction::Right)
             {
                 self.return_from_surface()
             } else {
@@ -1522,7 +1618,7 @@ impl AppState {
     }
 
     fn open_midi_settings_with_scan(&mut self) -> Result<ReducerEffects, EventRejection> {
-        self.open_midi_settings()?;
+        self.open_settings()?;
         Ok(ReducerEffects {
             midi_device_effects: self.start_midi_input_scan()?,
             ..ReducerEffects::default()
@@ -1530,9 +1626,12 @@ impl AppState {
     }
 
     fn return_from_surface(&mut self) -> Result<ReducerEffects, EventRejection> {
-        if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
+        if self.interaction.active_surface().is_system() {
+            if self.controller.capture.take().is_some() {
+                return Ok(ReducerEffects::default());
+            }
             self.interaction
-                .return_from_midi_settings()
+                .return_from_settings()
                 .map_err(|_| EventRejection::ActionUnavailableInContext)?;
             return Ok(ReducerEffects::default());
         }
@@ -1554,10 +1653,10 @@ impl AppState {
         })
     }
 
-    fn open_midi_settings(&mut self) -> Result<(), EventRejection> {
+    fn open_settings(&mut self) -> Result<(), EventRejection> {
         if self.interaction.mode() != crate::control::InteractionMode::Navigate
             || self.interaction.active_surface() == SurfaceId::MidiDeviceSettings
-            || self.interaction.midi_settings_session().is_some()
+            || self.interaction.settings_session().is_some()
             || self.file_browser.preview_is_held()
         {
             return Err(EventRejection::ActionUnavailableInContext);
@@ -1579,7 +1678,7 @@ impl AppState {
                 |identity| FocusPath::midi_device_settings(context, identity),
             );
         self.interaction
-            .open_midi_settings(focus)
+            .open_settings(focus)
             .map_err(|_| EventRejection::ActionUnavailableInContext)
     }
 
@@ -2190,6 +2289,7 @@ impl AppState {
         self.global = global;
         self.returns = Arc::new(returns);
         self.interaction = InteractionState::new();
+        self.controller.capture = None;
         self.disabled_patch_overview_origins.clear();
         self.focus_repair_status = None;
         self.engine_selection = EngineSelectionStatus::ready(target_graph_revision);
@@ -2257,7 +2357,8 @@ impl AppState {
             | SurfaceId::PatchChoice
             | SurfaceId::FileBrowser
             | SurfaceId::MixerMain
-            | SurfaceId::MidiDeviceSettings => Err(EventRejection::ActionUnavailableInContext),
+            | SurfaceId::MidiDeviceSettings
+            | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
@@ -2479,6 +2580,25 @@ impl AppState {
     }
 
     fn activate_focused_subordinate(&mut self) -> Result<ReducerEffects, EventRejection> {
+        if self.interaction.active_surface() == SurfaceId::ControllerSettings {
+            if self.controller.capture.take().is_some() {
+                return Ok(ReducerEffects::default());
+            }
+            match self.interaction.focus_path().control_id() {
+                SemanticControlId::ControllerSetting(ControllerSettingId::Binding(role))
+                    if self.controller.ready && !self.controller.devices.is_empty() =>
+                {
+                    self.controller.capture = Some(*role);
+                }
+                SemanticControlId::ControllerSetting(ControllerSettingId::ResetDefaults) => {
+                    self.controller.bindings = Default::default();
+                    self.controller.ready = true;
+                    self.controller.preference_status = ControllerPreferenceStatus::Saving;
+                }
+                _ => return Err(EventRejection::ActionUnavailableInContext),
+            }
+            return Ok(ReducerEffects::default());
+        }
         if self.interaction.active_surface() == SurfaceId::PatchMain {
             self.open_related_surface()?;
             return Ok(ReducerEffects::default());
@@ -3897,15 +4017,30 @@ impl AppState {
             | SurfaceId::PatchDetail
             | SurfaceId::PatchChoice
             | SurfaceId::FileBrowser
-            | SurfaceId::MidiDeviceSettings => Err(EventRejection::ActionUnavailableInContext),
+            | SurfaceId::MidiDeviceSettings
+            | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
-    fn navigate_midi_settings(&mut self, direction: Direction) -> Result<(), EventRejection> {
-        if !matches!(direction, Direction::Up | Direction::Down) {
+    fn navigate_settings(&mut self, direction: Direction) -> Result<(), EventRejection> {
+        if self.controller.capture.is_some() {
             return Err(EventRejection::ActionUnavailableInContext);
         }
-        let paths = SemanticResolver::new(self).midi_input_settings_paths()?;
+        if matches!(direction, Direction::Left | Direction::Right) {
+            let target = if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
+                FocusPath::controller_settings(
+                    self.context(),
+                    ControllerSettingId::Binding(ControllerRole::Up),
+                )
+            } else {
+                SemanticResolver::new(self)
+                    .midi_input_settings_paths()?
+                    .remove(0)
+            };
+            self.interaction.active_focus = target;
+            return Ok(());
+        }
+        let paths = SemanticResolver::new(self).ordered_paths(self.interaction.active_surface())?;
         self.navigate_side_nonwrapping(&paths, direction == Direction::Down)
     }
 
@@ -4008,9 +4143,10 @@ impl AppState {
                         .map_err(|_| EventRejection::InvalidSelection)
                 }
             },
-            SurfaceId::MixerMain | SurfaceId::MixerInspector | SurfaceId::MidiDeviceSettings => {
-                Err(EventRejection::ActionUnavailableInContext)
-            }
+            SurfaceId::MixerMain
+            | SurfaceId::MixerInspector
+            | SurfaceId::MidiDeviceSettings
+            | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
@@ -5339,7 +5475,8 @@ impl AppState {
                 | SurfaceId::PatchChoice
                 | SurfaceId::FileBrowser
                 | SurfaceId::MixerInspector
-                | SurfaceId::MidiDeviceSettings => return Err(EventRejection::InvalidSelection),
+                | SurfaceId::MidiDeviceSettings
+                | SurfaceId::ControllerSettings => return Err(EventRejection::InvalidSelection),
             };
             SemanticResolver::recover(path, old_order, new_order)
                 .ok_or(EventRejection::InvalidSelection)
@@ -5358,7 +5495,7 @@ impl AppState {
             .transpose()?;
         let suspended_focus = self
             .interaction
-            .midi_settings_session()
+            .settings_session()
             .map(|session| session.suspended_focus().clone());
         let repaired_suspended_focus = suspended_focus
             .as_ref()
@@ -5367,7 +5504,7 @@ impl AppState {
             .transpose()?;
         let repaired_suspended_return_origin = self
             .interaction
-            .midi_settings_session()
+            .settings_session()
             .and_then(|session| session.suspended_return_path())
             .map(|path| repair(path.origin()))
             .transpose()?;
@@ -5384,12 +5521,12 @@ impl AppState {
         }
         if let Some(focus) = repaired_suspended_focus {
             self.interaction
-                .replace_midi_settings_suspended_focus(focus)
+                .replace_settings_suspended_focus(focus)
                 .map_err(|_| EventRejection::InvalidSelection)?;
         }
         if let Some(origin) = repaired_suspended_return_origin {
             self.interaction
-                .replace_midi_settings_suspended_return_origin(origin)
+                .replace_settings_suspended_return_origin(origin)
                 .map_err(|_| EventRejection::InvalidSelection)?;
         }
         self.leave_stale_detail_surface();

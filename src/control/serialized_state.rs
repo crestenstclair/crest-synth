@@ -40,6 +40,8 @@ pub(crate) struct SerializedState<'a> {
     pub(crate) engine_selection: EngineSelectionStatus,
     #[serde(default)]
     pub(crate) midi_input: MidiInputState,
+    #[serde(default)]
+    pub(crate) controller: crate::control::ControllerState,
 }
 
 impl<'a> From<&'a AppState> for SerializedState<'a> {
@@ -55,6 +57,7 @@ impl<'a> From<&'a AppState> for SerializedState<'a> {
             interaction: SerializedInteractionState::from_state(state),
             engine_selection: state.engine_selection().clone(),
             midi_input: state.midi_input().clone(),
+            controller: state.controller().clone(),
         }
     }
 }

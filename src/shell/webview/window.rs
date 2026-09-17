@@ -444,7 +444,17 @@ struct KeyPipeline {
 impl KeyPipeline {
     fn feed(&mut self, input: WindowInput) {
         if let Some(action) = self.translator.translate(input) {
+            let release_edit = input.kind() == crate::shell::WindowInputKind::FocusLost
+                && action == crate::control::SemanticAction::PreviewStop;
             (self.on_input)(action);
+            // Focus loss releases both holds even when the translator's one
+            // immediate action is preview cleanup. The shared input coordinator
+            // preserves any controller that is still holding Edit.
+            if release_edit {
+                (self.on_input)(crate::control::SemanticAction::SetInteractionMode(
+                    crate::control::InteractionMode::Navigate,
+                ));
+            }
         }
     }
 }
@@ -998,6 +1008,36 @@ mod tests {
         session_command_for_menu_id, TauriWebviewWindow, MENU_CLOSE, MENU_NEW, MENU_OPEN,
         MENU_SAVE, MENU_SAVE_AS, PAGE_CSP, PAGE_CSS, PAGE_INDEX_HTML, PAGE_JS, PAGE_TOKENS_CSS,
     };
+
+    #[test]
+    fn focus_loss_releases_preview_and_edit_through_the_native_input_pipeline() {
+        use crate::control::{InteractionMode, SemanticAction};
+        use crate::shell::{KeyboardInputTranslator, WindowInput, WindowKey};
+        use std::{cell::RefCell, rc::Rc};
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let observed = actions.clone();
+        let mut pipeline = super::KeyPipeline {
+            translator: KeyboardInputTranslator::new(),
+            on_input: Box::new(move |action| observed.borrow_mut().push(action)),
+        };
+        pipeline.feed(WindowInput::key_down(WindowKey::K));
+        pipeline.feed(WindowInput::key_down(WindowKey::Space));
+        actions.borrow_mut().clear();
+        pipeline.feed(WindowInput::focus_lost());
+        assert_eq!(
+            *actions.borrow(),
+            vec![
+                SemanticAction::PreviewStop,
+                SemanticAction::SetInteractionMode(InteractionMode::Navigate)
+            ]
+        );
+        actions.borrow_mut().clear();
+        pipeline.feed(WindowInput::key_down(WindowKey::D));
+        assert_eq!(
+            *actions.borrow(),
+            vec![SemanticAction::Navigate(crate::control::Direction::Right)]
+        );
+    }
 
     #[test]
     fn file_menu_ids_normalize_once_to_host_neutral_commands() {

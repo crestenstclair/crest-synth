@@ -1708,6 +1708,7 @@ fn observe_records<'a>(
             | EventInput::MidiInputDisconnectRequested { .. }
             | EventInput::MidiInputConnectionLost { .. }
             | EventInput::MidiInputOperationFailed { .. }
+            | EventInput::Controller { .. }
             | EventInput::MidiInputShutdownRequested
             | EventInput::ReplacePersistedSession { .. }
             | EventInput::AssetImported { .. }

@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 /// are subordinate: they are never the resting surface of a context, and
 /// leaving one restores the exact origin. One detail surface identity serves
 /// both instrument and effect subjects, because the surface is the shell and
-/// the subject supplies the content. MIDI device Settings is a global system
-/// surface that suspends rather than replaces PATCH or MIXER.
+/// the subject supplies the content. MIDI Devices and Controller Buttons are
+/// global Settings surfaces that suspend rather than replace PATCH or MIXER.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SurfaceId {
@@ -27,10 +27,11 @@ pub enum SurfaceId {
     MixerMain,
     MixerInspector,
     MidiDeviceSettings,
+    ControllerSettings,
 }
 
 impl SurfaceId {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 9] = [
         Self::PatchMain,
         Self::PatchUtility,
         Self::PatchDetail,
@@ -39,6 +40,7 @@ impl SurfaceId {
         Self::MixerMain,
         Self::MixerInspector,
         Self::MidiDeviceSettings,
+        Self::ControllerSettings,
     ];
 
     pub const fn surface_descriptor() -> &'static [Self] {
@@ -53,7 +55,7 @@ impl SurfaceId {
                 Some(TopLevelContext::Patch)
             }
             Self::MixerMain | Self::MixerInspector => Some(TopLevelContext::Mixer),
-            Self::MidiDeviceSettings | Self::FileBrowser => None,
+            Self::MidiDeviceSettings | Self::ControllerSettings | Self::FileBrowser => None,
         }
     }
 
@@ -92,7 +94,7 @@ impl SurfaceId {
     }
 
     pub const fn is_system(self) -> bool {
-        matches!(self, Self::MidiDeviceSettings)
+        matches!(self, Self::MidiDeviceSettings | Self::ControllerSettings)
     }
 
     /// Reports whether a [`ReturnPath`] may name this surface as the one it was
@@ -132,7 +134,8 @@ impl SurfaceId {
             | Self::FileBrowser
             | Self::PatchMain
             | Self::MixerMain
-            | Self::MidiDeviceSettings => false,
+            | Self::MidiDeviceSettings
+            | Self::ControllerSettings => false,
         }
     }
 
@@ -146,6 +149,7 @@ impl SurfaceId {
             Self::MixerMain => "MIXER",
             Self::MixerInspector => "INSPECTOR",
             Self::MidiDeviceSettings => "MIDI DEVICES",
+            Self::ControllerSettings => "CONTROLLER BUTTONS",
         }
     }
 }
@@ -382,6 +386,7 @@ pub enum SemanticControlId {
     Modal(ModalControlId),
     MidiInputDevice(MidiInputDeviceId),
     MidiInputListRoot,
+    ControllerSetting(crate::control::ControllerSettingId),
     SurfaceRoot,
 }
 
@@ -394,6 +399,7 @@ impl SemanticControlId {
             | Self::Modal(_)
             | Self::MidiInputDevice(_)
             | Self::MidiInputListRoot
+            | Self::ControllerSetting(_)
             | Self::SurfaceRoot => None,
         }
     }
@@ -679,6 +685,20 @@ impl FocusPath {
         }
     }
 
+    pub const fn controller_settings(
+        context: TopLevelContext,
+        setting: crate::control::ControllerSettingId,
+    ) -> Self {
+        Self {
+            context,
+            surface: SurfaceId::ControllerSettings,
+            patch_position: None,
+            capability_id: None,
+            control_id: SemanticControlId::ControllerSetting(setting),
+            modal_id: None,
+        }
+    }
+
     /// Revalidates a deserialized or externally constructed path shape.
     pub fn validate(&self) -> Result<(), FocusPathError> {
         if let Some(surface_context) = self.surface.context() {
@@ -800,7 +820,8 @@ impl FocusPath {
             (
                 SurfaceId::MidiDeviceSettings,
                 SemanticControlId::MidiInputDevice(_) | SemanticControlId::MidiInputListRoot,
-            ) => {
+            )
+            | (SurfaceId::ControllerSettings, SemanticControlId::ControllerSetting(_)) => {
                 if self.patch_position.is_some()
                     || self.capability_id.is_some()
                     || self.modal_id.is_some()

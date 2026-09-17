@@ -42,6 +42,9 @@ midly = "0.5.3"
 # ALSA on Linux, and WinMM on Windows. JACK and WinRT remain explicit
 # packaging-time opt-ins; application/control types never depend on a backend.
 midir = "0.11.0"
+# SDL owns gamepad discovery, hardware mappings and hotplug. Build its C library
+# statically so the app has no dependency on a machine-local SDL installation.
+sdl3 = { version = "0.20", features = ["build-from-source-static"] }
 cpal = "0.18.1"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }

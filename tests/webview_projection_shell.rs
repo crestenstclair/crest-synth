@@ -219,6 +219,9 @@ const DETAIL_WITNESS_ENV: &str = "CREST_WEBVIEW_DETAIL_WITNESS";
 const OPTION_WITNESS_ENV: &str = "CREST_WEBVIEW_OPTION_WITNESS";
 const EMPTY_PATCH_WITNESS_ENV: &str = "CREST_WEBVIEW_EMPTY_PATCH_WITNESS";
 const PERFORMANCE_WITNESS_ENV: &str = "CREST_WEBVIEW_PERFORMANCE_WITNESS";
+const CONTROLLER_WITNESS_ENV: &str = "CREST_WEBVIEW_CONTROLLER_WITNESS";
+#[path = "support/controller_settings_native.rs"]
+mod controller_settings_native;
 #[cfg(target_os = "macos")]
 #[path = "support/page_navigation_native.rs"]
 mod page_navigation_native;
@@ -246,6 +249,14 @@ fn main() {
             "headless"
         }
     );
+
+    if live && std::env::var(CONTROLLER_WITNESS_ENV).as_deref() == Ok("1") {
+        prove_token_table_freshness();
+        prove_protocol_policy_parity();
+        run_live_sections(None, false, false, false, false, false);
+        println!("CREST_ACCEPTANCE controller_settings_native passed (unrelated fixtures, soak, and forced faults outside scoped witness)");
+        return;
+    }
 
     let fidelity = prove_serialized_schema_fidelity();
     prove_token_table_freshness();
@@ -279,7 +290,7 @@ fn main() {
 
     if live {
         run_live_sections(
-            &fidelity,
+            Some(&fidelity),
             detail_witness,
             option_witness,
             empty_patch_witness,
@@ -2599,6 +2610,7 @@ fn assert_detail_fixture_documents(instrument: &str, effect: &str, lifecycle: [&
             "numericRange",
             "patchInteraction",
             "path",
+            "readOnlyLabel",
             "requestedLabel",
             "requestedValue",
             "selectedLabel",
@@ -4109,7 +4121,7 @@ struct ScopedWitness {
 }
 
 fn run_live_sections(
-    fidelity: &FidelityEvidence,
+    fidelity: Option<&FidelityEvidence>,
     detail_witness: bool,
     option_witness: bool,
     empty_patch_witness: bool,
@@ -4117,6 +4129,7 @@ fn run_live_sections(
     performance_witness: bool,
 ) {
     use tauri::{Listener, Manager};
+    let controller_witness = std::env::var(CONTROLLER_WITNESS_ENV).as_deref() == Ok("1");
 
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     let assets = PageAssets::load(manifest);
@@ -4228,7 +4241,7 @@ fn run_live_sections(
             }
         }
     });
-    let driver_fidelity = fidelity.clone();
+    let driver_fidelity = fidelity.cloned();
     let driver_painted = Arc::clone(&painted);
     let driver_render_errors = Arc::clone(&render_errors);
     let scoped_witness = ScopedWitness {
@@ -4241,6 +4254,15 @@ fn run_live_sections(
     let driver_outcome = Arc::clone(&outcome);
     let driver = std::thread::spawn(move || {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if controller_witness {
+                return controller_settings_native::drive(
+                    &handle,
+                    &harness_receiver,
+                    &ready_receiver,
+                    &driver_painted,
+                    &driver_render_errors,
+                );
+            }
             #[cfg(target_os = "macos")]
             if page_witness {
                 return page_navigation_native::drive(
@@ -4256,7 +4278,9 @@ fn run_live_sections(
                 &ready_receiver,
                 &driver_painted,
                 &driver_render_errors,
-                &driver_fidelity,
+                driver_fidelity
+                    .as_ref()
+                    .expect("general witness has fixture documents"),
                 scoped_witness,
             )
         }));
@@ -4295,7 +4319,9 @@ fn run_live_sections(
         "T026 harness window owned shutdown: PASS (run_return = 0 through the owned close path)"
     );
 
-    if page_witness {
+    if controller_witness {
+        println!("CREST_WEBVIEW_CONTROLLER_WITNESS Controller Settings journey passed; owned window closed.");
+    } else if page_witness {
         println!("CREST_WEBVIEW_PAGE_NAVIGATION_WITNESS authored edges passed, including Shift+Right Settings return; owned window closed.");
     } else if detail_witness {
         println!(

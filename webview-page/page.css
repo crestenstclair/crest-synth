@@ -1479,7 +1479,22 @@ body {
   flex-wrap: wrap;
 }
 
-/* ---- temporary MIDI Devices system workspace -------------------------- */
+/* ---- Settings system workspaces --------------------------------------- */
+
+body.settings-active #footer {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-8);
+}
+
+body.settings-active #footer .spring {
+  display: none;
+}
+
+body.settings-active #footer .footer-guidance {
+  justify-content: flex-start;
+}
 
 body.settings-active #main-region {
   grid-template-columns:
@@ -1492,6 +1507,22 @@ body.settings-active #main-region {
     var(--shell-region-gap-preferred),
     var(--shell-region-gap-max)
   );
+}
+
+.settings-pages {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8) var(--space-24);
+  margin-bottom: var(--space-16);
+}
+
+.settings-page {
+  padding-block: var(--space-8);
+  border-bottom: var(--keyline-resting) solid transparent;
+}
+
+.settings-page[aria-current="page"] {
+  border-bottom-color: var(--color-text-secondary);
 }
 
 .midi-device-list {
@@ -1554,6 +1585,25 @@ body.settings-active #main-region {
 .midi-row-action {
   min-width: var(--min-interactive-target);
   text-align: right;
+}
+
+.controller-button-row[data-editable="false"] {
+  border-left: var(--keyline-emphasis) dashed var(--color-border-strong);
+}
+
+.controller-button-value {
+  min-width: 0;
+  max-width: 55%;
+  overflow-wrap: anywhere;
+  text-align: right;
+}
+
+.controller-settings-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-12);
+  padding-block: var(--space-16);
+  border-top: var(--keyline-resting) solid var(--color-border-default);
 }
 
 .midi-inline-marker {

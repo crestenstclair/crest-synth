@@ -6,6 +6,7 @@ pub mod component_vocabulary;
 pub mod controller_input_translator;
 pub mod density;
 pub(crate) mod file_library;
+pub(crate) mod gamepad;
 pub mod keyboard_input_translator;
 pub mod session_dialog;
 pub mod session_document;

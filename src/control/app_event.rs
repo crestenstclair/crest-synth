@@ -39,6 +39,7 @@ impl Direction {
 /// deterministic demos and acceptance tests.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppEventPayloadShape {
+    ControllerEvent,
     PatchList,
     SessionReplacement,
     PatchId,
@@ -82,6 +83,9 @@ pub enum AppEventPayloadShape {
 /// variants retain the complete names and types of their payload fields.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum AppEventSurfaceDescriptor {
+    Controller {
+        event: AppEventPayloadShape,
+    },
     SelectContext {
         context: TopLevelContext,
     },
@@ -236,7 +240,10 @@ pub enum AppEventSurfaceDescriptor {
     MidiInputShutdownRequested,
 }
 
-const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 55] = [
+const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 56] = [
+    AppEventSurfaceDescriptor::Controller {
+        event: AppEventPayloadShape::ControllerEvent,
+    },
     AppEventSurfaceDescriptor::AssetImported {
         selection: AppEventPayloadShape::AssetImportResult,
     },
@@ -439,6 +446,7 @@ const APP_EVENT_SURFACE_DESCRIPTOR: [AppEventSurfaceDescriptor; 55] = [
 /// event reaches the control layer.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AppEvent {
+    Controller(crate::control::ControllerEvent),
     /// Select one of the two reducer-owned top-level contexts directly.
     SelectContext(TopLevelContext),
     /// Move the focused Patch one position along the installed order.
@@ -672,7 +680,8 @@ impl AppEvent {
     pub const fn publishes_parameters_on_acceptance(&self) -> bool {
         !matches!(
             self,
-            Self::SelectContext(_)
+            Self::Controller(_)
+                | Self::SelectContext(_)
                 | Self::SelectPatch(_)
                 | Self::NavigatePage(_)
                 | Self::Navigate(_)
@@ -714,6 +723,9 @@ impl AppEvent {
     /// compile error until its surface descriptor is updated as well.
     pub fn surface_entry(&self) -> AppEventSurfaceDescriptor {
         match self {
+            Self::Controller(_) => AppEventSurfaceDescriptor::Controller {
+                event: AppEventPayloadShape::ControllerEvent,
+            },
             Self::SelectContext(context) => {
                 AppEventSurfaceDescriptor::SelectContext { context: *context }
             }

@@ -1,3 +1,8 @@
+pub mod controller;
+pub use controller::{
+    ControllerBindings, ControllerButton, ControllerDevice, ControllerEvent, ControllerFailure,
+    ControllerPreferenceStatus, ControllerRole, ControllerSettingId, ControllerState,
+};
 pub mod app_event;
 pub mod app_state;
 pub mod default_session;
@@ -53,7 +58,7 @@ pub use graphical_shell_projection::{
     ShellIdentityHeader, ShellMainRegion, ShellSideRegion, ShellWorkspace,
 };
 pub use interaction_state::{
-    InteractionState, MidiSettingsSession, PatchSubordinateSession, Selection, SelectionSection,
+    InteractionState, PatchSubordinateSession, Selection, SelectionSection, SettingsSession,
 };
 pub use midi_device::{
     ActiveMidiInput, ConnectMidiInput, MidiActiveInputIdentity, MidiActivityObservation,

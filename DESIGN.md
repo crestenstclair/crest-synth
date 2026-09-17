@@ -60,9 +60,9 @@ only when a change or regression affects it.
 Overview, Instrument/FX Detail, registry choices, Sample Detail/Browser,
 SoundFont loading, session lifecycle, physical MIDI, and page navigation have
 production-path witnesses. Their presence does not prove complete visual or
-workflow parity. Native Settings comparison, shared visual polish, production
-physical-gamepad integration, and packaged cross-platform acceptance remain
-separate gaps. Multi-select remains unavailable and is not required for
+workflow parity. Native Settings comparison, shared visual polish, broader
+controller coverage, and packaged cross-platform acceptance remain separate gaps.
+Multi-select remains unavailable and is not required for
 current feature completeness; the reserved Select button defines no behavior.
 
 Instrument/FX Detail uses one `detailShellHtml` composition over reducer-owned
@@ -147,6 +147,8 @@ The application currently provides:
 - channel-based MIDI subscriptions in which any number of installed Patches
   may share one channel and each incoming message fans out to every matching
   Patch in stable installation order;
+- physical gamepad discovery and button input through SDL3’s Gamepad API, with reducer-owned
+  Settings button capture and per-user saved assignments;
 - physical MIDI input discovery, exact opaque-identity selection, connection
   lifecycle, per-user selected-input preference, and a temporary Settings ·
   MIDI Devices system surface that suspends and restores the exact PATCH or
@@ -742,7 +744,7 @@ Physical bindings normalize to semantic actions before product logic:
 | Q / E | previous/next created Patch or trailing empty endpoint, without wrapping |
 | Shift + Up / W | Overview opens highlighted Detail; Mixer restores Overview; eligible Detail file control opens Browser |
 | Shift + Down / S | Detail restores Overview; Overview restores Mixer; Choice/Browser cancels; existing Settings escape |
-| Shift + Left / A | Overview opens temporary Settings · MIDI Devices; previous-Patch compatibility only outside Overview where admitted |
+| Shift + Left / A | Overview opens Settings on its MIDI Devices page; previous-Patch compatibility only outside Overview where admitted |
 | Shift + Right / D | Settings restores the suspended page and focus; next-Patch compatibility elsewhere where admitted |
 | Shift + Start / Space | compatibility entry to temporary Settings · MIDI Devices (non-repeating) |
 | Select | multi-select only when reducer semantics exist; currently unavailable |
@@ -779,9 +781,10 @@ exactly master volume, Patch volume, MIDI input, output track, and voice limit.
 Main and Utility remain mutually reachable, and subordinate return restores the
 stable semantic origin or the nearest enabled sibling after schema change.
 
-Settings · MIDI Devices is a system surface, not a top-level context. Entry
-suspends the exact performance focus, interaction mode, return path, and Patch
-subordinate session. Shift+Right restores that identity after schema repair;
+Settings contains MIDI Devices and Controller Buttons system surfaces, without
+adding a top-level context. Unmodified Left/Right or A/D switches between them.
+One `SettingsSession` suspends the exact performance focus, interaction mode,
+return path, and Patch subordinate session. Shift+Right restores that identity after schema repair;
 Shift+Down remains a compatibility escape. The user selected Shift+Right on
 2026-09-06, now authored in Page Layout `153:184` at `155:208` and `157:200`,
 with suspended PATCH/MIXER page and exact valid focus or nearest-enabled repair
@@ -799,6 +802,55 @@ aspect-ratio or named-viewport switch. This as-built structure has deterministic
 projection/renderer coverage; direct native comparison with Figma node `116:2`
 and the physical-device visual handoff remain incomplete evidence.
 
+The interactive composition uses SDL3's Gamepad API on the control thread.
+SDL owns discovery, hotplug, hardware mappings, and D-pad normalization; Crest
+ships no controller-specific mapping overrides. SDL is built from pinned source
+and linked statically, without initializing its video or audio subsystems or
+replacing Tauri's event loop. Standard button edges pass through the existing
+controller translator into semantic actions with Controller provenance. Trigger
+axes use press/release hysteresis for Patch cycling; sticks remain inactive.
+Each connected controller has independent transient holds; repeats cannot
+duplicate an edge. Connection and SDL remapping suppress existing holds until
+release. Remapping cancels capture; initialization/open failures are explicit
+controller status and release owned input.
+Keyboard and gamepad Edit holds share mode ownership, so releasing one input
+preserves another held input and never dismisses a modal surface. Edit confirms
+on tap release and becomes a modifier when combined with a direction. Page
+chords retain their original interpretation until direction release, including
+when the modifier releases first. Preview release stops only the request
+accepted from that input. Disconnect clears that device's holds; keyboard focus
+loss releases both keyboard Edit and preview. Autonomous demos do not attach devices.
+
+Controller Buttons configures directions, Edit, Shift, Sample preview, Patch
+cycling, and Settings entry. One normalized layout applies to all connected
+gamepads. Defaults use D-pad navigation, South for Edit, left shoulder for Shift,
+Start for preview, triggers for Patch cycling, and North for Settings. Select's
+reserved product meaning remains unavailable. Only backend-mapped standard
+buttons participate; analog stick movement and unmapped vendor buttons are not
+controller inputs. Legacy C/Z assignments remain readable and explicitly ask for
+reassignment, since SDL has no corresponding standard buttons. Gamepads remain
+active while the synth runs in the background.
+
+Activate a setting to capture the next fresh button press. Assigning an occupied
+button swaps its previous role, preserving a unique binding for every action.
+Capture and mapping transitions suppress held input until release. Return or
+Shift+Right cancels capture first; a subsequent return restores performance.
+Keyboard access stays available during remapping. Restore defaults is a focusable
+Settings action, including with no gamepad attached. Device loss cancels capture.
+Mappings, capture, and device status mutate only through `AppState::apply` and
+never change saved synth content or publish scalar audio parameters.
+
+`controller-buttons.json` lives in the per-user configuration directory beside
+the MIDI preference. A separate worker loads validated versioned mappings and
+atomically replaces the file after edits; shutdown flushes the final accepted
+mapping after audio stops. Save acknowledgements carry the complete mapping,
+so stale results cannot mark a newer assignment saved. Read/decode failures
+leave controller input unavailable until explicit recovery; write failures keep
+current controls active and show unsaved status. Backend failures remain visible.
+The 8BitDo Pro 3 in D mode has user-confirmed operation on macOS with SDL3.
+Broader controller/platform coverage and native visual acceptance remain separate
+from the deterministic production-path tests.
+
 On macOS, Shift arrives through AppKit's `FlagsChanged` event rather than a key
 down/up pair. The native input adapter treats modifier transitions as
 non-repeatable and never queries key-repeat state from a modifier event; a UI
@@ -815,8 +867,7 @@ page gestures require release or disconnect before another activation.
 Shift+arrows, repeats, and WASD through the production reducer and native paint.
 Its accepted journey includes Settings entry/return, exact Instrument/effect
 Detail origins, remembered context roots, singular focus, footer guidance,
-and owned shutdown. It does not establish physical gamepad support or broad
-visual parity.
+and owned shutdown. It does not establish an attached-gamepad handoff or broad visual parity.
 
 MIXER Main uses one stable `(MixerTrackId, MixerTrackParameter)` path. Left/Right
 changes the selected track while preserving Level/Pan/Mute/Solo row; Up/Down changes row
@@ -964,6 +1015,9 @@ Common entry points are defined in [`Makefile`](Makefile):
 | Build, functional checks, lint, formatting | `make build`, `make test`, `make lint`, `make fmt-check` |
 | SoundFont import and restore | `make test-soundfont-loading` |
 | Physical MIDI discovery | `make test-midi-host` |
+| Controller input and mapping | `make test-controller` |
+| Native Controller Settings | `make test-controller-native` |
+| SDL3 virtual gamepad input, hotplug, and mapping lifetimes | `make test-controller-sdl` |
 | Native Detail/Mixer | `make test-webview-detail-native` |
 | Native page navigation | `make test-webview-page-navigation-native` |
 | Native SoundFont workflows | `make test-webview-soundfont-native` |
@@ -982,8 +1036,10 @@ To choose an existing Sample library and initial asset, configure both
 
 Native window, physical-input, and physical-audio witnesses require an
 interactive host. An unavailable environment is incomplete evidence, not a
-pass. Linux MIDI builds require ALSA development headers; optional JACK is an
-explicit packaging choice. Windows defaults to WinMM; optional WinRT is also
+pass. Building the bundled SDL3 library requires CMake and a C toolchain. Linux
+input builds require ALSA development headers and SDL platform dependencies;
+optional JACK is an explicit MIDI packaging choice. Windows MIDI defaults to
+WinMM; optional WinRT is also
 an explicit choice. Broader packaging remains unverified; maintain platform
 adapter boundaries without assuming a small-device target.
 

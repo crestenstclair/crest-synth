@@ -822,7 +822,7 @@ pub struct StandaloneApplication<Boundary, Structural, Observation, Source, Wind
     window: Window,
     audio_output: Output,
     config: ApplicationConfig,
-    system_midi_devices: bool,
+    system_input_devices: bool,
     default_session_blueprint: Option<DefaultSessionBlueprint>,
     full_demo_selection: Option<FullDemoSelection>,
 }
@@ -891,18 +891,18 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
             window,
             audio_output,
             config,
-            system_midi_devices: false,
+            system_input_devices: false,
             default_session_blueprint: None,
             full_demo_selection: None,
         })
     }
 
-    /// Enables the production system MIDI adapter, device worker, and
-    /// per-user preference capability for the interactive `run` path.
+    /// Enables production MIDI and gamepad adapters, device workers, and
+    /// per-user preferences for the interactive `run` path.
     /// Deterministic and autonomous scene constructors remain isolated from
-    /// host devices unless the production composition root opts in.
-    pub fn with_system_midi_devices(mut self) -> Self {
-        self.system_midi_devices = true;
+    /// host MIDI and gamepad devices unless the production composition root opts in.
+    pub fn with_system_input_devices(mut self) -> Self {
+        self.system_input_devices = true;
         self
     }
 
@@ -1411,7 +1411,7 @@ where
             window,
             audio_output,
             config,
-            system_midi_devices,
+            system_input_devices,
             default_session_blueprint,
             full_demo_selection,
         } = self;
@@ -1443,7 +1443,7 @@ where
         if config.test_midi_on_launch && full_demo.is_none() {
             app_loop.dispatch_action(crate::control::SemanticAction::ToggleTestMidi)?;
         }
-        if system_midi_devices && full_demo.is_none() {
+        if system_input_devices && full_demo.is_none() {
             let midi_worker = ThreadedMidiDeviceWorker::new(
                 crate::adapter::midir_input_device::system_midi_input_device(),
                 crate::adapter::filesystem_midi_input_preference::per_user_midi_input_preference_store(
@@ -1475,6 +1475,8 @@ where
                         .map_err(ApplicationError::ProductionInstrumentComposition)?,
                 ),
             ),
+            gamepad: (system_input_devices && full_demo.is_none())
+                .then(crate::shell::gamepad::GamepadRuntime::new),
             app_loop,
             lifecycle,
             full_demo,
@@ -1516,6 +1518,12 @@ where
         drop(audio_stream);
         let (lifecycle_shutdown_result, midi_shutdown_result, graph_shutdown_result) = {
             let mut runtime = runtime.borrow_mut();
+            let controller_state = runtime.app_loop.state().controller().clone();
+            if let Some(gamepad) = runtime.gamepad.as_mut() {
+                gamepad.observe_preferences(&controller_state);
+            }
+            // Joining after the callback stops flushes the final accepted mapping.
+            drop(runtime.gamepad.take());
             runtime.file_library.shutdown();
             if let Some(demo) = runtime.full_demo.as_mut() {
                 demo.shutdown()
@@ -1601,7 +1609,7 @@ where
             window: _,
             audio_output,
             config,
-            system_midi_devices: _,
+            system_input_devices: _,
             default_session_blueprint: _,
             full_demo_selection: _,
         } = self;
@@ -1802,7 +1810,7 @@ where
             window: _,
             audio_output: _,
             config,
-            system_midi_devices: _,
+            system_input_devices: _,
             default_session_blueprint: _,
             full_demo_selection: _,
         } = self;
@@ -1889,7 +1897,7 @@ where
             window: _,
             audio_output: _,
             config,
-            system_midi_devices: _,
+            system_input_devices: _,
             default_session_blueprint: _,
             full_demo_selection: _,
         } = self;
@@ -2449,6 +2457,7 @@ where
 {
     test_midi: crate::shell::test_midi::TestMidiPattern,
     file_library: crate::shell::file_library::FileLibraryRuntime,
+    gamepad: Option<crate::shell::gamepad::GamepadRuntime>,
     app_loop: AppLoop<Boundary>,
     lifecycle: SessionLifecycleCoordinator,
     full_demo: Option<FullInstrumentEffectDemo>,
@@ -2482,16 +2491,22 @@ where
             return;
         }
 
-        match runtime
-            .app_loop
-            .dispatch_action_from(event, EventSource::Keyboard)
-        {
-            Ok(result) => {
-                if let Some(error) = result.boundary_full() {
-                    runtime.record_error(error.into());
+        let blocked = runtime.lifecycle.persisted_edits_blocked();
+        let result = {
+            let ControlRuntime {
+                app_loop, gamepad, ..
+            } = &mut *runtime;
+            if let Some(gamepad) = gamepad {
+                gamepad.dispatch_keyboard_action(app_loop, event, blocked)
+            } else {
+                match app_loop.dispatch_action_from(event, EventSource::Keyboard) {
+                    Ok(result) => result.boundary_full().map_or(Ok(()), Err),
+                    Err(_rejection) => Ok(()),
                 }
             }
-            Err(_rejection) => {}
+        };
+        if let Err(error) = result {
+            runtime.record_error(error.into());
         }
     })
 }
@@ -2605,6 +2620,7 @@ where
             lifecycle,
             full_demo,
             device_status: _,
+            gamepad,
             file_library,
             test_midi,
             midi_clock_micros,
@@ -2622,6 +2638,12 @@ where
                     false
                 }
             };
+        }
+        if let Some(gamepad) = gamepad {
+            if let Err(failure) = gamepad.advance(app_loop, lifecycle.persisted_edits_blocked()) {
+                *error = Some(failure.into());
+                return false;
+            }
         }
         if let Err(failure) = file_library.advance(app_loop) {
             *error = Some(failure.into());

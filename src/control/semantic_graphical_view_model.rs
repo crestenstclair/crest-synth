@@ -550,6 +550,12 @@ pub enum SemanticSurfaceSummary {
         preview_request_id: Option<EngineSelectionRequestId>,
         preview: SamplePreviewState,
     },
+    ControllerSettings {
+        title: String,
+        summary: String,
+        description: String,
+        controller: crate::control::ControllerState,
+    },
     MidiDeviceSettings {
         suspended_context: TopLevelContext,
         title: String,
@@ -574,7 +580,8 @@ impl SemanticSurfaceSummary {
             | Self::EmptyPatchUtility { .. }
             | Self::Mixer { .. }
             | Self::MixerInspector { .. }
-            | Self::MidiDeviceSettings { .. } => None,
+            | Self::MidiDeviceSettings { .. }
+            | Self::ControllerSettings { .. } => None,
         }
     }
 
@@ -593,9 +600,10 @@ impl SemanticSurfaceSummary {
             Self::PatchDetail { patch_position, .. } | Self::PatchChoice { patch_position, .. } => {
                 Some(*patch_position)
             }
-            Self::Mixer { .. } | Self::MixerInspector { .. } | Self::MidiDeviceSettings { .. } => {
-                None
-            }
+            Self::Mixer { .. }
+            | Self::MixerInspector { .. }
+            | Self::MidiDeviceSettings { .. }
+            | Self::ControllerSettings { .. } => None,
         }
     }
 }
@@ -1383,6 +1391,7 @@ impl SemanticGraphicalViewModel {
         let errors = project_errors(state, &resolver, &status)?;
         let mut surfaces = match state.interaction().active_surface() {
             SurfaceId::MidiDeviceSettings => project_midi_device_settings_surface(state)?,
+            SurfaceId::ControllerSettings => project_controller_settings_surface(state),
             _ => match state.context() {
                 TopLevelContext::Patch => {
                     project_patch_surfaces(state, &resolver, &status, &errors)?
@@ -1855,6 +1864,86 @@ fn project_focus_repair(
         removed_control_id: removed_control_id.clone(),
         replacement_control_id: replacement_control_id.clone(),
     }))
+}
+
+fn project_controller_settings_surface(state: &AppState) -> Vec<SemanticSurfaceViewModel> {
+    use crate::control::ControllerSettingId;
+    let controller = state.controller();
+    let controls: Vec<_> = ControllerSettingId::all()
+        .map(|setting| {
+            let path = FocusPath::controller_settings(state.context(), setting);
+            let focused = state.interaction().focus_path() == &path;
+            let value = match setting {
+                ControllerSettingId::Binding(role) if controller.capture() == Some(role) => {
+                    "PRESS A BUTTON…".to_owned()
+                }
+                ControllerSettingId::Binding(role) => {
+                    controller.bindings().button(role).label().to_owned()
+                }
+                ControllerSettingId::ResetDefaults => "Restore".to_owned(),
+            };
+            SemanticControlViewModel {
+                path,
+                label: setting.label().to_owned(),
+                kind: SemanticControlKind::Identity,
+                value: SemanticControlValue::Summary(value),
+                selected_label: None,
+                numeric_range: None,
+                unit: None,
+                browser_metadata: None,
+                availability_label: None,
+                read_only_label: None,
+                enabled: true,
+                visible: true,
+                focusable: true,
+                editable: matches!(setting, ControllerSettingId::ResetDefaults)
+                    || (controller.ready() && !controller.devices().is_empty()),
+                focused,
+                status: None,
+                error: None,
+                requested_value: None,
+                requested_label: None,
+                patch_interaction: None,
+                valid_actions: Vec::new(),
+            }
+        })
+        .collect();
+    let description = match state.interaction().focus_path().control_id() {
+        crate::control::SemanticControlId::ControllerSetting(ControllerSettingId::Binding(
+            role,
+        )) => role.description(),
+        _ => "Restore the standard controller layout. This replaces all saved button assignments.",
+    }
+    .to_owned();
+    let summary = if let Some(failure) = controller.backend_failure() {
+        failure.label().to_owned()
+    } else if controller.capture().is_some() {
+        "Waiting for a new button press".to_owned()
+    } else {
+        controller.preference_status().label().to_owned()
+    };
+    vec![SemanticSurfaceViewModel {
+        id: SurfaceId::ControllerSettings,
+        label: "CONTROLLER BUTTONS".to_owned(),
+        role: SemanticSurfaceRole::System,
+        sections: vec![SemanticSurfaceSectionViewModel {
+            id: "controllerButtons".to_owned(),
+            label: "Button assignments".to_owned(),
+            control_paths: controls
+                .iter()
+                .map(|control| control.path.clone())
+                .collect(),
+            control_summaries: Vec::new(),
+        }],
+        controls,
+        visualizations: Vec::new(),
+        summary: SemanticSurfaceSummary::ControllerSettings {
+            title: "Settings · Controller Buttons".to_owned(),
+            summary,
+            description,
+            controller: controller.clone(),
+        },
+    }]
 }
 
 fn project_midi_device_settings_surface(
@@ -3803,7 +3892,7 @@ fn map_resolver_error(error: crate::control::EventRejection) -> SemanticGraphica
 
 fn validate_data(data: &SemanticGraphicalData) -> Result<(), SemanticGraphicalViewModelError> {
     let active_surface_matches_context = if data.active_surface.is_system() {
-        data.active_surface == SurfaceId::MidiDeviceSettings
+        data.active_surface.is_system()
     } else {
         data.active_surface
             .context()

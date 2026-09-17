@@ -89,7 +89,7 @@ impl LiveShellCoverage {
                 }
             }
             SurfaceId::MixerInspector => self.mixer_inspector_observed = true,
-            SurfaceId::MidiDeviceSettings => {}
+            SurfaceId::MidiDeviceSettings | SurfaceId::ControllerSettings => {}
         }
         match frame.interaction_mode() {
             InteractionMode::Navigate => self.navigate_observed = true,
@@ -1939,6 +1939,7 @@ fn measure_mixer_routing(
                     | SemanticControlId::Patch(_)
                     | SemanticControlId::Modal(_)
                     | SemanticControlId::MidiInputDevice(_)
+                    | SemanticControlId::ControllerSetting(_)
                     | SemanticControlId::MidiInputListRoot
                     | SemanticControlId::SurfaceRoot => None,
                 })

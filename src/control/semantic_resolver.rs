@@ -1,3 +1,4 @@
+use crate::control::Direction;
 use crate::control::{
     AppState, EventRejection, FocusPath, MixerControlId, PatchChoiceSubject, PatchControlId,
     PatchDetailSubject, PatchPositionId, PatchSubordinateSession, ProspectivePatch, SemanticAction,
@@ -1019,6 +1020,9 @@ impl<'a> SemanticResolver<'a> {
             SurfaceId::FileBrowser => self.file_browser_paths(),
             SurfaceId::MixerInspector => self.mixer_inspector_paths(self.selected_mixer_track()?),
             SurfaceId::MidiDeviceSettings => self.midi_input_settings_paths(),
+            SurfaceId::ControllerSettings => Ok(crate::control::ControllerSettingId::all()
+                .map(|setting| FocusPath::controller_settings(self.state.context(), setting))
+                .collect()),
         }
     }
 
@@ -1040,7 +1044,7 @@ impl<'a> SemanticResolver<'a> {
     /// the production reducer.
     pub fn valid_actions(&self) -> Vec<ValidAction> {
         let mut availability = SemanticActionAvailability::new(self.state);
-        SemanticAction::surface_descriptor()
+        let mut actions: Vec<_> = SemanticAction::surface_descriptor()
             .iter()
             .filter(|action| availability.accepts(action))
             .cloned()
@@ -1051,6 +1055,36 @@ impl<'a> SemanticResolver<'a> {
                     }
                     SemanticAction::ToggleTestMidi => ("Start test MIDI", Some("T")),
                     SemanticAction::Activate
+                        if self.state.interaction().active_surface()
+                            == SurfaceId::ControllerSettings =>
+                    {
+                        if self.state.controller().capture().is_some() {
+                            ("Cancel button capture", Some("Return"))
+                        } else if matches!(
+                            self.state.interaction().focus_path().control_id(),
+                            crate::control::SemanticControlId::ControllerSetting(
+                                crate::control::ControllerSettingId::ResetDefaults
+                            )
+                        ) {
+                            ("Restore default buttons", Some("Return"))
+                        } else {
+                            ("Assign button", Some("Return"))
+                        }
+                    }
+                    SemanticAction::NavigatePage(Direction::Right)
+                        if self.state.controller().capture().is_some() =>
+                    {
+                        ("Cancel button capture", Some("Shift+Right / Shift+D"))
+                    }
+                    SemanticAction::NavigatePage(Direction::Down)
+                        if self.state.controller().capture().is_some() =>
+                    {
+                        ("Cancel button capture", Some("Shift+Down / Shift+S"))
+                    }
+                    SemanticAction::Return if self.state.controller().capture().is_some() => {
+                        ("Cancel button capture", None)
+                    }
+                    SemanticAction::Activate
                         if self.state.interaction().active_surface() == SurfaceId::PatchDetail =>
                     {
                         ("Browse files", Some("Return"))
@@ -1059,7 +1093,13 @@ impl<'a> SemanticResolver<'a> {
                 };
                 ValidAction::new(action, label, hint)
             })
-            .collect()
+            .collect();
+        if self.state.interaction().active_surface().is_system() {
+            // Keep the focused setting's primary action visible before the
+            // compatibility shortcuts when footer guidance wraps or scrolls.
+            actions.sort_by_key(|action| action.action() != &SemanticAction::Activate);
+        }
+        actions
     }
 
     /// Maps one MIXER stable identity back to compatibility coordinates. The
@@ -1184,13 +1224,14 @@ fn action_presentation(
             let label = match (surface, direction) {
                 (SurfaceId::PatchMain, Direction::Up) => "Open highlighted Detail",
                 (SurfaceId::PatchMain, Direction::Down) => "Open MIXER",
-                (SurfaceId::PatchMain, Direction::Left) => "Open MIDI Settings",
+                (SurfaceId::PatchMain, Direction::Left) => "Open Settings",
                 (SurfaceId::MixerMain | SurfaceId::MixerInspector, Direction::Up)
                 | (SurfaceId::PatchDetail, Direction::Down) => "Return to Overview",
                 (SurfaceId::PatchDetail, Direction::Up) => "Browse files",
-                (SurfaceId::MidiDeviceSettings, Direction::Right | Direction::Down) => {
-                    "Return to performance"
-                }
+                (
+                    SurfaceId::MidiDeviceSettings | SurfaceId::ControllerSettings,
+                    Direction::Right | Direction::Down,
+                ) => "Return to performance",
                 (_, Direction::Down) => "Return / cancel",
                 (_, Direction::Left) => "Previous patch",
                 (_, Direction::Right) => "Next patch",
@@ -1212,6 +1253,12 @@ fn action_presentation(
         SemanticAction::Navigate(Direction::Right) if surface == SurfaceId::PatchChoice => {
             ("Next group", Some("D"))
         }
+        SemanticAction::Navigate(Direction::Left) if surface.is_system() => {
+            ("Previous Settings page", Some("Left / A"))
+        }
+        SemanticAction::Navigate(Direction::Right) if surface.is_system() => {
+            ("Next Settings page", Some("Right / D"))
+        }
         SemanticAction::Navigate(Direction::Left) => ("Move left", Some("A")),
         SemanticAction::Navigate(Direction::Right) => ("Move right", Some("D")),
         SemanticAction::Adjust(Direction::Up) => ("Coarse increase", Some("K+W")),
@@ -1229,9 +1276,7 @@ fn action_presentation(
             ("Unavailable mode", None)
         }
         SemanticAction::OpenRelated => ("Open related", None),
-        SemanticAction::OpenMidiSettings => {
-            ("Open MIDI Devices", Some("Shift+Space / Shift+Start"))
-        }
+        SemanticAction::OpenMidiSettings => ("Open Settings", Some("Shift+Space / Shift+Start")),
         SemanticAction::Activate => ("Choose", Some("Return")),
         SemanticAction::PreviewStart => ("Preview", Some("hold Space")),
         SemanticAction::ToggleTestMidi => ("Toggle test MIDI", Some("T")),
@@ -1245,7 +1290,8 @@ fn action_presentation(
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
         SemanticAction::EnterSurface(SurfaceId::PatchMain)
         | SemanticAction::EnterSurface(SurfaceId::MixerMain)
-        | SemanticAction::EnterSurface(SurfaceId::MidiDeviceSettings) => {
+        | SemanticAction::EnterSurface(SurfaceId::MidiDeviceSettings)
+        | SemanticAction::EnterSurface(SurfaceId::ControllerSettings) => {
             ("Unavailable surface", None)
         }
         SemanticAction::Return => ("Return", None),

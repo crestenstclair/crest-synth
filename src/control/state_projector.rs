@@ -375,7 +375,7 @@ impl StateProjector {
         state: &AppState,
         state_hash: &str,
     ) -> Result<Option<PatchPageProjection>, StateProjectionError> {
-        if state.interaction().active_surface() == crate::control::SurfaceId::MidiDeviceSettings {
+        if state.interaction().active_surface().is_system() {
             return Ok(None);
         }
         match state.context() {
@@ -489,11 +489,20 @@ impl StateProjector {
         page: Option<&PatchPageProjection>,
         state_hash: &str,
     ) -> Result<TextProjection, StateProjectionError> {
-        if state.interaction.active_focus.surface() == crate::control::SurfaceId::MidiDeviceSettings
-        {
+        if state.interaction.active_focus.surface().is_system() {
             return Ok(TextProjection::for_context(
                 state.interaction.active_focus.context(),
-                "SETTINGS · MIDI DEVICES\nWATCHING FOR PHYSICAL INPUTS".to_owned(),
+                format!(
+                    "SETTINGS · {}\n{}",
+                    state.interaction.active_focus.surface().label(),
+                    if state.interaction.active_focus.surface()
+                        == crate::control::SurfaceId::ControllerSettings
+                    {
+                        state.controller.preference_status().label()
+                    } else {
+                        "WATCHING FOR PHYSICAL INPUTS"
+                    }
+                ),
                 0,
                 state_hash.to_owned(),
             ));
@@ -559,8 +568,7 @@ impl StateProjector {
         if page.is_some_and(|page| page.patch().id() != snapshot_patch) {
             return Err(StateProjectionError::InvalidSelection);
         }
-        let settings_active =
-            semantic.active_surface() == crate::control::SurfaceId::MidiDeviceSettings;
+        let settings_active = semantic.active_surface().is_system();
         let status_label = if settings_active {
             "WATCHING"
         } else {
@@ -583,9 +591,22 @@ impl StateProjector {
 
         let (identity_header, main_label, side_label, footer) = if settings_active {
             (
-                ShellIdentityHeader::new("SETTINGS · MIDI DEVICES", "PHYSICAL INPUT"),
-                "AVAILABLE INPUTS".to_owned(),
-                "INPUT INSPECTOR".to_owned(),
+                ShellIdentityHeader::new(
+                    format!("SETTINGS · {}", semantic.active_surface().label()),
+                    "PHYSICAL INPUT",
+                ),
+                if semantic.active_surface() == crate::control::SurfaceId::ControllerSettings {
+                    "BUTTON ASSIGNMENTS"
+                } else {
+                    "AVAILABLE INPUTS"
+                }
+                .to_owned(),
+                if semantic.active_surface() == crate::control::SurfaceId::ControllerSettings {
+                    "CONTROLLER INSPECTOR"
+                } else {
+                    "INPUT INSPECTOR"
+                }
+                .to_owned(),
                 ShellFooter::new(footer_path_label(semantic), action_hints),
             )
         } else {
@@ -623,6 +644,7 @@ impl StateProjector {
                                 == crate::control::SurfaceId::PatchUtility => {}
                         SemanticControlId::Mixer(_)
                         | SemanticControlId::MidiInputDevice(_)
+                        | SemanticControlId::ControllerSetting(_)
                         | SemanticControlId::MidiInputListRoot
                         | SemanticControlId::SurfaceRoot => {
                             return Err(StateProjectionError::InvalidSelection)
@@ -680,6 +702,7 @@ impl StateProjector {
                             return Err(StateProjectionError::InvalidSelection)
                         }
                         SemanticControlId::MidiInputDevice(_)
+                        | SemanticControlId::ControllerSetting(_)
                         | SemanticControlId::MidiInputListRoot => {
                             return Err(StateProjectionError::InvalidSelection)
                         }
@@ -731,7 +754,7 @@ fn footer_path_label(semantic: &SemanticGraphicalViewModel) -> String {
         || semantic.active_surface().label().to_owned(),
         |control| control.label().to_owned(),
     );
-    let root = if semantic.active_surface() == crate::control::SurfaceId::MidiDeviceSettings {
+    let root = if semantic.active_surface().is_system() {
         "SETTINGS"
     } else {
         semantic.context().label()
@@ -761,6 +784,7 @@ fn selection_from_serialized(
         | SemanticControlId::Patch(_)
         | SemanticControlId::Modal(_)
         | SemanticControlId::MidiInputDevice(_)
+        | SemanticControlId::ControllerSetting(_)
         | SemanticControlId::MidiInputListRoot
         | SemanticControlId::SurfaceRoot => Err(StateProjectionError::InvalidSelection),
     }

@@ -5,6 +5,7 @@ pub mod braids_preparer;
 pub mod chorus_capability;
 pub mod chorus_native;
 pub mod chorus_preparer;
+pub(crate) mod controller_preferences;
 pub mod cpal_audio_output;
 pub mod delay_capability;
 pub mod delay_preparer;

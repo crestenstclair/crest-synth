@@ -26,6 +26,7 @@ use serde::{Serialize, Serializer};
 pub enum EventSource {
     Startup,
     Keyboard,
+    Controller,
     AutomaticMidi,
     PhysicalMidi,
     DemoScene,
@@ -34,9 +35,10 @@ pub enum EventSource {
 }
 
 impl EventSource {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::Startup,
         Self::Keyboard,
+        Self::Controller,
         Self::AutomaticMidi,
         Self::PhysicalMidi,
         Self::DemoScene,
@@ -52,6 +54,7 @@ impl EventSource {
         match self {
             Self::Startup => "startup",
             Self::Keyboard => "keyboard",
+            Self::Controller => "controller",
             Self::AutomaticMidi => "automaticMidi",
             Self::PhysicalMidi => "physicalMidi",
             Self::DemoScene => "demoScene",
@@ -276,6 +279,9 @@ impl From<&crate::synth::PreparedSampleVisualization> for PreparedSampleVisualiz
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum EventInput {
+    Controller {
+        event: crate::control::ControllerEvent,
+    },
     SelectContext {
         context: TopLevelContext,
     },
@@ -485,6 +491,9 @@ impl From<&AppEvent> for EventInput {
             },
             AppEvent::SetInteractionMode(mode) => Self::SetInteractionMode { mode: *mode },
             AppEvent::OpenRelated => Self::OpenRelated,
+            AppEvent::Controller(event) => Self::Controller {
+                event: event.clone(),
+            },
             AppEvent::OpenMidiSettings => Self::OpenMidiSettings,
             AppEvent::Activate => Self::Activate,
             AppEvent::AssetImported(selection) => Self::AssetImported {
@@ -718,7 +727,8 @@ impl EventInput {
     pub const fn publishes_parameters_on_acceptance(&self) -> bool {
         !matches!(
             self,
-            Self::SelectContext { .. }
+            Self::Controller { .. }
+                | Self::SelectContext { .. }
                 | Self::SelectPatch { .. }
                 | Self::NavigatePage { .. }
                 | Self::Navigate { .. }

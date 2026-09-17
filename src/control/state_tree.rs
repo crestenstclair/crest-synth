@@ -238,7 +238,7 @@ impl StateTree {
     /// Version 24: asset-scoped capability catalogs and file-kind-correlated browser events.
     /// Version 25: source-specific `NavigatePage` actions and Settings-only
     /// PATCH page absence in full and generation-only projections.
-    pub const SCHEMA_VERSION: u32 = 30;
+    pub const SCHEMA_VERSION: u32 = 31;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -266,6 +266,7 @@ impl StateTree {
         "engineSelection.correlation.targetGraphRevision",
         "engineSelection.failure",
         "midiInput",
+        "controller",
         "patchPage",
         "graphicalShell",
         "projection.context",
@@ -613,6 +614,15 @@ impl StateTree {
         "parameters.returns[].scalars[]",
         "parameters.returns[].returnLevel",
         "parameters.global.masterGainDb",
+        "controller.devices[].id",
+        "controller.devices[].name",
+        "controller.bindings.version",
+        "controller.bindings.buttons[]",
+        "controller.capture",
+        "controller.ready",
+        "controller.preferenceStatus.kind",
+        "controller.preferenceStatus.failure",
+        "controller.backendFailure",
         "midiInput.active",
         "midiInput.active.identity.identity",
         "midiInput.active.identity.identitySchema",
@@ -1370,6 +1380,7 @@ struct SerializableStateTree<'a> {
     interaction: &'a SerializedInteractionState,
     engine_selection: &'a EngineSelectionStatus,
     midi_input: &'a crate::control::MidiInputState,
+    controller: &'a crate::control::ControllerState,
     patch_page: Option<&'a PatchPageProjection>,
     graphical_shell: &'a GraphicalShellProjection,
     projection: &'a TextProjection,
@@ -1396,6 +1407,7 @@ impl<'a> SerializableStateTree<'a> {
             interaction: &state.interaction,
             engine_selection: &state.engine_selection,
             midi_input: &state.midi_input,
+            controller: &state.controller,
             patch_page,
             graphical_shell,
             projection,
@@ -1658,7 +1670,7 @@ mod tests {
         assert_eq!(tree.state_hash(), snapshot.hash());
 
         let root = value.as_object().unwrap();
-        assert_eq!(root.len(), 15);
+        assert_eq!(root.len(), 16);
         for property in [
             "schemaVersion",
             "generation",
@@ -1671,6 +1683,7 @@ mod tests {
             "interaction",
             "engineSelection",
             "midiInput",
+            "controller",
             "patchPage",
             "graphicalShell",
             "projection",

@@ -746,9 +746,20 @@ fn engine_option_rows_have_one_focus_independent_current_and_reducer_actions() {
     state.apply(AppEvent::Adjust(Direction::Up)).unwrap();
     let model = semantic(&state);
     let choice = model.surface(SurfaceId::PatchChoice).unwrap();
+    // Options paint the current registry group; navigation wraps within it.
+    let category = state
+        .capabilities()
+        .descriptor_for_config(state.patches()[0].instrument_config())
+        .unwrap()
+        .instrument_category();
     assert_eq!(
         choice.controls().len(),
-        state.capabilities().descriptors().len()
+        state
+            .capabilities()
+            .descriptors()
+            .iter()
+            .filter(|descriptor| descriptor.instrument_category() == category)
+            .count()
     );
     assert_eq!(
         choice
@@ -768,7 +779,7 @@ fn engine_option_rows_have_one_focus_independent_current_and_reducer_actions() {
     );
     assert!(choice.controls()[0].focused());
     assert_eq!(choice.controls()[0].selected_label(), Some("CURRENT"));
-    for (index, control) in choice.controls().iter().enumerate() {
+    for control in choice.controls() {
         let has = |action: &SemanticAction| {
             control
                 .valid_actions()
@@ -777,10 +788,13 @@ fn engine_option_rows_have_one_focus_independent_current_and_reducer_actions() {
         };
         assert!(has(&SemanticAction::Activate));
         assert!(has(&SemanticAction::Return));
-        assert_eq!(has(&SemanticAction::Navigate(Direction::Up)), index > 0);
+        assert_eq!(
+            has(&SemanticAction::Navigate(Direction::Up)),
+            choice.controls().len() > 1
+        );
         assert_eq!(
             has(&SemanticAction::Navigate(Direction::Down)),
-            index + 1 < choice.controls().len()
+            choice.controls().len() > 1
         );
     }
     assert_eq!(choice.controls()[0].valid_actions(), model.valid_actions());

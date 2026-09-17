@@ -147,7 +147,7 @@ fn run(options: Options) -> Result<()> {
         );
         Ok(application
             .with_default_session_blueprint(default_session)
-            .with_system_midi_devices())
+            .with_system_input_devices())
     };
 
     if options.full_instrument_effect_demo {
@@ -738,6 +738,7 @@ impl DemoSceneObservation {
                 | EventInput::MidiInputDisconnectRequested { .. }
                 | EventInput::MidiInputConnectionLost { .. }
                 | EventInput::MidiInputOperationFailed { .. }
+                | EventInput::Controller { .. }
                 | EventInput::MidiInputShutdownRequested
                 | EventInput::AssetImported { .. }
                 | EventInput::ToggleTestMidi => {}

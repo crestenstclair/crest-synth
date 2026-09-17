@@ -183,6 +183,17 @@
       : null;
   }
 
+  function controllerSettingsSurface(model) {
+    var surface = surfaceById(model, "controllerSettings");
+    return surface && surface.summary && surface.summary.kind === "controllerSettings"
+      ? surface
+      : null;
+  }
+
+  function settingsSurface(model) {
+    return controllerSettingsSurface(model) || midiSettingsSurface(model);
+  }
+
   // The serialized identity of one projected control ("patch.engine",
   // "patch.effectSlot.0", ...). Used for structure — which group a row joins,
   // which row heads it — and never painted; the same way the mixer bank
@@ -614,13 +625,15 @@
   // ---- band renderers (pure: document in, HTML string out) ---------------
 
   function contextLineHtml(model) {
-    var settings = midiSettingsSurface(model);
+    var settings = settingsSurface(model);
     if (settings) {
       return (
         '<span class="type-heading">CREST SYNTH</span>' +
         '<span class="spring"></span>' +
         '<span class="type-label focus context-entry" data-context="settings" data-active="true"><span class="patch">*</span> SETTINGS</span>' +
-        '<span class="type-label positive" data-role="status">WATCHING</span>'
+        (settings.id === "midiDeviceSettings"
+          ? '<span class="type-label positive" data-role="status">WATCHING</span>'
+          : "")
       );
     }
     // The two declared top-level contexts; the active one carries the
@@ -670,11 +683,12 @@
   // metadata content differs, and it comes from the document's own surface
   // summaries, never from a page-side fork.
   function identityHeaderHtml(model, columns) {
-    var settings = midiSettingsSurface(model);
+    var settings = settingsSurface(model);
     if (settings) {
       return (
-        '<span class="type-display">MIDI DEVICES</span>' +
-        '<span class="type-label muted">/ PHYSICAL INPUT</span>' +
+        '<span class="type-heading">' +
+        escapeHtml(String(settings.summary.title || settings.label || "SETTINGS").toUpperCase()) +
+        '</span><span class="type-label muted">/ PHYSICAL INPUT</span>' +
         '<span class="spring"></span>' +
         '<span class="type-value focus" data-role="focus-annotation">' +
         escapeHtml(focusIdentity(model)) +
@@ -937,6 +951,25 @@
       : String(value).toUpperCase();
   }
 
+  // Page selection is reducer-owned. These labels advertise sibling system
+  // pages without creating another keyboard or semantic focus target.
+  function settingsPagesHtml(surface) {
+    var pages = [
+      { id: "midiDeviceSettings", label: "MIDI DEVICES" },
+      { id: "controllerSettings", label: "CONTROLLER BUTTONS" },
+    ];
+    var body = "";
+    for (var i = 0; i < pages.length; i += 1) {
+      var current = surface && surface.id === pages[i].id;
+      body += '<span class="type-label settings-page ' +
+        (current ? "secondary" : "muted") +
+        '" data-settings-page="' + escapeHtml(pages[i].id) + '"' +
+        (current ? ' aria-current="page"' : "") + '>' +
+        (current ? '● ' : '') + escapeHtml(pages[i].label) + '</span>';
+    }
+    return '<div class="settings-pages" aria-label="Settings pages">' + body + '</div>';
+  }
+
   function midiSettingsWorkspaceHtml(model) {
     var surface = midiSettingsSurface(model);
     var summary = surface ? surface.summary : null;
@@ -977,9 +1010,9 @@
           '">' +
           escapeHtml(String(row.descriptor.displayName || UNAVAILABLE)) +
           '</span><span class="type-hint muted">' +
-          midiFact(facts && facts.manufacturer) +
+          escapeHtml(midiFact(facts && facts.manufacturer)) +
           HINT_SEPARATOR +
-          midiFact(facts && facts.transport) +
+          escapeHtml(midiFact(facts && facts.transport)) +
           "</span></div>" +
           '<span class="midi-row-status type-label">' +
           escapeHtml(String(row.statusText || "UNKNOWN")) +
@@ -992,7 +1025,7 @@
           "</div>";
       }
     }
-    return workspaceScaffold(
+    return settingsPagesHtml(surface) + workspaceScaffold(
       model,
       '<span class="type-label muted">AVAILABLE INPUTS</span>',
       '<span class="type-hint positive">' +
@@ -1000,6 +1033,59 @@
         "</span>",
       '<div class="midi-device-list" data-role="midi-device-list">' + body + "</div>"
     );
+  }
+
+  function controllerSettingsWorkspaceHtml(model) {
+    var surface = controllerSettingsSurface(model);
+    var controls = (surface && surface.controls) || [];
+    var body = "";
+    for (var i = 0; i < controls.length; i += 1) {
+      var control = controls[i];
+      var focused = Boolean(control.focused);
+      body += '<div class="midi-device-row controller-button-row' +
+        (focused ? " focused" : "") +
+        '" data-editable="' + String(Boolean(control.editable)) +
+        '" data-focus-path="' + escapeHtml(JSON.stringify(control.path || null)) + '"' +
+        (focused ? ' data-focus-treatment="focused"' : '') + '>' +
+        '<span class="midi-status-marker" aria-hidden="true">' + (focused ? '›' : '·') + '</span>' +
+        '<div class="midi-row-identity"><span class="type-label ' +
+        (focused ? "focus" : "secondary") + '">' + escapeHtml(control.label) + '</span></div>' +
+        '<span class="type-value controller-button-value">' +
+        escapeHtml(controlValueText(control)) + '</span></div>';
+    }
+    return settingsPagesHtml(surface) + workspaceScaffold(
+      model,
+      '<span class="type-label muted">BUTTON ASSIGNMENTS</span>',
+      '<span class="type-hint secondary">SHARED MAPPING</span>',
+      '<div class="midi-device-list" data-role="controller-button-list">' + body + '</div>'
+    );
+  }
+
+  function controllerSettingsInspectorHtml(model) {
+    var surface = controllerSettingsSurface(model);
+    var summary = (surface && surface.summary) || {};
+    var controller = summary.controller || {};
+    var devices = controller.devices || [];
+    var deviceNames = "";
+    for (var i = 0; i < devices.length; i += 1) {
+      deviceNames += '<span class="type-value secondary">' +
+        escapeHtml(devices[i].name) + '</span>';
+    }
+    var status = controller.preferenceStatus || {};
+    var tone = controller.backendFailure || status.kind === "failed"
+      ? "warning" : controller.capture ? "adjust" : "secondary";
+    return '<div class="inspector-pinned"><span class="type-label muted">CONNECTED CONTROLLERS</span>' +
+      (deviceNames || '<span class="type-heading secondary">NONE</span>') +
+      '<span class="type-hint muted">' +
+      (devices.length ? 'One mapping applies to all connected gamepads.' : 'No controllers connected. Connect a gamepad to assign buttons.') +
+      '</span></div>' +
+      '<div class="controller-settings-status" data-controller-capture="' +
+      escapeHtml(controller.capture || "") + '" data-controller-preference-status="' +
+      escapeHtml(status.kind || "") + '"><span class="type-label ' + tone + '">' +
+      escapeHtml(summary.summary || UNAVAILABLE) + '</span>' +
+      '<span class="type-value focus">' + escapeHtml(focusIdentity(model)) + '</span>' +
+      '<span class="type-hint secondary">' + escapeHtml(summary.description || "") + '</span>' +
+      '<span class="type-hint muted">Assigning a button already in use swaps the two assignments.</span></div>';
   }
 
   function midiInputInspectorHtml(model) {
@@ -2508,7 +2594,7 @@
   }
 
   function footerHtml(model) {
-    var breadcrumb = midiSettingsSurface(model)
+    var breadcrumb = settingsSurface(model)
       ? "SETTINGS"
       : String(model.context || "").toUpperCase();
     if (hasWaveform(surfaceByRole(model, "detail")) && !surfaceByRole(model, "modal")) {
@@ -2594,7 +2680,7 @@
     latestModel = model;
     var main = surfaceById(model, "mixerMain");
     var columns = trackColumns(main);
-    var settings = midiSettingsSurface(model);
+    var settings = settingsSurface(model);
     doc.body.classList.toggle("settings-active", Boolean(settings));
     doc.getElementById("context-line").innerHTML = contextLineHtml(model);
     doc.getElementById("identity-header").innerHTML = identityHeaderHtml(
@@ -2603,12 +2689,16 @@
     );
     doc.getElementById("workspace").innerHTML =
       settings
-        ? midiSettingsWorkspaceHtml(model)
+        ? settings.id === "controllerSettings"
+          ? controllerSettingsWorkspaceHtml(model)
+          : midiSettingsWorkspaceHtml(model)
         : model.context === "patch"
         ? patchWorkspaceHtml(model)
         : mixerWorkspaceHtml(model, columns);
     doc.getElementById("inspector").innerHTML = settings
-      ? midiInputInspectorHtml(model)
+      ? settings.id === "controllerSettings"
+        ? controllerSettingsInspectorHtml(model)
+        : midiInputInspectorHtml(model)
       : sideRegionHtml(model);
     doc.getElementById("footer").innerHTML = footerHtml(model);
     // Final step, after ALL five region insertions: apply the dynamic

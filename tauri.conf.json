@@ -27,6 +27,7 @@
     "active": false,
     "resources": [
       "assets/licenses/UPSTREAM_AUDIO.txt",
+      "assets/licenses/SDL3.txt",
       "assets/licenses/EIGEN_SOURCE.tar.gz"
     ]
   }

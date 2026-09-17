@@ -47,6 +47,7 @@ fn source_name(source: EventSource) -> &'static str {
     match source {
         EventSource::Startup => "startup",
         EventSource::Keyboard => "keyboard",
+        EventSource::Controller => "controller",
         EventSource::AutomaticMidi => "automatic-midi",
         EventSource::PhysicalMidi => "physical-midi",
         EventSource::DemoScene => "demo-scene",

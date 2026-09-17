@@ -2,8 +2,8 @@ use crate::control::{Direction, SemanticAction};
 
 /// A normalized controller gesture at the platform-adapter boundary.
 ///
-/// Chord detection belongs to the physical controller adapter (for example,
-/// `gilrs`). The domain therefore sees neither button codes nor a particular
+/// Chord detection belongs to Crest's physical controller adapter, which reads
+/// SDL3's standard buttons. The domain sees neither button codes nor a particular
 /// device layout: it sees the same directional, Edit, Shift, and Start
 /// vocabulary the keyboard adapter already normalizes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

@@ -2477,6 +2477,7 @@ fn build_expected_coverage(
                 ..
             }
             | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputScanStarted
+            | crate::control::app_event::AppEventSurfaceDescriptor::Controller { .. }
             | crate::control::app_event::AppEventSurfaceDescriptor::MidiInputShutdownRequested
             | crate::control::app_event::AppEventSurfaceDescriptor::AssetImported { .. }
             | crate::control::app_event::AppEventSurfaceDescriptor::ToggleTestMidi => {

@@ -145,6 +145,18 @@ test-webview-soundfont-native: cache-guard ## Prove SoundFont file, preset, load
 	CREST_SOUNDFONT_EVIDENCE_DIR=/tmp/crest-soundfont-evidence cargo test --test soundfont_file_loading
 	CREST_SOUNDFONT_EVIDENCE_DIR=/tmp/crest-soundfont-evidence CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_DETAIL_WITNESS=1 cargo test --test webview_projection_shell -- --nocapture
 
+.PHONY: test-controller test-controller-native test-controller-sdl
+test-controller: cache-guard ## Verify gamepad gestures, saved mappings, and reducer-owned Settings
+	cargo test --lib controller
+	cargo test --lib gamepad
+	cargo test --test controller_settings
+
+test-controller-native: cache-guard ## Verify Controller Settings rendering and focus in WKWebView
+	CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_CONTROLLER_WITNESS=1 cargo test --test webview_projection_shell -- --nocapture
+
+test-controller-sdl: cache-guard ## Verify SDL3 virtual gamepads through the production reducer and projector
+	cargo test --lib sdl_gamepads_reach_reducer_and_preserve_input_lifetimes -- --nocapture
+
 .PHONY: test-page-navigation test-webview-page-navigation-native
 test-page-navigation: cache-guard ## Run focused page-routing, identity, input, and audio checks
 	cargo test --test page_navigation

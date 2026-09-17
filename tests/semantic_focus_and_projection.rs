@@ -176,9 +176,9 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
     );
     assert_eq!(state, bottom);
 
-    // C-003: two top-level contexts and the closed eight-surface vocabulary —
-    // four persistent surfaces, three PATCH subordinates, and global MIDI
-    // device Settings, which suspends rather than replaces PATCH/MIXER.
+    // C-003: two top-level contexts and the closed surface vocabulary —
+    // four persistent surfaces, three PATCH subordinates, and two Settings
+    // pages, which suspends rather than replaces PATCH/MIXER.
     assert_eq!(
         TopLevelContext::surface_descriptor(),
         &[TopLevelContext::Patch, TopLevelContext::Mixer]
@@ -194,6 +194,7 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
             SurfaceId::MixerMain,
             SurfaceId::MixerInspector,
             SurfaceId::MidiDeviceSettings,
+            SurfaceId::ControllerSettings,
         ]
     );
     assert_eq!(

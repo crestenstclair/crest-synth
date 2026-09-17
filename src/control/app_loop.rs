@@ -1167,7 +1167,9 @@ where
         let generation_before = self.state.generation();
         let state_hash_before = self.current_state_tree.state_hash().to_owned();
         let midi_generation_only = matches!(event, AppEvent::Midi { .. });
-        let parameters_published = event.publishes_parameters_on_acceptance();
+        let parameters_published = event.publishes_parameters_on_acceptance()
+            && !(matches!(event, AppEvent::Activate)
+                && self.state.interaction().active_surface().is_system());
 
         let reduction = match semantic_action {
             Some(action) => self.state.apply_semantic_action(action),
