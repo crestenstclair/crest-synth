@@ -60,11 +60,11 @@ body {
       var(--shell-identity-header-max)
     )
     minmax(0, 1fr)
-    clamp(
+    var(--shell-footer-track, clamp(
       var(--shell-footer-min),
       var(--shell-footer-preferred),
       var(--shell-footer-max)
-    );
+    ));
   overflow: hidden;
   container: shell / inline-size;
 }
@@ -1481,6 +1481,10 @@ body {
 
 /* ---- Settings system workspaces --------------------------------------- */
 
+body.settings-active {
+  --shell-footer-track: auto;
+}
+
 body.settings-active #footer {
   display: grid;
   grid-template-rows: auto minmax(0, 1fr);
@@ -1507,6 +1511,31 @@ body.settings-active #main-region {
     var(--shell-region-gap-preferred),
     var(--shell-region-gap-max)
   );
+}
+
+.session-file-description {
+  max-width: 80ch;
+  line-height: 1.6;
+}
+
+.session-file-row {
+  padding-block: var(--space-16);
+}
+
+.session-file-row[aria-disabled="true"] .session-action-state {
+  color: var(--color-text-secondary);
+}
+
+.session-document-name,
+.session-document-status {
+  overflow-wrap: anywhere;
+}
+
+.session-document-status {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+  padding: var(--space-16);
 }
 
 .settings-pages {

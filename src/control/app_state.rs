@@ -17,8 +17,7 @@ use crate::control::{
     SemanticControlId, SemanticResolver, SurfaceId,
 };
 use crate::control::{
-    ControllerEvent, ControllerPreferenceStatus, ControllerRole, ControllerSettingId,
-    ControllerState,
+    ControllerEvent, ControllerPreferenceStatus, ControllerSettingId, ControllerState,
 };
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::patch_id::PatchId;
@@ -106,6 +105,7 @@ pub struct ApplyOutcome {
     audio_command: Option<AudioCommand>,
     engine_selection_effect: Option<EngineSelectionEffect>,
     midi_device_effects: Vec<MidiDeviceEffect>,
+    session_file_action: Option<crate::control::SessionCommand>,
 }
 
 impl ApplyOutcome {
@@ -119,6 +119,10 @@ impl ApplyOutcome {
 
     pub const fn engine_selection_effect(&self) -> Option<&EngineSelectionEffect> {
         self.engine_selection_effect.as_ref()
+    }
+
+    pub const fn session_file_action(&self) -> Option<crate::control::SessionCommand> {
+        self.session_file_action
     }
 
     pub fn midi_device_effects(&self) -> &[MidiDeviceEffect] {
@@ -139,6 +143,7 @@ struct ReducerEffects {
     audio_command: Option<AudioCommand>,
     engine_selection_effect: Option<EngineSelectionEffect>,
     midi_device_effects: Vec<MidiDeviceEffect>,
+    session_file_action: Option<crate::control::SessionCommand>,
 }
 
 /// One visible deterministic repair caused by an enabled-origin schema change.
@@ -1087,6 +1092,7 @@ impl AppState {
                 audio_command: Some(AudioCommand::PatchMidi { patch_id, message }),
                 engine_selection_effect: None,
                 midi_device_effects: Vec::new(),
+                session_file_action: None,
             });
         }
 
@@ -1107,6 +1113,7 @@ impl AppState {
             audio_command: effects.audio_command,
             engine_selection_effect: effects.engine_selection_effect,
             midi_device_effects: effects.midi_device_effects,
+            session_file_action: effects.session_file_action,
         })
     }
 
@@ -1271,6 +1278,7 @@ impl AppState {
                     audio_command,
                     engine_selection_effect: None,
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::Adjust(direction) => match self.context() {
@@ -1300,6 +1308,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(engine_selection_effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::PreviewStop => {
@@ -1308,6 +1317,7 @@ impl AppState {
                     audio_command,
                     engine_selection_effect: None,
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::EnterSurface(SurfaceId::PatchDetail) => {
@@ -1371,6 +1381,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(engine_selection_effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::SampleAssetLifecycleAdvanced {
@@ -1429,6 +1440,7 @@ impl AppState {
                     audio_command,
                     engine_selection_effect: None,
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::EnginePreparationFailed {
@@ -1472,6 +1484,7 @@ impl AppState {
                     audio_command,
                     engine_selection_effect: Some(engine_selection_effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::SetSlotOccupancy {
@@ -1489,6 +1502,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::SetReturnOccupancy { bus, entry } => {
@@ -1501,6 +1515,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::TopologyPrepared {
@@ -1522,6 +1537,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             AppEvent::TopologyPreparationFailed {
@@ -1629,6 +1645,7 @@ impl AppState {
                 | SurfaceId::FileBrowser
                 | SurfaceId::MidiDeviceSettings
                 | SurfaceId::ControllerSettings
+                | SurfaceId::SaveLoadSettings
         ) {
             return if direction == Direction::Down
                 || (surface.is_system() && direction == Direction::Right)
@@ -1698,6 +1715,7 @@ impl AppState {
             audio_command,
             engine_selection_effect: None,
             midi_device_effects: Vec::new(),
+            session_file_action: None,
         })
     }
 
@@ -2412,7 +2430,8 @@ impl AppState {
             | SurfaceId::FileBrowser
             | SurfaceId::MixerMain
             | SurfaceId::MidiDeviceSettings
-            | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
+            | SurfaceId::ControllerSettings
+            | SurfaceId::SaveLoadSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
@@ -2646,6 +2665,17 @@ impl AppState {
     }
 
     fn activate_focused_subordinate(&mut self) -> Result<ReducerEffects, EventRejection> {
+        if self.interaction.active_surface() == SurfaceId::SaveLoadSettings {
+            let SemanticControlId::SessionFileAction(action) =
+                self.interaction.focus_path().control_id()
+            else {
+                return Err(EventRejection::InvalidSelection);
+            };
+            return Ok(ReducerEffects {
+                session_file_action: Some(*action),
+                ..ReducerEffects::default()
+            });
+        }
         if self.interaction.active_surface() == SurfaceId::ControllerSettings {
             if self.controller.capture.take().is_some() {
                 return Ok(ReducerEffects::default());
@@ -2745,6 +2775,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 });
             }
             self.interaction
@@ -2867,6 +2898,7 @@ impl AppState {
                 audio_command: None,
                 engine_selection_effect: Some(effect),
                 midi_device_effects: Vec::new(),
+                session_file_action: None,
             });
         }
         let patch_id = subject
@@ -2959,6 +2991,7 @@ impl AppState {
             audio_command: None,
             engine_selection_effect: effect,
             midi_device_effects: Vec::new(),
+            session_file_action: None,
         })
     }
 
@@ -2986,6 +3019,7 @@ impl AppState {
                     audio_command,
                     engine_selection_effect: None,
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             FileBrowserRowKind::File(asset_id) => {
@@ -3038,6 +3072,7 @@ impl AppState {
                     audio_command,
                     engine_selection_effect: effect,
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             FileBrowserRowKind::Cancel => {
@@ -3049,6 +3084,7 @@ impl AppState {
                     audio_command,
                     engine_selection_effect: None,
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
         }
@@ -4127,7 +4163,8 @@ impl AppState {
             | SurfaceId::FileBrowser
             | SurfaceId::MidiDeviceSettings
             | SurfaceId::Sends
-            | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
+            | SurfaceId::ControllerSettings
+            | SurfaceId::SaveLoadSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
@@ -4136,16 +4173,23 @@ impl AppState {
             return Err(EventRejection::ActionUnavailableInContext);
         }
         if matches!(direction, Direction::Left | Direction::Right) {
-            let target = if self.interaction.active_surface() == SurfaceId::MidiDeviceSettings {
-                FocusPath::controller_settings(
-                    self.context(),
-                    ControllerSettingId::Binding(ControllerRole::Up),
-                )
+            let pages = [
+                SurfaceId::MidiDeviceSettings,
+                SurfaceId::ControllerSettings,
+                SurfaceId::SaveLoadSettings,
+            ];
+            let index = pages
+                .iter()
+                .position(|page| *page == self.interaction.active_surface())
+                .ok_or(EventRejection::ActionUnavailableInContext)?;
+            let next = if direction == Direction::Right {
+                (index + 1) % pages.len()
             } else {
-                SemanticResolver::new(self)
-                    .midi_input_settings_paths()?
-                    .remove(0)
+                (index + pages.len() - 1) % pages.len()
             };
+            let target = SemanticResolver::new(self)
+                .ordered_paths(pages[next])?
+                .remove(0);
             self.interaction.active_focus = target;
             return Ok(());
         }
@@ -4256,7 +4300,8 @@ impl AppState {
             | SurfaceId::MixerInspector
             | SurfaceId::MidiDeviceSettings
             | SurfaceId::Sends
-            | SurfaceId::ControllerSettings => Err(EventRejection::ActionUnavailableInContext),
+            | SurfaceId::ControllerSettings
+            | SurfaceId::SaveLoadSettings => Err(EventRejection::ActionUnavailableInContext),
         }
     }
 
@@ -4288,6 +4333,7 @@ impl AppState {
                 audio_command: None,
                 engine_selection_effect: Some(effect),
                 midi_device_effects: Vec::new(),
+                session_file_action: None,
             });
         }
         if self.interaction.active_surface() == SurfaceId::PatchDetail {
@@ -4344,6 +4390,7 @@ impl AppState {
                         audio_command: None,
                         engine_selection_effect: effect,
                         midi_device_effects: Vec::new(),
+                        session_file_action: None,
                     });
                 }
                 crate::control::PatchControlId::Engine
@@ -4366,6 +4413,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(engine_selection_effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             Some(crate::control::PatchControlId::Envelope(parameter)) => {
@@ -4387,6 +4435,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(structural_effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             Some(crate::control::PatchControlId::EffectSlot(slot)) => {
@@ -4395,6 +4444,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(structural_effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             Some(crate::control::PatchControlId::Effect(slot_id, parameter_id)) => {
@@ -4759,6 +4809,7 @@ impl AppState {
                         audio_command: None,
                         engine_selection_effect: Some(engine_selection_effect),
                         midi_device_effects: Vec::new(),
+                        session_file_action: None,
                     })
                 } else {
                     self.adjust_instrument_parameter(&parameter_id, direction)?;
@@ -5304,6 +5355,7 @@ impl AppState {
                     audio_command: None,
                     engine_selection_effect: Some(effect),
                     midi_device_effects: Vec::new(),
+                    session_file_action: None,
                 })
             }
             MixerControlId::ReturnLevel { bus } => {
@@ -5615,7 +5667,8 @@ impl AppState {
                 | SurfaceId::MixerInspector
                 | SurfaceId::MidiDeviceSettings
                 | SurfaceId::Sends
-                | SurfaceId::ControllerSettings => return Err(EventRejection::InvalidSelection),
+                | SurfaceId::ControllerSettings
+                | SurfaceId::SaveLoadSettings => return Err(EventRejection::InvalidSelection),
             };
             SemanticResolver::recover(path, old_order, new_order)
                 .ok_or(EventRejection::InvalidSelection)

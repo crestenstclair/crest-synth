@@ -27,15 +27,7 @@ pub type TickCallback = Box<dyn FnMut(Duration) -> bool + 'static>;
 /// Post-paint evidence emitted by a graphical window adapter.
 pub type FrameObservationCallback = Box<dyn FnMut(ShellFrameObservation) + 'static>;
 
-/// Host-neutral document command emitted by native application chrome.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SessionCommand {
-    New,
-    Open,
-    Save,
-    SaveAs,
-    Close,
-}
+pub use crate::control::SessionCommand;
 
 /// Handles one normalized document command. `Close` returns whether the
 /// current native close request may proceed immediately.

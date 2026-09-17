@@ -396,6 +396,25 @@ impl SessionLifecycleCoordinator {
         }
     }
 
+    /// Routes a path-free command from native chrome or an accepted Settings row.
+    pub fn request<Boundary>(
+        &mut self,
+        command: crate::control::SessionCommand,
+        app: &mut AppLoop<Boundary>,
+    ) -> Result<(), SessionLifecycleError>
+    where
+        Boundary: ControlAudioBoundary,
+    {
+        use crate::control::SessionCommand;
+        match command {
+            SessionCommand::New => self.request_new(app),
+            SessionCommand::Open => self.request_open(app),
+            SessionCommand::Save => self.request_save(app),
+            SessionCommand::SaveAs => self.request_save_as(app),
+            SessionCommand::Close => self.request_close(app),
+        }
+    }
+
     pub fn request_new<Boundary>(
         &mut self,
         app: &mut AppLoop<Boundary>,
@@ -641,6 +660,12 @@ impl SessionLifecycleCoordinator {
     where
         Boundary: ControlAudioBoundary,
     {
+        // Consume every intent now so a busy click is never replayed later.
+        // Request methods retain typed failures and enforce the same admission
+        // and unsaved-change protection as native menu commands.
+        while let Some(action) = app.take_session_file_action() {
+            let _ = self.request(action, app);
+        }
         let mut progress = SessionLifecycleProgress::default();
         if let Some(result) = self.dialogs.try_poll() {
             progress.dialog_completed = true;
@@ -1479,6 +1504,152 @@ mod tests {
             assert!(Instant::now() < deadline, "close continuation timed out");
             std::thread::yield_now();
         }
+    }
+
+    fn drive_settings_to_idle(
+        lifecycle: &mut SessionLifecycleCoordinator,
+        app: &mut TestApp,
+        renderer: &mut TestRenderer,
+    ) {
+        for _ in 0..10 {
+            lifecycle.advance(app).unwrap();
+            render(renderer);
+            if lifecycle.operation().is_none() {
+                return;
+            }
+        }
+        panic!("Settings session operation did not complete");
+    }
+
+    fn settings_file_action(app: &mut TestApp, action: crate::control::SessionCommand) {
+        use crate::control::{SemanticAction, SurfaceId};
+        if !app.state().interaction().active_surface().is_system() {
+            app.dispatch_action(SemanticAction::SetInteractionMode(
+                InteractionMode::Navigate,
+            ))
+            .unwrap();
+            app.dispatch_action(SemanticAction::OpenMidiSettings)
+                .unwrap();
+        }
+        while app.state().interaction().active_surface() != SurfaceId::SaveLoadSettings {
+            app.dispatch_action(SemanticAction::Navigate(Direction::Left))
+                .unwrap();
+        }
+        while app
+            .dispatch_action(SemanticAction::Navigate(Direction::Up))
+            .is_ok()
+        {}
+        for candidate in crate::control::SessionCommand::SETTINGS_ACTIONS {
+            if candidate == action {
+                break;
+            }
+            app.dispatch_action(SemanticAction::Navigate(Direction::Down))
+                .unwrap();
+        }
+        app.dispatch_action(SemanticAction::Activate).unwrap();
+    }
+
+    #[test]
+    fn settings_save_load_uses_existing_file_workers_and_block_boundary_activation() {
+        use crate::control::{SemanticAction, SessionCommand};
+        let destination = PathBuf::from("settings-save.crest");
+        let copy = PathBuf::from("settings-copy.crest");
+        let (mut app, mut renderer, mut lifecycle, files, _, initial, _) = harness([
+            AutoResponse::File(destination.clone()),
+            AutoResponse::File(copy.clone()),
+            AutoResponse::File(destination.clone()),
+        ]);
+        settings_file_action(&mut app, SessionCommand::Save);
+        // Two inputs before a shell tick must not queue a second dialog for later.
+        app.dispatch_action(SemanticAction::Activate).unwrap();
+        lifecycle.advance(&mut app).unwrap();
+        assert!(app.take_session_file_action().is_none());
+        assert_eq!(
+            lifecycle.project_shell(&app).document().marker(),
+            SessionDocumentMarker::Busy
+        );
+        assert_eq!(lifecycle.document().identity(), &DocumentIdentity::Untitled);
+        drive_settings_to_idle(&mut lifecycle, &mut app, &mut renderer);
+        assert_eq!(
+            lifecycle.document().identity(),
+            &DocumentIdentity::Path(destination.clone())
+        );
+        assert!(!lifecycle.is_dirty(&app));
+        assert!(files.read(&destination).is_ok());
+
+        settings_file_action(&mut app, SessionCommand::SaveAs);
+        drive_settings_to_idle(&mut lifecycle, &mut app, &mut renderer);
+        assert_eq!(
+            lifecycle.document().identity(),
+            &DocumentIdentity::Path(copy.clone())
+        );
+        // A subsequent Save reuses the established path and needs no dialog.
+        app.dispatch_action(SemanticAction::Return).unwrap();
+        app.dispatch(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        app.dispatch(AppEvent::Adjust(Direction::Down)).unwrap();
+        let changed = app.capture_saved_session();
+        assert_ne!(changed, initial);
+        settings_file_action(&mut app, SessionCommand::Save);
+        drive_settings_to_idle(&mut lifecycle, &mut app, &mut renderer);
+        let written = SavedSession::from_json(
+            &String::from_utf8(files.read(&copy).unwrap()).unwrap(),
+            app.capabilities(),
+        )
+        .unwrap();
+        assert_eq!(written, changed);
+        settings_file_action(&mut app, SessionCommand::Open);
+        lifecycle.advance(&mut app).unwrap();
+        assert_eq!(
+            app.capture_saved_session(),
+            changed,
+            "load waits for audio activation"
+        );
+        drive_settings_to_idle(&mut lifecycle, &mut app, &mut renderer);
+        assert_eq!(app.capture_saved_session(), initial);
+        assert_eq!(
+            lifecycle.document().identity(),
+            &DocumentIdentity::Path(destination)
+        );
+        assert!(!lifecycle.is_dirty(&app));
+        render(&mut renderer);
+    }
+
+    #[test]
+    fn settings_load_cancel_and_failure_preserve_dirty_content_focus_and_sound() {
+        use crate::control::SessionCommand;
+        let bad = PathBuf::from("broken.crest");
+        let (mut app, mut renderer, mut lifecycle, files, _, _, _) = harness([
+            AutoResponse::Choice(UnsavedChoice::Cancel),
+            AutoResponse::Choice(UnsavedChoice::Discard),
+            AutoResponse::File(bad.clone()),
+        ]);
+        app.dispatch(AppEvent::SetInteractionMode(InteractionMode::Adjust))
+            .unwrap();
+        app.dispatch(AppEvent::Adjust(Direction::Down)).unwrap();
+        files.put(bad, b"not a session".to_vec());
+        settings_file_action(&mut app, SessionCommand::Open);
+        let saved = app.capture_saved_session();
+        let focus = app.state().interaction().clone();
+        lifecycle.advance(&mut app).unwrap();
+        assert_eq!(app.capture_saved_session(), saved);
+        assert_eq!(app.state().interaction(), &focus);
+        assert!(lifecycle.is_dirty(&app));
+        assert_eq!(
+            lifecycle.project_shell(&app).document().marker(),
+            SessionDocumentMarker::Ready
+        );
+        settings_file_action(&mut app, SessionCommand::Open);
+        lifecycle.advance(&mut app).unwrap();
+        assert!(lifecycle.advance(&mut app).is_err());
+        assert_eq!(app.capture_saved_session(), saved);
+        assert_eq!(app.state().interaction(), &focus);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert_eq!(
+            lifecycle.project_shell(&app).document().marker(),
+            SessionDocumentMarker::Error
+        );
+        render(&mut renderer);
     }
 
     #[test]

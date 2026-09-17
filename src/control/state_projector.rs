@@ -535,6 +535,10 @@ impl StateProjector {
                         == crate::control::SurfaceId::ControllerSettings
                     {
                         state.controller.preference_status().label()
+                    } else if state.interaction.active_focus.surface()
+                        == crate::control::SurfaceId::SaveLoadSettings
+                    {
+                        "SESSION FILES"
                     } else {
                         "WATCHING FOR PHYSICAL INPUTS"
                     }
@@ -629,16 +633,24 @@ impl StateProjector {
             (
                 ShellIdentityHeader::new(
                     format!("SETTINGS · {}", semantic.active_surface().label()),
-                    "PHYSICAL INPUT",
+                    if semantic.active_surface() == crate::control::SurfaceId::SaveLoadSettings {
+                        "SESSION FILES"
+                    } else {
+                        "PHYSICAL INPUT"
+                    },
                 ),
                 if semantic.active_surface() == crate::control::SurfaceId::ControllerSettings {
                     "BUTTON ASSIGNMENTS"
+                } else if semantic.active_surface() == crate::control::SurfaceId::SaveLoadSettings {
+                    "SESSION FILES"
                 } else {
                     "AVAILABLE INPUTS"
                 }
                 .to_owned(),
                 if semantic.active_surface() == crate::control::SurfaceId::ControllerSettings {
                     "CONTROLLER INSPECTOR"
+                } else if semantic.active_surface() == crate::control::SurfaceId::SaveLoadSettings {
+                    "CURRENT SESSION"
                 } else {
                     "INPUT INSPECTOR"
                 }
@@ -682,6 +694,7 @@ impl StateProjector {
                         | SemanticControlId::Mixer(_)
                         | SemanticControlId::MidiInputDevice(_)
                         | SemanticControlId::ControllerSetting(_)
+                        | SemanticControlId::SessionFileAction(_)
                         | SemanticControlId::MidiInputListRoot
                         | SemanticControlId::SurfaceRoot => {
                             return Err(StateProjectionError::InvalidSelection)
@@ -758,6 +771,7 @@ impl StateProjector {
                         }
                         SemanticControlId::MidiInputDevice(_)
                         | SemanticControlId::ControllerSetting(_)
+                        | SemanticControlId::SessionFileAction(_)
                         | SemanticControlId::MidiInputListRoot => {
                             return Err(StateProjectionError::InvalidSelection)
                         }
@@ -843,6 +857,7 @@ fn selection_from_serialized(
         | SemanticControlId::Modal(_)
         | SemanticControlId::MidiInputDevice(_)
         | SemanticControlId::ControllerSetting(_)
+        | SemanticControlId::SessionFileAction(_)
         | SemanticControlId::MidiInputListRoot
         | SemanticControlId::SurfaceRoot => Err(StateProjectionError::InvalidSelection),
     }

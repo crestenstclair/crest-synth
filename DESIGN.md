@@ -809,8 +809,16 @@ exactly master volume, Patch volume, MIDI input, output track, and voice limit.
 Main and Utility remain mutually reachable, and subordinate return restores the
 stable semantic origin or the nearest enabled sibling after schema change.
 
-Settings contains MIDI Devices and Controller Buttons system surfaces, without
-adding a top-level context. Unmodified Left/Right or A/D switches between them.
+Settings contains MIDI Devices, Controller Buttons, and Save & Load system
+surfaces, without adding a top-level context. Unmodified Left/Right or A/D
+cycles between them; Up/Down or W/S moves within the current page. Save & Load
+projects Save, Save As, and Load as stable semantic rows. Activate emits a
+path-free reducer effect that the shell routes through the existing session
+lifecycle, including native file dialogs and unsaved-change protection.
+Filename, dirty state, progress, and failures arrive through a separate
+read-only shell document channel, so save completion repaints without a
+product-state change. Successful Load returns to the restored session’s Patch
+Overview; cancellation or failure retains Settings focus and the prior session.
 One `SettingsSession` suspends the exact performance focus, interaction mode,
 return path, and Patch subordinate session. Shift+Right restores that identity after schema repair;
 Shift+Down remains a compatibility escape. The user selected Shift+Right on
@@ -1058,7 +1066,9 @@ Return opens highlighted Detail. Return on Sample/SoundFont File opens the
 in-app browser. W/S navigates; Return enters or assigns; Shift+S cancels.
 Hold Space on a Sample file to preview; SoundFont preview is unavailable.
 K with W/S/A/D edits controls; K+W opens an eligible choice. Cmd+S/Cmd+O use
-native session Save/Open dialogs. Assets use the in-app file page.
+native session Save/Open dialogs. Settings · Save & Load exposes the same
+workflow with controller navigation and Return to activate. Assets use the
+in-app file page.
 
 To choose an existing Sample library and initial asset, configure both
 `CREST_SAMPLE_LIBRARY_ROOT` (absolute root) and `CREST_SAMPLE_DEFAULT_ASSET`

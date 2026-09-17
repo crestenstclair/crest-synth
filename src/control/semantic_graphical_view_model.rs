@@ -559,6 +559,10 @@ pub enum SemanticSurfaceSummary {
         preview_request_id: Option<EngineSelectionRequestId>,
         preview: SamplePreviewState,
     },
+    SaveLoadSettings {
+        title: String,
+        description: String,
+    },
     ControllerSettings {
         title: String,
         summary: String,
@@ -591,7 +595,8 @@ impl SemanticSurfaceSummary {
             | Self::Mixer { .. }
             | Self::MixerInspector { .. }
             | Self::MidiDeviceSettings { .. }
-            | Self::ControllerSettings { .. } => None,
+            | Self::ControllerSettings { .. }
+            | Self::SaveLoadSettings { .. } => None,
         }
     }
 
@@ -614,7 +619,8 @@ impl SemanticSurfaceSummary {
             | Self::Mixer { .. }
             | Self::MixerInspector { .. }
             | Self::MidiDeviceSettings { .. }
-            | Self::ControllerSettings { .. } => None,
+            | Self::ControllerSettings { .. }
+            | Self::SaveLoadSettings { .. } => None,
         }
     }
 }
@@ -1429,6 +1435,7 @@ impl SemanticGraphicalViewModel {
             }
             SurfaceId::MidiDeviceSettings => project_midi_device_settings_surface(state)?,
             SurfaceId::ControllerSettings => project_controller_settings_surface(state),
+            SurfaceId::SaveLoadSettings => project_save_load_settings_surface(state),
             _ => match state.context() {
                 TopLevelContext::Patch => {
                     project_patch_surfaces(state, &resolver, &status, &errors)?
@@ -1913,6 +1920,56 @@ fn project_focus_repair(
         removed_control_id: removed_control_id.clone(),
         replacement_control_id: replacement_control_id.clone(),
     }))
+}
+
+fn project_save_load_settings_surface(state: &AppState) -> Vec<SemanticSurfaceViewModel> {
+    let controls: Vec<_> = crate::control::SessionCommand::SETTINGS_ACTIONS
+        .into_iter()
+        .map(|action| {
+            let path = FocusPath::save_load_settings(state.context(), action);
+            let focused = state.interaction().focus_path() == &path;
+            SemanticControlViewModel {
+                path,
+                label: action.label().to_owned(),
+                kind: SemanticControlKind::Identity,
+                value: SemanticControlValue::Summary(action.description().to_owned()),
+                selected_label: None,
+                numeric_range: None,
+                unit: None,
+                browser_metadata: None,
+                availability_label: None,
+                read_only_label: None,
+                enabled: true,
+                visible: true,
+                focusable: true,
+                editable: true,
+                focused,
+                status: None,
+                error: None,
+                requested_value: None,
+                requested_label: None,
+                patch_interaction: None,
+                valid_actions: Vec::new(),
+            }
+        })
+        .collect();
+    vec![SemanticSurfaceViewModel {
+        id: SurfaceId::SaveLoadSettings,
+        label: "SAVE & LOAD".to_owned(),
+        role: SemanticSurfaceRole::System,
+        sections: vec![SemanticSurfaceSectionViewModel {
+            id: "sessionFiles".to_owned(),
+            label: "Session files".to_owned(),
+            control_paths: controls.iter().map(|control| control.path.clone()).collect(),
+            control_summaries: Vec::new(),
+        }],
+        controls,
+        visualizations: Vec::new(),
+        summary: SemanticSurfaceSummary::SaveLoadSettings {
+            title: "Settings · Save & Load".to_owned(),
+            description: "Save and restore the complete session: Patches, instruments, effects and Mixer. Referenced assets must remain available in their libraries.".to_owned(),
+        },
+    }]
 }
 
 fn project_controller_settings_surface(state: &AppState) -> Vec<SemanticSurfaceViewModel> {
@@ -5276,7 +5333,12 @@ mod projection_enrichment_tests {
             .unwrap();
         browser.apply(AppEvent::OpenRelated).unwrap();
         browser.apply(AppEvent::OpenRelated).unwrap();
+        let mut save_load_settings = controller_settings.clone();
+        save_load_settings
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
+            .unwrap();
         vec![
+            ("Save & Load Settings", save_load_settings),
             ("soundfont PATCH Main", patch_state()),
             ("MIXER Main", mixed_state()),
             (

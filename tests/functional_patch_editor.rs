@@ -3068,6 +3068,11 @@ fn check_no_projected_screen_string_is_a_serialization_key() -> usize {
     midi_settings
         .apply_semantic_action(SemanticAction::OpenMidiSettings)
         .expect("the fixture opens the global MIDI device Settings surface");
+    let mut save_load_settings = midi_settings.clone();
+    save_load_settings
+        .apply_semantic_action(SemanticAction::Navigate(Direction::Left))
+        .unwrap();
+    fixtures.push(("Save & Load Settings", save_load_settings));
     fixtures.push(("MIDI Device Settings", midi_settings.clone()));
 
     let mut controller = midi_settings;

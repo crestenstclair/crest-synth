@@ -289,9 +289,19 @@ impl InteractionState {
 
     pub fn settings_invariant_holds(&self) -> bool {
         match (&self.settings_session, self.active_focus.surface()) {
-            (None, SurfaceId::MidiDeviceSettings | SurfaceId::ControllerSettings) => false,
+            (
+                None,
+                SurfaceId::MidiDeviceSettings
+                | SurfaceId::ControllerSettings
+                | SurfaceId::SaveLoadSettings,
+            ) => false,
             (None, _) => true,
-            (Some(session), SurfaceId::MidiDeviceSettings | SurfaceId::ControllerSettings) => {
+            (
+                Some(session),
+                SurfaceId::MidiDeviceSettings
+                | SurfaceId::ControllerSettings
+                | SurfaceId::SaveLoadSettings,
+            ) => {
                 self.mode == InteractionMode::Navigate
                     && self.return_path.is_none()
                     && self.subordinate_session.is_none()
@@ -395,6 +405,7 @@ impl InteractionState {
                     | SemanticControlId::Modal(_)
                     | SemanticControlId::MidiInputDevice(_)
                     | SemanticControlId::ControllerSetting(_)
+                    | SemanticControlId::SessionFileAction(_)
                     | SemanticControlId::MidiInputListRoot
                     | SemanticControlId::SurfaceRoot => None,
                 });
@@ -413,6 +424,7 @@ impl InteractionState {
             | SemanticControlId::Modal(_)
             | SemanticControlId::MidiInputDevice(_)
             | SemanticControlId::ControllerSetting(_)
+            | SemanticControlId::SessionFileAction(_)
             | SemanticControlId::MidiInputListRoot
             | SemanticControlId::SurfaceRoot => None,
         }
@@ -434,6 +446,7 @@ impl InteractionState {
             | SemanticControlId::Modal(_)
             | SemanticControlId::MidiInputDevice(_)
             | SemanticControlId::ControllerSetting(_)
+            | SemanticControlId::SessionFileAction(_)
             | SemanticControlId::MidiInputListRoot
             | SemanticControlId::SurfaceRoot => {
                 unreachable!("remembered MixerMain path is always a Mixer control")
@@ -588,7 +601,8 @@ impl InteractionState {
             | SurfaceId::Sends
             | SurfaceId::MixerMain
             | SurfaceId::MidiDeviceSettings
-            | SurfaceId::ControllerSettings => return Err(FocusPathError::ControlSurfaceMismatch),
+            | SurfaceId::ControllerSettings
+            | SurfaceId::SaveLoadSettings => return Err(FocusPathError::ControlSurfaceMismatch),
         };
         self.mode = InteractionMode::Navigate;
         self.assert_subordinate_invariant();

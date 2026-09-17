@@ -1010,6 +1010,10 @@ impl<'a> SemanticResolver<'a> {
             SurfaceId::FileBrowser => self.file_browser_paths(),
             SurfaceId::MixerInspector => self.mixer_inspector_paths(self.selected_mixer_track()?),
             SurfaceId::MidiDeviceSettings => self.midi_input_settings_paths(),
+            SurfaceId::SaveLoadSettings => Ok(crate::control::SessionCommand::SETTINGS_ACTIONS
+                .into_iter()
+                .map(|action| FocusPath::save_load_settings(self.state.context(), action))
+                .collect()),
             SurfaceId::ControllerSettings => Ok(crate::control::ControllerSettingId::all()
                 .map(|setting| FocusPath::controller_settings(self.state.context(), setting))
                 .collect()),
@@ -1040,6 +1044,17 @@ impl<'a> SemanticResolver<'a> {
             .cloned()
             .map(|action| {
                 let (label, hint) = match action {
+                    SemanticAction::Activate
+                        if self.state.interaction().active_surface()
+                            == SurfaceId::SaveLoadSettings =>
+                    {
+                        match self.state.interaction().focus_path().control_id() {
+                            crate::control::SemanticControlId::SessionFileAction(action) => {
+                                (action.label(), Some("Return"))
+                            }
+                            _ => unreachable!("Save & Load has only file action rows"),
+                        }
+                    }
                     SemanticAction::ToggleTestMidi if self.state.test_midi_enabled() => {
                         ("Stop test MIDI", Some("T"))
                     }
@@ -1227,7 +1242,9 @@ fn action_presentation(
                 | (SurfaceId::PatchDetail, Direction::Down) => "Return to Overview",
                 (SurfaceId::PatchDetail, Direction::Up) => "Browse files",
                 (
-                    SurfaceId::MidiDeviceSettings | SurfaceId::ControllerSettings,
+                    SurfaceId::MidiDeviceSettings
+                    | SurfaceId::ControllerSettings
+                    | SurfaceId::SaveLoadSettings,
                     Direction::Right | Direction::Down,
                 ) => "Return to performance",
                 (_, Direction::Down) => "Return / cancel",
@@ -1292,7 +1309,8 @@ fn action_presentation(
         SemanticAction::EnterSurface(SurfaceId::PatchMain)
         | SemanticAction::EnterSurface(SurfaceId::MixerMain)
         | SemanticAction::EnterSurface(SurfaceId::MidiDeviceSettings)
-        | SemanticAction::EnterSurface(SurfaceId::ControllerSettings) => {
+        | SemanticAction::EnterSurface(SurfaceId::ControllerSettings)
+        | SemanticAction::EnterSurface(SurfaceId::SaveLoadSettings) => {
             ("Unavailable surface", None)
         }
         SemanticAction::Return => ("Return", None),
