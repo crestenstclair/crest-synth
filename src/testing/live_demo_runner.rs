@@ -2294,6 +2294,7 @@ fn edited_parameter_of(focus: &FocusPath) -> Option<PatchControlId> {
         | crate::control::SemanticControlId::Modal(_)
         | crate::control::SemanticControlId::MidiInputDevice(_)
         | crate::control::SemanticControlId::ControllerSetting(_)
+        | crate::control::SemanticControlId::SessionFileAction(_)
         | crate::control::SemanticControlId::MidiInputListRoot
         | crate::control::SemanticControlId::SurfaceRoot => None,
     }

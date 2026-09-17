@@ -27,6 +27,8 @@
   var PROJECTION_EVENT = "crest://projection";
   var METER_EVENT = "crest://meters";
   var MIDI_ACTIVITY_EVENT = "crest://midi-activity";
+  var SESSION_DOCUMENT_EVENT = "crest://session-document";
+  var latestSessionDocument = null;
   var PAINTED_EVENT = "crest://painted";
   var READY_EVENT = "crest://ready";
   var RENDER_ERROR_EVENT = "crest://render-error";
@@ -190,8 +192,12 @@
       : null;
   }
 
+  function saveLoadSettingsSurface(model) {
+    return surfaceById(model, "saveLoadSettings");
+  }
+
   function settingsSurface(model) {
-    return controllerSettingsSurface(model) || midiSettingsSurface(model);
+    return saveLoadSettingsSurface(model) || controllerSettingsSurface(model) || midiSettingsSurface(model);
   }
 
   // The serialized identity of one projected control ("patch.engine",
@@ -688,7 +694,8 @@
       return (
         '<span class="type-heading">' +
         escapeHtml(String(settings.summary.title || settings.label || "SETTINGS").toUpperCase()) +
-        '</span><span class="type-label muted">/ PHYSICAL INPUT</span>' +
+        '</span><span class="type-label muted">/ ' +
+        (settings.id === "saveLoadSettings" ? "SESSION FILES" : "PHYSICAL INPUT") + '</span>' +
         '<span class="spring"></span>' +
         '<span class="type-value focus" data-role="focus-annotation">' +
         escapeHtml(focusIdentity(model)) +
@@ -957,6 +964,7 @@
     var pages = [
       { id: "midiDeviceSettings", label: "MIDI DEVICES" },
       { id: "controllerSettings", label: "CONTROLLER BUTTONS" },
+      { id: "saveLoadSettings", label: "SAVE & LOAD" },
     ];
     var body = "";
     for (var i = 0; i < pages.length; i += 1) {
@@ -968,6 +976,62 @@
         (current ? '● ' : '') + escapeHtml(pages[i].label) + '</span>';
     }
     return '<div class="settings-pages" aria-label="Settings pages">' + body + '</div>';
+  }
+
+  function saveLoadSettingsWorkspaceHtml(model) {
+    var surface = saveLoadSettingsSurface(model);
+    var controls = (surface && surface.controls) || [];
+    var busy = !latestSessionDocument || latestSessionDocument.marker === "busy";
+    var body = "";
+    for (var i = 0; i < controls.length; i += 1) {
+      var control = controls[i];
+      var focused = Boolean(control.focused);
+      body += '<div class="midi-device-row session-file-row' + (focused ? ' focused' : '') +
+        '" data-focus-path="' + escapeHtml(JSON.stringify(control.path)) + '"' +
+        ' aria-disabled="' + String(busy) + '"' +
+        (focused ? ' data-focus-treatment="focused"' : '') + '>' +
+        '<span class="midi-status-marker" aria-hidden="true">' + (focused ? '›' : '·') + '</span>' +
+        '<div class="midi-row-identity"><span class="type-label ' + (focused ? 'focus' : 'secondary') + '">' +
+        escapeHtml(control.label) + '</span><span class="type-hint secondary">' +
+        escapeHtml(controlValueText(control)) + '</span></div>' +
+        '<span class="type-hint muted session-action-state">' + (busy ? 'WAIT' : 'READY') + '</span></div>';
+    }
+    return settingsPagesHtml(surface) + workspaceScaffold(model,
+      '<span class="type-label muted">SESSION FILES</span>',
+      '<span class="type-hint secondary">.CREST</span>',
+      '<p class="type-hint secondary session-file-description">' + escapeHtml(surface.summary.description) + '</p>' +
+      '<div class="midi-device-list" data-role="session-file-list">' + body + '</div>');
+  }
+
+  function saveLoadSettingsInspectorHtml() {
+    var document = latestSessionDocument;
+    if (!document) {
+      return '<div class="inspector-pinned"><span class="type-label muted">CURRENT SESSION</span>' +
+        '<span class="type-value secondary">Waiting for document status</span></div>';
+    }
+    var marker = document.marker === "error" ? '! ' : document.marker === "busy" ? '… ' : '✓ ';
+    return '<div class="inspector-pinned session-document" data-document-marker="' + escapeHtml(document.marker) + '">' +
+      '<span class="type-label muted">CURRENT SESSION</span>' +
+      '<span class="type-heading session-document-name" data-role="session-name">' + escapeHtml(document.name) + '</span>' +
+      '<span class="type-label ' + (document.dirty ? 'warning' : 'secondary') + '" data-role="session-dirty">' +
+      (document.dirty ? '● UNSAVED CHANGES' : '✓ NO UNSAVED CHANGES') + '</span></div>' +
+      '<div class="session-document-status" role="status" aria-live="polite">' +
+      '<span class="type-label ' + (document.marker === "error" ? 'warning' : 'secondary') + '" data-role="session-status">' +
+      escapeHtml(marker + (document.operation ? document.operation + ' · ' : '') + document.status) + '</span>' +
+      (document.failure ? '<span class="type-hint warning" data-role="session-failure">' + escapeHtml(document.failure) + '</span>' : '') +
+      '<span class="type-hint muted">Session files reference assets in your libraries; they do not include audio files. MIDI devices and controller buttons are separate preferences.</span></div>';
+  }
+
+  // Read-only shell facts; no document paths, lifecycle decisions or synth
+  // state live in the page. Updates also arrive when product generation stays put.
+  function observeSessionDocument(document) {
+    latestSessionDocument = document;
+    if (latestModel && saveLoadSettingsSurface(latestModel)) {
+      var doc = window.document;
+      doc.getElementById("workspace").innerHTML = saveLoadSettingsWorkspaceHtml(latestModel);
+      doc.getElementById("inspector").innerHTML = saveLoadSettingsInspectorHtml();
+      revealSemanticFocus(doc, latestModel);
+    }
   }
 
   function midiSettingsWorkspaceHtml(model) {
@@ -2689,14 +2753,18 @@
     );
     doc.getElementById("workspace").innerHTML =
       settings
-        ? settings.id === "controllerSettings"
+        ? settings.id === "saveLoadSettings"
+          ? saveLoadSettingsWorkspaceHtml(model)
+          : settings.id === "controllerSettings"
           ? controllerSettingsWorkspaceHtml(model)
           : midiSettingsWorkspaceHtml(model)
         : model.context === "patch"
         ? patchWorkspaceHtml(model)
         : mixerWorkspaceHtml(model, columns);
     doc.getElementById("inspector").innerHTML = settings
-      ? settings.id === "controllerSettings"
+      ? settings.id === "saveLoadSettings"
+        ? saveLoadSettingsInspectorHtml()
+        : settings.id === "controllerSettings"
         ? controllerSettingsInspectorHtml(model)
         : midiInputInspectorHtml(model)
       : sideRegionHtml(model);
@@ -4054,7 +4122,10 @@
         observeMidiActivity(event.payload);
       }
     );
-    Promise.all([projectionListener, meterListener, midiActivityListener])
+    var sessionDocumentListener = tauri.event.listen(SESSION_DOCUMENT_EVENT, function (event) {
+      observeSessionDocument(event.payload);
+    });
+    Promise.all([projectionListener, meterListener, midiActivityListener, sessionDocumentListener])
       .then(function () {
         return tauri.event.emit(READY_EVENT, { ready: true });
       })
@@ -4094,6 +4165,7 @@
     renderObservation: renderObservation,
     observeAudio: observeAudio,
     observeMidiActivity: observeMidiActivity,
+    observeSessionDocument: observeSessionDocument,
   };
   attachTransports();
 })();

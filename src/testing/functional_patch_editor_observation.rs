@@ -877,6 +877,7 @@ const fn surface_identity(id: SurfaceId) -> &'static str {
         SurfaceId::MixerInspector => "mixerInspector",
         SurfaceId::MidiDeviceSettings => "midiDeviceSettings",
         SurfaceId::ControllerSettings => "controllerSettings",
+        SurfaceId::SaveLoadSettings => "saveLoadSettings",
     }
 }
 

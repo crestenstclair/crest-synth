@@ -18,6 +18,8 @@ pub mod patch_control_id;
 pub mod patch_page_projection;
 pub mod patch_position_id;
 pub mod saved_session;
+mod session_command;
+pub use session_command::SessionCommand;
 pub mod semantic_action;
 pub mod semantic_focus;
 pub mod semantic_graphical_view_model;

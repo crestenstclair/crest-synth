@@ -303,6 +303,21 @@ fn production_loop_projects_configuration_without_session_changes_or_audio_publi
             .unwrap();
         }
     }
+    app.dispatch_action(SemanticAction::Navigate(Direction::Right))
+        .unwrap();
+    for (index, command) in crest_synth::control::SessionCommand::SETTINGS_ACTIONS
+        .into_iter()
+        .enumerate()
+    {
+        if index > 0 {
+            app.dispatch_action(SemanticAction::Navigate(Direction::Down))
+                .unwrap();
+        }
+        app.dispatch_action_from(SemanticAction::Activate, EventSource::Controller)
+            .unwrap();
+        assert_eq!(app.take_session_file_action(), Some(command));
+        assert_eq!(app.take_session_file_action(), None);
+    }
     app.dispatch_action(SemanticAction::NavigatePage(Direction::Right))
         .unwrap();
     assert_eq!(app.current_semantic_model().focus_path(), &origin);
@@ -314,4 +329,107 @@ fn production_loop_projects_configuration_without_session_changes_or_audio_publi
         },
         before
     );
+}
+
+#[test]
+fn save_load_settings_cycle_all_pages_and_emit_only_focused_file_intents() {
+    use crest_synth::control::{SavedSession, SessionCommand, TopLevelContext};
+    for context in [TopLevelContext::Patch, TopLevelContext::Mixer] {
+        let mut state = state();
+        state
+            .apply_semantic_action(SemanticAction::SelectContext(context))
+            .unwrap();
+        if context == TopLevelContext::Patch {
+            state
+                .apply_semantic_action(SemanticAction::OpenRelated)
+                .unwrap();
+        }
+        let origin = state.interaction().clone();
+        let saved = SavedSession::capture(&state);
+        state
+            .apply_semantic_action(SemanticAction::OpenMidiSettings)
+            .unwrap();
+        state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Left))
+            .unwrap();
+        assert_eq!(
+            state.interaction().active_surface(),
+            SurfaceId::SaveLoadSettings
+        );
+        for (index, action) in SessionCommand::SETTINGS_ACTIONS.into_iter().enumerate() {
+            if index != 0 {
+                state
+                    .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
+                    .unwrap();
+            }
+            assert_eq!(
+                state.interaction().focus_path(),
+                &FocusPath::save_load_settings(context, action)
+            );
+            let outcome = state
+                .apply_semantic_action(SemanticAction::Activate)
+                .unwrap();
+            assert_eq!(outcome.session_file_action(), Some(action));
+            assert!(!outcome.accepted().saved_session_changed());
+            assert!(outcome.audio_command().is_none());
+            assert!(outcome.engine_selection_effect().is_none());
+            assert!(outcome.midi_device_effects().is_empty());
+            let shell = StateProjector::new().project_with_shell(&state).unwrap().3;
+            let model = shell.semantic_model();
+            let page = model.surface(SurfaceId::SaveLoadSettings).unwrap();
+            assert_eq!(page.controls().len(), 3);
+            assert_eq!(
+                page.controls()
+                    .iter()
+                    .filter(|control| control.focused())
+                    .count(),
+                1
+            );
+            assert!(model
+                .valid_actions()
+                .iter()
+                .any(|valid| valid.label() == action.label()));
+        }
+        assert!(state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Down))
+            .is_err());
+        assert_eq!(SavedSession::capture(&state), saved);
+        state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            state.interaction().active_surface(),
+            SurfaceId::MidiDeviceSettings
+        );
+        state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            state.interaction().active_surface(),
+            SurfaceId::ControllerSettings
+        );
+        state
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
+            .unwrap();
+        assert_eq!(
+            state.interaction().active_surface(),
+            SurfaceId::SaveLoadSettings
+        );
+        state
+            .apply_semantic_action(SemanticAction::NavigatePage(Direction::Right))
+            .unwrap();
+        assert_eq!(state.interaction(), &origin);
+    }
+}
+
+#[test]
+fn chrome_only_commands_cannot_be_settings_focus() {
+    use crest_synth::control::{SessionCommand, TopLevelContext};
+    for command in [SessionCommand::New, SessionCommand::Close] {
+        let focus = FocusPath::save_load_settings(TopLevelContext::Patch, command);
+        assert!(focus.validate().is_err());
+        let decoded: FocusPath =
+            serde_json::from_str(&serde_json::to_string(&focus).unwrap()).unwrap();
+        assert!(decoded.validate().is_err());
+    }
 }

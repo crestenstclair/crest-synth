@@ -88,6 +88,12 @@ impl Witness<'_> {
             focusedBounds:focused.length ? rect(focused[0]) : null,
             treatedRows:document.querySelectorAll('.controller-button-row.focused').length,
             currentPage:(document.querySelector('[data-settings-page][aria-current="page"]') || {}).dataset?.settingsPage || null,
+            sessionRows:Array.from(document.querySelectorAll('.session-file-row')).map(function (row) {
+              return {path:JSON.parse(row.getAttribute('data-focus-path')), label:text(row.querySelector('.type-label')), disabled:row.getAttribute('aria-disabled'), bounds:rect(row)};
+            }),
+            sessionFocusedRows:document.querySelectorAll('.session-file-row.focused').length,
+            overflow:document.documentElement.scrollWidth > window.innerWidth,
+            footerOverflow:document.getElementById('footer').scrollHeight > document.getElementById('footer').clientHeight,
             rows:Array.from(document.querySelectorAll('.controller-button-row')).map(function (node) {
               return {path:JSON.parse(node.getAttribute('data-focus-path')),
                 label:text(node.querySelector('.midi-row-identity')),
@@ -177,6 +183,28 @@ impl Witness<'_> {
                 "{tag}: focus below viewport"
             );
         }
+        if state.interaction().active_surface() == SurfaceId::SaveLoadSettings {
+            let surface = document["surfaces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|surface| surface["id"] == "saveLoadSettings")
+                .unwrap();
+            let rows = observed["sessionRows"].as_array().unwrap();
+            assert_eq!(rows.len(), 3, "{tag}: all file actions painted");
+            for (row, control) in rows.iter().zip(surface["controls"].as_array().unwrap()) {
+                assert_eq!(row["path"], control["path"], "{tag}: file action identity");
+                assert_eq!(row["label"], control["label"], "{tag}: file action label");
+                assert!(row["bounds"]["width"].as_f64().unwrap() > 0.0);
+            }
+            assert_eq!(observed["sessionFocusedRows"], 1);
+            assert_eq!(observed["currentPage"], "saveLoadSettings");
+            assert_eq!(observed["overflow"], false, "{tag}: no horizontal overflow");
+            assert_eq!(
+                observed["footerOverflow"], false,
+                "{tag}: all Settings guidance visible"
+            );
+        }
         std::fs::write(
             evidence_dir().join(format!("{tag}.json")),
             serde_json::to_vec_pretty(&serde_json::json!({
@@ -186,6 +214,66 @@ impl Witness<'_> {
         )
         .map_err(|error| error.to_string())?;
         println!("CONTROLLER_SETTINGS {tag}: native paint and singular focus passed");
+        Ok(observed)
+    }
+
+    fn session_document(
+        &self,
+        document: crest_synth::shell::SessionDocumentProjection,
+        tag: &str,
+    ) -> Result<Value, String> {
+        let expected = serde_json::to_value(&document).map_err(|error| error.to_string())?;
+        tauri::Emitter::emit(self.handle, "crest://session-document", &document)
+            .map_err(|error| error.to_string())?;
+        let script = r#"(function () {
+          var expected = DOCUMENT, remaining = 120;
+          function text(selector) { var node = document.querySelector(selector); return node ? node.textContent : null; }
+          function inspect() {
+            var marker = document.querySelector('[data-document-marker]');
+            var name = text('[data-role="session-name"]');
+            var status = text('[data-role="session-status"]');
+            if (!marker || marker.dataset.documentMarker !== expected.marker || name !== expected.name || !status.includes(expected.status)) {
+              if (--remaining > 0) { requestAnimationFrame(inspect); return; }
+              throw new Error('Session document update did not paint');
+            }
+            window.__TAURI__.event.emit('EVENT', {phase:'TAG', observation:{
+              name:name, marker:marker.dataset.documentMarker, status:status,
+              dirty:text('[data-role="session-dirty"]'), failure:text('[data-role="session-failure"]'),
+              disabled:Array.from(document.querySelectorAll('.session-file-row')).map(function (row) { return row.getAttribute('aria-disabled'); }),
+              focusedRows:document.querySelectorAll('.session-file-row.focused').length
+            }});
+          }
+          inspect();
+        })();"#
+            .replace("DOCUMENT", &expected.to_string())
+            .replace("EVENT", HARNESS_EVENT)
+            .replace("TAG", tag);
+        self.window
+            .eval(script)
+            .map_err(|error| error.to_string())?;
+        let observed =
+            receive_phase(self.receiver, tag, Duration::from_secs(10))?["observation"].clone();
+        assert_eq!(observed["name"], expected["name"]);
+        assert_eq!(observed["failure"], expected["failure"]);
+        assert_eq!(observed["focusedRows"], 1);
+        assert_eq!(
+            observed["dirty"],
+            if document.dirty() {
+                "● UNSAVED CHANGES"
+            } else {
+                "✓ NO UNSAVED CHANGES"
+            }
+        );
+        for disabled in observed["disabled"].as_array().unwrap() {
+            assert_eq!(
+                disabled,
+                if document.marker() == crest_synth::shell::SessionDocumentMarker::Busy {
+                    "true"
+                } else {
+                    "false"
+                }
+            );
+        }
         Ok(observed)
     }
 
@@ -362,6 +450,64 @@ pub(super) fn drive(
         assert_eq!(midi["currentPage"], "midiDeviceSettings");
         action(&mut state, SemanticAction::Navigate(Direction::Right));
         witness.paint(&state, &format!("controller-{name}-controller-switch"))?;
+        action(&mut state, SemanticAction::Navigate(Direction::Right));
+        witness.paint(&state, &format!("save-load-{name}-entry"))?;
+        use crest_synth::shell::{SessionDocumentMarker, SessionDocumentProjection};
+        // These shell-only updates must paint without any product generation change.
+        let generation = state.generation();
+        for (suffix, marker, dirty, operation, status, failure) in [
+            (
+                "ready",
+                SessionDocumentMarker::Ready,
+                true,
+                None,
+                "READY",
+                None,
+            ),
+            (
+                "saving",
+                SessionDocumentMarker::Busy,
+                true,
+                Some("SAVE"),
+                "WRITING FILE",
+                None,
+            ),
+            (
+                "failed",
+                SessionDocumentMarker::Error,
+                true,
+                None,
+                "FAILED — PRIOR SESSION UNCHANGED",
+                Some("Could not write the session. Check folder permissions and try Save As."),
+            ),
+            (
+                "saved",
+                SessionDocumentMarker::Ready,
+                false,
+                None,
+                "READY",
+                None,
+            ),
+        ] {
+            witness.session_document(
+                SessionDocumentProjection::new(
+                    "Evening & <Morning>.crest",
+                    dirty,
+                    marker,
+                    operation.map(str::to_owned),
+                    status,
+                    failure.map(str::to_owned),
+                ),
+                &format!("save-load-{name}-{suffix}"),
+            )?;
+            witness.screenshot(&format!("save-load-{name}-{suffix}"))?;
+            assert_eq!(state.generation(), generation);
+        }
+        for row in 1..3 {
+            action(&mut state, SemanticAction::Navigate(Direction::Down));
+            witness.paint(&state, &format!("save-load-{name}-row-{row}"))?;
+        }
+        witness.screenshot(&format!("save-load-{name}-load"))?;
         action(&mut state, SemanticAction::NavigatePage(Direction::Right));
         assert_eq!(
             state.interaction(),

@@ -802,6 +802,7 @@ impl AppWindow for TauriWebviewWindow {
         let mut page_ready = false;
         let dialogs = self.dialogs.clone();
         let mut last_document_title = None::<String>;
+        let mut last_page_document = None::<SessionDocumentProjection>;
 
         // The first runtime failure while the window still lives — a
         // transport emit, a rejected painted ack, a page render failure, or
@@ -916,7 +917,8 @@ impl AppWindow for TauriWebviewWindow {
                 let elapsed = now.duration_since(last_tick);
                 last_tick = now;
                 if on_tick(elapsed) {
-                    let title = native_document_title(&document_projection());
+                    let document = document_projection();
+                    let title = native_document_title(&document);
                     if last_document_title.as_ref() != Some(&title) {
                         if let Some(window) = handle.get_webview_window(WINDOW_LABEL) {
                             if let Err(error) = window.set_title(&title) {
@@ -934,6 +936,19 @@ impl AppWindow for TauriWebviewWindow {
                     }
                     if !page_ready {
                         return;
+                    }
+                    // Document facts have a shell lifecycle independent of product
+                    // generations (for example, a save can finish without an edit).
+                    if last_page_document.as_ref() != Some(&document) {
+                        if let Err(error) = handle.emit("crest://session-document", &document) {
+                            loop_runtime_error.borrow_mut().get_or_insert_with(|| {
+                                WindowError::new(format!("session document update failed: {error}"))
+                            });
+                            close_requested = true;
+                            close_window_once_with_retry(handle, &loop_runtime_error);
+                            return;
+                        }
+                        last_page_document = Some(document);
                     }
                     // Port invariant: each interactive frame advances the
                     // injected control-side tick and then requests the
@@ -1207,8 +1222,9 @@ mod tests {
         assert!(PAGE_JS.contains("var meterListener = tauri.event.listen("));
         assert!(PAGE_JS.contains("var midiActivityListener = tauri.event.listen("));
         assert!(PAGE_JS.contains("MIDI_ACTIVITY_EVENT"));
+        assert!(PAGE_JS.contains("var sessionDocumentListener = tauri.event.listen("));
         assert!(PAGE_JS
-            .contains("Promise.all([projectionListener, meterListener, midiActivityListener])"));
+            .contains("Promise.all([projectionListener, meterListener, midiActivityListener, sessionDocumentListener])"));
         assert!(PAGE_JS.contains("tauri.event.emit(READY_EVENT"));
     }
 

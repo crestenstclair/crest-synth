@@ -195,6 +195,7 @@ fn all_three_slot_rows_are_reachable_and_the_context_set_is_closed() {
             SurfaceId::MixerInspector,
             SurfaceId::MidiDeviceSettings,
             SurfaceId::ControllerSettings,
+            SurfaceId::SaveLoadSettings,
         ]
     );
     assert_eq!(

@@ -379,6 +379,7 @@ where
     deferred_revision_error: Option<GraphRevisionError>,
     midi_device_runtime: Option<MidiDeviceRuntime>,
     pending_midi_device_effects: VecDeque<MidiDeviceEffect>,
+    pending_session_file_actions: VecDeque<crate::control::SessionCommand>,
 }
 
 impl<Boundary> AppLoop<Boundary>
@@ -440,6 +441,7 @@ where
             deferred_revision_error: None,
             midi_device_runtime: None,
             pending_midi_device_effects: VecDeque::new(),
+            pending_session_file_actions: VecDeque::new(),
         })
     }
 
@@ -1067,6 +1069,11 @@ where
         self.dispatch_from(event, EventSource::System)
     }
 
+    /// Takes one accepted Settings file intent for shell-side execution.
+    pub fn take_session_file_action(&mut self) -> Option<crate::control::SessionCommand> {
+        self.pending_session_file_actions.pop_front()
+    }
+
     /// Maps one normalized user intent to exactly one AppEvent before the
     /// canonical reducer and existing commit-before-project pipeline.
     pub fn dispatch_action(
@@ -1272,6 +1279,8 @@ where
             self.pending_engine_selection_request = Some(effect);
         }
         self.pending_midi_device_effects.extend(midi_device_effects);
+        self.pending_session_file_actions
+            .extend(outcome.session_file_action());
 
         Ok(DispatchResult {
             accepted,

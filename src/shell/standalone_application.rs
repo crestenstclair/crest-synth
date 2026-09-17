@@ -2563,13 +2563,7 @@ where
             close_requested,
             ..
         } = &mut *runtime;
-        let result = match command {
-            SessionCommand::New => lifecycle.request_new(app_loop),
-            SessionCommand::Open => lifecycle.request_open(app_loop),
-            SessionCommand::Save => lifecycle.request_save(app_loop),
-            SessionCommand::SaveAs => lifecycle.request_save_as(app_loop),
-            SessionCommand::Close => lifecycle.request_close(app_loop),
-        };
+        let result = lifecycle.request(command, app_loop);
         if result.is_err() {
             return false;
         }

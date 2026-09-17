@@ -14,8 +14,8 @@ use serde::{Deserialize, Serialize};
 /// are subordinate: they are never the resting surface of a context, and
 /// leaving one restores the exact origin. One detail surface identity serves
 /// both instrument and effect subjects, because the surface is the shell and
-/// the subject supplies the content. MIDI Devices and Controller Buttons are
-/// global Settings surfaces that suspend rather than replace PATCH or MIXER.
+/// the subject supplies the content. Settings surfaces suspend rather than
+/// replace PATCH or MIXER.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SurfaceId {
@@ -28,10 +28,11 @@ pub enum SurfaceId {
     MixerInspector,
     MidiDeviceSettings,
     ControllerSettings,
+    SaveLoadSettings,
 }
 
 impl SurfaceId {
-    pub const ALL: [Self; 9] = [
+    pub const ALL: [Self; 10] = [
         Self::PatchMain,
         Self::PatchUtility,
         Self::PatchDetail,
@@ -41,6 +42,7 @@ impl SurfaceId {
         Self::MixerInspector,
         Self::MidiDeviceSettings,
         Self::ControllerSettings,
+        Self::SaveLoadSettings,
     ];
 
     pub const fn surface_descriptor() -> &'static [Self] {
@@ -55,7 +57,10 @@ impl SurfaceId {
                 Some(TopLevelContext::Patch)
             }
             Self::MixerMain | Self::MixerInspector => Some(TopLevelContext::Mixer),
-            Self::MidiDeviceSettings | Self::ControllerSettings | Self::FileBrowser => None,
+            Self::MidiDeviceSettings
+            | Self::ControllerSettings
+            | Self::SaveLoadSettings
+            | Self::FileBrowser => None,
         }
     }
 
@@ -94,7 +99,10 @@ impl SurfaceId {
     }
 
     pub const fn is_system(self) -> bool {
-        matches!(self, Self::MidiDeviceSettings | Self::ControllerSettings)
+        matches!(
+            self,
+            Self::MidiDeviceSettings | Self::ControllerSettings | Self::SaveLoadSettings
+        )
     }
 
     /// Reports whether a [`ReturnPath`] may name this surface as the one it was
@@ -135,7 +143,8 @@ impl SurfaceId {
             | Self::PatchMain
             | Self::MixerMain
             | Self::MidiDeviceSettings
-            | Self::ControllerSettings => false,
+            | Self::ControllerSettings
+            | Self::SaveLoadSettings => false,
         }
     }
 
@@ -150,6 +159,7 @@ impl SurfaceId {
             Self::MixerInspector => "INSPECTOR",
             Self::MidiDeviceSettings => "MIDI DEVICES",
             Self::ControllerSettings => "CONTROLLER BUTTONS",
+            Self::SaveLoadSettings => "SAVE & LOAD",
         }
     }
 }
@@ -387,6 +397,7 @@ pub enum SemanticControlId {
     MidiInputDevice(MidiInputDeviceId),
     MidiInputListRoot,
     ControllerSetting(crate::control::ControllerSettingId),
+    SessionFileAction(crate::control::SessionCommand),
     SurfaceRoot,
 }
 
@@ -400,6 +411,7 @@ impl SemanticControlId {
             | Self::MidiInputDevice(_)
             | Self::MidiInputListRoot
             | Self::ControllerSetting(_)
+            | Self::SessionFileAction(_)
             | Self::SurfaceRoot => None,
         }
     }
@@ -685,6 +697,20 @@ impl FocusPath {
         }
     }
 
+    pub fn save_load_settings(
+        context: TopLevelContext,
+        action: crate::control::SessionCommand,
+    ) -> Self {
+        Self {
+            context,
+            surface: SurfaceId::SaveLoadSettings,
+            patch_position: None,
+            capability_id: None,
+            control_id: SemanticControlId::SessionFileAction(action),
+            modal_id: None,
+        }
+    }
+
     pub const fn controller_settings(
         context: TopLevelContext,
         setting: crate::control::ControllerSettingId,
@@ -701,6 +727,11 @@ impl FocusPath {
 
     /// Revalidates a deserialized or externally constructed path shape.
     pub fn validate(&self) -> Result<(), FocusPathError> {
+        if let SemanticControlId::SessionFileAction(action) = self.control_id {
+            if !crate::control::SessionCommand::SETTINGS_ACTIONS.contains(&action) {
+                return Err(FocusPathError::ControlSurfaceMismatch);
+            }
+        }
         if let Some(surface_context) = self.surface.context() {
             if surface_context != self.context {
                 return Err(FocusPathError::ContextSurfaceMismatch);
@@ -821,7 +852,8 @@ impl FocusPath {
                 SurfaceId::MidiDeviceSettings,
                 SemanticControlId::MidiInputDevice(_) | SemanticControlId::MidiInputListRoot,
             )
-            | (SurfaceId::ControllerSettings, SemanticControlId::ControllerSetting(_)) => {
+            | (SurfaceId::ControllerSettings, SemanticControlId::ControllerSetting(_))
+            | (SurfaceId::SaveLoadSettings, SemanticControlId::SessionFileAction(_)) => {
                 if self.patch_position.is_some()
                     || self.capability_id.is_some()
                     || self.modal_id.is_some()
@@ -960,7 +992,7 @@ mod tests {
     fn performance_and_system_surfaces_are_classified_without_a_third_context() {
         use crate::control::TopLevelContext;
 
-        assert_eq!(SurfaceId::surface_descriptor().len(), 8);
+        assert_eq!(SurfaceId::surface_descriptor().len(), 10);
         assert_eq!(SurfaceId::PatchMain.context(), Some(TopLevelContext::Patch));
         assert_eq!(
             SurfaceId::MixerInspector.context(),
