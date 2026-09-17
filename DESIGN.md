@@ -1132,6 +1132,7 @@ usual: the launcher bind-mounts this exact worktree into `/workspace`.
 
 ```sh
 make linux-shell
+make linux-desktop
 # Or run commands directly from macOS:
 scripts/linux/dev.sh cargo check --locked --all-targets
 scripts/linux/dev.sh make test-linux
@@ -1139,6 +1140,24 @@ scripts/linux/dev.sh make test-linux-wayland
 scripts/linux/dev.sh make test-linux-session-native
 scripts/linux/dev.sh --arch amd64 cargo test --locked --lib
 ```
+
+`make linux-desktop` builds the optional Xpra image and prints a password-bearing
+localhost URL. Open it in a browser for a Linux desktop, development terminal,
+and the shipping synth; the terminal shows the release build before launch and
+returns to a shell when the app closes. Browser keyboard and mouse input reach
+the real Linux app; Control keeps its Linux meaning instead of swapping with
+Mac Command. Click the desktop to focus it. Xpra forwards the PulseAudio monitor
+to browser audio; toggle Audio off/on if the browser blocks autoplay. This adds
+streaming latency and does not measure physical device latency.
+The desktop defaults to 1024×768;
+set `CREST_LINUX_SCREEN_SIZE=1600x1000` for a larger display and use browser zoom
+or fullscreen to fit it. Automated witnesses retain their existing resolution.
+
+Each desktop gets its own random port bound to `127.0.0.1` and a fresh password.
+Keep the launcher running; closing the browser only disconnects, while Ctrl+C
+stops its container. The launcher also prints a `docker stop` command. Save
+sessions under `/workspace` to retain them in this worktree; manual app settings
+persist under the selected target directory's `linux-desktop/config` folder.
 
 Containers are disposable; source and per-worktree, per-architecture build
 caches persist on the Mac under `target/linux-arm64` and `target/linux-amd64`.

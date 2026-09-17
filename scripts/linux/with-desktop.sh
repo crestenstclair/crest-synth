@@ -8,12 +8,17 @@ if [[ "$(uname -s)" != Linux ]]; then
   exit 2
 fi
 if [[ "${1:-}" != --inside-desktop ]]; then
+  screen_size="${CREST_LINUX_SCREEN_SIZE:-2560x1600}"
+  if [[ ! "$screen_size" =~ ^[1-9][0-9]*x[1-9][0-9]*$ ]]; then
+    echo 'CREST_LINUX_SCREEN_SIZE must be WIDTHxHEIGHT.' >&2
+    exit 2
+  fi
   window_system=x11
   if [[ "${1:-}" == --wayland ]]; then
     window_system=wayland
     shift
   fi
-  exec dbus-run-session -- xvfb-run -a -s '-screen 0 2560x1600x24 -nolisten tcp' \
+  exec dbus-run-session -- xvfb-run -a -s "-screen 0 ${screen_size}x24 -nolisten tcp" \
     "$0" --inside-desktop "$window_system" "$@"
 fi
 shift

@@ -1,4 +1,4 @@
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS development
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -25,3 +25,14 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs -o /tmp/rustup-ini
     && rm /tmp/rustup-init.sh
 WORKDIR /workspace
 CMD ["scripts/linux/with-desktop.sh", "scripts/linux/check.sh"]
+
+# The visible desktop is optional; ordinary builds and automated witnesses do
+# not need a remote desktop server.
+FROM development AS desktop
+USER root
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    xpra xterm libjs-jquery python3-pil python3-lz4 python3-gst-1.0 gstreamer1.0-plugins-good \
+    && rm -rf /var/lib/apt/lists/*
+USER crest
+
+FROM development AS default
