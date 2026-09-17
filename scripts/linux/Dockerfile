@@ -6,9 +6,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libgtk-3-dev libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf \
     libasound2-dev libasound2-plugins libudev-dev libdbus-1-dev libpulse-dev \
     libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxss-dev libxtst-dev \
-    libwayland-dev libxkbcommon-dev xvfb xauth xdotool x11-xserver-utils openbox dbus-x11 \
+    libwayland-dev libxkbcommon-dev xvfb xauth xdotool x11-xserver-utils openbox weston dbus-x11 \
     pulseaudio pulseaudio-utils alsa-utils imagemagick fonts-dejavu-core \
-    zenity at-spi2-core xdg-desktop-portal xdg-desktop-portal-gtk \
+    zenity at-spi2-core python3-pyatspi xdg-desktop-portal xdg-desktop-portal-gtk \
     && rm -rf /var/lib/apt/lists/*
 
 # Match the bind-mounted checkout's owner without running WebKit as root.

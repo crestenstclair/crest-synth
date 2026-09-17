@@ -1110,6 +1110,14 @@ adapter boundaries without assuming a small-device target.
 native DSP allocation/lock instrumentation, and native UI witnesses. Its
 virtual desktop uses Xvfb/Openbox and a PulseAudio null sink; this validates
 Linux integration without claiming physical speaker or Steam Deck acceptance.
+`make test-linux-wayland` runs the Detail, Mixer, and Sample native paint and
+resize witnesses through Weston. The compositor is nested in Xvfb to supply a
+Wayland input seat without a GPU; application GTK windows use Wayland exclusively.
+`make test-linux-session-native` builds the shipping binary and exercises audio,
+transport stop, native Save As/New/Open, exact session round trips, dirty edits,
+unsaved cancellation, Save, and owned shutdown on both window systems. AT-SPI
+observes native focus before the next shortcut, including compositor animations;
+session files and configuration live in a fresh temporary evidence directory.
 WebKit uses software compositing on this GPU-less desktop to avoid software-GPU
 round trips; normal application launches retain the platform rendering defaults.
 The virtual desktop defaults to an 8192-frame audio buffer to tolerate emulation
