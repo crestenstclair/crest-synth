@@ -31,6 +31,11 @@ output directory rather than altering the pinned source inputs.
   The native adapter build disables GCC lifetime dead-store elimination to
   preserve zeroed storage before embedded DSP constructors; optimized instance
   independence and finite-output witnesses cover this initialization contract.
+  Rings' staged modal resonator borrows the existing SVF histories into bounded
+  stack arrays for SIMD, retains ordered summation, and caches pickup weights
+  only while the interpolated position is unchanged. Filter histories return
+  to their original owners after each block; exact-zero shortcuts never truncate
+  a tail. A numerical witness compares against the retained upstream resonators.
 - Airwindows/mda DSP is isolated behind a small SDK compatibility boundary;
   no VST2 SDK or foreign editor is distributed. mda ePiano's constructor-owned
   sample crossfades use private sample storage. ButterComp2's local static
@@ -45,15 +50,23 @@ output directory rather than altering the pinned source inputs.
   the original retains its own filter and resonance semantics.
   The other selected DaisySP algorithms remain the MIT main-library versions;
   the separate LGPL subtree is not included in the build.
-  Staged SVF implementations cache unchanged filter coefficients, retaining
-  the original calculations on first use and after parameter changes. Gain
+  Staged SVF and modal implementations cache unchanged filter coefficients;
+  AnalogBassDrum computes its unchanged tone/decay powers in their setters.
+  The original calculations run on first use and after parameter changes. Gain
   and filter history still advance every sample. The native witness compares
-  these paths against the retained upstream sources across changes and reset.
+  these paths against retained upstream sources across changes, reset, sample
+  rates, and modal resolutions using the production optimization level.
 - STK uses its fixed native sample rate behind r8brain. Setup/retirement of its
   global observer list is serialized off callback. Raw waves are embedded and
   loaded during preparation. Delay capacity for BandedWG is reserved during
   construction; Shakers' selectable materials are warmed there. Mandolin's
   admitted damping range avoids the upstream invalid loop-gain endpoint.
+  BandedWG's staged delay type privately wraps DelayL's original scalar tick
+  and clears only the contiguous circular interval written since the previous
+  clear. Delay changes, pointers, and cached outputs retain upstream semantics.
+  Mesh2D fuses its junction/outgoing-wave passes because all outgoing writes
+  target alternate buffers. Native witnesses require bit-identical samples
+  across presets, pitch bends, delay wraps/growth, mesh dimensions, and resets.
 - r8brain retains its upstream 24-bit filter design and double-precision DSP.
   Staged convolution starts at a prepared zero-padded block offset to spread
   independent voices' FFT work, retaining the original latency consumption and

@@ -1040,7 +1040,10 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
             }
             MidiMessageKind::PitchBend => {
                 self.bend = (a, b);
-                for voice in &mut self.voices {
+                // Idle processors are reset and receive the current bend
+                // before their next note-on. Held and releasing voices still
+                // receive every ordered bend, including same-block events.
+                for voice in self.voices.iter_mut().filter(|v| !v.envelope.is_idle()) {
                     voice.processor.note(0xe0, a, b);
                 }
             }
@@ -1232,6 +1235,85 @@ mod tests {
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::{GraphRevision, ParameterSnapshot};
+
+    #[test]
+    fn bends_reach_held_and_releasing_voices_and_replay_after_idle_reset() {
+        #[derive(Default)]
+        struct Recorder(Vec<(i32, u8, u8)>);
+        impl VoiceProcessor for Recorder {
+            fn latency(&self) -> usize {
+                0
+            }
+            fn set(&mut self, _: &[f32]) -> bool {
+                true
+            }
+            fn note(&mut self, status: i32, a: u8, b: u8) {
+                self.0.push((status, a, b));
+            }
+            fn reset(&mut self) {
+                self.0.push((-1, 0, 0));
+            }
+            fn process(&mut self, stereo: &mut [f32], _: usize) -> bool {
+                stereo.fill(1.0);
+                true
+            }
+        }
+        let id = PatchId::new(1).unwrap();
+        let params = RtPatchParameters::projected(
+            id,
+            PatchOutput::default(),
+            VoiceEnvelope::new(0.0, 0.0, 1.0, 40.0).unwrap(),
+            crate::real_time::RtInstrumentParameters::EMPTY,
+        );
+        let mut bank = PreparedVoiceBank {
+            patch_id: id,
+            voices: (0..3)
+                .map(|_| Voice {
+                    processor: Recorder::default(),
+                    envelope: VoiceEnvelopeState::IDLE,
+                    note: None,
+                    age: 0,
+                    held: false,
+                    delay: 0,
+                })
+                .collect(),
+            scratch: vec![0.0; 128],
+            rate: 48_000.0,
+            age: 0,
+            sustain: false,
+            bend: (0, 64),
+            expression: 1.0,
+            pressure: 1.0,
+        };
+        let message =
+            |kind, a, b| MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, a, b).unwrap();
+        bank.dispatch(message(MidiMessageKind::NoteOn, 60, 100), &params)
+            .unwrap();
+        bank.dispatch(message(MidiMessageKind::NoteOn, 61, 100), &params)
+            .unwrap();
+        bank.render(&mut [0.0; 128], 64, &params).unwrap();
+        bank.dispatch(message(MidiMessageKind::NoteOff, 60, 0), &params)
+            .unwrap();
+        assert!(bank.voices[0].envelope.is_releasing());
+        assert!(bank.voices[1].held);
+        for voice in &mut bank.voices {
+            voice.processor.0.clear();
+        }
+        let bends = [(0xe0, 0, 0), (0xe0, 127, 127), (0xe0, 17, 76)];
+        for &(_, a, b) in &bends {
+            bank.dispatch(message(MidiMessageKind::PitchBend, a, b), &params)
+                .unwrap();
+        }
+        assert_eq!(bank.voices[0].processor.0, bends);
+        assert_eq!(bank.voices[1].processor.0, bends);
+        assert!(bank.voices[2].processor.0.is_empty());
+        bank.dispatch(message(MidiMessageKind::NoteOn, 62, 100), &params)
+            .unwrap();
+        assert_eq!(
+            bank.voices[2].processor.0,
+            [(-1, 0, 0), (0xe0, 17, 76), (0x90, 62, 100)]
+        );
+    }
 
     #[test]
     fn every_upstream_effect_prepares_and_renders_through_its_public_port() {

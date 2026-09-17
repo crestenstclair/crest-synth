@@ -68,6 +68,43 @@ bool sfizz_midi_flush_witness();
 bool daisy_coefficient_witness();
 bool r8brain_scheduling_witness();
 bool rate_adapter_witness();
+bool mutable_resonator_witness();
+bool stk_model_witness();
+static bool parameter_validation_witness() {
+    size_t index=0;
+    while(index<crest_audio_count() && std::strcmp(crest_audio_id(index),"daisy_AnalogBassDrum")) ++index;
+    if(index==crest_audio_count()) return false;
+    void* tested=crest_audio_create(index,48000,64);
+    void* reference=crest_audio_create(index,48000,64);
+    if(!tested || !reference) { crest_audio_destroy(tested); crest_audio_destroy(reference); return false; }
+    const size_t count=crest_audio_param_count(tested);
+    std::vector<float> valid(count);
+    for(size_t i=0; i<count; ++i) valid[i]=crest_audio_param_default(tested,i);
+    bool success=crest_audio_set(tested,valid.data(),count) && crest_audio_set(reference,valid.data(),count);
+    auto invalid=valid;
+    invalid[0]=1000; // A valid early edit must not survive a rejected late edit.
+    for(float rejected : {NAN,INFINITY,-1.f,2.f,.5f}) {
+        invalid.back()=rejected; // Sustain: integral 0 or 1 only.
+        success &= !crest_audio_set(tested,invalid.data(),count);
+    }
+    success &= !crest_audio_set(tested,valid.data(),count-1);
+    crest_audio_note(tested,0x90,60,100); crest_audio_note(reference,0x90,60,100);
+    for(size_t block=0; block<32; ++block) {
+        float a[128]{},b[128]{};
+        success &= crest_audio_process(tested,a,64) && crest_audio_process(reference,b,64);
+        success &= std::memcmp(a,b,sizeof(a))==0;
+    }
+    // Reset invalidates the cached snapshot, including unchanged scalar values.
+    crest_audio_reset(tested); crest_audio_reset(reference);
+    success &= crest_audio_set(tested,valid.data(),count) && crest_audio_set(reference,valid.data(),count);
+    crest_audio_note(tested,0x90,60,100); crest_audio_note(reference,0x90,60,100);
+    float a[128]{},b[128]{};
+    success &= crest_audio_process(tested,a,64) && crest_audio_process(reference,b,64);
+    success &= std::memcmp(a,b,sizeof(a))==0;
+    crest_audio_destroy(tested); crest_audio_destroy(reference);
+    if(!success) std::printf("NATIVE PARAMETER VALIDATION FAILED\n");
+    return success;
+}
 // Verify instrumentation before accepting a zero-operation measurement.
 static bool counter_self_test() {
     allocations=destructions=heap_operations=locks=0;
@@ -96,12 +133,47 @@ static bool counter_self_test() {
 #endif
     return true;
 }
+static bool idle_bend_witness(size_t index, float rate) {
+    void* reference=crest_audio_create(index,rate,64);
+    void* actual=crest_audio_create(index,rate,64);
+    if(!reference || !actual) { crest_audio_destroy(reference); crest_audio_destroy(actual); return false; }
+    std::vector<float> values(crest_audio_param_count(reference));
+    for(size_t i=0;i<values.size();++i) values[i]=crest_audio_param_default(reference,i);
+    bool same=true;
+    for(void* p:{reference,actual}) {
+        if(!std::strcmp(crest_audio_id(index),"sfizz_Sample"))
+            same &= crest_audio_load_sample(p,reinterpret_cast<const uint8_t*>(crest_sample_default),sizeof(crest_sample_default)-1,48000);
+        same &= crest_audio_set(p,values.data(),values.size());
+        crest_audio_note(p,0x90,48,96);
+    }
+    for(int block=0;block<24;++block) {
+        float a[128]{},b[128]{};
+        same &= crest_audio_process(reference,a,64) && crest_audio_process(actual,b,64);
+    }
+    // Once the host envelope is idle, DSP no longer renders. Extra bends before
+    // reuse must not affect sound after reset, current bend, and the next note.
+    for(int bend:{0,127,32,96}) crest_audio_note(reference,0xe0,0,bend);
+    for(void* p:{reference,actual}) {
+        crest_audio_reset(p); same &= crest_audio_set(p,values.data(),values.size());
+        crest_audio_note(p,0xe0,17,76); crest_audio_note(p,0x90,60,96);
+    }
+    for(int block=0;block<64;++block) {
+        float a[128]{},b[128]{};
+        same &= crest_audio_process(reference,a,64) && crest_audio_process(actual,b,64);
+        same &= std::memcmp(a,b,sizeof(a))==0;
+    }
+    crest_audio_destroy(reference); crest_audio_destroy(actual);
+    return same;
+}
 int main(){
     if(!counter_self_test()){std::printf("COUNTER SELF-TEST FAILED\n");return 1;}
     if(!sfizz_midi_flush_witness()){std::printf("SFIZZ MIDI FLUSH FAILED\n");return 1;}
     if(!daisy_coefficient_witness()){return 1;}
     if(!r8brain_scheduling_witness()){return 1;}
     if(!rate_adapter_witness()){return 1;}
+    if(!mutable_resonator_witness()){return 1;}
+    if(!stk_model_witness()){return 1;}
+    if(!parameter_validation_witness()){return 1;}
     size_t failures=0,checked=0;
     for(float rate:{44100.f,48000.f,96000.f})for(size_t index=0;index<crest_audio_count();++index){
         const char* id=crest_audio_id(index);auto* p=crest_audio_create(index,rate,256);
@@ -172,6 +244,9 @@ int main(){
         });
         audio_thread.join();
         crest_audio_destroy(p);
+        if(crest_audio_is_instrument(index) && !idle_bend_witness(index,rate)) {
+            std::printf("IDLE BEND %s %.0f\n",id,rate); ++failures;
+        }
         // A second instance must not perturb an already prepared instance's random sequence.
         if(std::strcmp(id,"sfizz_Sample")) {
             void* solo=crest_audio_create(index,rate,256);

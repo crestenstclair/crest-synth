@@ -1,9 +1,13 @@
 #[path = "build_support/daisy.rs"]
 mod daisy_build;
+#[path = "build_support/mutable.rs"]
+mod mutable_build;
 #[path = "build_support/r8brain.rs"]
 mod r8brain_build;
 #[path = "build_support/sfizz.rs"]
 mod sfizz_build;
+#[path = "build_support/stk.rs"]
+mod stk_build;
 fn main() {
     // Track complete header/source trees as well as embedded inputs. These
     // remain authoritative when Cargo reuses native output for Rust-only edits.
@@ -76,6 +80,8 @@ fn main() {
 fn build_audio_catalog() {
     let generated = std::path::PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     let r8brain_sources = r8brain_build::stage(&generated);
+    let mutable_sources = mutable_build::stage(&generated);
+    let stk_sources = stk_build::stage(&generated);
     let msfa_sources = stage_msfa(&generated);
     std::fs::create_dir_all(generated.join("stmlib/utils")).unwrap();
     // Select each instance's original Mutable generator through the prepared
@@ -154,6 +160,7 @@ fn build_audio_catalog() {
         .define("EIGEN_MPL2_ONLY", None)
         .include("native/audio")
         .include(&r8brain_sources)
+        .include(&stk_sources)
         .include("vendor/audio/stk/include")
         .warnings(false);
     for entry in std::fs::read_dir("native/audio").unwrap() {
@@ -208,11 +215,12 @@ fn build_audio_catalog() {
         .flag("-include")
         .flag("cstdio");
     for module in ["plaits", "rings", "elements", "clouds", "warps"] {
-        add_cpp_tree(
+        mutable_build::add_sources(
             &mut mutable,
             &std::path::Path::new("vendor/audio/mutable")
                 .join(module)
                 .join("dsp"),
+            &mutable_sources,
         );
         mutable.file(format!("vendor/audio/mutable/{module}/resources.cc"));
     }
@@ -278,6 +286,8 @@ fn build_audio_catalog() {
     stk.file("native/audio/stk_waves.cpp");
     stk.cpp(true)
         .std("c++17")
+        .include(&stk_sources)
+        .include("native/audio")
         .include("vendor/audio/stk/include")
         .warnings(false)
         .flag("-include")
@@ -286,7 +296,12 @@ fn build_audio_catalog() {
         .unwrap()
         .lines()
     {
-        stk.file(source);
+        let name = std::path::Path::new(source).file_name().unwrap();
+        if name == "BandedWG.cpp" || name == "Mesh2D.cpp" {
+            stk.file(stk_sources.join(name));
+        } else {
+            stk.file(source);
+        }
     }
     stk.compile("crest_stk");
     let mut msfa = native_build();
@@ -362,17 +377,6 @@ fn stage_msfa(output: &std::path::Path) -> std::path::PathBuf {
         std::fs::write(staged.join(source.file_name().unwrap()), text).unwrap();
     }
     staged
-}
-
-fn add_cpp_tree(build: &mut cc::Build, directory: &std::path::Path) {
-    for entry in std::fs::read_dir(directory).unwrap() {
-        let path = entry.unwrap().path();
-        if path.is_dir() {
-            add_cpp_tree(build, &path);
-        } else if path.extension().and_then(|p| p.to_str()) == Some("cc") {
-            build.file(path);
-        }
-    }
 }
 
 fn add_sources(build: &mut cc::Build, path: &std::path::Path, extension: &str) {

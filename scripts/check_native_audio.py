@@ -27,7 +27,9 @@ if len(outputs) != 1:
 output = outputs[0]
 print(f'Native witness archives: {output}', flush=True)
 binary = output / 'native-audio-witness'
-command = ['c++', '-std=c++20', '-O1', '-g', '-I'+str(output), str(root/'native/audio/tests/realtime.cpp'), '-o', str(binary)]
+# Both Cargo test and release profiles compile DSP at O3. Build the upstream
+# numerical references the same way (notably floating-point contraction).
+command = ['c++', '-std=c++20', '-O3', '-g', '-I'+str(output), str(root/'native/audio/tests/realtime.cpp'), '-o', str(binary)]
 command += ['-I'+str(output/'sfizz-source/src'),
             '-I'+str(root/'vendor/audio/sfizz/external/abseil-cpp'),
             '-I'+str(root/'vendor/audio/sfizz/external/simde'),
@@ -41,6 +43,15 @@ command += ['-I'+str(output/'r8brain-source'),
             str(root/'native/audio/tests/rate_adapter.cpp'),
             str(root/'native/audio/tests/r8brain_reference.cpp'),
             str(root/'native/audio/tests/r8brain_scheduling.cpp')]
+if subprocess.run(['c++', '-fno-lifetime-dse', '-x', 'c++', '-fsyntax-only', '-'],
+                  input='', text=True, capture_output=True).returncode == 0:
+    command.append('-fno-lifetime-dse')
+command += ['-DTEST', '-I'+str(root/'vendor/audio'), '-I'+str(root/'vendor/audio/mutable'),
+            str(root/'native/audio/tests/mutable_reference.cpp'),
+            str(root/'native/audio/tests/mutable_resonators.cpp')]
+command += ['-I'+str(output/'stk-source'), '-I'+str(root/'vendor/audio/stk/include'),
+            str(root/'native/audio/tests/stk_reference.cpp'),
+            str(root/'native/audio/tests/stk_models.cpp')]
 if sys.platform == 'darwin':
     interposer = output / 'libcrest_witness_interpose.dylib'
     subprocess.run(['c++', '-std=c++20', '-O1', '-dynamiclib', '-mmacosx-version-min=11.0',

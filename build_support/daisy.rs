@@ -41,6 +41,97 @@ fn copy_tree(source: &Path, destination: &Path) {
 // ResonatorSvf caches only coefficients; gain and filter history always advance.
 const EDITS: &[(&str, &str, &str)] = &[
     (
+        "Drums/analogbassdrum.h",
+        "    float accent_, f0_, tone_, decay_;",
+        "    float accent_, f0_, tone_, decay_;\n    float cached_q_, cached_tone_;",
+    ),
+    (
+        "Drums/analogbassdrum.cpp",
+        "1500.0f * powf(2.f, kOneTwelfth * decay_ * 80.0f)",
+        "cached_q_",
+    ),
+    (
+        "Drums/analogbassdrum.cpp",
+        "powf(2.f, kOneTwelfth * tone_ * 108.0f)",
+        "cached_tone_",
+    ),
+    (
+        "Drums/analogbassdrum.cpp",
+        "    tone_ = fclamp(tone, 0.f, 1.f);",
+        "    tone_ = fclamp(tone, 0.f, 1.f);\n    cached_tone_ = powf(2.f, kOneTwelfth * tone_ * 108.0f);",
+    ),
+    (
+        "Drums/analogbassdrum.cpp",
+        "    decay_ -= .1f;",
+        "    decay_ -= .1f;\n    cached_q_ = 1500.0f * powf(2.f, kOneTwelfth * decay_ * 80.0f);",
+    ),
+    (
+        "PhysicalModeling/resonator.h",
+        "    float                        mode_amplitude_[kMaxNumModes];",
+        r###"    bool modes_ready_;
+    float cached_frequency_, cached_structure_, cached_brightness_, cached_damping_;
+    float prepared_f_[kMaxNumModes], prepared_q_[kMaxNumModes], prepared_a_[kMaxNumModes];
+    float                        mode_amplitude_[kMaxNumModes];"###,
+    ),
+    (
+        "PhysicalModeling/resonator.cpp",
+        "    sample_rate_ = sample_rate;",
+        "    sample_rate_ = sample_rate;\n    modes_ready_ = false;",
+    ),
+    (
+        "PhysicalModeling/resonator.cpp",
+        "    float stiffness  = CalcStiff(structure_);",
+        r###"    if(!modes_ready_ || frequency_ != cached_frequency_ || structure_ != cached_structure_
+       || brightness_ != cached_brightness_ || damping_ != cached_damping_)
+    {
+    modes_ready_ = true;
+    cached_frequency_ = frequency_; cached_structure_ = structure_;
+    cached_brightness_ = brightness_; cached_damping_ = damping_;
+    float stiffness  = CalcStiff(structure_);"###,
+    ),
+    (
+        "PhysicalModeling/resonator.cpp",
+        r###"    float mode_q[kModeBatchSize];
+    float mode_f[kModeBatchSize];
+    float mode_a[kModeBatchSize];
+    int   batch_counter = 0;
+
+    ResonatorSvf<kModeBatchSize>* batch_processor = &mode_filters_[0];
+"###,
+        "",
+    ),
+    (
+        "PhysicalModeling/resonator.cpp",
+        r###"        mode_f[batch_counter] = mode_frequency;
+        mode_q[batch_counter] = 1.0f + mode_frequency * q;
+        mode_a[batch_counter] = mode_amplitude_[i] * mode_attenuation;
+        ++batch_counter;
+
+        if(batch_counter == kModeBatchSize)
+        {
+            batch_counter = 0;
+            batch_processor
+                ->Process<ResonatorSvf<kModeBatchSize>::BAND_PASS, true>(
+                    mode_f, mode_q, mode_a, in, &out);
+            ++batch_processor;
+        }"###,
+        r###"        prepared_f_[i] = mode_frequency;
+        prepared_q_[i] = 1.0f + mode_frequency * q;
+        prepared_a_[i] = mode_amplitude_[i] * mode_attenuation;"###,
+    ),
+    (
+        "PhysicalModeling/resonator.cpp",
+        "    return out;",
+        r###"    }
+    for(int batch = 0; batch < resolution_ / kModeBatchSize; ++batch)
+    {
+        const int offset = batch * kModeBatchSize;
+        mode_filters_[batch].Process<ResonatorSvf<kModeBatchSize>::BAND_PASS, true>(
+            prepared_f_ + offset, prepared_q_ + offset, prepared_a_ + offset, in, &out);
+    }
+    return out;"###,
+    ),
+    (
         "Filters/svf.h",
         r###"    float sr_, fc_, res_, drive_, freq_, damp_;"###,
         r###"    bool frequency_ready_, resonance_ready_;

@@ -547,8 +547,16 @@ Sample admission accounts for private PCM copies separately from shared PCM.
 This remains a memory optimization opportunity.
 Delay-zero MIDI updates retain normalized event state without rewriting every
 controller buffer each block. Delayed events still flush in timestamp order.
-DaisySP caches unchanged SVF coefficients while advancing filter history and
-gain every sample; the native witness compares against the upstream sources.
+DaisySP caches unchanged SVF and modal coefficients and drum tone/decay
+calculations while advancing filter history and gain every sample. Rings batches
+independent modal filters for SIMD and reuses unchanged pickup weights, retaining
+ordered modal sums. STK BandedWG clears only the circular delay interval written
+since its last clear; Mesh2D computes each junction and its alternate-buffer
+outgoing waves in one pass. Native witnesses compare these paths against the
+retained upstream sources. Scalar snapshots revalidate changed values before
+applying any edits; reset invalidates the validated cache. Idle host voices receive
+the current pitch bend after reset at their next note-on; held and releasing
+voices still receive every ordered bend.
 
 Catalog descriptors expose native parameters through existing generic lists.
 Parameter descriptors attach names to categorical stepped values and normalized

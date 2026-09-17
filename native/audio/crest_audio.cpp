@@ -73,10 +73,14 @@ bool crest_audio_set(void* h, const float* params, size_t count) noexcept {
     auto& handle = *static_cast<Handle*>(h); CrestRandomScope scope(handle.random);
     auto& p = *handle.processor;
     if (count != p.count()) return false;
+    auto& previous=handle.parameters;
     for (size_t i=0; i<count; ++i) {
+        // Descriptors are fixed for a prepared processor. Equal values already
+        // passed this boundary; reset invalidates the cache with NaNs. Validate
+        // every changed value before applying any part of the new snapshot.
+        if (previous[i]==params[i]) continue;
         if (!std::isfinite(params[i]) || params[i] < p.minimum(i) || params[i] > p.maximum(i) || (p.stepped(i) && std::floor(params[i]) != params[i])) return false;
     }
-    auto& previous=static_cast<Handle*>(h)->parameters;
     for (size_t i=0; i<count; ++i) if (previous[i]!=params[i]) { p.set(i, params[i]); previous[i]=params[i]; }
     return true;
 }
