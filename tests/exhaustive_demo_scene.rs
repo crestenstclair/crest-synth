@@ -85,11 +85,9 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
         assert!(coverage.missing().is_empty(), "{group:?}");
         assert!(coverage.unexpected().is_empty(), "{group:?}");
     }
-    // Twenty-four normalized keys in each of two kinds, plus focus loss. The eight
-    // digits and the two bracket keys the gallery pages and steps with are
-    // normalized at the window boundary and bound to no semantic action, so
-    // they are exercised here as inputs without appearing among the events
-    // below.
+    // Twenty-four normalized keys in each of two kinds, plus focus loss.
+    // Ctrl+4 opens Sends. The remaining gallery digits and bracket keys are
+    // exercised as normalized inputs without adding reducer event kinds.
     assert_eq!(
         report
             .coverage()
@@ -98,17 +96,41 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
             .len(),
         49
     );
-    // The eleven WP-era reducer events, the five WP06 occupancy lifecycle and
-    // topology outcomes, SelectPatch, and Phase 7's OpenRelated, MIDI Settings,
-    // Activate, PreviewStart, PreviewStop, and NavigatePage — every current
-    // player/worker-reachable event kind declared by the exhaustive scene.
+    // Exact player/worker event contract, including the Send action reached
+    // through the physical Ctrl+4 sweep. Chain edits have dedicated witnesses.
+    let expected_events = [
+        "event.activate",
+        "event.adjust",
+        "event.engineActivationAcknowledged",
+        "event.enginePreparationFailed",
+        "event.enginePrepared",
+        "event.engineSelectionLifecycleAdvanced",
+        "event.enterSurface",
+        "event.installPatches",
+        "event.midi",
+        "event.navigate",
+        "event.navigatePage",
+        "event.openMidiSettings",
+        "event.openRelated",
+        "event.previewStart",
+        "event.previewStop",
+        "event.return",
+        "event.selectContext",
+        "event.selectPatch",
+        "event.send",
+        "event.setInteractionMode",
+        "event.setReturnOccupancy",
+        "event.setSlotOccupancy",
+        "event.topologyPreparationFailed",
+        "event.topologyPrepared",
+    ]
+    .map(str::to_owned);
     assert_eq!(
         report
             .coverage()
             .group(DemoCoverageGroup::Events)
-            .exercised()
-            .len(),
-        23
+            .exercised(),
+        expected_events.as_slice()
     );
     assert_eq!(
         report
@@ -297,7 +319,7 @@ fn exhaustive_scene_proves_exact_coverage_boundaries_and_restoration() {
                 let (_, target) = track
                     .split_once('.')
                     .expect("track parameter identity contains its target");
-                // All eight indexed sends share one descriptor, so they are
+                // All indexed sends share one descriptor, so they are
                 // one boundary target kind exactly as one named track field
                 // is one kind across all sixteen tracks.
                 if target.starts_with("sends[") {

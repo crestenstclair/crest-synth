@@ -656,8 +656,18 @@ impl AppWindow for TauriWebviewWindow {
         // the Rust side on the main thread before the event loop starts. The
         // sink runs on the main thread; events pass through unchanged so the
         // webview still receives them (the page registers no key handler).
+        let text_entry_active = Rc::new(std::cell::Cell::new(false));
+        let capture_text_entry = Rc::clone(&text_entry_active);
         let capture_pipeline = Rc::clone(&pipeline);
         let _capture_handle = input_capture::install(move |raw| {
+            if capture_text_entry.get() {
+                // Retire held performance keys without dispatching text edits.
+                capture_pipeline
+                    .borrow_mut()
+                    .translator
+                    .translate(WindowInput::focus_lost());
+                return;
+            }
             let input = if raw.pressed() {
                 WindowInput::key_down(raw.key())
             } else {
@@ -749,6 +759,16 @@ impl AppWindow for TauriWebviewWindow {
         // callback and projection channel live.
         let (page_signal_sender, page_signals) = mpsc::channel::<PageSignal>();
         let ready_sender = page_signal_sender.clone();
+        let (send_name_sender, send_name_events) = mpsc::channel::<crate::control::SendAction>();
+        app.listen_any("crest://send-name", move |event| {
+            if let Ok(
+                action @ (crate::control::SendAction::Rename { .. }
+                | crate::control::SendAction::CancelRename),
+            ) = serde_json::from_str::<crate::control::SendAction>(event.payload())
+            {
+                let _ = send_name_sender.send(action);
+            }
+        });
         app.listen_any(READY_EVENT, move |_| {
             let _ = ready_sender.send(PageSignal::Ready);
         });
@@ -796,7 +816,6 @@ impl AppWindow for TauriWebviewWindow {
             }
         });
 
-        let loop_pipeline = Rc::clone(&pipeline);
         let mut last_tick = Instant::now();
         let mut close_requested = false;
         let mut page_ready = false;
@@ -816,6 +835,7 @@ impl AppWindow for TauriWebviewWindow {
         let mut midi_activity_channel =
             crate::shell::webview::midi_activity_channel::MidiActivityChannel::new();
 
+        let loop_pipeline = Rc::clone(&pipeline);
         let exit_code = app.run_return(move |handle, event| match event {
             RunEvent::WindowEvent {
                 event: WindowEvent::CloseRequested { api, .. },
@@ -895,6 +915,11 @@ impl AppWindow for TauriWebviewWindow {
                         }
                     }
                 }
+                while let Ok(action) = send_name_events.try_recv() {
+                    (loop_pipeline.borrow_mut().on_input)(crate::control::SemanticAction::Send(
+                        action,
+                    ));
+                }
                 while let Ok(command) = session_commands.try_recv() {
                     let close_now = on_session_command(command);
                     if command == SessionCommand::Close && close_now {
@@ -954,6 +979,21 @@ impl AppWindow for TauriWebviewWindow {
                     // injected control-side tick and then requests the
                     // current immutable projection.
                     let projection_for_page = projection();
+                    text_entry_active.set(
+                        projection_for_page
+                            .semantic_model()
+                            .surfaces()
+                            .iter()
+                            .any(|surface| {
+                                matches!(
+                                    surface.summary(),
+                                    crate::control::SemanticSurfaceSummary::Sends {
+                                        editing_name: true,
+                                        ..
+                                    }
+                                )
+                            }),
+                    );
                     // WP03 projection transport: generation-gated push of
                     // the serde serialization of this projection's embedded
                     // SemanticGraphicalViewModel. A failure while the window
@@ -1208,16 +1248,12 @@ mod tests {
         ] {
             assert!(page.contains(marker), "index.html must carry {marker}");
         }
-        // The page registers no key handler in the document or the render
-        // script; keys are captured Rust-side (WP01/WP02 boundary).
-        for source in [page, PAGE_JS] {
-            assert!(
-                !source.contains("keydown")
-                    && !source.contains("keyup")
-                    && !source.contains("keypress"),
-                "the page must register no key handler"
-            );
-        }
+        // Performance keys stay Rust-side. The focused name input owns only
+        // text editing and Escape cancellation while native capture is suspended.
+        assert!(!page.contains("keydown") && !page.contains("keyup"));
+        assert_eq!(PAGE_JS.matches("addEventListener(\"keydown\"").count(), 1);
+        assert!(PAGE_JS.contains("input.addEventListener(\"keydown\""));
+        assert!(!PAGE_JS.contains("addEventListener(\"keyup\""));
         assert!(PAGE_JS.contains("var projectionListener = tauri.event.listen("));
         assert!(PAGE_JS.contains("var meterListener = tauri.event.listen("));
         assert!(PAGE_JS.contains("var midiActivityListener = tauri.event.listen("));

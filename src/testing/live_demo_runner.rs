@@ -1651,6 +1651,7 @@ where
             StructuralEditIntent::SetVoiceBudget { .. }
             | StructuralEditIntent::ReplaceEffectAsset { .. }
             | StructuralEditIntent::SetSlotOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. }
             | StructuralEditIntent::SetReturnOccupancy { .. }
             | StructuralEditIntent::AppendPatch { .. } => {
                 return Err(LiveDemoError::EngineProjectionMismatch)
@@ -2291,6 +2292,7 @@ fn edited_parameter_of(focus: &FocusPath) -> Option<PatchControlId> {
     match focus.control_id() {
         crate::control::SemanticControlId::Patch(control) => Some(control.clone()),
         crate::control::SemanticControlId::Mixer(_)
+        | crate::control::SemanticControlId::Send(_)
         | crate::control::SemanticControlId::Modal(_)
         | crate::control::SemanticControlId::MidiInputDevice(_)
         | crate::control::SemanticControlId::ControllerSetting(_)
@@ -2534,6 +2536,7 @@ where
         StructuralEditIntent::SetVoiceBudget { .. }
         | StructuralEditIntent::ReplaceEffectAsset { .. }
         | StructuralEditIntent::SetSlotOccupancy { .. }
+        | StructuralEditIntent::SetSendEffect { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. }
         | StructuralEditIntent::AppendPatch { .. } => Ok(false),
     }

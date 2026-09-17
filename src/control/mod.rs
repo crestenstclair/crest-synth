@@ -131,3 +131,6 @@ pub mod state_tree;
 pub use state_tree::{StateTree, StateTreeError};
 pub mod event_log;
 pub use event_log::{EventCoverage, EventLog, EventLogError};
+
+mod sends;
+pub use sends::{SendAction, SendControlId};

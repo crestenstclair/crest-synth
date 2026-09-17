@@ -1996,17 +1996,21 @@ fn check_no_component_owns_or_dispatches_application_state() {
             );
         }
     }
-    // The gallery script is held to the same input rule as the page: its
-    // digit keys are bound Rust-side by the testing scene, never page-side.
+    // Performance keys stay Rust-side. The focused text input owns only
+    // Escape cancellation while native capture is suspended. Exempt that
+    // exact handler; any other page or gallery key handler still fails.
+    const NAME_CANCEL_HANDLER: &str = r#"input.addEventListener("keydown", function (event) { if (event.key === "Escape") { event.preventDefault(); emit({ kind: "cancelRename" }); } });"#;
+    assert_eq!(page_js.matches(NAME_CANCEL_HANDLER).count(), 1);
+    let performance_page_js = page_js.replace(NAME_CANCEL_HANDLER, "");
     for (name, source) in [
-        ("page.js", &page_js),
+        ("page.js", &performance_page_js),
         ("index.html", &index_html),
         ("gallery.js", &gallery_js),
     ] {
         for needle in ["keydown", "keyup", "keypress"] {
             assert!(
                 !source.contains(needle),
-                "{name} registers a key handler (`{needle}`); keys are captured Rust-side"
+                "{name} registers a performance key handler (`{needle}`); keys are captured Rust-side"
             );
         }
     }

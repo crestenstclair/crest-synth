@@ -140,7 +140,7 @@ The application currently provides:
 - one effect registry containing the legacy effects plus Airwindows, DaisySP,
   Mutable Clouds/Warps/Rings resonator, mda, Neural Amp Modeler, FFTConvolver,
   and Signalsmith pitch/formant processing;
-- ordered Patch post-effect slots, bus returns, and persistent Mixer tracks;
+- ordered Patch post-effect slots, named send-effect chains, and persistent Mixer tracks;
 - descriptor-driven Patch Overview, Detail, generic Choice, shared File Browser,
   waveform/playhead projection, persistent Utility, and persistent Mixer
   Inspector surfaces;
@@ -167,7 +167,9 @@ Normal `make run` resolves the composition-root-designated Sample capability
 exactly and constructs Patch 1 `INIT`: MIDI channel 1, T00 at 0 dB Patch trim,
 neutral envelope, capability-seeded voice settings, and empty post-effect
 slots. It also installs the default Mixer, 0 dB master, and the
-production return bank. The captured versioned session and its complete graph
+default bank of sixteen empty `INIT` send chains. Retained effects/buses diagnostic
+scenes explicitly seed audible returns; new documents never consume that fixture.
+The captured versioned session and its complete graph
 are validated and prepared before audio or the window starts; a missing or
 invalid designated capability is a typed fatal startup error, never registry
 fallback. The initial graph receives the explicit test pattern through the same
@@ -374,7 +376,7 @@ status and are formatted/handled off callback.
 
 - A Patch owns a stable `PatchId`, label/MIDI mapping, instrument config,
   per-note `VoiceEnvelope`, ordered post-effect slots, output
-  `MixerTrackId`, Patch-local trim, and voice settings.
+  `MixerTrackId`, Patch-local trim and send amounts, and voice settings.
 - A Patch MIDI channel is a subscription, never an exclusive owner. Multiple
   Patches may subscribe to the same channel; one incoming message fans out to
   every current subscriber in stable installation order. Changing a
@@ -383,8 +385,9 @@ status and are formatted/handled off callback.
 - Mixer state owns persistent tracks independently of the
   Patch collection. Multiple Patches may share a track and empty tracks remain
   configurable.
-- Patch trim and route are not track controls. A Patch never owns track level,
-  pan, mute, solo, send, or meter state.
+- Patch trim, route, and send amounts are Patch controls. A Patch never owns
+  track level, pan, mute, solo, or meter state. Mixer Inspector retains its
+  separate sends from the summed track signal.
 - Master gain has one canonical owner, projected in PATCH Utility and MIXER
   Inspector.
 - Prepared storage, voice admission, and parameter layouts belong to the
@@ -392,8 +395,22 @@ status and are formatted/handled off callback.
   they do not constrain the intended product or technology selection.
 - Effect slot order is render order. Topology edits prepare and exchange a
   complete graph; there is no silent bypass or render-time graph mutation.
-- Reverb occupies return 0 and Delay return 1 by default; other returns start
-  empty. Registry failure is typed rather than substituted.
+- Send returns start empty, named `INIT`, with sixteen destinations by default.
+  The saved bank count and prepared vectors configure routing capacity; sixteen
+  is not an admission limit. Each return owns an ordered chain drawn from the
+  same effect registry as Patch post FX, plus its name and output level. Slot
+  identities survive other slots being removed. Empty chains contribute silence.
+  The existing decimated meter bank observes the first sixteen returns; queries
+  beyond that report unavailable without limiting audio routing or chain count.
+- The Mixer-owned Sends screen opens with `4` or `Ctrl+4`; Q/E selects a
+  destination using the same bounded adjacent navigation as Patches. Return
+  on Name opens keyboard text entry (Return commits, Escape cancels). Effect
+  rows open the shared categorized registry choices; parameter rows use the
+  existing descriptor controls and asset browser.
+- Patch Utility exposes only occupied send chains and edits the focused
+  Patch's independent send amounts. Each destination sums incoming audio,
+  processes its ordered effects once, and adds the result at its own return
+  volume to the master mix. Names, chains, and send amounts persist in sessions.
 - Voice admission must honor the configured hardware budget and expose
   resource exhaustion. Existing admission and engine-native stealing behavior
   remain source-level behavior to account for when making that configurable.
@@ -436,14 +453,17 @@ Patch instrument
 ordered Patch post FX
   ↓
 Patch trim
+  ├──→ Patch sends through routed track level/pan/gate ─┐
   ↓
 route and sum into a Mixer track
   ↓
 track level / pan
   ├──→ pre-gate meter
   ↓
-mute / solo gate
-  ├──→ post-gate sends → returns            ─┐
+mute / solo gate                                       │
+  ├──→ track sends ──→ sum each send input ←────────────┘
+  │                          ↓
+  │                   effects / return volume ─┐
   ↓                                           │
 track dry mix    ←────────────────────────────┘
   ↓
@@ -453,13 +473,15 @@ stereo device
 ```
 
 Mute always wins. If any track is soloed, only soloed, non-muted tracks
-contribute dry signal or sends. Sends are post-fader and post-gate. Meters are
+contribute dry signal or sends. Patch sends tap individual post-FX/trim stems
+through the routed track's fader, pan, and gate before track accumulation loses
+Patch identity. Track sends tap the summed post-fader, post-gate track. Meters are
 post-level/pan but pre-gate so muted tracks remain diagnosable. Feedback may
 exist only inside bounded effect implementations, never as an arbitrary graph
 cycle.
 
 Mixer processing skips tracks with no routed Patch stems and accumulates only
-nonzero sends, once per bus per block. It retains the same sample and Patch
+nonzero sends per source and bus. It retains the same sample and Patch
 accumulation order, pre-gate meters, mute/solo rules, and independently processed
 return tails. Audio command draining has a per-block work budget;
 queue capacity alone cannot bound a concurrently replenished
@@ -476,7 +498,13 @@ macOS, `$XDG_CONFIG_HOME/crest-synth` or `~/.config/crest-synth` on Linux, and
 schema/value and last-known display name, using a temporary file plus rename.
 Manual disconnect, runtime connection state, descriptors, handles, queues,
 timestamps, diagnostics, and activity are never persisted. `SavedSession`
-remains version 2 and contains none of those device fields.
+uses version 4 and contains none of those device fields. Versions 1 and 2
+migrate their eight returns and send levels without changing effect values,
+padding the bank with empty sends. Version 3 stores return names and ordered
+effect chains and preserves configured bank sizes. Version 4 stores independent
+Patch send amounts. Loading versions 1–3 copies each routed track's sends to its
+Patches and clears those track sends to prevent doubling; unused-track sends
+remain intact. Current documents require valid, bank-sized Patch send arrays.
 
 SoundFont and Sample file work is off callback: resolve, validate, read, parse,
 decode, resample/precompute, allocate/warm voices, then publish a complete
@@ -928,6 +956,8 @@ one for another or demand an unrelated repeat of already accepted work.
 `make run`, `make play`, and `make ui` use the optimized release profile for both
 Rust and native DSP. `cargo run --bin crest-synth` remains an explicit debug
 launch; unoptimized timing is not a supported real-time performance target.
+Tour tests with real-time dispatch budgets run with `cargo test --release --lib
+full_demo_`; debug test runs skip those timing checks.
 
 `make full-instrument-effect-demo` runs a sequential listening tour in the
 production window and audio runtime, focused on the new audio catalog. The

@@ -111,6 +111,9 @@ impl KeyboardInputTranslator {
 
     fn translate_key_down(&mut self, key: WindowKey) -> Option<SemanticAction> {
         match key {
+            WindowKey::Digit4 => {
+                return Some(SemanticAction::Send(crate::control::SendAction::Open))
+            }
             WindowKey::Digit1 => {
                 return Some(SemanticAction::SelectContext(TopLevelContext::Mixer))
             }
@@ -214,9 +217,8 @@ mod tests {
     /// The four the gallery added — `Digit9`, `Digit0`, and the two brackets —
     /// are here for the same reason the six digits are: normalizing a key so a
     /// scene may bind it locally must not give it an application meaning.
-    const UNBOUND_DIGITS: [WindowKey; 10] = [
+    const UNBOUND_DIGITS: [WindowKey; 9] = [
         WindowKey::Digit3,
-        WindowKey::Digit4,
         WindowKey::Digit5,
         WindowKey::Digit6,
         WindowKey::Digit7,

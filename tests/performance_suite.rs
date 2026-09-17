@@ -170,7 +170,7 @@ impl Fixtures {
                 .unwrap();
         }
         for track in MixerTrackId::ALL {
-            let mut values = *mixer.track(track);
+            let mut values = mixer.track(track).clone();
             for bus in &BusId::ALL[..returns] {
                 values = values.with_send(*bus, 0.15).unwrap();
             }
@@ -237,7 +237,7 @@ impl Fixtures {
                 state.generation(),
                 revision,
                 *state.global(),
-                *state.mixer(),
+                state.mixer().clone(),
                 state.patches(),
                 state.capabilities(),
                 state.effects(),

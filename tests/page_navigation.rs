@@ -365,7 +365,7 @@ fn projected_page_guidance_matches_admission_and_source() {
     for (direction, label) in [
         (Direction::Up, "Open highlighted Detail"),
         (Direction::Down, "Open MIXER"),
-        (Direction::Left, "Open MIDI Settings"),
+        (Direction::Left, "Open Settings"),
     ] {
         let actions = SemanticResolver::new(&state).valid_actions();
         let action = actions

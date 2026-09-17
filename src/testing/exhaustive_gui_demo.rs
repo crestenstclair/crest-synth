@@ -1614,6 +1614,9 @@ fn observe_records<'a>(
 ) {
     for record in records {
         match record.input() {
+            EventInput::Send { .. } => {
+                observed.insert("event.send".to_owned());
+            }
             EventInput::SelectContext { context } => {
                 observed.insert("event.selectContext".to_owned());
                 observed.insert(format!("context.{}", context.label().to_ascii_lowercase()));

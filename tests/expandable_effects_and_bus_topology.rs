@@ -752,12 +752,25 @@ fn measure_routing() -> RoutingMeasurements {
             .with_send(target, 0.8)
             .unwrap();
         let (_, observation) = run(parameters, &BusId::ALL, 1);
-        assert!(observation.bus_input_rms(target) > 0.0);
+        assert!(
+            observation
+                .bus_input_rms(target)
+                .expect("bus belongs to observed default bank")
+                > 0.0
+        );
         for other in BusId::ALL {
             if other != target {
                 max_off_target = max_off_target
-                    .max(f64::from(observation.bus_input_rms(other)))
-                    .max(f64::from(observation.bus_output_rms(other)));
+                    .max(f64::from(
+                        observation
+                            .bus_input_rms(other)
+                            .expect("bus belongs to observed default bank"),
+                    ))
+                    .max(f64::from(
+                        observation
+                            .bus_output_rms(other)
+                            .expect("bus belongs to observed default bank"),
+                    ));
             }
         }
     }
@@ -774,8 +787,16 @@ fn measure_routing() -> RoutingMeasurements {
     let mut gated_wet = 0.0_f64;
     for bus in BusId::ALL {
         gated_wet = gated_wet
-            .max(f64::from(muted_observation.bus_input_rms(bus)))
-            .max(f64::from(muted_observation.bus_output_rms(bus)));
+            .max(f64::from(
+                muted_observation
+                    .bus_input_rms(bus)
+                    .expect("bus belongs to observed default bank"),
+            ))
+            .max(f64::from(
+                muted_observation
+                    .bus_output_rms(bus)
+                    .expect("bus belongs to observed default bank"),
+            ));
     }
 
     // C-BR-6: an unoccupied return contributes silence, never its input.
@@ -785,8 +806,14 @@ fn measure_routing() -> RoutingMeasurements {
     let (unoccupied_output, unoccupied_observation) = run(sends, &[], 1);
     let dry_reference: [f32; MIX_SAMPLES] =
         core::array::from_fn(|index| if index % 2 == 0 { 0.4 } else { 0.2 });
-    let unoccupied_return_silent = unoccupied_observation.bus_input_rms(BusId::ALL[7]) > 0.0
-        && unoccupied_observation.bus_output_rms(BusId::ALL[7]) == 0.0
+    let unoccupied_return_silent = unoccupied_observation
+        .bus_input_rms(BusId::ALL[7])
+        .expect("bus belongs to observed default bank")
+        > 0.0
+        && unoccupied_observation
+            .bus_output_rms(BusId::ALL[7])
+            .expect("bus belongs to observed default bank")
+            == 0.0
         && unoccupied_output
             .iter()
             .zip(dry_reference.iter())
@@ -795,12 +822,12 @@ fn measure_routing() -> RoutingMeasurements {
     // FR-013: a return-content change leaves the dry path untouched — a
     // track with zero sends renders identically under either occupant.
     let dry_only = MixerTrackParameters::default();
-    let (before_change, _) = run(dry_only, &[BusId::ALL[1]], 1);
+    let (before_change, _) = run(dry_only.clone(), &[BusId::ALL[1]], 1);
     let (after_change, _) = run(dry_only, &[BusId::ALL[1]], 2);
     let wet_coupled = MixerTrackParameters::default()
         .with_send(BusId::ALL[1], 0.5)
         .unwrap();
-    let (coupled_attested, _) = run(wet_coupled, &[BusId::ALL[1]], 1);
+    let (coupled_attested, _) = run(wet_coupled.clone(), &[BusId::ALL[1]], 1);
     let (coupled_changed, _) = run(wet_coupled, &[BusId::ALL[1]], 2);
     let dry_uninterrupted_across_content_change =
         before_change == after_change && coupled_attested != coupled_changed;
@@ -891,7 +918,7 @@ fn measure_carry_over_identity_refusal() -> bool {
             0,
             revision,
             global,
-            mixer,
+            mixer.clone(),
             patches,
             &capabilities,
             &effects,
@@ -1529,7 +1556,7 @@ fn expandable_effects_and_bus_topology() {
     // slot activation — measured, with no re-sounded note to fake it.
     assert!(first.cleared_slot_preserved_held_notes);
     assert!(first.cleared_slot_focus_recovered);
-    assert_eq!(first.addressable_returns, 8);
+    assert_eq!(first.addressable_returns, 16);
     assert!(first.default_return_occupancy_exact);
     assert!(first.max_off_target_bus_dbfs < -60.0);
     assert_eq!(first.muted_or_solo_excluded_wet_contribution, 0.0);

@@ -1,45 +1,42 @@
 use core::fmt;
 use serde::{Deserialize, Deserializer, Serialize};
 
-/// Number of bus returns in the fixed bank addressed by [`BusId`].
-pub const MAX_BUS_RETURNS: usize = 8;
+/// Initial number of sends. This is a startup default, not a product limit.
+pub const DEFAULT_BUS_RETURNS: usize = 16;
+/// Compatibility name for the default storage size, not an identity limit.
+pub const MAX_BUS_RETURNS: usize = DEFAULT_BUS_RETURNS;
 
-/// Stable positional identity of one bus return in the fixed eight-return bank.
+/// Stable positional identity of one bus return, independent of its contents.
 ///
-/// The identity is positional and independent of whichever effect currently
-/// occupies the return, so changing a return's contents changes no `BusId`.
-/// There are deliberately no named constructors: `BusId::reverb()` and
-/// equivalents would re-encode a destination's contents in its identity, which
-/// is exactly the fault the indexed bus topology removes (B-3).
+/// Every representable identity is valid. A return bank determines which
+/// identities are installed; the default bank does not restrict this type.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(transparent)]
-pub struct BusId(u8);
+pub struct BusId(u16);
 
 impl BusId {
-    pub const COUNT: usize = MAX_BUS_RETURNS;
-    pub const MIN: u8 = 0;
-    pub const MAX: u8 = (MAX_BUS_RETURNS - 1) as u8;
-    pub const ALL: [Self; Self::COUNT] = [
-        Self(0),
-        Self(1),
-        Self(2),
-        Self(3),
-        Self(4),
-        Self(5),
-        Self(6),
-        Self(7),
-    ];
-
-    /// Creates a bus identity without clamping, wrapping, or substitution.
-    pub const fn new(value: u8) -> Result<Self, BusIdError> {
-        if value <= Self::MAX {
-            Ok(Self(value))
-        } else {
-            Err(BusIdError { value })
+    /// Number of returns installed by default, not an identity limit.
+    pub const COUNT: usize = DEFAULT_BUS_RETURNS;
+    pub const MIN: u16 = 0;
+    pub const MAX: u16 = u16::MAX;
+    /// Identities installed by default. Larger banks use additional identities.
+    pub const ALL: [Self; Self::COUNT] = {
+        let mut all = [Self(0); Self::COUNT];
+        let mut index = 0;
+        while index < Self::COUNT {
+            all[index] = Self(index as u16);
+            index += 1;
         }
+        all
+    };
+
+    /// Creates an identity without imposing a bank size or substituting values.
+    /// The result signature is retained for callers of the prior bounded type.
+    pub const fn new(value: u16) -> Result<Self, BusIdError> {
+        Ok(Self(value))
     }
 
-    pub const fn value(self) -> u8 {
+    pub const fn value(self) -> u16 {
         self.0
     }
 
@@ -60,11 +57,19 @@ impl fmt::Display for BusId {
     }
 }
 
+impl TryFrom<u16> for BusId {
+    type Error = BusIdError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        Self::new(value)
+    }
+}
+
 impl TryFrom<u8> for BusId {
     type Error = BusIdError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
-        Self::new(value)
+        Self::new(u16::from(value))
     }
 }
 
@@ -73,25 +78,25 @@ impl<'de> Deserialize<'de> for BusId {
     where
         D: Deserializer<'de>,
     {
-        let value = u8::deserialize(deserializer)?;
+        let value = u16::deserialize(deserializer)?;
         Self::new(value).map_err(serde::de::Error::custom)
     }
 }
 
-impl From<BusId> for u8 {
+impl From<BusId> for u16 {
     fn from(value: BusId) -> Self {
         value.value()
     }
 }
 
-/// Rejection of one out-of-range bus identity (B-1).
+/// Compatibility error type retained by the identity constructor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct BusIdError {
-    value: u8,
+    value: u16,
 }
 
 impl BusIdError {
-    pub const fn value(self) -> u8 {
+    pub const fn value(self) -> u16 {
         self.value
     }
 }
@@ -112,35 +117,32 @@ impl std::error::Error for BusIdError {}
 
 #[cfg(test)]
 mod tests {
-    use super::{BusId, BusIdError, MAX_BUS_RETURNS};
+    use super::{BusId, DEFAULT_BUS_RETURNS, MAX_BUS_RETURNS};
 
     #[test]
-    fn fixed_bank_is_exact_and_positional() {
-        assert_eq!(MAX_BUS_RETURNS, 8);
-        assert_eq!(BusId::ALL.len(), 8);
+    fn default_bank_is_positional_without_limiting_identity() {
+        assert_eq!(DEFAULT_BUS_RETURNS, 16);
+        assert_eq!(MAX_BUS_RETURNS, DEFAULT_BUS_RETURNS);
+        assert_eq!(BusId::ALL.len(), DEFAULT_BUS_RETURNS);
         for (index, bus) in BusId::ALL.into_iter().enumerate() {
             assert_eq!(bus.index(), index);
-            assert_eq!(bus.value(), index as u8);
-            assert_eq!(BusId::new(index as u8), Ok(bus));
+            assert_eq!(bus.value(), index as u16);
+            assert_eq!(BusId::new(index as u16), Ok(bus));
         }
         assert_eq!(BusId::ALL[3].to_string(), "B3");
+        assert_eq!(BusId::new(256).unwrap().value(), 256);
+        assert_eq!(BusId::new(u16::MAX).unwrap().value(), u16::MAX);
     }
 
     #[test]
-    fn out_of_range_identity_is_rejected_without_clamping() {
-        assert_eq!(BusId::new(8), Err(BusIdError { value: 8 }));
-        assert_eq!(BusId::new(u8::MAX).unwrap_err().value(), u8::MAX);
-        assert_eq!(
-            BusId::new(8).unwrap_err().to_string(),
-            "bus id must be in 0..=7, got 8"
-        );
-    }
-
-    #[test]
-    fn serde_round_trip_preserves_numeric_identity_and_rejects_invalid() {
-        let bus = BusId::new(6).unwrap();
-        assert_eq!(serde_json::to_string(&bus).unwrap(), "6");
-        assert_eq!(serde_json::from_str::<BusId>("6").unwrap(), bus);
-        assert!(serde_json::from_str::<BusId>("8").is_err());
+    fn serde_preserves_identity_and_rejects_unrepresentable_values() {
+        for value in [6, 16, 256, u16::MAX] {
+            let bus = BusId::new(value).unwrap();
+            let encoded = serde_json::to_string(&bus).unwrap();
+            assert_eq!(encoded, value.to_string());
+            assert_eq!(serde_json::from_str::<BusId>(&encoded).unwrap(), bus);
+        }
+        assert!(serde_json::from_str::<BusId>("65536").is_err());
+        assert!(serde_json::from_str::<BusId>("-1").is_err());
     }
 }

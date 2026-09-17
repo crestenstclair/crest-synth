@@ -411,7 +411,7 @@ impl StateProjector {
             state.generation(),
             state.engine_selection().projection_graph_revision(),
             *state.global(),
-            *state.mixer(),
+            state.mixer().clone(),
             state.patches(),
             state.capabilities(),
             state.effects(),
@@ -489,6 +489,42 @@ impl StateProjector {
         page: Option<&PatchPageProjection>,
         state_hash: &str,
     ) -> Result<TextProjection, StateProjectionError> {
+        if state.interaction.active_focus.surface() == crate::control::SurfaceId::FileBrowser {
+            return Ok(TextProjection::for_context(
+                state.interaction.active_focus.context(),
+                format!(
+                    "FILE BROWSER\n> {}",
+                    serde_json::to_string(state.interaction.active_focus.control_id())
+                        .map_err(|_| StateProjectionError::StateSerialization)?
+                ),
+                1,
+                state_hash.to_owned(),
+            ));
+        }
+        if state.interaction.active_focus.surface() == crate::control::SurfaceId::Sends {
+            let active = &state.interaction.active_focus;
+            let SemanticControlId::Send(control) = active.control_id() else {
+                return Err(StateProjectionError::InvalidSelection);
+            };
+            let send = state
+                .returns
+                .entries()
+                .get(control.bus().index())
+                .ok_or(StateProjectionError::InvalidSelection)?;
+            return Ok(TextProjection::for_context(
+                crate::control::TopLevelContext::Mixer,
+                format!(
+                    "SENDS\n> SEND {} · {} · {:?}\n{}",
+                    control.bus().index() + 1,
+                    send.name,
+                    control,
+                    serde_json::to_string(send)
+                        .map_err(|_| StateProjectionError::StateSerialization)?
+                ),
+                1,
+                state_hash.to_owned(),
+            ));
+        }
         if state.interaction.active_focus.surface().is_system() {
             return Ok(TextProjection::for_context(
                 state.interaction.active_focus.context(),
@@ -654,7 +690,8 @@ impl StateProjector {
                         SemanticControlId::SurfaceRoot
                             if semantic.active_surface()
                                 == crate::control::SurfaceId::PatchUtility => {}
-                        SemanticControlId::Mixer(_)
+                        SemanticControlId::Send(_)
+                        | SemanticControlId::Mixer(_)
                         | SemanticControlId::MidiInputDevice(_)
                         | SemanticControlId::ControllerSetting(_)
                         | SemanticControlId::SessionFileAction(_)
@@ -684,7 +721,25 @@ impl StateProjector {
                             .collect::<Vec<_>>()
                             .join(", ")
                     };
-                    let (primary, secondary) = match semantic.focus_path().control_id() {
+                    let identity_path =
+                        if semantic.active_surface() == crate::control::SurfaceId::FileBrowser {
+                            semantic
+                                .return_path()
+                                .ok_or(StateProjectionError::InvalidSelection)?
+                                .origin()
+                        } else {
+                            semantic.focus_path()
+                        };
+                    let (primary, secondary) = match identity_path.control_id() {
+                        SemanticControlId::Send(control) => (
+                            format!("SEND {:02}", control.bus().index() + 1),
+                            state
+                                .returns
+                                .entries()
+                                .get(control.bus().index())
+                                .map(|send| send.name.clone())
+                                .unwrap_or_default(),
+                        ),
                         SemanticControlId::Mixer(
                             MixerControlId::Track { track_id, .. }
                             | MixerControlId::Send { track_id, .. },
@@ -770,6 +825,8 @@ fn footer_path_label(semantic: &SemanticGraphicalViewModel) -> String {
     );
     let root = if semantic.active_surface().is_system() {
         "SETTINGS"
+    } else if semantic.surface(crate::control::SurfaceId::Sends).is_some() {
+        "SENDS"
     } else {
         semantic.context().label()
     };
@@ -796,6 +853,7 @@ fn selection_from_serialized(
         }
         SemanticControlId::Mixer(_)
         | SemanticControlId::Patch(_)
+        | SemanticControlId::Send(_)
         | SemanticControlId::Modal(_)
         | SemanticControlId::MidiInputDevice(_)
         | SemanticControlId::ControllerSetting(_)
@@ -827,7 +885,7 @@ fn render_mixer_text(
             "TRACK {track_id} routedPatches=[{}]",
             routed.join(",")
         ));
-        let values = *state.mixer.track(track_id);
+        let values = state.mixer.track(track_id).clone();
         for parameter in crate::mixer::mixer_track_parameters::MixerTrackParameter::MAIN {
             let descriptor = parameter.descriptor();
             let path = crate::control::FocusPath::mixer_track(track_id, parameter);
@@ -850,7 +908,9 @@ fn render_mixer_text(
             );
         }
         // All eight indexed sends in ascending BusId order.
-        for bus in crate::mixer::bus_id::BusId::ALL {
+        for bus in (0..state.returns.entries().len())
+            .filter_map(|index| crate::mixer::bus_id::BusId::new(index as u16).ok())
+        {
             let path = crate::control::FocusPath::mixer_send(track_id, bus);
             push_parameter_line(
                 &mut lines,
@@ -864,7 +924,9 @@ fn render_mixer_text(
 
     lines.push(SEPARATOR.to_owned());
     lines.push("RETURNS".to_owned());
-    for bus in crate::mixer::bus_id::BusId::ALL {
+    for bus in (0..state.returns.entries().len())
+        .filter_map(|index| crate::mixer::bus_id::BusId::new(index as u16).ok())
+    {
         let entry = state
             .returns
             .entries()

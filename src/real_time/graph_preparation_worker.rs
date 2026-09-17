@@ -118,7 +118,8 @@ impl GraphPreparationCorrelation {
             StructuralEditIntent::SetVoiceBudget { patch_id, .. } => Some(*patch_id),
             StructuralEditIntent::ReplaceEffectAsset { target, .. } => target.patch_id(),
             StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => Some(*patch_id),
-            StructuralEditIntent::SetReturnOccupancy { .. } => None,
+            StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. } => None,
             _ => return Err(GraphPreparationRequestError::IntentMismatch),
         };
         Self::new_with_context(
@@ -227,7 +228,8 @@ impl GraphPreparationCorrelation {
                         slot: *slot,
                     }
                 }
-                crate::control::EffectAssetTarget::BusReturn { bus } => {
+                crate::control::EffectAssetTarget::BusReturn { bus }
+                | crate::control::EffectAssetTarget::SendSlot { bus, .. } => {
                     crate::real_time::GraphReplacementScope::BusReturn(*bus)
                 }
             }),
@@ -245,7 +247,8 @@ impl GraphPreparationCorrelation {
                     slot: *slot,
                 })
             }
-            StructuralEditIntent::SetReturnOccupancy { bus, .. } => {
+            StructuralEditIntent::SetReturnOccupancy { bus, .. }
+            | StructuralEditIntent::SetSendEffect { bus, .. } => {
                 Some(crate::real_time::GraphReplacementScope::BusReturn(*bus))
             }
             StructuralEditIntent::AppendPatch { patch_id } => Some(
@@ -475,6 +478,20 @@ impl GraphPreparationRequest {
                     .set_slot_occupancy(*slot, occupant)
                     .map_err(|_| GraphPreparationRequestError::InvalidOccupancy)?;
             }
+            StructuralEditIntent::SetSendEffect {
+                bus,
+                slot_id,
+                entry,
+            } => {
+                candidate_returns
+                    .set_effect_slot(effects, *bus, *slot_id, entry.as_ref())
+                    .map_err(|error| match error {
+                        crate::mixer::bus_return::BusReturnError::UnknownRegistryEntry {
+                            ..
+                        } => GraphPreparationRequestError::UnknownEffectEntry,
+                        _ => GraphPreparationRequestError::InvalidOccupancy,
+                    })?;
+            }
             StructuralEditIntent::SetReturnOccupancy { bus, entry } => {
                 candidate_returns
                     .set_return_occupancy(effects, *bus, entry.as_ref())
@@ -669,7 +686,7 @@ impl GraphPreparationRequest {
             self.candidate_parameters.generation(),
             self.correlation.target_graph_revision(),
             *self.candidate_parameters.global(),
-            MixerState::new(*self.candidate_parameters.mixer_tracks()),
+            MixerState::new(self.candidate_parameters.mixer_tracks().clone()),
             &self.candidate_patches,
             registry,
             effects,
@@ -939,6 +956,7 @@ fn validate_candidate_delta(
         StructuralEditIntent::SetVoiceBudget { .. }
         | StructuralEditIntent::ReplaceEffectAsset { .. }
         | StructuralEditIntent::SetSlotOccupancy { .. }
+        | StructuralEditIntent::SetSendEffect { .. }
         | StructuralEditIntent::SetReturnOccupancy { .. }
         | StructuralEditIntent::AppendPatch { .. } => {
             return Err(GraphPreparationRequestError::IntentMismatch);

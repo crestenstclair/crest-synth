@@ -1285,12 +1285,14 @@ where
     } = instruments;
     let revision = GraphRevision::INITIAL;
     let (control_boundary, audio_boundary) = boundary.into_handles();
-    // The production root propagates a failed default bus-return
-    // composition as a typed startup error; the permissive test-registry
-    // variant (`startup_bus_returns`) is never consumed here.
-    let startup_returns =
-        crate::adapter::production_effects::production_startup_bus_returns(&effects)
-            .map_err(ApplicationError::DefaultBusReturns)?;
+    // Retained diagnostic scenes raise sends before changing return occupancy.
+    // Their explicit audible fixture stays separate from empty new documents.
+    let startup_returns = if effects.descriptors().is_empty() {
+        crate::mixer::bus_return::BusReturnBank::default()
+    } else {
+        crate::adapter::production_effects::production_default_bus_returns(&effects)
+            .map_err(ApplicationError::DefaultBusReturns)?
+    };
     let mut state = AppState::for_graph_with_effects(
         capabilities.clone(),
         effects.clone(),

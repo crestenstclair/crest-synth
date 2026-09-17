@@ -77,6 +77,10 @@ impl std::error::Error for EngineSelectionRequestIdError {}
     rename_all_fields = "camelCase"
 )]
 pub enum EffectAssetTarget {
+    SendSlot {
+        bus: BusId,
+        slot_id: crate::synth::EffectSlotId,
+    },
     PatchSlot {
         patch_id: PatchId,
         slot: EffectSlotIndex,
@@ -89,7 +93,7 @@ impl EffectAssetTarget {
     pub const fn patch_id(self) -> Option<PatchId> {
         match self {
             Self::PatchSlot { patch_id, .. } => Some(patch_id),
-            Self::BusReturn { .. } => None,
+            Self::BusReturn { .. } | Self::SendSlot { .. } => None,
         }
     }
     pub(crate) fn config<'a>(
@@ -102,6 +106,7 @@ impl EffectAssetTarget {
                 patches.iter().find(|p| p.id() == patch_id)?.effect_slots()[slot.index()].as_ref()
             }
             Self::BusReturn { bus } => returns.bus_return(bus).effect(),
+            Self::SendSlot { bus, slot_id } => returns.get(bus)?.effect_at(slot_id),
         }
     }
     pub(crate) fn assign(
@@ -125,7 +130,7 @@ impl EffectAssetTarget {
                 .ok_or(crate::control::EventRejection::UnknownPatch)?
                 .set_slot_occupancy(slot, Some(next))
                 .map_err(|_| crate::control::EventRejection::InvalidEffectConfig),
-            Self::BusReturn { bus } => returns
+            Self::BusReturn { bus } | Self::SendSlot { bus, .. } => returns
                 .replace_occupant_values(bus, next)
                 .map_err(|_| crate::control::EventRejection::InvalidEffectConfig),
         }
@@ -217,6 +222,11 @@ impl EngineSelectionFailure {
     rename_all_fields = "camelCase"
 )]
 pub enum StructuralEditIntent {
+    SetSendEffect {
+        bus: BusId,
+        slot_id: crate::synth::EffectSlotId,
+        entry: Option<EffectCapabilityId>,
+    },
     SetVoiceBudget {
         patch_id: PatchId,
         voices: u16,
@@ -275,6 +285,7 @@ impl StructuralEditIntent {
             Self::SetVoiceBudget { .. }
             | Self::ReplaceEffectAsset { .. }
             | Self::SetSlotOccupancy { .. }
+            | Self::SetSendEffect { .. }
             | Self::SetReturnOccupancy { .. }
             | Self::AppendPatch { .. } => None,
         }
@@ -304,6 +315,7 @@ impl StructuralEditIntent {
             Self::SetVoiceBudget { .. }
                 | Self::ReplaceEffectAsset { .. }
                 | Self::SetSlotOccupancy { .. }
+                | Self::SetSendEffect { .. }
                 | Self::SetReturnOccupancy { .. }
         )
     }
@@ -360,7 +372,7 @@ impl StructuralEditIntent {
                 patch_id: intent_patch_id,
                 ..
             } => patch_id == Some(*intent_patch_id) && source.is_none() && target.is_none(),
-            Self::SetReturnOccupancy { .. } => {
+            Self::SetReturnOccupancy { .. } | Self::SetSendEffect { .. } => {
                 patch_id.is_none() && source.is_none() && target.is_none()
             }
             Self::AppendPatch {
@@ -639,7 +651,8 @@ impl EngineSelectionStatus {
             StructuralEditIntent::SetVoiceBudget { patch_id, .. } => Some(*patch_id),
             StructuralEditIntent::ReplaceEffectAsset { target, .. } => target.patch_id(),
             StructuralEditIntent::SetSlotOccupancy { patch_id, .. } => Some(*patch_id),
-            StructuralEditIntent::SetReturnOccupancy { .. } => None,
+            StructuralEditIntent::SetReturnOccupancy { .. }
+            | StructuralEditIntent::SetSendEffect { .. } => None,
             StructuralEditIntent::ReplaceCapability { .. }
             | StructuralEditIntent::ReplaceParameterChoice { .. }
             | StructuralEditIntent::ReplaceAsset { .. }

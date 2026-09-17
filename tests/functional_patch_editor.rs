@@ -1021,6 +1021,41 @@ fn projected_screen_strings(state: &AppState) -> Vec<(String, String)> {
         if let Some(label) = surface.get("label").and_then(Value::as_str) {
             strings.push((format!("surface {surface_id} label"), label.to_owned()));
         }
+        for section in surface
+            .get("sections")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            if let Some(label) = section.get("label").and_then(Value::as_str) {
+                strings.push((
+                    format!("surface {surface_id} section title"),
+                    label.to_owned(),
+                ));
+            }
+        }
+        let summary_paths: &[&str] = match surface_id.as_str() {
+            "sends" => &["/summary/name", "/summary/choiceGroupLabel"],
+            "controllerSettings" => &["/summary/title", "/summary/summary", "/summary/description"],
+            _ => &[],
+        };
+        for path in summary_paths {
+            if let Some(text) = surface.pointer(path).and_then(Value::as_str) {
+                strings.push((format!("surface {surface_id} {path}"), text.to_owned()));
+            }
+        }
+        if surface_id == "controllerSettings" {
+            for device in surface
+                .pointer("/summary/controller/devices")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                if let Some(name) = device.get("name").and_then(Value::as_str) {
+                    strings.push(("controller device name".to_owned(), name.to_owned()));
+                }
+            }
+        }
         for control in surface
             .get("controls")
             .and_then(Value::as_array)
@@ -1031,7 +1066,14 @@ fn projected_screen_strings(state: &AppState) -> Vec<(String, String)> {
             if let Some(label) = control.get("label").and_then(Value::as_str) {
                 strings.push((format!("{surface_id} {id} label"), label.to_owned()));
             }
-            let modal = matches!(surface_id.as_str(), "patchChoice" | "fileBrowser");
+            let modal = matches!(surface_id.as_str(), "patchChoice" | "fileBrowser")
+                || (surface_id == "sends"
+                    && surface.pointer("/summary/choosingEffect") == Some(&Value::Bool(true)));
+            for marker in ["availabilityLabel", "readOnlyLabel"] {
+                if let Some(label) = control.get(marker).and_then(Value::as_str) {
+                    strings.push((format!("{surface_id} {id} {marker}"), label.to_owned()));
+                }
+            }
             if modal {
                 if let Some(marker) = control.get("selectedLabel").and_then(Value::as_str) {
                     strings.push((format!("{surface_id} {id} state marker"), marker.to_owned()));
@@ -1060,21 +1102,6 @@ fn projected_screen_strings(state: &AppState) -> Vec<(String, String)> {
                 if let Some(label) = action.get("label").and_then(Value::as_str) {
                     strings.push((format!("{surface_id} {id} action label"), label.to_owned()));
                 }
-            }
-        }
-    }
-    if let Some(main) = surface_of(&document, "patchMain") {
-        for section in main
-            .get("sections")
-            .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-        {
-            if let (Some(id), Some(label)) = (
-                section.get("id").and_then(Value::as_str),
-                section.get("label").and_then(Value::as_str),
-            ) {
-                strings.push((format!("Overview section {id} title"), label.to_owned()));
             }
         }
     }
@@ -3031,24 +3058,98 @@ fn check_one_master_gain_owner() {
 /// - the walk carries **values**, not labels only (F-33: the Preset row painted
 ///   `sf2.bank-0.program-40` as a value, which the label guard walks past).
 fn check_no_projected_screen_string_is_a_serialization_key() -> usize {
+    use crest_synth::control::{ControllerDevice, ControllerEvent, ControllerFailure, SendAction};
+
     let mut checked = 0_usize;
     let mut covered = BTreeSet::new();
+    let mut audited_sites = BTreeSet::new();
     let mut fixtures = screen_string_fixtures();
     let mut midi_settings = fixture_state();
     midi_settings
         .apply_semantic_action(SemanticAction::OpenMidiSettings)
         .expect("the fixture opens the global MIDI device Settings surface");
-    let mut controller_settings = midi_settings.clone();
-    controller_settings
-        .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
-        .unwrap();
-    let mut save_load_settings = controller_settings.clone();
+    let mut save_load_settings = midi_settings.clone();
     save_load_settings
-        .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
+        .apply_semantic_action(SemanticAction::Navigate(Direction::Left))
         .unwrap();
-    fixtures.push(("Controller Settings", controller_settings));
     fixtures.push(("Save & Load Settings", save_load_settings));
-    fixtures.push(("MIDI Device Settings", midi_settings));
+    fixtures.push(("MIDI Device Settings", midi_settings.clone()));
+
+    let mut controller = midi_settings;
+    controller
+        .apply(AppEvent::Navigate(Direction::Right))
+        .unwrap();
+    assert_eq!(
+        controller.interaction().active_surface(),
+        SurfaceId::ControllerSettings
+    );
+    fixtures.push(("Controller Settings disconnected", controller.clone()));
+    controller
+        .apply(AppEvent::Controller(ControllerEvent::PreferencesLoaded {
+            result: Ok(None),
+        }))
+        .unwrap();
+    controller
+        .apply(AppEvent::Controller(ControllerEvent::DevicesChanged {
+            devices: vec![ControllerDevice {
+                id: 7,
+                name: "Studio Gamepad".to_owned(),
+            }],
+        }))
+        .unwrap();
+    let mut capture = controller.clone();
+    capture.apply(AppEvent::Activate).unwrap();
+    fixtures.push(("Controller Settings capture", capture));
+    for setting in crest_synth::control::ControllerSettingId::all() {
+        navigate_to(&mut controller, |path| {
+            path.control_id() == &SemanticControlId::ControllerSetting(setting)
+        });
+        fixtures.push(("Controller Settings connected", controller.clone()));
+    }
+    controller
+        .apply(AppEvent::Controller(ControllerEvent::BackendFailed {
+            failure: ControllerFailure::BackendUnavailable,
+        }))
+        .unwrap();
+    fixtures.push(("Controller Settings failure", controller));
+
+    let mut sends = fixture_state();
+    sends.apply(AppEvent::Send(SendAction::Open)).unwrap();
+    fixtures.push(("Sends INIT", sends));
+    let mut sends = fixture_state();
+    let mut returns = sends.bus_returns().clone();
+    let bus = crest_synth::mixer::bus_id::BusId::default();
+    let slot_id = EffectSlotId::new(1).unwrap();
+    returns
+        .set_effect_slot(
+            sends.effects(),
+            bus,
+            slot_id,
+            Some(&crest_synth::synth::EffectCapabilityId::new(CHORUS_CAPABILITY_ID).unwrap()),
+        )
+        .unwrap();
+    sends = sends.with_initial_returns(returns);
+    sends.apply(AppEvent::Send(SendAction::Open)).unwrap();
+    sends.apply(AppEvent::Activate).unwrap();
+    sends
+        .apply(AppEvent::Send(SendAction::Rename {
+            bus,
+            name: "Long Hall".to_owned(),
+        }))
+        .unwrap();
+    fixtures.push(("Sends occupied", sends.clone()));
+    sends.apply(AppEvent::Activate).unwrap();
+    fixtures.push(("Sends rename", sends.clone()));
+    sends
+        .apply(AppEvent::Send(SendAction::CancelRename))
+        .unwrap();
+    navigate_to(&mut sends, |path| {
+        matches!(path.control_id(), SemanticControlId::Send(
+        crest_synth::control::SendControlId::EffectSlot { slot_id: slot, .. }
+    ) if *slot == slot_id)
+    });
+    sends.apply(AppEvent::Activate).unwrap();
+    fixtures.push(("Sends effect choices", sends));
     for (fixture, state) in fixtures {
         let keys = serialization_keys(&state);
         for surface in semantic(&state).surfaces() {
@@ -3060,6 +3161,7 @@ fn check_no_projected_screen_string_is_a_serialization_key() -> usize {
                 !keys.contains(&string),
                 "{fixture}: {site} puts the serialization key {string} on screen"
             );
+            audited_sites.insert(site);
         }
     }
     assert_eq!(
@@ -3070,6 +3172,19 @@ fn check_no_projected_screen_string_is_a_serialization_key() -> usize {
             .collect::<BTreeSet<_>>(),
         "the guard must cover every surface, not just the ones that were reported"
     );
+    for site in [
+        "surface sends section title",
+        "surface sends /summary/name",
+        "surface sends /summary/choiceGroupLabel",
+        "surface controllerSettings /summary/summary",
+        "surface controllerSettings /summary/description",
+        "controller device name",
+    ] {
+        assert!(
+            audited_sites.contains(site),
+            "unvisited screen text: {site}"
+        );
+    }
     assert!(
         checked > 400,
         "only {checked} screen strings walked — the guard stopped seeing the projection"

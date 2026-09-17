@@ -184,6 +184,8 @@ impl StateTree {
     /// Version 27: effect families and the shared instrument/effect picker label.
     /// Version 28: descriptor-derived explanations for read-only controls.
     /// Version 29: optional display names for numeric stepped parameters.
+    /// Version 32: named send chains, their full audio parameters, and send-screen interaction.
+    /// Version 33: independent Patch send levels in state and audio projections.
     ///
     /// Version 23: browser metadata distinguishes unavailable files from
     /// invalid audio and carries download-required and empty-file causes.
@@ -238,7 +240,7 @@ impl StateTree {
     /// Version 24: asset-scoped capability catalogs and file-kind-correlated browser events.
     /// Version 25: source-specific `NavigatePage` actions and Settings-only
     /// PATCH page absence in full and generation-only projections.
-    pub const SCHEMA_VERSION: u32 = 31;
+    pub const SCHEMA_VERSION: u32 = 33;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -251,6 +253,9 @@ impl StateTree {
         "interaction.activeFocus",
         "interaction.rememberedPatchMain",
         "interaction.rememberedMixerMain",
+        "interaction.rememberedSend",
+        "interaction.sendChoiceOrigin",
+        "interaction.sendNameEditing",
         "interaction.mode",
         "interaction.returnPath",
         "interaction.detailSubject",
@@ -396,12 +401,22 @@ impl StateTree {
         "patches[].envelope.sustain",
         "patches[].output.trackId",
         "patches[].output.trimGainDb",
+        "patches[].sends[]",
         "mixer.tracks[].levelDb",
         "mixer.tracks[].pan",
         "mixer.tracks[].mute",
         "mixer.tracks[].solo",
         "mixer.tracks[].sends[]",
         "global.masterGainDb",
+        "returns[].name",
+        "returns[].effects[].slotId",
+        "returns[].effects[].capabilityId",
+        "returns[].effects[].values[].parameterId",
+        "returns[].effects[].values[].value.kind",
+        "returns[].effects[].values[].value.value",
+        "returns[].effects[].assetReferences[].parameterId",
+        "returns[].effects[].assetReferences[].reference.kind",
+        "returns[].effects[].assetReferences[].reference.locator",
         "returns[].effect",
         "returns[].effect.slotId",
         "returns[].effect.capabilityId",
@@ -457,6 +472,7 @@ impl StateTree {
         "engineSelection.correlation.intent.targetCapabilityId",
         "engineSelection.correlation.intent.patchId",
         "engineSelection.correlation.intent.slot",
+        "engineSelection.correlation.intent.slotId",
         "engineSelection.correlation.intent.bus",
         "engineSelection.correlation.intent.entry",
         "engineSelection.correlation.intent.reference.kind",
@@ -603,6 +619,7 @@ impl StateTree {
         "parameters.patches[].effects[].scalars[]",
         "parameters.patches[].output.trackId",
         "parameters.patches[].output.trimGainDb",
+        "parameters.patches[].sends[]",
         "parameters.mixerTracks[].levelDb",
         "parameters.mixerTracks[].pan",
         "parameters.mixerTracks[].mute",
@@ -613,6 +630,10 @@ impl StateTree {
         "parameters.returns[].scalarCount",
         "parameters.returns[].scalars[]",
         "parameters.returns[].returnLevel",
+        "parameters.returns[].tail[].active",
+        "parameters.returns[].tail[].slotId",
+        "parameters.returns[].tail[].scalarCount",
+        "parameters.returns[].tail[].scalars[]",
         "parameters.global.masterGainDb",
         "controller.devices[].id",
         "controller.devices[].name",
@@ -706,11 +727,13 @@ impl StateTree {
                 "interaction.activeFocus.context",
                 "interaction.activeFocus.controlId.id",
                 "interaction.activeFocus.controlId.id.bus",
+                "interaction.activeFocus.controlId.id.entry",
                 "interaction.activeFocus.controlId.id.id",
                 "interaction.activeFocus.controlId.id.identity",
                 "interaction.activeFocus.controlId.id.identitySchema",
                 "interaction.activeFocus.controlId.id.kind",
                 "interaction.activeFocus.controlId.id.parameter",
+                "interaction.activeFocus.controlId.id.slotId",
                 "interaction.activeFocus.controlId.id.trackId",
                 "interaction.activeFocus.controlId.kind",
                 "interaction.activeFocus.modalId",
@@ -738,6 +761,29 @@ impl StateTree {
                 "interaction.rememberedPatchMain.modalId",
                 "interaction.rememberedPatchMain.patchId",
                 "interaction.rememberedPatchMain.surface",
+                "interaction.rememberedSend.capabilityId",
+                "interaction.rememberedSend.capabilityId.id",
+                "interaction.rememberedSend.capabilityId.kind",
+                "interaction.rememberedSend.context",
+                "interaction.rememberedSend.controlId.id.bus",
+                "interaction.rememberedSend.controlId.id.kind",
+                "interaction.rememberedSend.controlId.id.parameter",
+                "interaction.rememberedSend.controlId.id.slotId",
+                "interaction.rememberedSend.controlId.kind",
+                "interaction.rememberedSend.modalId",
+                "interaction.rememberedSend.patchId",
+                "interaction.rememberedSend.surface",
+                "interaction.sendChoiceOrigin",
+                "interaction.sendChoiceOrigin.capabilityId",
+                "interaction.sendChoiceOrigin.context",
+                "interaction.sendChoiceOrigin.controlId.id.bus",
+                "interaction.sendChoiceOrigin.controlId.id.kind",
+                "interaction.sendChoiceOrigin.controlId.id.slotId",
+                "interaction.sendChoiceOrigin.controlId.kind",
+                "interaction.sendChoiceOrigin.modalId",
+                "interaction.sendChoiceOrigin.patchId",
+                "interaction.sendChoiceOrigin.surface",
+                "interaction.sendNameEditing",
                 "interaction.returnPath",
                 "interaction.returnPath.enteredSurface",
                 "interaction.returnPath.origin.capabilityId",
@@ -745,8 +791,10 @@ impl StateTree {
                 "interaction.returnPath.origin.capabilityId.kind",
                 "interaction.returnPath.origin.context",
                 "interaction.returnPath.origin.controlId.id",
+                "interaction.returnPath.origin.controlId.id.bus",
                 "interaction.returnPath.origin.controlId.id.kind",
                 "interaction.returnPath.origin.controlId.id.parameter",
+                "interaction.returnPath.origin.controlId.id.slotId",
                 "interaction.returnPath.origin.controlId.id.trackId",
                 "interaction.returnPath.origin.controlId.kind",
                 "interaction.returnPath.origin.modalId",
@@ -1248,6 +1296,9 @@ fn validate_parameter_projection(
         if state_patch.output != parameter_patch.output() {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
+        if state_patch.sends.as_ref() != parameter_patch.sends() {
+            return Err(StateTreeError::PatchParametersMismatch { index });
+        }
         if state_patch.envelope != *parameter_patch.envelope() {
             return Err(StateTreeError::PatchParametersMismatch { index });
         }
@@ -1323,7 +1374,7 @@ fn validate_parameter_projection(
     // Every live return entry must attest exactly the serialized return-owned
     // state at its bus: occupancy, instance identity, scalar layout and
     // values, and the return-owned level.
-    if !state.returns.is_complete() {
+    if !state.returns.is_complete() || state.returns.entries().len() != parameters.returns().len() {
         return Err(StateTreeError::ReturnParametersMismatch { index: 0 });
     }
     for (index, (serialized, live)) in state
@@ -1333,32 +1384,35 @@ fn validate_parameter_projection(
         .zip(parameters.returns())
         .enumerate()
     {
-        match &serialized.effect {
-            None => {
-                if live.is_active() {
-                    return Err(StateTreeError::ReturnParametersMismatch { index });
-                }
-            }
-            Some(config) => {
-                let descriptor = state
-                    .effects
-                    .descriptor(config.capability_id())
-                    .ok_or(StateTreeError::ReturnParametersMismatch { index })?;
-                if live.slot_id() != Some(config.slot_id())
-                    || live.scalar_count() != descriptor.scalar_parameter_count()
-                    || live.return_level() != serialized.return_level
-                    || descriptor
-                        .scalar_parameters()
-                        .enumerate()
-                        .any(|(scalar_index, spec)| {
-                            let Some(value) = config.value(spec.id()) else {
-                                return true;
-                            };
-                            spec.scalar_value(value).ok() != live.scalar(scalar_index)
-                        })
-                {
-                    return Err(StateTreeError::ReturnParametersMismatch { index });
-                }
+        // Old observational snapshots carry only the first effect.
+        let configs: Vec<_> = if serialized.effects.is_empty() {
+            serialized.effect.iter().collect()
+        } else {
+            serialized.effects.iter().collect()
+        };
+        if configs.len() != live.effect_count()
+            || (!configs.is_empty() && live.return_level() != serialized.return_level)
+        {
+            return Err(StateTreeError::ReturnParametersMismatch { index });
+        }
+        for (config, values) in configs.iter().zip(live.effects()) {
+            let descriptor = state
+                .effects
+                .descriptor(config.capability_id())
+                .ok_or(StateTreeError::ReturnParametersMismatch { index })?;
+            if values.slot_id() != Some(config.slot_id())
+                || values.scalar_count() != descriptor.scalar_parameter_count()
+                || descriptor
+                    .scalar_parameters()
+                    .enumerate()
+                    .any(|(scalar_index, spec)| {
+                        config
+                            .value(spec.id())
+                            .and_then(|value| spec.scalar_value(value).ok())
+                            != values.scalar(scalar_index)
+                    })
+            {
+                return Err(StateTreeError::ReturnParametersMismatch { index });
             }
         }
     }
@@ -1401,7 +1455,7 @@ impl<'a> SerializableStateTree<'a> {
             capabilities: state.capabilities.as_ref(),
             effects: state.effects.as_ref(),
             patches: state.patches.iter().map(TreePatch::from).collect(),
-            mixer: state.mixer,
+            mixer: state.mixer.clone(),
             global: TreeGlobalParameters::from(&state.global),
             returns: &state.returns,
             interaction: &state.interaction,
@@ -1426,6 +1480,7 @@ struct TreePatch<'a> {
     post_effects: &'a [PostEffectConfig],
     envelope: VoiceEnvelope,
     output: PatchOutput,
+    sends: &'a [f32],
 }
 
 impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
@@ -1438,6 +1493,7 @@ impl<'a> From<&'a SerializedPatch<'_>> for TreePatch<'a> {
             post_effects: patch.post_effects.as_ref(),
             envelope: patch.envelope,
             output: patch.output,
+            sends: patch.sends.as_ref(),
         }
     }
 }
@@ -1497,6 +1553,7 @@ mod tests {
                         "id": 7,
                         "name": "Lead",
                         "channel": 2,
+                        "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                         "instrument": create_soundfont_config(
                             &provider,
                             SoundFontInstrument::new(0, 80, false).unwrap()
@@ -1510,6 +1567,7 @@ mod tests {
                         "id": 9,
                         "name": "Drums",
                         "channel": 9,
+                        "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                         "instrument": create_soundfont_config(
                             &provider,
                             SoundFontInstrument::new(128, 0, true).unwrap()
@@ -1699,6 +1757,7 @@ mod tests {
                 "name": "Lead",
                 "channel": 2,
                 "instrument": value["patches"][0]["instrument"].clone(),
+                "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                 "postEffects": [],
                 "envelope": {
                     "attackMilliseconds": 0.0,
@@ -1741,7 +1800,10 @@ mod tests {
                 "masterGainDb": -3.0
             })
         );
-        assert_eq!(value["returns"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            value["returns"].as_array().unwrap().len(),
+            fixture_bank().len()
+        );
         assert_eq!(value["returns"][0]["returnLevel"], json!(0.25));
         assert_eq!(
             value["returns"][1]["effect"]["capabilityId"],
@@ -1767,6 +1829,19 @@ mod tests {
                     "modalId": null
                 },
                 "rememberedPatchMain": null,
+                "rememberedSend": {
+                    "context": "mixer",
+                    "surface": "sends",
+                    "patchId": null,
+                    "capabilityId": null,
+                    "controlId": {
+                        "kind": "send",
+                        "id": { "kind": "name", "bus": 0 }
+                    },
+                    "modalId": null
+                },
+                "sendChoiceOrigin": null,
+                "sendNameEditing": false,
                 "rememberedMixerMain": {
                     "context": "mixer",
                     "surface": "mixerMain",
@@ -1832,6 +1907,7 @@ mod tests {
                 "voiceLimit": crate::synth::VoiceLimit::MAXIMUM,
                 "instrument": {"count": 0, "values": []},
                 "effects": [inactive_effect.clone(), inactive_effect.clone(), inactive_effect],
+                "sends": vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS],
                 "output": {
                     "trackId": 9,
                     "trimGainDb": -12.0
@@ -1839,13 +1915,20 @@ mod tests {
             })
         );
         assert_eq!(value["parameters"]["mixerTracks"], value["mixer"]["tracks"]);
+        assert_eq!(
+            value["parameters"]["patches"][1]["sends"],
+            value["patches"][1]["sends"]
+        );
         // The snapshot's global object keeps only master gain; the retired
         // reverb/delay values travel as the indexed return entries.
         assert_eq!(
             value["parameters"]["global"],
             json!({"masterGainDb": value["global"]["masterGainDb"]})
         );
-        assert_eq!(value["parameters"]["returns"].as_array().unwrap().len(), 8);
+        assert_eq!(
+            value["parameters"]["returns"].as_array().unwrap().len(),
+            fixture_bank().len()
+        );
         assert_eq!(
             value["parameters"]["returns"][0]["scalars"][0],
             value["returns"][0]["effect"]["values"][0]["value"]["value"]
@@ -1885,6 +1968,8 @@ mod tests {
             "patches[].instrument.assetReferences[].reference.locator",
             "parameters.graphRevision",
             "parameters.patches[].output.trimGainDb",
+            "patches[].sends[]",
+            "parameters.patches[].sends[]",
             "parameters.mixerTracks[].levelDb",
         ] {
             assert!(unique.contains(required), "missing {required}");
@@ -1955,7 +2040,7 @@ mod tests {
             43,
             revision,
             global(),
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             parameters().patches(),
         )
         .unwrap();
@@ -1972,7 +2057,7 @@ mod tests {
             42,
             revision,
             global(),
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             &reversed,
         )
         .unwrap();
@@ -1992,7 +2077,7 @@ mod tests {
             42,
             revision,
             global(),
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             &wrong_values,
         )
         .unwrap();
@@ -2000,6 +2085,27 @@ mod tests {
             state_tree(&snapshot, &projection, &wrong_parameters),
             Err(StateTreeError::PatchParametersMismatch { index: 1 })
         );
+    }
+
+    #[test]
+    fn rejects_patch_send_level_or_bank_shape_drift() {
+        let parameters = parameters();
+        for sends in [
+            {
+                let mut levels = vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS];
+                levels[3] = 0.75;
+                levels
+            },
+            vec![0.0; crate::mixer::bus_id::DEFAULT_BUS_RETURNS + 1],
+        ] {
+            let mut state: Value = serde_json::from_str(snapshot().json()).unwrap();
+            state["patches"][1]["sends"] = json!(sends);
+            let snapshot = StateSnapshot::new(state.to_string());
+            assert_eq!(
+                state_tree(&snapshot, &projection(&snapshot), &parameters),
+                Err(StateTreeError::PatchParametersMismatch { index: 1 })
+            );
+        }
     }
 
     #[test]
@@ -2018,7 +2124,7 @@ mod tests {
             42,
             crate::real_time::GraphRevision::new(7).unwrap(),
             different_global,
-            MixerState::new(*parameters().mixer_tracks()),
+            MixerState::new(parameters().mixer_tracks().clone()),
             parameters().patches(),
         )
         .unwrap();

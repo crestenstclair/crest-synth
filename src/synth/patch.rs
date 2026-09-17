@@ -1,5 +1,7 @@
 use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::patch_id::PatchId;
+use crate::mixer::bus_id::{BusId, DEFAULT_BUS_RETURNS};
+use crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
 use crate::mixer::patch_output::PatchOutput;
 use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
 use crate::synth::instrument_capability::{
@@ -67,7 +69,7 @@ pub fn resolve_patch_editable_targets(
 /// One installed, playable instrument capability configuration.
 ///
 /// A patch's identity, display name, instrument, and assigned MIDI channel are
-/// fixed at construction time. Output, envelope, and descriptor-classified
+/// fixed at construction time. Output, sends, envelope, and descriptor-classified
 /// values can change only through the canonical reducer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Patch {
@@ -77,6 +79,8 @@ pub struct Patch {
     channel: MidiChannel,
     envelope: VoiceEnvelope,
     output: PatchOutput,
+    /// Independent Patch contributions to the shared effect-return bank.
+    sends: Vec<f32>,
     /// The canonical bounded effect chain: exactly `MAX_EFFECT_SLOTS` ordered
     /// positions, each independently empty or occupied. Slot order is render
     /// order, positions are stable addresses, and a fourth effect is
@@ -118,6 +122,7 @@ impl Patch {
             channel,
             envelope: VoiceEnvelope::default(),
             output,
+            sends: vec![BUS_SEND_DESCRIPTOR.default(); DEFAULT_BUS_RETURNS],
             effects: std::array::from_fn(|_| None),
             voice_limit: VoiceLimit::seeded_from(VoicePolicy::EngineManaged),
         }
@@ -154,6 +159,54 @@ impl Patch {
     /// Returns this Patch's validated pre-track trim and destination.
     pub const fn output(&self) -> PatchOutput {
         self.output
+    }
+
+    pub fn send(&self, bus: BusId) -> f32 {
+        self.sends.get(bus.index()).copied().unwrap_or(0.0)
+    }
+
+    pub fn sends(&self) -> &[f32] {
+        &self.sends
+    }
+
+    /// Restores a complete, validated Patch-owned send bank.
+    pub fn with_sends(mut self, sends: Vec<f32>) -> Result<Self, PatchSendError> {
+        validate_send_count(sends.len())?;
+        for (index, value) in sends.iter().copied().enumerate() {
+            let bus = BusId::new(index as u16).expect("validated send count fits BusId");
+            validate_send(bus, value)?;
+        }
+        self.sends = sends;
+        Ok(self)
+    }
+
+    /// Shapes control-side storage without discarding an audible send route.
+    pub fn with_send_count(mut self, count: usize) -> Result<Self, PatchSendError> {
+        validate_send_count(count)?;
+        if let Some(index) = self
+            .sends
+            .iter()
+            .enumerate()
+            .skip(count)
+            .find_map(|(index, amount)| (*amount != 0.0).then_some(index))
+        {
+            return Err(PatchSendError::WouldDiscardSend {
+                bus: BusId::new(index as u16).expect("installed send count fits BusId"),
+            });
+        }
+        self.sends.resize(count, BUS_SEND_DESCRIPTOR.default());
+        Ok(self)
+    }
+
+    /// Applies a scalar edit only to an installed send, without changing shape.
+    pub(crate) fn set_send(&mut self, bus: BusId, value: f32) -> Result<(), PatchSendError> {
+        validate_send(bus, value)?;
+        let target = self
+            .sends
+            .get_mut(bus.index())
+            .ok_or(PatchSendError::UnknownSend { bus })?;
+        *target = value;
+        Ok(())
     }
 
     /// Returns the canonical Patch-owned ceiling on simultaneously sounding
@@ -319,6 +372,37 @@ impl Patch {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, thiserror::Error)]
+pub enum PatchSendError {
+    #[error("Patch send count {count} exceeds the BusId representation")]
+    SendCountOutOfRange { count: usize },
+    #[error("Patch send {bus} must be finite")]
+    NonFiniteSend { bus: BusId },
+    #[error("Patch send {bus} must be in 0.0..=1.0, got {value}")]
+    OutOfRangeSend { bus: BusId, value: f32 },
+    #[error("Patch send {bus} is not installed")]
+    UnknownSend { bus: BusId },
+    #[error("shrinking the Patch send bank would discard nonzero send {bus}")]
+    WouldDiscardSend { bus: BusId },
+}
+
+fn validate_send_count(count: usize) -> Result<(), PatchSendError> {
+    if count > usize::from(BusId::MAX) + 1 {
+        return Err(PatchSendError::SendCountOutOfRange { count });
+    }
+    Ok(())
+}
+
+fn validate_send(bus: BusId, value: f32) -> Result<(), PatchSendError> {
+    if !value.is_finite() {
+        return Err(PatchSendError::NonFiniteSend { bus });
+    }
+    if !BUS_SEND_DESCRIPTOR.contains(value) {
+        return Err(PatchSendError::OutOfRangeSend { bus, value });
+    }
+    Ok(())
+}
+
 /// What an engine replacement did to the Patch's voice limit.
 ///
 /// The type exists so the narrowing is a reported outcome rather than a silent
@@ -443,6 +527,76 @@ mod tests {
 
     fn slot(index: usize) -> EffectSlotIndex {
         EffectSlotIndex::new(index).unwrap()
+    }
+
+    #[test]
+    fn sends_are_independent_for_patches_routed_to_the_same_track() {
+        let mut first = test_patch();
+        let mut second = first.clone();
+        let bus = BusId::new(5).unwrap();
+        assert_eq!(first.sends(), &[0.0; DEFAULT_BUS_RETURNS]);
+        first.set_send(bus, 0.25).unwrap();
+        second.set_send(bus, 0.75).unwrap();
+        assert_eq!(first.output().track_id(), second.output().track_id());
+        assert_eq!(first.send(bus), 0.25);
+        assert_eq!(second.send(bus), 0.75);
+        let expanded = first.with_send_count(40).unwrap();
+        assert_eq!(expanded.send(bus), 0.25);
+        assert!(expanded.sends()[DEFAULT_BUS_RETURNS..]
+            .iter()
+            .all(|value| *value == 0.0));
+        assert_eq!(
+            test_patch()
+                .with_send_count(usize::from(BusId::MAX) + 1)
+                .unwrap()
+                .sends()
+                .len(),
+            65_536
+        );
+    }
+
+    #[test]
+    fn invalid_send_edits_are_rejected_without_mutation_or_clamping() {
+        let mut patch = test_patch();
+        let before = patch.clone();
+        let bus = BusId::default();
+        for value in [-0.1, 1.1, f32::INFINITY, f32::NAN] {
+            assert!(patch.set_send(bus, value).is_err());
+            assert_eq!(patch, before);
+            assert!(test_patch().with_sends(vec![value]).is_err());
+        }
+        let missing = BusId::new(DEFAULT_BUS_RETURNS as u16).unwrap();
+        assert_eq!(
+            patch.set_send(missing, 0.5),
+            Err(PatchSendError::UnknownSend { bus: missing })
+        );
+        assert_eq!(patch, before);
+        let count = usize::from(BusId::MAX) + 2;
+        assert_eq!(
+            test_patch().with_send_count(count),
+            Err(PatchSendError::SendCountOutOfRange { count })
+        );
+        assert_eq!(
+            test_patch().with_sends(vec![0.0; count]),
+            Err(PatchSendError::SendCountOutOfRange { count })
+        );
+    }
+
+    #[test]
+    fn shrinking_send_storage_refuses_nonzero_routes_but_allows_zero_tail() {
+        let mut patch = test_patch().with_send_count(19).unwrap();
+        let kept = BusId::new(2).unwrap();
+        let outside = BusId::new(18).unwrap();
+        patch.set_send(kept, 0.25).unwrap();
+        patch.set_send(outside, 0.75).unwrap();
+        assert_eq!(
+            patch.clone().with_send_count(DEFAULT_BUS_RETURNS),
+            Err(PatchSendError::WouldDiscardSend { bus: outside })
+        );
+        patch.set_send(outside, 0.0).unwrap();
+        let resized = patch.with_send_count(DEFAULT_BUS_RETURNS).unwrap();
+        assert_eq!(resized.sends().len(), DEFAULT_BUS_RETURNS);
+        assert_eq!(resized.send(kept), 0.25);
     }
 
     #[test]

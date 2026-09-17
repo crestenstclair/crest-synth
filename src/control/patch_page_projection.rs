@@ -315,6 +315,7 @@ impl PatchPageOutputRow {
             | PatchControlId::Envelope(_)
             | PatchControlId::Capability(_)
             | PatchControlId::EffectSlot(_)
+            | PatchControlId::Send(_)
             | PatchControlId::Effect(..) => return None,
         };
         Some(row)
@@ -973,6 +974,12 @@ enum PatchProjectionSource<'a> {
 }
 
 impl PatchProjectionSource<'_> {
+    fn send(&self, bus: crate::mixer::bus_id::BusId) -> f32 {
+        match self {
+            Self::Created(patch) | Self::Pending(patch) => patch.send(bus),
+            Self::Prospective(_) => 0.0,
+        }
+    }
     fn instrument_config(&self) -> &crate::synth::InstrumentConfig {
         match self {
             Self::Created(patch) | Self::Pending(patch) => patch.instrument_config(),
@@ -1394,7 +1401,18 @@ impl PatchPageProjection {
             // original row is no longer focusable on Patch Main.
             vec![focused_control_id.clone()]
         } else if focused_control_id.is_utility() {
-            PatchControlId::utility_surface_descriptor().to_vec()
+            let mut controls = PatchControlId::utility_surface_descriptor().to_vec();
+            if !prospective {
+                controls.extend(
+                    state
+                        .bus_returns()
+                        .returns()
+                        .iter()
+                        .filter(|send| send.is_occupied())
+                        .map(|send| PatchControlId::Send(send.id())),
+                );
+            }
+            controls
         } else {
             state
                 .focused_patch_controls()
@@ -1415,7 +1433,7 @@ impl PatchPageProjection {
             .collect();
         // The five declared Utility rows, in the one declared order, so every
         // focusable Utility row has a projected row to be selected on.
-        let output = PatchControlId::utility_surface_descriptor()
+        let mut output: Vec<_> = PatchControlId::utility_surface_descriptor()
             .iter()
             .filter_map(|control| {
                 PatchPageOutputRow::for_utility_control(
@@ -1428,6 +1446,30 @@ impl PatchPageProjection {
                 )
             })
             .collect();
+        if !prospective && source.output().is_some() {
+            let descriptor = crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR;
+            for send in state
+                .bus_returns()
+                .returns()
+                .iter()
+                .filter(|send| send.is_occupied())
+            {
+                output.push(PatchPageOutputRow {
+                    control_id: PatchControlId::Send(send.id()),
+                    id: format!("send.{}", send.id().value()),
+                    label: format!("Send {} · {}", send.id().index() + 1, send.name()),
+                    kind: "continuous".to_owned(),
+                    scalar_value: Some(source.send(send.id())),
+                    choice_value: None,
+                    minimum: Some(descriptor.minimum()),
+                    maximum: Some(descriptor.maximum()),
+                    fine_step: Some(descriptor.fine_step()),
+                    coarse_step: Some(descriptor.coarse_step()),
+                    unit: None,
+                    editable: true,
+                });
+            }
+        }
         let engine_selection = state.engine_selection();
         let correlation = engine_selection.correlation();
         let engine_targeted = correlation.is_some_and(|correlation| {

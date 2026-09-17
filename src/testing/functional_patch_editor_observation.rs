@@ -868,6 +868,7 @@ fn detail_subject_key(subject: &PatchDetailSubject) -> String {
 /// occurrences.
 const fn surface_identity(id: SurfaceId) -> &'static str {
     match id {
+        SurfaceId::Sends => "sends",
         SurfaceId::PatchMain => "patchMain",
         SurfaceId::PatchUtility => "patchUtility",
         SurfaceId::PatchDetail => "patchDetail",

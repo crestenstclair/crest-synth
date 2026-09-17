@@ -169,6 +169,7 @@ impl Serialize for RtPostEffectParameters {
 #[derive(Clone, Debug, PartialEq)]
 pub struct RtBusReturnParameters {
     effect: RtPostEffectParameters,
+    tail: Vec<RtPostEffectParameters>,
     return_level: f32,
 }
 
@@ -176,6 +177,7 @@ impl RtBusReturnParameters {
     /// The canonical unoccupied return entry.
     pub const EMPTY: Self = Self {
         effect: RtPostEffectParameters::EMPTY,
+        tail: Vec::new(),
         return_level: 0.0,
     };
 
@@ -198,8 +200,38 @@ impl RtBusReturnParameters {
         }
         Ok(Self {
             effect,
+            tail: Vec::new(),
             return_level,
         })
+    }
+
+    /// Builds a complete ordered chain off the audio thread.
+    pub fn chain(
+        mut effects: Vec<RtPostEffectParameters>,
+        return_level: f32,
+    ) -> Result<Self, ParameterSnapshotError> {
+        if !return_level.is_finite() {
+            return Err(ParameterSnapshotError::NonFiniteEffectScalar { index: 0 });
+        }
+        if effects.is_empty() {
+            return Ok(Self::EMPTY);
+        }
+        let effect = effects.remove(0);
+        Ok(Self {
+            effect,
+            tail: effects,
+            return_level,
+        })
+    }
+
+    pub fn effects(&self) -> impl Iterator<Item = &RtPostEffectParameters> {
+        std::iter::once(&self.effect)
+            .filter(|effect| effect.is_active())
+            .chain(self.tail.iter())
+    }
+
+    pub fn effect_count(&self) -> usize {
+        usize::from(self.is_active()) + self.tail.len()
     }
 
     pub const fn is_active(&self) -> bool {
@@ -251,6 +283,7 @@ impl Serialize for RtBusReturnParameters {
             scalar_count: usize,
             scalars: &'a [f32],
             return_level: f32,
+            tail: &'a [RtPostEffectParameters],
         }
         SerializableBusReturnParameters {
             active: self.is_active(),
@@ -258,6 +291,7 @@ impl Serialize for RtBusReturnParameters {
             scalar_count: self.scalar_count(),
             scalars: self.scalars(),
             return_level: self.return_level(),
+            tail: &self.tail,
         }
         .serialize(serializer)
     }
@@ -265,12 +299,13 @@ impl Serialize for RtBusReturnParameters {
 
 /// The prepared audio parameters for one active Patch.
 ///
-/// The value is copyable and owns no heap storage. An absent Patch identity is
-/// the canonical inactive value used for unused ParameterSnapshot entries.
+/// Scalar storage is allocated off callback and exchanged by ownership. An
+/// absent identity marks unused ParameterSnapshot entries.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RtPatchParameters {
     patch_id: Option<PatchId>,
     output: PatchOutput,
+    sends: Vec<f32>,
     envelope: VoiceEnvelope,
     /// The Patch's canonical ceiling on simultaneously sounding notes, riding
     /// the latest-scalar transport as a plain bounded integer beside the
@@ -299,10 +334,11 @@ impl RtPatchParameters {
 
     /// Copies one active Patch's identity and validated mixer parameters into a
     /// real-time-safe value.
-    pub const fn new(patch_id: PatchId, output: PatchOutput) -> Self {
+    pub fn new(patch_id: PatchId, output: PatchOutput) -> Self {
         Self {
             patch_id: Some(patch_id),
             output,
+            sends: vec![0.0; MAX_BUS_RETURNS],
             envelope: VoiceEnvelope::DEFAULT,
             voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument: RtInstrumentParameters::EMPTY,
@@ -311,7 +347,7 @@ impl RtPatchParameters {
     }
 
     /// Copies the full live projection for one active Patch.
-    pub const fn projected(
+    pub fn projected(
         patch_id: PatchId,
         output: PatchOutput,
         envelope: VoiceEnvelope,
@@ -320,6 +356,7 @@ impl RtPatchParameters {
         Self {
             patch_id: Some(patch_id),
             output,
+            sends: vec![0.0; MAX_BUS_RETURNS],
             envelope,
             voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument,
@@ -331,7 +368,7 @@ impl RtPatchParameters {
     ///
     /// One entry per position: empty positions carry the canonical inactive
     /// value at their exact index, never compacted down.
-    pub const fn projected_with_effects(
+    pub fn projected_with_effects(
         patch_id: PatchId,
         output: PatchOutput,
         envelope: VoiceEnvelope,
@@ -341,6 +378,7 @@ impl RtPatchParameters {
         Self {
             patch_id: Some(patch_id),
             output,
+            sends: vec![0.0; MAX_BUS_RETURNS],
             envelope,
             voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument,
@@ -368,6 +406,24 @@ impl RtPatchParameters {
     /// Returns the Patch's copied, validated output route and trim.
     pub const fn output(&self) -> PatchOutput {
         self.output
+    }
+
+    /// Copies validated Patch send amounts on the control/preparation thread.
+    pub fn with_sends(mut self, sends: &[f32]) -> Result<Self, ParameterSnapshotError> {
+        if sends.len() > usize::from(BusId::MAX) + 1 {
+            return Err(ParameterSnapshotError::InvalidSendCount);
+        }
+        if let Some(index) = sends.iter().position(|value| {
+            !crate::mixer::mixer_track_parameters::BUS_SEND_DESCRIPTOR.contains(*value)
+        }) {
+            return Err(ParameterSnapshotError::InvalidSend { index });
+        }
+        self.sends = sends.to_vec();
+        Ok(self)
+    }
+
+    pub fn sends(&self) -> &[f32] {
+        &self.sends
     }
 
     pub const fn envelope(&self) -> &VoiceEnvelope {
@@ -398,6 +454,7 @@ impl RtPatchParameters {
         Self {
             patch_id: None,
             output: PatchOutput::default(),
+            sends: Vec::new(),
             envelope: VoiceEnvelope::DEFAULT,
             voice_limit: Self::UNPROJECTED_VOICE_LIMIT,
             instrument: RtInstrumentParameters::EMPTY,
@@ -420,6 +477,7 @@ impl Serialize for RtPatchParameters {
             instrument: &'a RtInstrumentParameters,
             effects: &'a [RtPostEffectParameters; MAX_EFFECT_SLOTS],
             output: PatchOutput,
+            sends: &'a [f32],
         }
 
         SerializablePatchParameters {
@@ -429,6 +487,7 @@ impl Serialize for RtPatchParameters {
             instrument: self.instrument(),
             effects: self.effects(),
             output: self.output(),
+            sends: self.sends(),
         }
         .serialize(serializer)
     }
@@ -438,17 +497,34 @@ impl Serialize for RtPatchParameters {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParameterSnapshotError {
     /// The control state contains more Patch values than the fixed capacity.
-    TooManyPatches { count: usize, capacity: usize },
+    TooManyPatches {
+        count: usize,
+        capacity: usize,
+    },
     /// An inactive value was supplied inside the active Patch prefix.
-    InactivePatch { index: usize },
+    InactivePatch {
+        index: usize,
+    },
     /// A scalar could not be represented as a finite real-time value.
-    NonFiniteInstrumentScalar { index: usize },
+    NonFiniteInstrumentScalar {
+        index: usize,
+    },
     /// An effect scalar could not be represented as a finite real-time value.
-    NonFiniteEffectScalar { index: usize },
+    NonFiniteEffectScalar {
+        index: usize,
+    },
     /// A Patch config did not resolve through the immutable registry.
-    InvalidInstrumentConfig { index: usize },
+    InvalidInstrumentConfig {
+        index: usize,
+    },
     /// A Patch effect config did not resolve through the immutable effect registry.
-    InvalidEffectConfig { index: usize },
+    InvalidEffectConfig {
+        index: usize,
+    },
+    InvalidSend {
+        index: usize,
+    },
+    InvalidSendCount,
 }
 
 impl fmt::Display for ParameterSnapshotError {
@@ -473,6 +549,10 @@ impl fmt::Display for ParameterSnapshotError {
             Self::InvalidEffectConfig { index } => {
                 write!(formatter, "Patch {index} has an invalid effect config")
             }
+            Self::InvalidSend { index } => {
+                write!(formatter, "send {index} must be finite and in 0..=1")
+            }
+            Self::InvalidSendCount => formatter.write_str("send count exceeds bus identity range"),
         }
     }
 }
@@ -490,7 +570,7 @@ pub struct ParameterSnapshot {
     graph_revision: GraphRevision,
     global: GlobalParameters,
     mixer_tracks: [MixerTrackParameters; MixerTrackId::COUNT],
-    returns: [RtBusReturnParameters; MAX_BUS_RETURNS],
+    returns: Vec<RtBusReturnParameters>,
     patch_count: usize,
     patches: [RtPatchParameters; MAX_ACTIVE_PATCHES],
 }
@@ -514,6 +594,7 @@ impl ParameterSnapshot {
         "patches[].effects[].scalars[]",
         "patches[].output.trackId",
         "patches[].output.trimGainDb",
+        "patches[].sends[]",
         "mixerTracks[].levelDb",
         "mixerTracks[].pan",
         "mixerTracks[].mute",
@@ -524,6 +605,10 @@ impl ParameterSnapshot {
         "returns[].scalarCount",
         "returns[].scalars[]",
         "returns[].returnLevel",
+        "returns[].tail[].active",
+        "returns[].tail[].slotId",
+        "returns[].tail[].scalarCount",
+        "returns[].tail[].scalars[]",
         "global.masterGainDb",
     ];
 
@@ -575,7 +660,7 @@ impl ParameterSnapshot {
         global: GlobalParameters,
         mixer: MixerState,
         patches: &[RtPatchParameters],
-        returns: [RtBusReturnParameters; MAX_BUS_RETURNS],
+        returns: impl Into<Vec<RtBusReturnParameters>>,
     ) -> Result<Self, ParameterSnapshotError> {
         if patches.len() > MAX_ACTIVE_PATCHES {
             return Err(ParameterSnapshotError::TooManyPatches {
@@ -594,8 +679,8 @@ impl ParameterSnapshot {
             generation,
             graph_revision,
             global,
-            mixer_tracks: *mixer.tracks(),
-            returns,
+            mixer_tracks: mixer.tracks().clone(),
+            returns: returns.into(),
             patch_count: patches.len(),
             patches: storage,
         })
@@ -603,8 +688,8 @@ impl ParameterSnapshot {
 
     /// Replaces the eight live return entries on an already-complete snapshot.
     #[must_use]
-    pub fn with_returns(mut self, returns: [RtBusReturnParameters; MAX_BUS_RETURNS]) -> Self {
-        self.returns = returns;
+    pub fn with_returns(mut self, returns: impl Into<Vec<RtBusReturnParameters>>) -> Self {
+        self.returns = returns.into();
         self
     }
 
@@ -620,30 +705,35 @@ impl ParameterSnapshot {
     pub fn project_returns(
         effect_registry: &EffectCapabilityRegistry,
         bank: &crate::mixer::bus_return::BusReturnBank,
-    ) -> Result<[RtBusReturnParameters; MAX_BUS_RETURNS], ParameterSnapshotError> {
-        let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
-        for bus_return in bank.returns() {
-            let Some(config) = bus_return.effect() else {
-                continue;
-            };
-            let index = bus_return.id().index();
-            let descriptor = effect_registry
-                .descriptor(config.capability_id())
-                .ok_or(ParameterSnapshotError::InvalidEffectConfig { index })?;
-            let scalars = descriptor
-                .scalar_parameters()
-                .map(|spec| {
-                    let value = config
-                        .value(spec.id())
-                        .ok_or(ParameterSnapshotError::InvalidEffectConfig { index })?;
-                    spec.scalar_value(value)
-                        .map_err(|_| ParameterSnapshotError::InvalidEffectConfig { index })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            returns[index] =
-                RtBusReturnParameters::new(config.slot_id(), &scalars, bus_return.return_level())?;
-        }
-        Ok(returns)
+    ) -> Result<Vec<RtBusReturnParameters>, ParameterSnapshotError> {
+        bank.returns()
+            .iter()
+            .map(|bus_return| {
+                let index = bus_return.id().index();
+                let effects = bus_return
+                    .effects()
+                    .iter()
+                    .map(|config| {
+                        let descriptor = effect_registry
+                            .descriptor(config.capability_id())
+                            .ok_or(ParameterSnapshotError::InvalidEffectConfig { index })?;
+                        let scalars = descriptor
+                            .scalar_parameters()
+                            .map(|spec| {
+                                let value = config
+                                    .value(spec.id())
+                                    .ok_or(ParameterSnapshotError::InvalidEffectConfig { index })?;
+                                spec.scalar_value(value).map_err(|_| {
+                                    ParameterSnapshotError::InvalidEffectConfig { index }
+                                })
+                            })
+                            .collect::<Result<Vec<_>, _>>()?;
+                        RtPostEffectParameters::new(config.slot_id(), &scalars)
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+                RtBusReturnParameters::chain(effects, bus_return.return_level())
+            })
+            .collect()
     }
 
     /// Projects the canonical Patch/config values into the one fixed real-time shape.
@@ -687,13 +777,14 @@ impl ParameterSnapshot {
                     })
                     .collect::<Result<Vec<_>, _>>()?;
                 let instrument = RtInstrumentParameters::new(&values)?;
-                Ok(RtPatchParameters::projected(
+                RtPatchParameters::projected(
                     patch.id(),
                     patch.output(),
                     *patch.envelope(),
                     instrument,
                 )
-                .with_voice_limit(patch.voice_limit()))
+                .with_voice_limit(patch.voice_limit())
+                .with_sends(patch.sends())
             })
             .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
 
@@ -774,14 +865,15 @@ impl ParameterSnapshot {
                     effects[position] =
                         RtPostEffectParameters::new(config.slot_id(), &effect_values)?;
                 }
-                Ok(RtPatchParameters::projected_with_effects(
+                RtPatchParameters::projected_with_effects(
                     patch.id(),
                     patch.output(),
                     *patch.envelope(),
                     instrument,
                     effects,
                 )
-                .with_voice_limit(patch.voice_limit()))
+                .with_voice_limit(patch.voice_limit())
+                .with_sends(patch.sends())
             })
             .collect::<Result<Vec<_>, ParameterSnapshotError>>()?;
         Self::for_graph(generation, graph_revision, global, mixer, &projected)
@@ -841,12 +933,12 @@ impl ParameterSnapshot {
     }
 
     /// Returns all eight live bus-return entries in ascending `BusId` order.
-    pub const fn returns(&self) -> &[RtBusReturnParameters; MAX_BUS_RETURNS] {
+    pub fn returns(&self) -> &[RtBusReturnParameters] {
         &self.returns
     }
 
     /// Returns the live entry for one bus return.
-    pub const fn bus_return(&self, bus: BusId) -> &RtBusReturnParameters {
+    pub fn bus_return(&self, bus: BusId) -> &RtBusReturnParameters {
         &self.returns[bus.index()]
     }
 
@@ -936,7 +1028,7 @@ impl Serialize for ParameterSnapshot {
             patch_count: usize,
             patches: &'a [RtPatchParameters],
             mixer_tracks: &'a [MixerTrackParameters; MixerTrackId::COUNT],
-            returns: &'a [RtBusReturnParameters; MAX_BUS_RETURNS],
+            returns: &'a [RtBusReturnParameters],
             global: SerializableGlobalParameters,
         }
 
@@ -1092,8 +1184,14 @@ mod tests {
             effects,
         );
         let mut returns = [const { RtBusReturnParameters::EMPTY }; MAX_BUS_RETURNS];
-        returns[2] =
-            RtBusReturnParameters::new(EffectSlotId::new(3).unwrap(), &[0.25, 0.5], 0.75).unwrap();
+        returns[2] = RtBusReturnParameters::chain(
+            vec![
+                RtPostEffectParameters::new(EffectSlotId::new(3).unwrap(), &[0.25, 0.5]).unwrap(),
+                RtPostEffectParameters::new(EffectSlotId::new(4).unwrap(), &[0.125]).unwrap(),
+            ],
+            0.75,
+        )
+        .unwrap();
         let snapshot = ParameterSnapshot::for_graph(
             9,
             GraphRevision::new(4).unwrap(),
@@ -1513,13 +1611,13 @@ mod tests {
         assert!(!bare.audio_values_equal(&explicit));
     }
 
-    /// T027: all eight sends cross the boundary per track and are observable
+    /// All configured sends cross the boundary per track and are observable
     /// in `BusId` order.
     #[test]
-    fn every_track_carries_all_eight_indexed_sends() {
+    fn every_track_carries_all_default_indexed_sends() {
         let mut sends = [0.0; MAX_BUS_RETURNS];
         for (index, send) in sends.iter_mut().enumerate() {
-            *send = index as f32 * 0.1;
+            *send = index as f32 / (MAX_BUS_RETURNS - 1) as f32;
         }
         let track = MixerTrackParameters::from_values(0.0, 0.0, false, false, sends).unwrap();
         let snapshot = ParameterSnapshot::new(

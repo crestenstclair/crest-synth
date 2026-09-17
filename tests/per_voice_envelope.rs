@@ -654,7 +654,7 @@ fn prove_patch_control_contract() -> (usize, bool, bool, bool, bool, bool) {
 
         let mut mixer = make_state();
         let baseline_patches = mixer.patches().to_vec();
-        let baseline_mixer = *mixer.mixer();
+        let baseline_mixer = mixer.mixer().clone();
         for _ in 0..parameter_index {
             mixer.apply(AppEvent::Navigate(Direction::Down)).unwrap();
         }

@@ -1076,8 +1076,8 @@ fn snapshot_with_cross_track_leak(
         return published;
     }
 
-    let mut tracks = *published.mixer_tracks();
-    tracks[0] = tracks[1];
+    let mut tracks = published.mixer_tracks().clone();
+    tracks[0] = tracks[1].clone();
     ParameterSnapshot::new(
         published.generation(),
         *published.global(),
@@ -2058,7 +2058,7 @@ fn run_muted_send_leak(mutant_enabled: bool) -> MutedSendLeakObservation {
         .expect("fixture send is valid");
     let muted = MixerTrackParameters::from_values(0.0, 0.0, true, false, sounding.sends())
         .expect("fixture muted track is valid");
-    let sounding_run = run_send_seam_mix(sounding, bus, true);
+    let sounding_run = run_send_seam_mix(sounding.clone(), bus, true);
     let muted_run = if mutant_enabled {
         // The gate fault: the send stage consumes a snapshot whose mute
         // was dropped.
@@ -2102,7 +2102,7 @@ fn run_permissive_structural_match(mutant_enabled: bool) -> PermissiveStructural
             .map(|index| if index % 2 == 0 { 0.4 } else { 0.2 })
             .collect();
         let track_id = MixerTrackId::ALL[0];
-        let mixer_state = MixerState::default().with_track(track_id, sends);
+        let mixer_state = MixerState::default().with_track(track_id, sends.clone());
         let patches = [RtPatchParameters::new(
             PatchId::new(1).expect("fixture PatchId is nonzero"),
             PatchOutput::to_track(track_id),

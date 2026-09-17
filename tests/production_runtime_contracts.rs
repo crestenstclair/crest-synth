@@ -5,7 +5,6 @@ use crest_synth::adapter::chorus_preparer::ChorusPreparer;
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
 use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
 use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
-use crest_synth::adapter::production_effects::ProductionEffectCompositionError;
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_loop::AppLoop;
 use crest_synth::control::app_state::AppState;
@@ -819,12 +818,10 @@ fn runtime_application_with_effects(
     })
 }
 
-/// An effect registry that installs entries but cannot compose the declared
-/// production default occupancy (reverb on return 0, delay on return 1)
-/// must abort production startup with the error naming the default
-/// bus-return composition — never boot on silently unoccupied returns.
+/// Empty startup send chains do not require any specific effect provider.
+/// A partial registry still boots through the complete production root.
 #[test]
-fn defective_default_return_composition_aborts_startup_with_the_named_error() {
+fn empty_startup_sends_accept_a_partial_effect_registry() {
     let preparation = Arc::new(PreparationProbe::default());
     let output = Arc::new(OutputProbe::default());
     let application = runtime_application_with_effects(
@@ -836,25 +833,13 @@ fn defective_default_return_composition_aborts_startup_with_the_named_error() {
     )
     .unwrap();
 
-    let error = application.run().unwrap_err();
-    assert!(
-        matches!(
-            error,
-            ApplicationError::DefaultBusReturns(ProductionEffectCompositionError::ReturnOccupancy(
-                _
-            ))
-        ),
-        "startup must name the default bus-return composition failure, got: {error}"
-    );
-    assert!(!output.started.load(Ordering::Acquire));
-    assert_eq!(preparation.prepared.load(Ordering::Relaxed), 0);
-    println!(
-        "CREST_RT_VALIDATION defective_default_return_composition_aborts_startup_with_the_named_error passed"
-    );
+    application.run().unwrap();
+    assert!(output.started.load(Ordering::Acquire));
+    assert!(preparation.prepared.load(Ordering::Relaxed) > 0);
+    println!("CREST_RT_VALIDATION empty_startup_sends_accept_a_partial_effect_registry passed");
 }
 
-/// The same production root boots when the composed registry can satisfy the
-/// declared default occupancy exactly.
+/// The complete production effect registry also boots with empty startup sends.
 #[test]
 fn declared_default_return_composition_boots_the_production_root() {
     let preparation = Arc::new(PreparationProbe::default());

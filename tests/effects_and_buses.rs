@@ -132,10 +132,14 @@ fn effects_and_buses_scene_completes_with_measured_topology_and_responsiveness()
     let effect_providers =
         production_effect_providers().expect("production effect providers are valid");
     let effects = production_effect_registry().expect("production effect registry is valid");
+    // This scene proves edits to already-audible returns. Its fixture owns
+    // those occupants; new production sessions deliberately start empty.
+    let returns =
+        crest_synth::adapter::production_effects::production_default_bus_returns(&effects)
+            .expect("the audible effects-and-buses fixture composes");
     let mut app_loop = AppLoop::with_event_log(
-        AppState::new_with_effects(registry.clone(), effects.clone(), global).with_initial_returns(
-            crest_synth::adapter::production_effects::startup_bus_returns(&effects),
-        ),
+        AppState::new_with_effects(registry.clone(), effects.clone(), global)
+            .with_initial_returns(returns),
         StateProjector::for_graph(GraphRevision::INITIAL),
         control,
         event_log,

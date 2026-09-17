@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// Stable graphical surfaces independent of host layout or rectangle placement.
 ///
-/// Four are persistent — two mains and two sides — and three PATCH surfaces
-/// are subordinate: they are never the resting surface of a context, and
+/// PATCH and MIXER have persistent mains and sides; Sends is another MIXER
+/// main surface. Three surfaces are subordinate: never the resting surface of a context, and
 /// leaving one restores the exact origin. One detail surface identity serves
 /// both instrument and effect subjects, because the surface is the shell and
 /// the subject supplies the content. Settings surfaces suspend rather than
@@ -19,6 +19,7 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SurfaceId {
+    Sends,
     PatchMain,
     PatchUtility,
     PatchDetail,
@@ -32,7 +33,8 @@ pub enum SurfaceId {
 }
 
 impl SurfaceId {
-    pub const ALL: [Self; 10] = [
+    pub const ALL: [Self; 11] = [
+        Self::Sends,
         Self::PatchMain,
         Self::PatchUtility,
         Self::PatchDetail,
@@ -56,7 +58,7 @@ impl SurfaceId {
             Self::PatchMain | Self::PatchUtility | Self::PatchDetail | Self::PatchChoice => {
                 Some(TopLevelContext::Patch)
             }
-            Self::MixerMain | Self::MixerInspector => Some(TopLevelContext::Mixer),
+            Self::Sends | Self::MixerMain | Self::MixerInspector => Some(TopLevelContext::Mixer),
             Self::MidiDeviceSettings
             | Self::ControllerSettings
             | Self::SaveLoadSettings
@@ -82,7 +84,7 @@ impl SurfaceId {
     }
 
     pub const fn is_main(self) -> bool {
-        matches!(self, Self::PatchMain | Self::MixerMain)
+        matches!(self, Self::PatchMain | Self::MixerMain | Self::Sends)
     }
 
     pub const fn is_persistent_side(self) -> bool {
@@ -138,7 +140,8 @@ impl SurfaceId {
     pub const fn is_enterable(self) -> bool {
         match self {
             Self::PatchUtility | Self::MixerInspector | Self::PatchDetail => true,
-            Self::PatchChoice
+            Self::Sends
+            | Self::PatchChoice
             | Self::FileBrowser
             | Self::PatchMain
             | Self::MixerMain
@@ -150,6 +153,7 @@ impl SurfaceId {
 
     pub const fn label(self) -> &'static str {
         match self {
+            Self::Sends => "SENDS",
             Self::PatchMain => "PATCH",
             Self::PatchUtility => "UTILITY",
             Self::PatchDetail => "DETAIL",
@@ -391,6 +395,7 @@ pub enum FocusCapabilityId {
 #[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 #[serde(tag = "kind", content = "id", rename_all = "camelCase")]
 pub enum SemanticControlId {
+    Send(crate::control::SendControlId),
     Patch(PatchControlId),
     Mixer(MixerControlId),
     Modal(ModalControlId),
@@ -405,7 +410,8 @@ impl SemanticControlId {
     pub const fn as_mixer_track_id(&self) -> Option<MixerTrackId> {
         match self {
             Self::Mixer(MixerControlId::Track { track_id, .. }) => Some(*track_id),
-            Self::Mixer(_)
+            Self::Send(_)
+            | Self::Mixer(_)
             | Self::Patch(_)
             | Self::Modal(_)
             | Self::MidiInputDevice(_)
@@ -593,6 +599,20 @@ impl FocusPath {
         }
     }
 
+    pub fn send(
+        control: crate::control::SendControlId,
+        capability_id: Option<EffectCapabilityId>,
+    ) -> Self {
+        Self {
+            context: TopLevelContext::Mixer,
+            surface: SurfaceId::Sends,
+            patch_position: None,
+            capability_id: capability_id.map(FocusCapabilityId::Effect),
+            control_id: SemanticControlId::Send(control),
+            modal_id: None,
+        }
+    }
+
     pub const fn mixer_track(track_id: MixerTrackId, parameter: MixerTrackParameter) -> Self {
         Self {
             context: TopLevelContext::Mixer,
@@ -738,6 +758,20 @@ impl FocusPath {
             }
         }
         match (&self.surface, &self.control_id) {
+            (SurfaceId::Sends, SemanticControlId::Send(control)) => {
+                if self.patch_position.is_some() || self.modal_id.is_some() {
+                    return Err(FocusPathError::ControlSurfaceMismatch);
+                }
+                let valid_capability = match control {
+                    crate::control::SendControlId::EffectParameter { .. } => {
+                        matches!(self.capability_id, Some(FocusCapabilityId::Effect(_)))
+                    }
+                    _ => self.capability_id.is_none(),
+                };
+                if !valid_capability {
+                    return Err(FocusPathError::CapabilityIdentityMismatch);
+                }
+            }
             (SurfaceId::PatchMain, SemanticControlId::Patch(control)) => {
                 if self.patch_position.is_none() {
                     return Err(FocusPathError::PatchIdentityMismatch);
@@ -930,8 +964,9 @@ impl ReturnPath {
     /// side surface.
     ///
     /// Persistent side and Detail entry still require a main origin. A Choice
-    /// or Sample Browser may replace a PATCH main, Utility, or Detail surface
-    /// and remember that exact origin, but a modal/browser origin is rejected;
+    /// or Sample Browser may replace a PATCH main, Utility, or Detail surface;
+    /// the browser also admits MIXER Inspector and Sends. They remember that
+    /// exact origin, but a modal/browser origin is rejected;
     /// therefore there is one replaceable subordinate session, never a stack.
     pub fn new(origin: FocusPath, entered_surface: SurfaceId) -> Result<Self, FocusPathError> {
         origin.validate()?;
@@ -942,6 +977,7 @@ impl ReturnPath {
                     | SurfaceId::PatchUtility
                     | SurfaceId::PatchDetail
                     | SurfaceId::MixerInspector
+                    | SurfaceId::Sends
             ),
             SurfaceId::PatchChoice => {
                 matches!(
@@ -992,8 +1028,11 @@ mod tests {
     fn performance_and_system_surfaces_are_classified_without_a_third_context() {
         use crate::control::TopLevelContext;
 
-        assert_eq!(SurfaceId::surface_descriptor().len(), 10);
+        assert_eq!(SurfaceId::surface_descriptor().len(), 11);
         assert_eq!(SurfaceId::PatchMain.context(), Some(TopLevelContext::Patch));
+        assert_eq!(SurfaceId::Sends.context(), Some(TopLevelContext::Mixer));
+        assert!(SurfaceId::Sends.is_main());
+        assert!(!SurfaceId::Sends.is_system());
         assert_eq!(
             SurfaceId::MixerInspector.context(),
             Some(crate::control::TopLevelContext::Mixer)
@@ -1003,8 +1042,8 @@ mod tests {
         assert!(SurfaceId::PatchUtility.is_persistent_side());
         assert!(SurfaceId::MixerMain.is_main());
 
-        // Every surface is exactly one of main, persistent side, or
-        // subordinate — a surface that were two at once would let the reducer
+        // Every surface is exactly one of main, persistent side, subordinate,
+        // or system — a surface that were two at once would let the reducer
         // treat it as a resting place and a return target simultaneously.
         for surface in SurfaceId::ALL {
             let roles = usize::from(surface.is_main())
@@ -1057,7 +1096,7 @@ mod tests {
             assert!(!subject_opened.is_enterable());
             assert!(subject_opened.is_return_target());
         }
-        for main in [SurfaceId::PatchMain, SurfaceId::MixerMain] {
+        for main in [SurfaceId::PatchMain, SurfaceId::MixerMain, SurfaceId::Sends] {
             assert!(!main.is_enterable());
             assert!(!main.is_return_target());
         }
@@ -1129,6 +1168,83 @@ mod tests {
             &SemanticControlId::Mixer(MixerControlId::Global {
                 parameter: GlobalParameter::MasterGainDb
             })
+        );
+    }
+
+    #[test]
+    fn sends_focus_preserves_bus_slot_and_effect_capability_identity() {
+        use crate::control::{SendControlId, TopLevelContext};
+        use crate::mixer::bus_id::BusId;
+        use crate::synth::{EffectCapabilityId, EffectSlotId, ParameterId};
+
+        let bus = BusId::new(18).unwrap();
+        let slot_id = EffectSlotId::new(9).unwrap();
+        let capability = EffectCapabilityId::new("effect.fixture").unwrap();
+        for (control, capability) in [
+            (SendControlId::Name { bus }, None),
+            (SendControlId::Level { bus }, None),
+            (SendControlId::EffectSlot { bus, slot_id }, None),
+            (
+                SendControlId::EffectParameter {
+                    bus,
+                    slot_id,
+                    parameter: ParameterId::new("amount").unwrap(),
+                },
+                Some(capability),
+            ),
+        ] {
+            let focus = FocusPath::send(control.clone(), capability);
+            assert!(focus.validate().is_ok());
+            assert_eq!(focus.context(), TopLevelContext::Mixer);
+            assert_eq!(focus.surface(), SurfaceId::Sends);
+            assert_eq!(focus.patch_id(), None);
+            assert_eq!(focus.control_id(), &SemanticControlId::Send(control));
+            let json = serde_json::to_string(&focus).unwrap();
+            assert_eq!(serde_json::from_str::<FocusPath>(&json).unwrap(), focus);
+        }
+    }
+
+    #[test]
+    fn send_effect_browser_keeps_exact_origin_and_rejects_wrong_capability_shape() {
+        use crate::control::SendControlId;
+        use crate::mixer::bus_id::BusId;
+        use crate::synth::{CapabilityId, EffectCapabilityId, EffectSlotId, ParameterId};
+
+        let bus = BusId::new(5).unwrap();
+        let mut origin = FocusPath::send(
+            SendControlId::EffectParameter {
+                bus,
+                slot_id: EffectSlotId::new(3).unwrap(),
+                parameter: ParameterId::new("effect.asset").unwrap(),
+            },
+            Some(EffectCapabilityId::new("effect.fixture").unwrap()),
+        );
+        let path = ReturnPath::new(origin.clone(), SurfaceId::FileBrowser).unwrap();
+        assert_eq!(path.origin(), &origin);
+        assert_eq!(path.entered_surface(), SurfaceId::FileBrowser);
+        origin.capability_id = Some(super::FocusCapabilityId::Instrument(
+            CapabilityId::new("instrument.fixture").unwrap(),
+        ));
+        assert_eq!(
+            origin.validate(),
+            Err(FocusPathError::CapabilityIdentityMismatch)
+        );
+        assert_eq!(
+            ReturnPath::new(origin.clone(), SurfaceId::FileBrowser),
+            Err(FocusPathError::CapabilityIdentityMismatch)
+        );
+        origin.capability_id = None;
+        assert_eq!(
+            origin.validate(),
+            Err(FocusPathError::CapabilityIdentityMismatch)
+        );
+        let named = FocusPath::send(
+            SendControlId::Name { bus },
+            Some(EffectCapabilityId::new("effect.fixture").unwrap()),
+        );
+        assert_eq!(
+            named.validate(),
+            Err(FocusPathError::CapabilityIdentityMismatch)
         );
     }
 

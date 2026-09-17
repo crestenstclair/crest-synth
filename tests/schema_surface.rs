@@ -12,7 +12,8 @@ use crest_synth::control::{
     AppEvent, AppState, EngineSelectionFailure, EngineSelectionStatusKind,
     GraphicalShellProjection, MidiDeviceEffect, MidiDeviceFailure, MidiInputDescriptor,
     MidiInputDeviceId, MidiInputPortFacts, MidiInputTransport, PatchControlId, PatchPageProjection,
-    SemanticAction, StateProjector, StateTree, SurfaceId, TopLevelContext,
+    SemanticAction, SemanticControlId, SendAction, SendControlId, StateProjector, StateTree,
+    SurfaceId, TopLevelContext,
 };
 use crest_synth::kernel::midi_channel::MidiChannel;
 use crest_synth::kernel::patch_id::PatchId;
@@ -78,6 +79,10 @@ fn configured_state(first: InstrumentConfig, second: InstrumentConfig) -> AppSta
             .descriptor(&EffectCapabilityId::new("effect.airwindows.biquad2").unwrap())
             .unwrap()
             .clone(),
+        production_effects
+            .descriptor(&EffectCapabilityId::new("effect.fft.convolver").unwrap())
+            .unwrap()
+            .clone(),
         schema_effect,
     ])
     .unwrap();
@@ -112,11 +117,29 @@ fn configured_state(first: InstrumentConfig, second: InstrumentConfig) -> AppSta
             Some(&EffectCapabilityId::new("effect.chorus").unwrap()),
         )
         .unwrap();
+    let first_bus = crest_synth::mixer::bus_id::BusId::new(0).unwrap();
+    let next_slot = returns.bus_return(first_bus).next_slot_id().unwrap();
+    returns
+        .set_effect_slot(
+            &effects,
+            first_bus,
+            next_slot,
+            Some(&EffectCapabilityId::new("effect.chorus").unwrap()),
+        )
+        .unwrap();
+    returns.set_name(first_bus, "Schema chain").unwrap();
     returns
         .set_return_occupancy(
             &effects,
             crest_synth::mixer::bus_id::BusId::new(1).unwrap(),
             Some(&EffectCapabilityId::new("effect.schema-fixture").unwrap()),
+        )
+        .unwrap();
+    returns
+        .set_return_occupancy(
+            &effects,
+            crest_synth::mixer::bus_id::BusId::new(2).unwrap(),
+            Some(&EffectCapabilityId::new("effect.fft.convolver").unwrap()),
         )
         .unwrap();
     let mut state = AppState::new_with_effects(capabilities, effects, support::globals())
@@ -252,6 +275,140 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             false,
         ),
     ];
+    // Observe send interaction through production reducer transitions, including
+    // retained parameter focus and the effect picker's precise return identity.
+    let mut send_state = configured_state(soundfont_config.clone(), braids_config.clone());
+    send_state
+        .apply_semantic_action(SemanticAction::Send(SendAction::Open))
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&send_state)
+            .unwrap()
+            .4,
+    );
+    send_state.apply(AppEvent::Activate).unwrap();
+    assert!(send_state.interaction().send_name_editing());
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&send_state)
+            .unwrap()
+            .4,
+    );
+    send_state
+        .apply_semantic_action(SemanticAction::Send(SendAction::CancelRename))
+        .unwrap();
+    navigate_down_until(&mut send_state, |path| {
+        matches!(
+            path.control_id(),
+            SemanticControlId::Send(SendControlId::EffectParameter { .. })
+        )
+    });
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&send_state)
+            .unwrap()
+            .4,
+    );
+    navigate_down_until(&mut send_state, |path| {
+        matches!(
+            path.control_id(),
+            SemanticControlId::Send(SendControlId::EffectSlot { .. })
+        )
+    });
+    send_state.apply(AppEvent::Activate).unwrap();
+    assert!(send_state.interaction().send_choice_origin().is_some());
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&send_state)
+            .unwrap()
+            .4,
+    );
+    send_state.apply(AppEvent::Return).unwrap();
+    let bus = send_state.interaction().selected_send();
+    let slot_id = send_state
+        .bus_returns()
+        .bus_return(bus)
+        .next_slot_id()
+        .unwrap();
+    send_state
+        .apply_semantic_action(SemanticAction::Send(SendAction::SetEffect {
+            bus,
+            slot_id,
+            entry: Some(EffectCapabilityId::new("effect.chorus").unwrap()),
+        }))
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&send_state)
+            .unwrap()
+            .4,
+    );
+
+    // The asset-bearing send opens the shared browser, so its exact effect-slot
+    // identity is observed in the stable return path as well as active focus.
+    let mut send_asset_state = configured_state(soundfont_config.clone(), braids_config.clone());
+    send_asset_state
+        .apply_semantic_action(SemanticAction::Send(SendAction::Open))
+        .unwrap();
+    send_asset_state
+        .apply(AppEvent::SelectPatch(
+            crest_synth::control::Direction::Right,
+        ))
+        .unwrap();
+    send_asset_state
+        .apply(AppEvent::SelectPatch(
+            crest_synth::control::Direction::Right,
+        ))
+        .unwrap();
+    let asset_parameter = send_asset_state
+        .effects()
+        .descriptor(&EffectCapabilityId::new("effect.fft.convolver").unwrap())
+        .unwrap()
+        .parameters()
+        .find(|spec| spec.kind() == crest_synth::synth::ParameterKind::Asset)
+        .unwrap()
+        .id()
+        .clone();
+    navigate_down_until(&mut send_asset_state, |path| {
+        matches!(path.control_id(),
+            SemanticControlId::Send(SendControlId::EffectParameter { parameter, .. })
+                if *parameter == asset_parameter)
+    });
+    send_asset_state.apply(AppEvent::Activate).unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&send_asset_state)
+            .unwrap()
+            .4,
+    );
+    let mut controller_state = AppState::new(
+        production_capability_registry().unwrap(),
+        support::globals(),
+    );
+    controller_state
+        .apply(AppEvent::Controller(
+            crest_synth::control::ControllerEvent::DevicesChanged {
+                devices: vec![crest_synth::control::ControllerDevice {
+                    id: 1,
+                    name: "Schema gamepad".to_owned(),
+                }],
+            },
+        ))
+        .unwrap();
+    controller_state
+        .apply(AppEvent::Controller(
+            crest_synth::control::ControllerEvent::PreferencesLoaded {
+                result: Err(crest_synth::control::ControllerFailure::PreferenceRead),
+            },
+        ))
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&controller_state)
+            .unwrap()
+            .4,
+    );
     let creation_registry = production_capability_registry().unwrap();
     trees.push(state_tree_after(
         soundfont_config.clone(),
@@ -996,7 +1153,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // physical MIDI lifecycle facts while excluding handles and observations.
     // Version 20 adds the explicit tagged trailing-empty Patch shape and its
     // prospective/capacity ownership facts without inventing a Patch ID.
-    assert_eq!(StateTree::SCHEMA_VERSION, 30);
+    assert_eq!(StateTree::SCHEMA_VERSION, 33);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

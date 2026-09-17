@@ -103,9 +103,9 @@ impl MixObservation {
         self.output_rms
     }
 
-    /// Returns the post-gate send sum RMS accumulated toward one bus.
-    pub const fn bus_input_rms(self, bus: BusId) -> f32 {
-        self.bus_input_rms[bus.index()]
+    /// Returns the post-gate send RMS, or None outside the observation bank.
+    pub fn bus_input_rms(self, bus: BusId) -> Option<f32> {
+        self.bus_input_rms.get(bus.index()).copied()
     }
 
     /// Returns every bus input RMS in ascending `BusId` order.
@@ -113,9 +113,9 @@ impl MixObservation {
         self.bus_input_rms
     }
 
-    /// Returns one return's pre-master output contribution RMS.
-    pub const fn bus_output_rms(self, bus: BusId) -> f32 {
-        self.bus_output_rms[bus.index()]
+    /// Returns pre-master output RMS, or None outside the observation bank.
+    pub fn bus_output_rms(self, bus: BusId) -> Option<f32> {
+        self.bus_output_rms.get(bus.index()).copied()
     }
 
     /// Returns every return contribution RMS in ascending `BusId` order.
@@ -149,9 +149,17 @@ impl MixObservation {
 #[cfg(test)]
 mod tests {
     use super::MixObservation;
-    use crate::mixer::bus_id::BusId;
+    use crate::mixer::bus_id::{BusId, MAX_BUS_RETURNS};
     use crate::mixer::mixer_track_id::MixerTrackId;
     use crate::mixer::track_meter::TrackMeter;
+
+    #[test]
+    fn bus_outside_observation_bank_is_explicitly_unavailable() {
+        let observation = MixObservation::default();
+        let bus = BusId::new(MAX_BUS_RETURNS as u16).unwrap();
+        assert_eq!(observation.bus_input_rms(bus), None);
+        assert_eq!(observation.bus_output_rms(bus), None);
+    }
 
     #[test]
     fn mix_observation_is_fixed_size_copyable_numeric_data() {
@@ -177,11 +185,29 @@ mod tests {
         );
         assert_eq!(observation.reverb_input_rms(), 0.25);
         assert_eq!(observation.delay_input_rms(), 0.5);
-        assert_eq!(observation.bus_input_rms(BusId::new(0).unwrap()), 0.25);
-        assert_eq!(observation.bus_input_rms(BusId::new(1).unwrap()), 0.5);
+        assert_eq!(
+            observation
+                .bus_input_rms(BusId::new(0).unwrap())
+                .expect("bus belongs to observed default bank"),
+            0.25
+        );
+        assert_eq!(
+            observation
+                .bus_input_rms(BusId::new(1).unwrap())
+                .expect("bus belongs to observed default bank"),
+            0.5
+        );
         for bus in &BusId::ALL[2..] {
-            assert_eq!(observation.bus_input_rms(*bus), 0.0);
+            assert_eq!(
+                observation
+                    .bus_input_rms(*bus)
+                    .expect("bus belongs to observed default bank"),
+                0.0
+            );
         }
-        assert_eq!(observation.bus_output_rms_all(), [0.0; 8]);
+        assert_eq!(
+            observation.bus_output_rms_all(),
+            [0.0; crate::mixer::bus_id::MAX_BUS_RETURNS]
+        );
     }
 }

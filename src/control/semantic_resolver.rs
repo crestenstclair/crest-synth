@@ -1,3 +1,4 @@
+mod sends;
 use crate::control::Direction;
 use crate::control::{
     AppState, EventRejection, FocusPath, MixerControlId, PatchChoiceSubject, PatchControlId,
@@ -324,40 +325,7 @@ impl<'a> SemanticResolver<'a> {
                 let current = patch
                     .effect_slot(*slot)
                     .map(|effect| effect.capability_id());
-                let descriptors = self.state.effects().descriptors();
-                // EMPTY belongs to the first navigable family. Its stable
-                // identity therefore needs no separate group cursor.
-                let empty_category = descriptors
-                    .iter()
-                    .filter(|descriptor| descriptor.availability().is_enabled())
-                    .map(|descriptor| descriptor.effect_category())
-                    .min()
-                    .or_else(|| {
-                        descriptors
-                            .iter()
-                            .map(|descriptor| descriptor.effect_category())
-                            .min()
-                    })
-                    .unwrap_or_default();
-                let mut empty = ResolvedChoiceOption::enabled(
-                    crate::control::EMPTY_OCCUPANCY_CHOICE_ID,
-                    "EMPTY",
-                    current.is_none(),
-                );
-                empty.category = Some(ChoiceCategory::Effect(empty_category));
-                let options: Vec<ResolvedChoiceOption> = core::iter::once(empty)
-                    .chain(descriptors.iter().map(|descriptor| {
-                        let mut option = ResolvedChoiceOption::with_availability(
-                            descriptor.id().to_string(),
-                            descriptor.label(),
-                            current == Some(descriptor.id()),
-                            descriptor.availability().clone(),
-                        );
-                        option.category =
-                            Some(ChoiceCategory::Effect(descriptor.effect_category()));
-                        option
-                    }))
-                    .collect();
+                let options = sends::effect_occupancy_options(self.state.effects(), current);
                 (format!("Effect Slot {}", slot.index() + 1), options)
             }
             PatchControlId::Output(
@@ -441,6 +409,7 @@ impl<'a> SemanticResolver<'a> {
             | PatchControlId::Envelope(_)
             | PatchControlId::Global(_)
             | PatchControlId::MidiInput
+            | PatchControlId::Send(_)
             | PatchControlId::VoiceLimit => return Err(EventRejection::InvalidSelection),
         };
         if options.is_empty() {
@@ -657,6 +626,7 @@ impl<'a> SemanticResolver<'a> {
                 | PatchControlId::Output(_)
                 | PatchControlId::Global(_)
                 | PatchControlId::MidiInput
+                | PatchControlId::Send(_)
                 | PatchControlId::VoiceLimit => None,
             };
         }
@@ -694,6 +664,7 @@ impl<'a> SemanticResolver<'a> {
             | PatchControlId::Output(_)
             | PatchControlId::Global(_)
             | PatchControlId::MidiInput
+            | PatchControlId::Send(_)
             | PatchControlId::VoiceLimit => None,
         }
     }
@@ -873,10 +844,18 @@ impl<'a> SemanticResolver<'a> {
         {
             return Err(EventRejection::NoPatchesInstalled);
         }
-        let paths = PatchControlId::utility_surface_descriptor()
+        let mut paths = PatchControlId::utility_surface_descriptor()
             .iter()
             .map(|control| FocusPath::patch_utility(patch_id, control.clone()))
             .collect::<Vec<_>>();
+        paths.extend(
+            self.state
+                .bus_returns()
+                .returns()
+                .iter()
+                .filter(|send| send.is_occupied())
+                .map(|send| FocusPath::patch_utility(patch_id, PatchControlId::Send(send.id()))),
+        );
         ensure_unique(&paths)?;
         Ok(paths)
     }
@@ -905,11 +884,21 @@ impl<'a> SemanticResolver<'a> {
         &self,
         track_id: TrackId,
     ) -> Result<Vec<FocusPath>, EventRejection> {
-        let mut paths = BusId::ALL
-            .into_iter()
+        let mut paths = self
+            .state
+            .bus_returns()
+            .returns()
+            .iter()
+            .map(|send| send.id())
             .map(|bus| FocusPath::mixer_send(track_id, bus))
             .collect::<Vec<_>>();
-        for bus in BusId::ALL {
+        for bus in self
+            .state
+            .bus_returns()
+            .returns()
+            .iter()
+            .map(|send| send.id())
+        {
             paths.push(FocusPath::mixer_return_occupancy(bus));
             paths.push(FocusPath::mixer_return_level(bus));
             let bus_return = self.state.bus_returns().bus_return(bus);
@@ -974,6 +963,7 @@ impl<'a> SemanticResolver<'a> {
     /// always contain their single read-only root anchor.
     pub fn ordered_paths(&self, surface: SurfaceId) -> Result<Vec<FocusPath>, EventRejection> {
         match surface {
+            SurfaceId::Sends => self.send_paths(self.state.interaction().selected_send()),
             SurfaceId::PatchMain => {
                 let position = self
                     .state
@@ -1231,12 +1221,20 @@ fn action_presentation(
     match action {
         SemanticAction::SelectContext(TopLevelContext::Mixer) => ("Open MIXER", Some("1")),
         SemanticAction::SelectContext(TopLevelContext::Patch) => ("Open PATCH", Some("2")),
+        SemanticAction::SelectPatch(Direction::Left) if surface == SurfaceId::Sends => {
+            ("Previous send", Some("Q"))
+        }
+        SemanticAction::SelectPatch(Direction::Right) if surface == SurfaceId::Sends => {
+            ("Next send", Some("E"))
+        }
         SemanticAction::SelectPatch(Direction::Left) => ("Previous patch", Some("Q")),
         SemanticAction::SelectPatch(Direction::Right) => ("Next patch", Some("E")),
         SemanticAction::SelectPatch(Direction::Up)
         | SemanticAction::SelectPatch(Direction::Down) => ("Unavailable patch step", None),
         SemanticAction::NavigatePage(direction) => {
             let label = match (surface, direction) {
+                (SurfaceId::Sends, Direction::Left) => "Previous send",
+                (SurfaceId::Sends, Direction::Right) => "Next send",
                 (SurfaceId::PatchMain, Direction::Up) => "Open highlighted Detail",
                 (SurfaceId::PatchMain, Direction::Down) => "Open MIXER",
                 (SurfaceId::PatchMain, Direction::Left) => "Open Settings",
@@ -1299,8 +1297,11 @@ fn action_presentation(
         SemanticAction::ToggleTestMidi => ("Toggle test MIDI", Some("T")),
         SemanticAction::PreviewStop => ("Stop preview", Some("release Space")),
         SemanticAction::SetSlotOccupancy { .. } => ("Set slot occupancy", None),
+        SemanticAction::Send(crate::control::SendAction::Open) => ("Sends", Some("Ctrl+4")),
+        SemanticAction::Send(_) => ("Edit send", None),
         SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
+        SemanticAction::EnterSurface(SurfaceId::Sends) => ("Sends", Some("Ctrl+4")),
         SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", Some("Return")),
         SemanticAction::EnterSurface(SurfaceId::PatchChoice)
         | SemanticAction::EnterSurface(SurfaceId::FileBrowser) => ("Unavailable surface", None),

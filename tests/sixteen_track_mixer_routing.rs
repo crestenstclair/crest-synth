@@ -410,7 +410,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
         );
     }
 
-    let mut state = installed_state(&shared_outputs, distinctive_mixer);
+    let mut state = installed_state(&shared_outputs, distinctive_mixer.clone());
     assert_eq!(*state.mixer(), distinctive_mixer);
     assert_eq!(state.mixer().tracks().len(), MixerTrackId::COUNT);
     assert_eq!(
@@ -474,7 +474,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
         .iter()
         .all(|patch| !matches!(patch.output().track_id().index(), 0 | 15)));
 
-    let mixer_before_navigation = *state.mixer();
+    let mixer_before_navigation = state.mixer().clone();
     let parameters_before_navigation = projector.parameter_snapshot(&state).unwrap();
     assert_eq!(
         state.interaction().focus_path(),
@@ -536,7 +536,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
                 .unwrap();
         }
     }
-    let edited_track = *control_state.mixer().track(track(0));
+    let edited_track = control_state.mixer().track(track(0)).clone();
     assert_eq!(
         edited_track,
         MixerTrackParameters::from_values(
@@ -559,7 +559,7 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     assert_eq!(projected_controls.4.mixer_track(track(0)), &edited_track);
 
     let mut output_state = installed_state(&default_outputs, MixerState::default());
-    let output_mixer_before = *output_state.mixer();
+    let output_mixer_before = output_state.mixer().clone();
     let patches_before = output_state.patches().to_vec();
     let graph_before = output_state.engine_selection().projection_graph_revision();
     enter_patch_utility(&mut output_state);
@@ -723,13 +723,15 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     assert!(approximately(
         sends
             .observation
-            .bus_input_rms(crest_synth::mixer::bus_id::BusId::ALL[0]),
+            .bus_input_rms(crest_synth::mixer::bus_id::BusId::ALL[0])
+            .expect("bus belongs to observed default bank"),
         sample_rms(&[0.05, 0.025, 0.05, 0.025]),
     ));
     assert!(approximately(
         sends
             .observation
-            .bus_input_rms(crest_synth::mixer::bus_id::BusId::ALL[1]),
+            .bus_input_rms(crest_synth::mixer::bus_id::BusId::ALL[1])
+            .expect("bus belongs to observed default bank"),
         sample_rms(&[0.1, 0.05, 0.1, 0.05]),
     ));
     let sounding_meter = sends.observation.track(track(3));
@@ -755,8 +757,20 @@ fn production_path_proves_canonical_sixteen_track_routing() {
     );
     assert_samples(&muted.output, &[0.0; SAMPLE_COUNT]);
     for bus in crest_synth::mixer::bus_id::BusId::ALL {
-        assert_eq!(muted.observation.bus_input_rms(bus), 0.0);
-        assert_eq!(muted.observation.bus_output_rms(bus), 0.0);
+        assert_eq!(
+            muted
+                .observation
+                .bus_input_rms(bus)
+                .expect("bus belongs to observed default bank"),
+            0.0
+        );
+        assert_eq!(
+            muted
+                .observation
+                .bus_output_rms(bus)
+                .expect("bus belongs to observed default bank"),
+            0.0
+        );
     }
     assert_eq!(muted.observation.track(track(3)), sounding_meter);
 

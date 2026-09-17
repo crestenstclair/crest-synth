@@ -65,7 +65,7 @@ where
         self.in_flight = Some(InFlightGraph {
             revision,
             previous_revision,
-            accepted_layout: self.required_layout,
+            accepted_layout: self.required_layout.clone(),
             active_acknowledged: false,
             retired_acknowledged: false,
             retired_collected: false,
@@ -108,7 +108,7 @@ where
         let accepted_layout = graph.layout();
         if !self
             .required_layout
-            .permits_replacement(accepted_layout, scope)
+            .permits_replacement(accepted_layout.clone(), scope)
         {
             return Err(GraphPublicationError::new(
                 GraphPublicationFailure::IncompatibleLayout,
@@ -153,7 +153,7 @@ where
                 && in_flight.retired_collected
             {
                 completed_revision = Some(in_flight.revision);
-                completed_layout = Some(in_flight.accepted_layout);
+                completed_layout = Some(in_flight.accepted_layout.clone());
             }
         }
         if completed_revision.is_some() {
@@ -212,7 +212,7 @@ where
     }
 
     pub fn in_flight_revision(&self) -> Option<GraphRevision> {
-        self.in_flight.map(|in_flight| in_flight.revision)
+        self.in_flight.as_ref().map(|in_flight| in_flight.revision)
     }
 
     pub fn staged_revision(&self) -> Option<GraphRevision> {
@@ -232,7 +232,7 @@ where
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct InFlightGraph {
     revision: GraphRevision,
     previous_revision: GraphRevision,

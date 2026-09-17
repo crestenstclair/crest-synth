@@ -2397,7 +2397,7 @@ mod tests {
                     &self.effect_registry,
                 )
                 .unwrap();
-                for bus_value in 2..MAX_BUS_RETURNS as u8 {
+                for bus_value in 2..MAX_BUS_RETURNS as u16 {
                     let bus = BusId::new(bus_value).unwrap();
                     bank.set_return_occupancy(&self.effect_registry, bus, Some(&chorus))
                         .unwrap();

@@ -3,7 +3,7 @@ use crate::mixer::mixer_track_parameters::MixerTrackParameters;
 use serde::{Deserialize, Serialize};
 
 /// Canonical fixed mixer bank owned by control state.
-#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MixerState {
     tracks: [MixerTrackParameters; MixerTrackId::COUNT],
@@ -35,7 +35,7 @@ impl MixerState {
 impl Default for MixerState {
     fn default() -> Self {
         Self {
-            tracks: [MixerTrackParameters::default(); MixerTrackId::COUNT],
+            tracks: std::array::from_fn(|_| MixerTrackParameters::default()),
         }
     }
 }
