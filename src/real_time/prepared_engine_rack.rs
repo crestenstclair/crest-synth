@@ -50,7 +50,27 @@ impl PreparedEngineRack {
         self.slots[..self.patch_count]
             .iter()
             .filter_map(Option::as_ref)
-            .filter_map(|slot| slot.instrument.prepared_asset_footprint())
+            .flat_map(|slot| slot.instrument.prepared_asset_footprints())
+    }
+
+    pub(crate) fn accepts_note(&self, patch_id: PatchId, note: u8) -> bool {
+        self.slots[..self.patch_count]
+            .iter()
+            .flatten()
+            .find(|slot| slot.patch_id == patch_id)
+            .is_none_or(|slot| slot.instrument.accepts_note(note))
+    }
+
+    pub(crate) fn prepared_sample_visualizations(
+        &self,
+        patch_id: PatchId,
+    ) -> Vec<crate::synth::PreparedSampleVisualization> {
+        self.slots[..self.patch_count]
+            .iter()
+            .flatten()
+            .find(|slot| slot.patch_id == patch_id)
+            .map(|slot| slot.instrument.prepared_sample_visualizations())
+            .unwrap_or_default()
     }
 
     pub(crate) fn prepared_sample_visualization(

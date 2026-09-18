@@ -358,7 +358,7 @@ pub enum EventInput {
         #[serde(rename = "candidateConfig")]
         candidate_config: InstrumentConfig,
         #[serde(rename = "preparedVisualization")]
-        prepared_visualization: Option<PreparedSampleVisualizationInput>,
+        prepared_visualization: Option<Vec<PreparedSampleVisualizationInput>>,
     },
     SampleAssetLifecycleAdvanced {
         #[serde(rename = "requestId")]
@@ -416,7 +416,7 @@ pub enum EventInput {
         source_graph_revision: GraphRevision,
         #[serde(rename = "targetGraphRevision")]
         target_graph_revision: GraphRevision,
-        prepared_visualization: Option<PreparedSampleVisualizationInput>,
+        prepared_visualization: Option<Vec<PreparedSampleVisualizationInput>>,
     },
     TopologyPreparationFailed {
         #[serde(rename = "requestId")]
@@ -556,9 +556,12 @@ impl From<&AppEvent> for EventInput {
                 source_graph_revision: *source_graph_revision,
                 target_graph_revision: *target_graph_revision,
                 candidate_config: candidate_config.clone(),
-                prepared_visualization: prepared_visualization
-                    .as_ref()
-                    .map(PreparedSampleVisualizationInput::from),
+                prepared_visualization: prepared_visualization.as_ref().map(|values| {
+                    values
+                        .iter()
+                        .map(PreparedSampleVisualizationInput::from)
+                        .collect()
+                }),
             },
             AppEvent::SampleAssetLifecycleAdvanced {
                 request_id,
@@ -642,9 +645,12 @@ impl From<&AppEvent> for EventInput {
                 intent: intent.clone(),
                 source_graph_revision: *source_graph_revision,
                 target_graph_revision: *target_graph_revision,
-                prepared_visualization: prepared_visualization
-                    .as_ref()
-                    .map(PreparedSampleVisualizationInput::from),
+                prepared_visualization: prepared_visualization.as_ref().map(|values| {
+                    values
+                        .iter()
+                        .map(PreparedSampleVisualizationInput::from)
+                        .collect()
+                }),
             },
             AppEvent::TopologyPreparationFailed {
                 request_id,
@@ -1016,20 +1022,20 @@ impl EventRecord {
         "input.patches[].postEffects[].values[].value.kind",
         "input.patches[].postEffects[].values[].value.value",
         "input.preparedVisualization",
-        "input.preparedVisualization.assetId",
-        "input.preparedVisualization.channels",
-        "input.preparedVisualization.crossfadeFrames",
-        "input.preparedVisualization.frames",
-        "input.preparedVisualization.loopEnd",
-        "input.preparedVisualization.loopMode",
-        "input.preparedVisualization.loopStart",
-        "input.preparedVisualization.playbackEnd",
-        "input.preparedVisualization.playbackStart",
-        "input.preparedVisualization.sampleRate",
-        "input.preparedVisualization.waveform[].leftMax",
-        "input.preparedVisualization.waveform[].leftMin",
-        "input.preparedVisualization.waveform[].rightMax",
-        "input.preparedVisualization.waveform[].rightMin",
+        "input.preparedVisualization[].assetId",
+        "input.preparedVisualization[].channels",
+        "input.preparedVisualization[].crossfadeFrames",
+        "input.preparedVisualization[].frames",
+        "input.preparedVisualization[].loopEnd",
+        "input.preparedVisualization[].loopMode",
+        "input.preparedVisualization[].loopStart",
+        "input.preparedVisualization[].playbackEnd",
+        "input.preparedVisualization[].playbackStart",
+        "input.preparedVisualization[].sampleRate",
+        "input.preparedVisualization[].waveform[].leftMax",
+        "input.preparedVisualization[].waveform[].leftMin",
+        "input.preparedVisualization[].waveform[].rightMax",
+        "input.preparedVisualization[].waveform[].rightMin",
         "input.requestId",
         "input.retiredGraphRevision",
         "input.selection.descriptor",
@@ -1042,6 +1048,7 @@ impl EventRecord {
         "input.selection.descriptor.label",
         "input.selection.descriptor.sections[].id",
         "input.selection.descriptor.sections[].label",
+        "input.selection.descriptor.sections[].leadingControls",
         "input.selection.descriptor.sections[].parameters[].choices[].id",
         "input.selection.descriptor.sections[].parameters[].choices[].label",
         "input.selection.descriptor.sections[].parameters[].coarseStep",
@@ -1687,7 +1694,7 @@ mod tests {
                     source_graph_revision: GraphRevision::INITIAL,
                     target_graph_revision,
                     candidate_config: candidate_config.clone(),
-                    prepared_visualization: Some(PreparedSampleVisualizationInput {
+                    prepared_visualization: Some(vec![PreparedSampleVisualizationInput {
                         asset_id: AssetFileId::new("event-log.wav").unwrap(),
                         sample_rate: 48_000,
                         channels: 2,
@@ -1704,7 +1711,7 @@ mod tests {
                         loop_end: 112,
                         crossfade_frames: 8,
                         loop_mode: SampleLoopMode::Forward,
-                    }),
+                    }]),
                 },
                 EventOutcome::Accepted,
                 vec![EmittedEvent::EngineSelection {
@@ -2064,7 +2071,7 @@ mod tests {
             source_graph_revision: GraphRevision::INITIAL,
             target_graph_revision: GraphRevision::new(2).unwrap(),
             candidate_config: config,
-            prepared_visualization: Some(visualization),
+            prepared_visualization: Some(vec![visualization]),
         };
         let input = EventInput::from(&event);
         let EventInput::EnginePrepared {
@@ -2074,8 +2081,8 @@ mod tests {
         else {
             panic!("EnginePrepared records its visualization");
         };
-        assert_eq!(recorded.asset_id(), &asset);
-        assert_eq!(recorded.waveform(), &[pair]);
+        assert_eq!(recorded[0].asset_id(), &asset);
+        assert_eq!(recorded[0].waveform(), &[pair]);
         let json = serde_json::to_string(&input).unwrap();
         assert!(json.contains("preparedVisualization"));
         assert!(!json.contains("interleaved"));

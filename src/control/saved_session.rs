@@ -570,10 +570,8 @@ impl PreparedSavedSession {
             .patches()
             .iter()
             .filter_map(|patch| {
-                self.graph
-                    .prepared_sample_visualization(patch.id())
-                    .cloned()
-                    .map(|value| (patch.id(), value))
+                let summaries = self.graph.prepared_sample_visualizations(patch.id());
+                (!summaries.is_empty()).then_some((patch.id(), summaries))
             })
             .collect();
         let payload = SessionReplacementPayload::from_prepared_state(

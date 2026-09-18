@@ -102,7 +102,7 @@ impl PreparedEngineRackBuilder {
                     actual,
                 });
             }
-            if let Some(footprint) = instrument.prepared_asset_footprint() {
+            for footprint in instrument.prepared_asset_footprints() {
                 let identity = (footprint.reference().clone(), footprint.preparation_key());
                 {
                     let shared = if prepared_asset_identities.insert(identity) {

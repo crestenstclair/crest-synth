@@ -5,6 +5,9 @@ use crate::mixer::mixer_state::MixerState;
 use crate::real_time::GraphRevision;
 use crate::synth::Patch;
 
+pub(crate) type PatchSampleVisualizations =
+    std::collections::BTreeMap<PatchId, Vec<crate::synth::PreparedSampleVisualization>>;
+
 /// One reducer payload correlated with an already prepared complete graph.
 ///
 /// Its fields and constructor remain crate-private so persistence, shell, and
@@ -18,18 +21,14 @@ pub struct SessionReplacementPayload {
     global: GlobalParameters,
     returns: BusReturnBank,
     target_graph_revision: GraphRevision,
-    sample_visualizations:
-        std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
+    sample_visualizations: PatchSampleVisualizations,
 }
 
 impl SessionReplacementPayload {
     pub(crate) fn from_prepared_state(
         state: &crate::control::AppState,
         target_graph_revision: GraphRevision,
-        sample_visualizations: std::collections::BTreeMap<
-            PatchId,
-            crate::synth::PreparedSampleVisualization,
-        >,
+        sample_visualizations: PatchSampleVisualizations,
     ) -> Self {
         Self {
             patches: state.patches().to_vec(),
@@ -50,7 +49,7 @@ impl SessionReplacementPayload {
         GlobalParameters,
         BusReturnBank,
         GraphRevision,
-        std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
+        PatchSampleVisualizations,
     ) {
         (
             self.patches,

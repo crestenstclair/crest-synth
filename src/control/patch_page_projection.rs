@@ -423,6 +423,7 @@ impl PatchPageEnvelopeRow {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(tag = "source", rename_all = "camelCase")]
 pub enum PatchPageParameterValue {
+    EmptyAsset,
     Parameter { value: ParameterValue },
     Asset { reference: AssetReference },
 }
@@ -431,13 +432,13 @@ impl PatchPageParameterValue {
     pub const fn parameter(&self) -> Option<&ParameterValue> {
         match self {
             Self::Parameter { value } => Some(value),
-            Self::Asset { .. } => None,
+            Self::Asset { .. } | Self::EmptyAsset => None,
         }
     }
 
     pub const fn asset(&self) -> Option<&AssetReference> {
         match self {
-            Self::Parameter { .. } => None,
+            Self::Parameter { .. } | Self::EmptyAsset => None,
             Self::Asset { reference } => Some(reference),
         }
     }
@@ -876,14 +877,11 @@ fn detail_sections<'a>(
                 .iter()
                 .map(|spec| {
                     let resolved = if spec.kind() == ParameterKind::Asset {
-                        let reference = asset(spec.id())
-                            .or_else(|| match spec.default_value() {
-                                ParameterDefault::Asset(reference) => Some(reference),
-                                ParameterDefault::Value(_) => None,
-                            })
-                            .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
-                        PatchPageParameterValue::Asset {
-                            reference: reference.clone(),
+                        match asset(spec.id()) {
+                            Some(reference) => PatchPageParameterValue::Asset {
+                                reference: reference.clone(),
+                            },
+                            None => PatchPageParameterValue::EmptyAsset,
                         }
                     } else {
                         PatchPageParameterValue::Parameter {
@@ -1512,16 +1510,9 @@ impl PatchPageProjection {
                     .iter()
                     .map(|spec| {
                         let value = if spec.kind() == ParameterKind::Asset {
-                            let reference = source
-                                .instrument_config()
-                                .asset_reference(spec.id())
-                                .or_else(|| match spec.default_value() {
-                                    ParameterDefault::Asset(reference) => Some(reference),
-                                    ParameterDefault::Value(_) => None,
-                                })
-                                .ok_or(PatchPageProjectionError::InvalidInstrumentConfig)?;
-                            PatchPageParameterValue::Asset {
-                                reference: reference.clone(),
+                            match source.instrument_config().asset_reference(spec.id()) {
+                                Some(reference) => PatchPageParameterValue::Asset { reference: reference.clone() },
+                                None => PatchPageParameterValue::EmptyAsset,
                             }
                         } else {
                             let value = source
@@ -2249,6 +2240,10 @@ mod tests {
                     structural.then(|| PatchControlId::Capability(spec.id().clone()))
                 );
                 match row.value() {
+                    PatchPageParameterValue::EmptyAsset => assert!(patch
+                        .instrument_config()
+                        .asset_reference(spec.id())
+                        .is_none()),
                     PatchPageParameterValue::Parameter { value } => {
                         assert_eq!(Some(value), patch.instrument_config().value(spec.id()));
                     }

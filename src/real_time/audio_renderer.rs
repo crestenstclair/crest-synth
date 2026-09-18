@@ -172,6 +172,17 @@ where
                     // would strand a latched voice. An identity the snapshot
                     // does not carry is not tested here at all, so the routing
                     // failure below stays the one report for it.
+                    if matches!(
+                        message.kind(),
+                        MidiMessageKind::NoteOn | MidiMessageKind::NoteOff
+                    ) && !self
+                        .active_graph
+                        .callback_parts_mut()
+                        .0
+                        .accepts_note(patch_id, message.data1())
+                    {
+                        continue;
+                    }
                     if let Some(parameters) = matching_parameters {
                         if starts_a_note(message)
                             && self.active_notes.count_patch(patch_id)

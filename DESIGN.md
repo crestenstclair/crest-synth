@@ -130,7 +130,7 @@ The application currently provides:
 
 - PATCH and MIXER as the only top-level contexts;
 - sparse stable Patch identities; current runtime capacity debt is described above;
-- SoundFont, Sample, Braids, Mutable, DaisySP, STK, mda, MSFA DX7, and sfizz
+- SoundFont, Sample, Drum Rack, Braids, Mutable, DaisySP, STK, mda, MSFA DX7, and sfizz
   instruments in the production registry. SoundFont retains its HiDef identity
   and accepts local SF2 banks; DX7 imports single-voice and bank SysEx libraries;
 - Sample installed by default with `Test Tone.wav` in
@@ -435,6 +435,17 @@ status and are formatted/handled off callback.
   lifecycle and commits only after activation; reductions change admission.
   Configurable engines preserve budgets across engine changes. Descriptor
   defaults seed new Patches and do not impose engine ceilings.
+- Drum Rack composes sixteen independent Sample slots on MIDI notes 36–51
+  (Ableton C1–D#2). Slots start empty; unmapped and empty notes do not consume
+  note admission. Loaded pads play at Sample's reference pitch, with independent
+  files, tuning, playback, and loop controls. The Patch envelope, voice budget,
+  output, sends, and effects remain shared. All Sample banks prepare off callback;
+  standalone Sample and Drum Rack share the worker-owned PCM cache, and graph
+  admission accounts for every resident asset and private native copy.
+  The leading Pad choice uses the existing scalar Choice workflow and persists
+  with the Patch; it selects visible controls without changing MIDI routing.
+  Visibility predicates govern presentation and preserve hidden values; enabled
+  dependencies still validate control values.
 - Instrument and effect scalar layouts use prepared vectors rather than fixed
   parameter counts. Callback ownership swaps avoid allocation or destruction
   when a compatible snapshot arrives. Render rejection becomes a typed routing
@@ -678,7 +689,10 @@ replace the decoded summary. The engine-choice regression in
 audio block activation, acknowledgement, and Detail projection without first
 assigning a file in the browser. Prepared session replacement also carries the
 waveform summaries belonging to its complete graph, hydrating startup and Open through `AppState::apply` without
-storing waveform caches in the saved document. Newly appended Sample Patches
+storing waveform caches in the saved document. Prepared instruments may supply
+multiple asset summaries; Drum Rack switches the visible waveform with the
+selected pad. Optional asset rows show EMPTY and open the same correlated
+browser before their first assignment. Newly appended Sample Patches
 retain the summary supplied by their topology preparation.
 
 Saved state is versioned and stores canonical control state and stable relative
@@ -961,8 +975,9 @@ full_demo_`; debug test runs skip those timing checks.
 
 `make full-instrument-effect-demo` runs a sequential listening tour in the
 production window and audio runtime, focused on the new audio catalog. The
-composition root skips SoundFont, standalone Braids auditions, and the legacy
-Chorus, Reverb, and Delay. The changed Sample renderer remains included. The
+composition root skips SoundFont, standalone Braids auditions, the initially
+empty Drum Rack, and the legacy Chorus, Reverb, and Delay. Drum Rack has a
+separate pad-loading, note-routing, and rendering witness. The changed Sample renderer remains included. The
 installed registries supply the remaining entries: each instrument is
 auditioned dry, then each effect occupies one post-effect position on the
 composition-root-designated Braids
@@ -986,6 +1001,16 @@ bundled assets, and read-only fields and asset scope are reported explicitly;
 the demo does not enumerate imported file libraries. In particular, the
 bundled NAM test model and transparent convolution IR do not demonstrate a
 library of amp captures or reverbs.
+
+`make demo-live-drum-rack` runs an isolated Drum Rack listening scene in the
+production window and audio runtime. It renders the bundled HiDef standard
+percussion kit into a process-owned temporary WAV library before startup,
+loads all sixteen pads through the Sample preparer, auditions each pad, then
+plays an eight-bar layered groove at 120 BPM. The Sample editor follows the
+pad selector through ordinary semantic actions. D#2 retains the requested
+name `Right` and uses a ride cymbal. The scene shares the listening-tour
+scheduler, graph activation, input isolation, and cleanup; it does not alter
+the user's Sample library or the `demo-live` alias.
 
 Scene navigation uses the production semantic resolver and reducer. Complete
 session candidates use the existing background session worker and structural

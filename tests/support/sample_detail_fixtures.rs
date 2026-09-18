@@ -82,7 +82,7 @@ fn preparation_event(
         source_graph_revision: effect.source_graph_revision(),
         target_graph_revision: effect.source_graph_revision().checked_next().unwrap(),
         candidate_config: config,
-        prepared_visualization: Some(visualization),
+        prepared_visualization: Some(vec![visualization]),
     }
 }
 
@@ -257,11 +257,11 @@ pub fn sample_detail_states() -> Vec<(&'static str, AppState)> {
         ..
     } = &mut wrong_summary
     {
-        *prepared_visualization = Some(prepared_waveform(
+        *prepared_visualization = Some(vec![prepared_waveform(
             &provider,
             state.patches()[0].instrument_config(),
             ACTIVE_ASSET,
-        ));
+        )]);
     }
     incompatible.apply(wrong_summary).unwrap();
     acknowledge(&mut incompatible, &replacement);

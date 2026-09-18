@@ -576,11 +576,10 @@ pub struct AppState {
     /// Canonical aggregate reserved for one implicit append. It remains
     /// transient until matching graph activation acknowledgement.
     pending_patch_creation: Option<Patch>,
-    sample_visualizations:
-        std::collections::BTreeMap<PatchId, crate::synth::PreparedSampleVisualization>,
+    sample_visualizations: super::session_replacement::PatchSampleVisualizations,
     pending_sample_visualization: Option<(
         EngineSelectionRequestId,
-        crate::synth::PreparedSampleVisualization,
+        Vec<crate::synth::PreparedSampleVisualization>,
     )>,
     last_engine_selection_request_id: EngineSelectionRequestId,
     generation: u64,
@@ -802,12 +801,11 @@ impl AppState {
                     && (self.file_browser.preview_request_id() == Some(*request_id)
                         || self.file_browser.request_id() == Some(*request_id))
             })
-            .map(|(_, visualization)| visualization)
-            .filter(matches_asset)
+            .and_then(|(_, visualizations)| visualizations.iter().find(matches_asset))
             .or_else(|| {
                 self.sample_visualizations
                     .get(&patch_id)
-                    .filter(matches_asset)
+                    .and_then(|visualizations| visualizations.iter().find(matches_asset))
             })
     }
 
@@ -2440,20 +2438,10 @@ impl AppState {
             return Err(EventRejection::StructuralEditBusy);
         }
         let origin = self.interaction.focus_path().clone();
-        let (patch_id, parameter_id) = self.browser_asset_origin(&origin)?;
-        let reference = if let Some(target) = self.effect_asset_target(&origin) {
-            target
-                .config(&self.patches, &self.returns)
-                .and_then(|c| c.asset_reference(&parameter_id))
-        } else {
-            self.patches
-                .iter()
-                .find(|p| Some(p.id()) == patch_id)
-                .and_then(|p| p.instrument_config().asset_reference(&parameter_id))
-        }
-        .ok_or(EventRejection::InvalidSelection)?;
+        let (_, parameter_id) = self.browser_asset_origin(&origin)?;
+        let kind = self.browser_asset_kind(&origin, &parameter_id)?;
         self.file_browser
-            .begin_from(origin.clone(), parameter_id.clone(), reference.kind());
+            .begin_from(origin.clone(), parameter_id.clone(), kind);
         let row = self
             .file_browser
             .rows()
@@ -2537,6 +2525,34 @@ impl AppState {
             _ => None,
         }
     }
+    fn browser_asset_kind(
+        &self,
+        origin: &FocusPath,
+        parameter: &ParameterId,
+    ) -> Result<AssetKind, EventRejection> {
+        let kind = if let Some(target) = self.effect_asset_target(origin) {
+            target
+                .config(&self.patches, &self.returns)
+                .and_then(|config| config.asset_reference(parameter))
+                .map(AssetReference::kind)
+        } else {
+            self.patches
+                .iter()
+                .find(|patch| Some(patch.id()) == origin.patch_id())
+                .and_then(|patch| {
+                    self.capabilities
+                        .descriptor_for_config(patch.instrument_config())
+                })
+                .and_then(|descriptor| descriptor.parameter(parameter))
+                .and_then(|spec| match spec.default_value() {
+                    crate::synth::ParameterDefault::Asset(reference) => Some(reference.kind()),
+                    _ => None,
+                })
+        };
+        kind.filter(|kind| *kind != AssetKind::Other)
+            .ok_or(EventRejection::ActionUnavailableInContext)
+    }
+
     fn browser_asset_origin(
         &self,
         origin: &FocusPath,
@@ -2559,19 +2575,7 @@ impl AppState {
             | SemanticControlId::Mixer(MixerControlId::ReturnEffect { parameter, .. }) => parameter,
             _ => return Err(EventRejection::ActionUnavailableInContext),
         };
-        let reference = if let Some(target) = self.effect_asset_target(origin) {
-            target
-                .config(&self.patches, &self.returns)
-                .and_then(|c| c.asset_reference(parameter))
-        } else {
-            self.patches
-                .iter()
-                .find(|p| Some(p.id()) == patch_id)
-                .and_then(|p| p.instrument_config().asset_reference(parameter))
-        };
-        if reference.is_none_or(|r| r.kind() == AssetKind::Other) {
-            return Err(EventRejection::ActionUnavailableInContext);
-        }
+        self.browser_asset_kind(origin, parameter)?;
         Ok((patch_id, parameter.clone()))
     }
 
@@ -3140,11 +3144,10 @@ impl AppState {
             })
             .ok_or(EventRejection::InvalidSelection)?;
         let reference = AssetReference::new(
-            patch
-                .instrument_config()
-                .asset_reference(&parameter_id)
-                .ok_or(EventRejection::InvalidSelection)?
-                .kind(),
+            match spec.default_value() {
+                crate::synth::ParameterDefault::Asset(reference) => reference.kind(),
+                _ => return Err(EventRejection::InvalidSelection),
+            },
             asset_id.as_str(),
         )
         .map_err(|_| EventRejection::InvalidParameterValue)?;
@@ -3447,7 +3450,7 @@ impl AppState {
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
         candidate_config: crate::synth::InstrumentConfig,
-        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
+        prepared_visualization: Option<Vec<crate::synth::PreparedSampleVisualization>>,
     ) -> Result<EngineSelectionEffect, EventRejection> {
         let correlation = self.pending_correlation(request_id)?.clone();
         if correlation.patch_id() != Some(patch_id)
@@ -5994,18 +5997,9 @@ fn candidate_matches_intent(
             reference,
         } => {
             source.capability_id() == capability_id
-                && candidate.capability_id() == capability_id
-                && source.values() == candidate.values()
-                && source.asset_references().len() == candidate.asset_references().len()
-                && candidate.asset_reference(parameter_id) == Some(reference)
-                && candidate
-                    .asset_references()
-                    .iter()
-                    .zip(source.asset_references())
-                    .all(|(next, prior)| {
-                        next.parameter_id() == prior.parameter_id()
-                            && (next.parameter_id() == parameter_id || next == prior)
-                    })
+                && registry
+                    .replace_asset(source, parameter_id, reference.clone())
+                    .is_ok_and(|expected| expected == *candidate)
         }
     }
 }

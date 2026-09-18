@@ -521,7 +521,7 @@ pub enum AppEvent {
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
         candidate_config: InstrumentConfig,
-        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
+        prepared_visualization: Option<Vec<crate::synth::PreparedSampleVisualization>>,
     },
     /// Advances one correlated Sample assignment through observable worker-side
     /// admission stages. Only Loading → Validating → Preparing is accepted.
@@ -580,7 +580,7 @@ pub enum AppEvent {
         intent: StructuralEditIntent,
         source_graph_revision: GraphRevision,
         target_graph_revision: GraphRevision,
-        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
+        prepared_visualization: Option<Vec<crate::synth::PreparedSampleVisualization>>,
     },
     /// Records one correlated typed occupancy refusal without adapter detail.
     TopologyPreparationFailed {

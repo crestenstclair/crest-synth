@@ -222,6 +222,8 @@ const PERFORMANCE_WITNESS_ENV: &str = "CREST_WEBVIEW_PERFORMANCE_WITNESS";
 const CONTROLLER_WITNESS_ENV: &str = "CREST_WEBVIEW_CONTROLLER_WITNESS";
 #[path = "support/controller_settings_native.rs"]
 mod controller_settings_native;
+#[path = "support/drum_rack_fixtures.rs"]
+mod drum_rack_fixtures;
 #[cfg(target_os = "macos")]
 #[path = "support/page_navigation_native.rs"]
 mod page_navigation_native;
@@ -2094,7 +2096,10 @@ fn prove_serialized_schema_fidelity() -> FidelityEvidence {
         zero_level_document,
         patch_geometry_document,
     };
-    for (label, state) in sample_detail_fixtures::sample_detail_states() {
+    for (label, state) in sample_detail_fixtures::sample_detail_states()
+        .into_iter()
+        .chain(drum_rack_fixtures::states())
+    {
         let (_, bytes) =
             check_state_fidelity(&projector, &mut ProjectionChannel::new(), &state, label);
         evidence.patch_documents.push((label, bytes));
@@ -7650,7 +7655,9 @@ fn drive_live_window(
     let sample_documents = fidelity
         .patch_documents
         .iter()
-        .filter(|(label, _)| label.starts_with("patch-sample"))
+        .filter(|(label, _)| {
+            label.starts_with("patch-sample") || label.starts_with("patch-drum-rack")
+        })
         .cloned()
         .collect::<Vec<_>>();
     let patch_documents: &[(&'static str, String)] = if sample_witness {
@@ -7878,7 +7885,7 @@ fn drive_live_window(
             &format!("T024 desktop 1920x1080 {patch_label}"),
         );
         let name = format!("t024-{patch_label}-desktop-1920x1080.png");
-        if sample_witness && patch_document["activeSurface"] == "patchDetail" {
+        if sample_witness {
             sample_capture(&window, &name, patch_bytes, &first)?;
         } else {
             screenshot(&name);
@@ -8078,7 +8085,7 @@ fn drive_live_window(
             &format!("T024 standard 1280x800 {patch_label}"),
         );
         let name = format!("t024-{patch_label}-compact-1280x800.png");
-        if sample_witness && patch_document["activeSurface"] == "patchDetail" {
+        if sample_witness {
             sample_capture(&window, &name, patch_bytes, &first)?;
         } else {
             screenshot(&name);

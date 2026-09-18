@@ -9,6 +9,8 @@ pub(crate) mod controller_preferences;
 pub mod cpal_audio_output;
 pub mod delay_capability;
 pub mod delay_preparer;
+pub mod drum_rack_capability;
+pub mod drum_rack_preparer;
 pub mod filesystem_file_browser;
 pub mod filesystem_midi_input_preference;
 pub mod filesystem_sample_catalog;

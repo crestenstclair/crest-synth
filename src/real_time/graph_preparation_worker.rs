@@ -709,7 +709,7 @@ pub enum GraphPreparationResult {
         /// occupancy intents change no instrument config. The reducer keeps
         /// it pending until activation acknowledgement.
         candidate_config: Option<InstrumentConfig>,
-        prepared_visualization: Option<crate::synth::PreparedSampleVisualization>,
+        prepared_visualization: Option<Vec<crate::synth::PreparedSampleVisualization>>,
         prepared_graph: PreparedGraph,
     },
     Failed {
@@ -937,18 +937,9 @@ fn validate_candidate_delta(
             reference,
         } => {
             if source.capability_id() != capability_id
-                || candidate.capability_id() != capability_id
-                || source.values() != candidate.values()
-                || source.asset_references().len() != candidate.asset_references().len()
-                || candidate.asset_reference(parameter_id) != Some(reference)
-                || candidate
-                    .asset_references()
-                    .iter()
-                    .zip(source.asset_references())
-                    .any(|(next, prior)| {
-                        next.parameter_id() != prior.parameter_id()
-                            || (next.parameter_id() != parameter_id && next != prior)
-                    })
+                || !registry
+                    .replace_asset(source, parameter_id, reference.clone())
+                    .is_ok_and(|expected| expected == *candidate)
             {
                 return Err(GraphPreparationRequestError::ConfigDeltaMismatch);
             }
@@ -1076,8 +1067,8 @@ pub(crate) fn prepare_graph_request_with_effects(
             }
             let prepared_visualization = correlation
                 .patch_id()
-                .and_then(|patch_id| prepared_graph.prepared_sample_visualization(patch_id))
-                .cloned();
+                .map(|patch_id| prepared_graph.prepared_sample_visualizations(patch_id))
+                .filter(|values| !values.is_empty());
             GraphPreparationResult::Prepared {
                 correlation,
                 candidate_config,
