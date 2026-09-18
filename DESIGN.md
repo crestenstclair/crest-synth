@@ -1092,8 +1092,9 @@ source. The manually dispatched `Release binaries` workflow builds both targets
 from one commit and checks the packaged production smoke path outside the checkout.
 Bundles target macOS 11 or newer; builds and smoke checks do not establish physical
 device acceptance on every OS version. Signing is ad-hoc; Developer ID signing and
-notarization remain unavailable until credentials are configured. Publish verified
-artifacts and SHA-256 checksums only after both jobs pass, tagging that exact commit.
+notarization remain unavailable until credentials are configured. The workflow's
+optional publish input tags the exact build commit and publishes verified artifacts
+and SHA-256 checksums only after both native jobs pass.
 
 ## Change checklist
 

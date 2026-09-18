@@ -21,6 +21,12 @@ assert header[:4] == b'RIFF' and header[8:] == b'sfbk', 'Run git lfs pull before
 PY
 
 cargo build --locked --release --bins
+# Unlike Apple's ARM linker, the Intel linker leaves executables unsigned.
+# Tauri verifies the main executable before signing its bundled sibling, so
+# every executable needs an initial signature before it enters the app bundle.
+for executable in crest-synth crest-synth-witness; do
+  codesign --force --sign - "target/release/$executable"
+done
 npx --yes @tauri-apps/cli@2.11.4 bundle --ci --bundles app,dmg
 app="$PWD/target/release/bundle/macos/crest-synth.app"
 codesign --verify --deep --strict "$app"
