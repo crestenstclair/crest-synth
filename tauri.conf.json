@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "crest-synth",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "identifier": "synth.crest.dev",
   "build": {},
   "app": {
@@ -24,11 +24,18 @@
     }
   },
   "bundle": {
-    "active": false,
-    "resources": [
-      "assets/licenses/UPSTREAM_AUDIO.txt",
-      "assets/licenses/SDL3.txt",
-      "assets/licenses/EIGEN_SOURCE.tar.gz"
-    ]
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": ["icons/icon.png"],
+    "macOS": {
+      "minimumSystemVersion": "11.0",
+      "signingIdentity": "-"
+    },
+    "resources": {
+      "assets/licenses/": "licenses/",
+      "vendor/azeret-mono/OFL.txt": "licenses/AZERET_MONO.txt",
+      "sf2/SGM-V2.01.sf2": "sf2/HiDef.sf2",
+      "midi/Radiohead - Everything In Its Right Place - HiDef Compatible.mid": "midi/Radiohead - Everything In Its Right Place - HiDef Compatible.mid"
+    }
   }
 }

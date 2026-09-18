@@ -1,6 +1,7 @@
 #include "parameter_adapter.h"
-#include "fftconvolver/FFTConvolver.h"
+// Load SIMD headers at global scope before FFTConvolver's namespaced includes.
 #include "CDSPResampler.h"
+#include "fftconvolver/FFTConvolver.h"
 
 class ConvolutionEffect final : public ParameterAdapter {
     fftconvolver::FFTConvolver left_,right_;

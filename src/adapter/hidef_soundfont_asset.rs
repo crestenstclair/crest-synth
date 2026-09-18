@@ -18,7 +18,9 @@ pub struct HiDefSoundFontAsset {
 impl HiDefSoundFontAsset {
     /// Opens the fixed production asset and parses it exactly once.
     pub fn load() -> Result<Self, HiDefSoundFontAssetError> {
-        Self::load_from_path(Path::new(HIDEF_SOUNDFONT_PATH))
+        let path = super::bundled_resource::path(HIDEF_SOUNDFONT_PATH)
+            .map_err(|_| HiDefSoundFontAssetError::FileOpen)?;
+        Self::load_from_path(&path)
     }
 
     pub fn load_from_path(path: &Path) -> Result<Self, HiDefSoundFontAssetError> {
