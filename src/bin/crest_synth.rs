@@ -80,10 +80,14 @@ fn main() -> Result<()> {
 fn full_demo_selection() -> Result<FullDemoSelection> {
     Ok(FullDemoSelection {
         effect_reference: CapabilityId::new(BRAIDS_CAPABILITY_ID)?,
-        skipped_instruments: [HIDEF_CAPABILITY_ID, BRAIDS_CAPABILITY_ID]
-            .into_iter()
-            .map(CapabilityId::new)
-            .collect::<Result<_, _>>()?,
+        skipped_instruments: [
+            HIDEF_CAPABILITY_ID,
+            BRAIDS_CAPABILITY_ID,
+            crest_synth::adapter::drum_rack_capability::DRUM_RACK_CAPABILITY_ID,
+        ]
+        .into_iter()
+        .map(CapabilityId::new)
+        .collect::<Result<_, _>>()?,
         skipped_effects: [
             crest_synth::adapter::chorus_capability::CHORUS_CAPABILITY_ID,
             crest_synth::adapter::reverb_capability::REVERB_CAPABILITY_ID,
@@ -96,9 +100,8 @@ fn full_demo_selection() -> Result<FullDemoSelection> {
 }
 
 fn run(options: Options) -> Result<()> {
-    let _phase7_sample_library = options
-        .demo_live_detail_and_assets
-        .then(DemoSampleLibrary::create)
+    let _demo_sample_library = (options.demo_live_detail_and_assets || options.demo_live_drum_rack)
+        .then(|| DemoSampleLibrary::create(options.demo_live_drum_rack))
         .transpose()?;
     let make_application = || -> Result<_> {
         let config = ApplicationConfig::default().with_test_midi_on_launch();
@@ -150,7 +153,12 @@ fn run(options: Options) -> Result<()> {
             .with_system_input_devices())
     };
 
-    if options.full_instrument_effect_demo {
+    if options.demo_live_drum_rack {
+        make_application()?
+            .with_drum_rack_demo()
+            .run()
+            .context("Drum Rack demo failed")?;
+    } else if options.full_instrument_effect_demo {
         make_application()?
             .with_full_instrument_effect_demo(full_demo_selection()?)
             .run()
@@ -350,7 +358,7 @@ fn emit_live_report(report: &LiveDemoReport) {
     println!("CREST_LIVE_SUMMARY {}", report.summary());
 }
 
-/// Self-contained production-adapter library for the retained Phase 7 scene.
+/// Self-contained production-adapter library for Sample and Drum Rack scenes.
 ///
 /// The files are created before application composition and consumed through
 /// `FilesystemSampleCatalog` plus `WavSampleDecoder`; no fixture decoder or
@@ -363,17 +371,19 @@ struct DemoSampleLibrary {
 }
 
 impl DemoSampleLibrary {
-    fn create() -> Result<Self> {
+    fn create(drum_rack: bool) -> Result<Self> {
         let unique = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .context("system clock is before the Unix epoch")?
             .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "crest-synth-phase7-{}-{unique}",
-            std::process::id()
-        ));
-        std::fs::create_dir(&root).context("failed to create the Phase 7 sample library")?;
+        let root =
+            std::env::temp_dir().join(format!("crest-synth-demo-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&root).context("failed to create the demo sample library")?;
         let write_result = (|| -> Result<()> {
+            if drum_rack {
+                crest_synth::testing::drum_rack_demo::write_samples(&root)?;
+                return Ok(());
+            }
             std::fs::write(root.join("A-valid.wav"), demo_wave(196.0))
                 .context("failed to write the active Phase 7 WAV fixture")?;
             std::fs::write(root.join("B-alternate.wav"), demo_wave(329.63))
@@ -397,7 +407,11 @@ impl DemoSampleLibrary {
         );
         std::env::set_var(
             crest_synth::adapter::production_instruments::SAMPLE_DEFAULT_ASSET_ENV,
-            "A-valid.wav",
+            if drum_rack {
+                crest_synth::testing::drum_rack_demo::sample_filename(0)
+            } else {
+                "A-valid.wav".into()
+            },
         );
         Ok(Self {
             root,
@@ -458,6 +472,7 @@ struct Options {
     observe: bool,
     demo_scene: bool,
     full_instrument_effect_demo: bool,
+    demo_live_drum_rack: bool,
     demo_live: bool,
     demo_live_mixer: bool,
     demo_live_semantic: bool,
@@ -487,6 +502,9 @@ where
     let arguments = arguments.into_iter();
     for argument in arguments {
         match argument.as_ref() {
+            "--demo-live-drum-rack" if !options.demo_live_drum_rack => {
+                options.demo_live_drum_rack = true;
+            }
             "--full-instrument-effect-demo" if !options.full_instrument_effect_demo => {
                 options.full_instrument_effect_demo = true;
             }
@@ -543,6 +561,7 @@ where
                 options.degenerate = Some(DegenerateMode::Control);
             }
             "--full-instrument-effect-demo"
+            | "--demo-live-drum-rack"
             | "--smoke"
             | "--observe"
             | "--demo-scene"
@@ -566,7 +585,7 @@ where
         }
     }
 
-    if options.full_instrument_effect_demo
+    if (options.full_instrument_effect_demo || options.demo_live_drum_rack)
         && (options.smoke
             || options.observe
             || options.demo_scene
@@ -574,9 +593,10 @@ where
             || options.demo_component_library
             || options.degenerate.is_some()
             || options.defeat_patch_selection
-            || options.defeat_detail_and_assets_preview)
+            || options.defeat_detail_and_assets_preview
+            || (options.full_instrument_effect_demo && options.demo_live_drum_rack))
     {
-        bail!("--full-instrument-effect-demo must be used by itself");
+        bail!("listening demo options must be used by themselves");
     }
     if options.observe && !options.smoke {
         bail!("--observe requires --smoke");
@@ -1437,7 +1457,11 @@ mod tests {
                 .iter()
                 .map(|id| id.as_str())
                 .collect::<Vec<_>>(),
-            [super::HIDEF_CAPABILITY_ID, super::BRAIDS_CAPABILITY_ID]
+            [
+                super::HIDEF_CAPABILITY_ID,
+                super::BRAIDS_CAPABILITY_ID,
+                crest_synth::adapter::drum_rack_capability::DRUM_RACK_CAPABILITY_ID
+            ]
         );
         assert_eq!(
             selection
@@ -1466,6 +1490,7 @@ mod tests {
                 observe: false,
                 demo_scene: false,
                 full_instrument_effect_demo: false,
+                demo_live_drum_rack: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1486,6 +1511,7 @@ mod tests {
                 observe: true,
                 demo_scene: false,
                 full_instrument_effect_demo: false,
+                demo_live_drum_rack: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1506,6 +1532,7 @@ mod tests {
                 observe: true,
                 demo_scene: true,
                 full_instrument_effect_demo: false,
+                demo_live_drum_rack: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1526,6 +1553,7 @@ mod tests {
                 observe: true,
                 demo_scene: false,
                 full_instrument_effect_demo: false,
+                demo_live_drum_rack: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1552,6 +1580,7 @@ mod tests {
                 observe: true,
                 demo_scene: true,
                 full_instrument_effect_demo: false,
+                demo_live_drum_rack: false,
                 demo_live: false,
                 demo_live_mixer: false,
                 demo_live_semantic: false,
@@ -1640,7 +1669,7 @@ mod tests {
         );
         assert!(parse_options(["--defeat-detail-and-assets-preview"]).is_err());
 
-        let library = DemoSampleLibrary::create().unwrap();
+        let library = DemoSampleLibrary::create(false).unwrap();
         let catalog =
             crest_synth::adapter::filesystem_sample_catalog::FilesystemSampleCatalog::new(
                 &library.root,
@@ -1751,6 +1780,33 @@ mod tests {
         assert!(makefile.contains("cargo run --release --bin crest-synth -- --demo-live-mixer"));
         assert!(makefile.contains("demo-live: demo-live-detail-and-assets"));
         assert!(!makefile.contains("demo-live: demo-live-mixer"));
+    }
+
+    #[test]
+    fn drum_rack_demo_is_an_isolated_additive_option() {
+        assert_eq!(
+            parse_options(["--demo-live-drum-rack"]).unwrap(),
+            Options {
+                demo_live_drum_rack: true,
+                ..Options::default()
+            }
+        );
+        for other in [
+            "--demo-live-drum-rack",
+            "--full-instrument-effect-demo",
+            "--demo-live",
+            "--smoke",
+            "--demo-live-component-library",
+            "--defeat-patch-selection",
+        ] {
+            assert!(parse_options(["--demo-live-drum-rack", other]).is_err());
+            assert!(parse_options([other, "--demo-live-drum-rack"]).is_err());
+        }
+        assert!(
+            parse_options(["--demo-live"])
+                .unwrap()
+                .demo_live_detail_and_assets
+        );
     }
 
     /// The gallery is its own scene, not a live-demo alias.

@@ -185,7 +185,7 @@ impl StateTree {
     /// Version 28: descriptor-derived explanations for read-only controls.
     /// Version 29: optional display names for numeric stepped parameters.
     /// Version 32: named send chains, their full audio parameters, and send-screen interaction.
-    /// Version 33: independent Patch send levels in state and audio projections.
+    /// Version 34: leading Detail controls and optional, grouped Sample assets.
     ///
     /// Version 23: browser metadata distinguishes unavailable files from
     /// invalid audio and carries download-required and empty-file causes.
@@ -240,7 +240,7 @@ impl StateTree {
     /// Version 24: asset-scoped capability catalogs and file-kind-correlated browser events.
     /// Version 25: source-specific `NavigatePage` actions and Settings-only
     /// PATCH page absence in full and generation-only projections.
-    pub const SCHEMA_VERSION: u32 = 33;
+    pub const SCHEMA_VERSION: u32 = 34;
     pub const SERIALIZED_PROPERTY_DESCRIPTOR: &'static [&'static str] = &[
         "schemaVersion",
         "generation",
@@ -305,6 +305,7 @@ impl StateTree {
         "capabilities.descriptors[].visualizations[].landmarks[].role",
         "capabilities.descriptors[].sections[].id",
         "capabilities.descriptors[].sections[].label",
+        "capabilities.descriptors[].sections[].leadingControls",
         "capabilities.descriptors[].sections[].parameters[].id",
         "capabilities.descriptors[].sections[].parameters[].label",
         "capabilities.descriptors[].sections[].parameters[].kind",
@@ -335,6 +336,9 @@ impl StateTree {
         "capabilities.descriptors[].sections[].parameters[].enabledWhen.equals.kind",
         "capabilities.descriptors[].sections[].parameters[].enabledWhen.equals.value",
         "capabilities.descriptors[].sections[].parameters[].visibleWhen",
+        "capabilities.descriptors[].sections[].parameters[].visibleWhen.parameterId",
+        "capabilities.descriptors[].sections[].parameters[].visibleWhen.equals.kind",
+        "capabilities.descriptors[].sections[].parameters[].visibleWhen.equals.value",
         "capabilities.descriptors[].assetRequirements[].parameterId",
         "capabilities.descriptors[].assetRequirements[].required",
         "capabilities.descriptors[].voicePolicy.kind",
@@ -348,6 +352,7 @@ impl StateTree {
         "effects.descriptors[].availability.reason",
         "effects.descriptors[].sections[].id",
         "effects.descriptors[].sections[].label",
+        "effects.descriptors[].sections[].leadingControls",
         "effects.descriptors[].sections[].parameters[].id",
         "effects.descriptors[].sections[].parameters[].label",
         "effects.descriptors[].sections[].parameters[].kind",

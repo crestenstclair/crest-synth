@@ -96,12 +96,22 @@ pub fn assert_waveform(detail: &Value, painted: &Value, data: &Value, label: &st
         "{label}: waveform has native observations"
     );
     assert_eq!(waveform["status"], data["status"]);
-    assert_eq!(waveform["asset"], data["asset"]["locator"]);
-    let hierarchy = detail["hierarchy"].as_array().unwrap();
     assert_eq!(
-        &hierarchy[..2],
+        waveform["asset"],
+        data["asset"]["locator"].as_str().unwrap_or("EMPTY")
+    );
+    let hierarchy = detail["hierarchy"].as_array().unwrap();
+    let leading = usize::from(label.contains("patch-drum-rack"));
+    if leading > 0 {
+        assert_eq!(
+            hierarchy[0], "detail-section",
+            "{label}: pad selector leads the Sample layout"
+        );
+    }
+    assert_eq!(
+        &hierarchy[leading..leading + 2],
         &["detail-asset", "waveform"],
-        "{label}: file and waveform lead"
+        "{label}: file and waveform follow leading controls"
     );
     assert!(
         hierarchy.iter().position(|v| v == "waveform").unwrap()

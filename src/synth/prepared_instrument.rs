@@ -6,13 +6,32 @@ use core::fmt;
 
 /// One fully prepared Patch-specific synthesis runtime.
 ///
-/// Implementations own all voice state and scratch needed by one Patch. Every
-/// method is called from the hard real-time path and must use only bounded,
-/// preallocated work with no allocation, destruction, locking, blocking, I/O,
-/// logging, formatting, panic, or unwind.
+/// Implementations own all voice state and scratch needed by one Patch. Note
+/// admission, dispatch, render, and silence run on the hard real-time path with
+/// bounded, preallocated work: no allocation, destruction, locking, blocking,
+/// I/O, logging, formatting, panic, or unwind. Asset metadata methods below are
+/// explicitly worker-only.
 pub trait PreparedInstrument: Send {
     /// Returns the immutable Patch identity prepared into this instrument.
     fn patch_id(&self) -> PatchId;
+
+    /// Static prepared note mapping; unmapped/empty pads do not consume note admission.
+    fn accepts_note(&self, _note: u8) -> bool {
+        true
+    }
+
+    /// Worker-side collection for instruments composed of several resident assets.
+    fn prepared_asset_footprints(&self) -> Vec<&PreparedAssetFootprint> {
+        self.prepared_asset_footprint().into_iter().collect()
+    }
+
+    /// Worker-side summaries; never called by the callback.
+    fn prepared_sample_visualizations(&self) -> Vec<PreparedSampleVisualization> {
+        self.prepared_sample_visualization()
+            .cloned()
+            .into_iter()
+            .collect()
+    }
 
     /// Delivers one normalized MIDI message to this instrument only.
     fn dispatch(

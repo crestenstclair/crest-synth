@@ -852,7 +852,7 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             source_graph_revision: preview_correlation.source_graph_revision(),
             target_graph_revision: GraphRevision::INITIAL.checked_next().unwrap(),
             candidate_config,
-            prepared_visualization: Some(prepared_visualization),
+            prepared_visualization: Some(vec![prepared_visualization]),
         })
         .unwrap();
     trees.push(
@@ -1060,6 +1060,12 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
             .as_array_mut()
             .unwrap()
             .push(serde_json::to_value(normalized).unwrap());
+        // Exercise conditional visibility in both installed and asset-scoped schemas.
+        base["sections"][0]["parameters"]
+            .as_array_mut()
+            .unwrap()
+            .last_mut()
+            .unwrap()["visibleWhen"] = serde_json::json!({"parameterId": "schema.named-step", "equals": {"kind": "stepped", "value": 0}});
         let mut scoped = base.clone();
         let base: CapabilityDescriptor = serde_json::from_value(base).unwrap();
         let initial = sample.default_config().unwrap();
@@ -1153,7 +1159,7 @@ fn typed_descriptors_and_discovered_serialized_leaves_are_bidirectionally_exact(
     // physical MIDI lifecycle facts while excluding handles and observations.
     // Version 20 adds the explicit tagged trailing-empty Patch shape and its
     // prospective/capacity ownership facts without inventing a Patch ID.
-    assert_eq!(StateTree::SCHEMA_VERSION, 33);
+    assert_eq!(StateTree::SCHEMA_VERSION, 34);
     for leaf in GraphicalShellProjection::serialized_leaf_descriptor() {
         let tree_leaf = format!("graphicalShell.{leaf}");
         assert!(

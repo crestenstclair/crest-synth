@@ -44,7 +44,7 @@ pub(crate) const ARPEGGIO: [u8; 24] = [
 #[error("full instrument/effect demo: {0}")]
 pub struct FullDemoError(String);
 
-fn failure(error: impl std::fmt::Display) -> FullDemoError {
+pub(super) fn failure(error: impl std::fmt::Display) -> FullDemoError {
     FullDemoError(error.to_string())
 }
 
@@ -57,20 +57,26 @@ pub struct FullDemoSelection {
     pub skipped_effects: Vec<EffectCapabilityId>,
 }
 
-#[derive(Clone)]
-struct ParameterEdit {
-    spec: ParameterSpec,
-    value: ParameterValue,
+pub(crate) enum ListeningDemoSelection {
+    Catalog(FullDemoSelection),
+    DrumRack,
 }
 
 #[derive(Clone)]
-struct DemoBar {
-    label: String,
-    session: SavedSession,
-    control: PatchControlId,
-    edit: Option<ParameterEdit>,
-    prerequisites: Vec<ParameterEdit>,
-    requires_preparation: bool,
+pub(super) struct ParameterEdit {
+    pub spec: ParameterSpec,
+    pub value: ParameterValue,
+}
+
+#[derive(Clone)]
+pub(super) struct DemoBar {
+    pub label: String,
+    pub session: SavedSession,
+    pub control: PatchControlId,
+    pub edit: Option<ParameterEdit>,
+    pub prerequisites: Vec<ParameterEdit>,
+    pub requires_preparation: bool,
+    pub notes: Option<[Vec<(u8, u8)>; NOTES_PER_BAR]>,
 }
 
 struct ControlEdit {
@@ -79,17 +85,20 @@ struct ControlEdit {
     remember_original: bool,
 }
 
-struct Audition {
-    label: String,
-    bars: Vec<DemoBar>,
+pub(super) struct Audition {
+    pub label: String,
+    pub bars: Vec<DemoBar>,
 }
 
 pub(crate) struct FullDemoPlan {
-    auditions: Vec<Audition>,
-    instruments: usize,
-    effects: usize,
-    asset_notes: Vec<String>,
-    skipped: Vec<String>,
+    pub(super) auditions: Vec<Audition>,
+    pub(super) instruments: usize,
+    pub(super) effects: usize,
+    pub(super) asset_notes: Vec<String>,
+    pub(super) skipped: Vec<String>,
+    pub(super) title: &'static str,
+    pub(super) max_active_notes: usize,
+    pub(super) introduction: Option<&'static str>,
 }
 
 impl FullDemoPlan {
@@ -112,6 +121,9 @@ impl FullDemoPlan {
             effects: 0,
             asset_notes: Vec::new(),
             skipped: Vec::new(),
+            title: "Full instrument / effect demo",
+            max_active_notes: 1,
+            introduction: None,
         };
         for descriptor in factory.registry().descriptors() {
             if selection.skipped_instruments.contains(descriptor.id()) {
@@ -334,6 +346,7 @@ impl FullDemoPlan {
             edit,
             prerequisites: Vec::new(),
             requires_preparation: false,
+            notes: None,
         })
     }
 
@@ -342,6 +355,13 @@ impl FullDemoPlan {
     }
 
     fn announce(&self) {
+        if let Some(introduction) = self.introduction {
+            eprintln!("{}: {introduction}", self.title);
+            for note in &self.asset_notes {
+                eprintln!("Asset scope: {note}");
+            }
+            return;
+        }
         eprintln!("New instrument/effect demo: {} instruments dry, then {} effects on the unchanged reference instrument. {} eight-bar auditions; {:.1} minutes of music plus preparation. 120 BPM, 4/4, one voice. Close the window or Ctrl-C to stop.", self.instruments, self.effects, self.auditions.len(), self.auditions.len() as f64 * 16.0 / 60.0);
         eprintln!("Skipped known functionality: {}.", self.skipped.join(", "));
         eprintln!("Eight bars total per entry: one default bar, then seven representative parameter/preset variations. Other settings reset before each bar. This is a quick tour, not exhaustive parameter or preset coverage.");
@@ -475,28 +495,28 @@ fn representative_values(spec: &ParameterSpec) -> Result<Vec<ParameterValue>, Fu
 }
 
 #[derive(Default)]
-struct Arpeggio {
+struct DemoPhrase {
     note: usize,
     elapsed: Duration,
     started: bool,
-    held: Option<u8>,
+    held: Vec<u8>,
 }
 
-impl Arpeggio {
+impl DemoPhrase {
     fn send<B: ControlAudioBoundary>(
         app: &mut AppLoop<B>,
         note: u8,
-        on: bool,
+        velocity: u8,
     ) -> Result<(), FullDemoError> {
         let message = MidiMessage::try_new(
             MidiChannel::new(0).map_err(failure)?,
-            if on {
+            if velocity != 0 {
                 MidiMessageKind::NoteOn
             } else {
                 MidiMessageKind::NoteOff
             },
             note,
-            if on { 72 } else { 0 },
+            velocity,
         )
         .map_err(failure)?;
         if let Some(error) = app
@@ -510,24 +530,41 @@ impl Arpeggio {
     }
 
     fn stop<B: ControlAudioBoundary>(&mut self, app: &mut AppLoop<B>) -> Result<(), FullDemoError> {
-        if let Some(note) = self.held.take() {
-            Self::send(app, note, false)?;
+        for note in self.held.drain(..) {
+            Self::send(app, note, 0)?;
         }
         Ok(())
     }
 
-    /// At most two MIDI edges per tick. A delayed frame stretches the phrase;
-    /// it never skips notes or emits a catch-up chord. Note-off precedes on.
+    fn start_notes<B: ControlAudioBoundary>(
+        &mut self,
+        app: &mut AppLoop<B>,
+        notes: Option<&[Vec<(u8, u8)>; NOTES_PER_BAR]>,
+    ) -> Result<(), FullDemoError> {
+        if let Some(notes) = notes {
+            for &(note, velocity) in &notes[self.note % NOTES_PER_BAR] {
+                Self::send(app, note, velocity)?;
+                self.held.push(note);
+            }
+        } else {
+            let note = ARPEGGIO[self.note % ARPEGGIO.len()];
+            Self::send(app, note, 72)?;
+            self.held.push(note);
+        }
+        Ok(())
+    }
+
+    /// At most one authored step per tick, with note-off before note-on.
+    /// A delayed frame stretches the phrase without replaying overdue steps.
     fn advance<B: ControlAudioBoundary>(
         &mut self,
         app: &mut AppLoop<B>,
         elapsed: Duration,
+        notes: Option<&[Vec<(u8, u8)>; NOTES_PER_BAR]>,
     ) -> Result<bool, FullDemoError> {
         if !self.started {
             self.started = true;
-            let note = ARPEGGIO[self.note % ARPEGGIO.len()];
-            Self::send(app, note, true)?;
-            self.held = Some(note);
+            self.start_notes(app, notes)?;
             return Ok(false);
         }
         self.elapsed += elapsed;
@@ -549,9 +586,7 @@ impl Arpeggio {
             self.started = false;
             Ok(true)
         } else {
-            let note = ARPEGGIO[self.note % ARPEGGIO.len()];
-            Self::send(app, note, true)?;
-            self.held = Some(note);
+            self.start_notes(app, notes)?;
             Ok(false)
         }
     }
@@ -573,7 +608,7 @@ pub(crate) struct FullInstrumentEffectDemo {
     audition: usize,
     bar: usize,
     phase: Phase,
-    arpeggio: Arpeggio,
+    phrase: DemoPhrase,
     wait: Duration,
     expected_revision: Option<GraphRevision>,
     status: String,
@@ -584,12 +619,13 @@ pub(crate) struct FullInstrumentEffectDemo {
 
 impl FullInstrumentEffectDemo {
     pub fn check_audio(
+        &self,
         snapshot: crate::real_time::AudioObservationSnapshot,
     ) -> Result<(), FullDemoError> {
         if snapshot.routing_failures() != 0
             || snapshot.non_finite_samples() != 0
             || snapshot.voice_limit_refusals() != 0
-            || snapshot.active_notes() > 1
+            || snapshot.active_notes() as usize > self.plan.max_active_notes
         {
             return Err(failure(format!("audio observation: {} routing failures, {} non-finite samples, {} refused notes, {} active notes",
                 snapshot.routing_failures(), snapshot.non_finite_samples(), snapshot.voice_limit_refusals(), snapshot.active_notes())));
@@ -604,7 +640,7 @@ impl FullInstrumentEffectDemo {
             audition: 0,
             bar: 0,
             phase: Phase::Start,
-            arpeggio: Arpeggio::default(),
+            phrase: DemoPhrase::default(),
             wait: Duration::ZERO,
             expected_revision: None,
             status: "Preparing first audition".into(),
@@ -616,7 +652,7 @@ impl FullInstrumentEffectDemo {
 
     pub fn document(&self) -> SessionDocumentProjection {
         SessionDocumentProjection::new(
-            "Full instrument / effect demo",
+            self.plan.title,
             false,
             if self.is_complete() || (matches!(self.phase, Phase::Play) && self.controls_ready) {
                 SessionDocumentMarker::Ready
@@ -753,7 +789,13 @@ impl FullInstrumentEffectDemo {
         match self.phase {
             Phase::Start => self.start_bar()?,
             Phase::Play => {
-                if self.arpeggio.advance(app, elapsed)? {
+                if self.phrase.advance(
+                    app,
+                    elapsed,
+                    self.plan.auditions[self.audition].bars[self.bar]
+                        .notes
+                        .as_ref(),
+                )? {
                     if !self.controls_ready {
                         return Err(failure(format!(
                             "parameter adjustment overran its bar: {}",
@@ -771,24 +813,30 @@ impl FullInstrumentEffectDemo {
                         // Keep MIDI on the same clock across scalar changes.
                         // The next note starts before control-side navigation;
                         // the existing engine and effect retain their state.
-                        self.arpeggio.advance(app, Duration::ZERO)?;
+                        self.phrase.advance(
+                            app,
+                            Duration::ZERO,
+                            self.plan.auditions[self.audition].bars[self.bar]
+                                .notes
+                                .as_ref(),
+                        )?;
                         self.start_bar()?;
                     }
                 }
             }
             Phase::Submit => {
-                self.arpeggio.stop(app)?;
+                self.phrase.stop(app)?;
                 self.restore.clear();
                 self.pending_edits.clear();
-                self.arpeggio.elapsed = Duration::ZERO;
+                self.phrase.elapsed = Duration::ZERO;
                 if self.bar == BARS {
                     self.audition += 1;
                     self.bar = 0;
-                    self.arpeggio = Arpeggio::default();
+                    self.phrase = DemoPhrase::default();
                 }
                 if self.audition == self.plan.auditions.len() {
                     self.phase = Phase::Complete;
-                    self.status = "Full instrument/effect demo complete".into();
+                    self.status = format!("{} complete", self.plan.title);
                     eprintln!(
                         "{}: {} instruments, {} effects, {} auditions.",
                         self.status,
@@ -1037,6 +1085,17 @@ mod tests {
             factory: DescriptorDefaultConfigFactory,
             effects: EffectCapabilityRegistry,
         ) -> Self {
+            Self::with_preparers(plan, factory, effects, || {
+                production_instrument_preparers().unwrap()
+            })
+        }
+
+        fn with_preparers(
+            plan: FullDemoPlan,
+            factory: DescriptorDefaultConfigFactory,
+            effects: EffectCapabilityRegistry,
+            preparers: impl Fn() -> Vec<Box<dyn crate::synth::InstrumentPreparer>>,
+        ) -> Self {
             let config = AudioDeviceConfig::new(48_000.0, 2, AudioSampleFormat::F32, 256).unwrap();
             let registry = factory.registry().clone();
             let initial = plan
@@ -1044,7 +1103,7 @@ mod tests {
                 .prepare_restore(
                     registry.clone(),
                     effects.clone(),
-                    &production_instrument_preparers().unwrap(),
+                    &preparers(),
                     &production_effect_preparers().unwrap(),
                     GraphRevision::INITIAL,
                     48_000.0,
@@ -1094,7 +1153,7 @@ mod tests {
             .unwrap();
             let worker = ThreadedGraphPreparationWorker::new_with_effects(
                 registry.clone(),
-                production_instrument_preparers().unwrap(),
+                preparers(),
                 effects.clone(),
                 production_effect_preparers().unwrap(),
                 config,
@@ -1104,7 +1163,7 @@ mod tests {
                 .unwrap();
             let candidates = ThreadedSessionCandidateWorker::new(
                 registry,
-                production_instrument_preparers().unwrap(),
+                preparers(),
                 effects,
                 production_effect_preparers().unwrap(),
                 config,
@@ -1127,13 +1186,14 @@ mod tests {
                 "{}",
                 self.demo.status
             );
-            FullInstrumentEffectDemo::check_audio(self.observation.read_latest_on_control())
+            self.demo
+                .check_audio(self.observation.read_latest_on_control())
                 .unwrap_or_else(|error| panic!("{}: {error}", self.demo.status));
             output.iter().map(|sample| sample.abs()).fold(0.0, f32::max)
         }
 
         fn shutdown(mut self) {
-            self.demo.arpeggio.stop(&mut self.app).unwrap();
+            self.demo.phrase.stop(&mut self.app).unwrap();
             self.render();
             assert_eq!(self.observation.read_latest_on_control().active_notes(), 0);
             drop(self.renderer);
@@ -1148,6 +1208,7 @@ mod tests {
             skipped_instruments: [
                 crate::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID,
                 BRAIDS_CAPABILITY_ID,
+                crate::adapter::drum_rack_capability::DRUM_RACK_CAPABILITY_ID,
             ]
             .into_iter()
             .map(|id| CapabilityId::new(id).unwrap())
@@ -1161,6 +1222,113 @@ mod tests {
             .map(|id| EffectCapabilityId::new(id).unwrap())
             .collect(),
         }
+    }
+
+    #[test]
+    fn drum_rack_demo_plays_every_pad_and_layered_groove_through_production() {
+        use crate::adapter::{
+            drum_rack_capability::{DrumRackCapability, DRUM_RACK_PAD_PARAMETER_ID},
+            drum_rack_preparer::DrumRackPreparer,
+            filesystem_sample_catalog::FilesystemSampleCatalog,
+            sample_capability::SampleCapability,
+            sample_preparer::SamplePreparer,
+            wav_sample_decoder::WavSampleDecoder,
+        };
+        use crate::synth::{AssetFileId, CapabilityRegistry, InstrumentCapabilityProvider};
+        use std::sync::Arc;
+        struct Fixture(std::path::PathBuf);
+        impl Drop for Fixture {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = Fixture(std::env::temp_dir().join(format!(
+            "crest-drum-demo-test-{}-{unique}",
+            std::process::id()
+        )));
+        std::fs::create_dir(&root.0).unwrap();
+        crate::testing::drum_rack_demo::write_samples(&root.0).unwrap();
+        let initial = AssetFileId::new(crate::testing::drum_rack_demo::sample_filename(0)).unwrap();
+        let sample = SampleCapability::new(initial.clone()).unwrap();
+        let drum = DrumRackCapability::new(initial.clone()).unwrap();
+        let registry =
+            CapabilityRegistry::new(vec![sample.descriptor(), drum.descriptor()]).unwrap();
+        let factory =
+            DescriptorDefaultConfigFactory::new(registry, vec![Box::new(sample), Box::new(drum)]);
+        let effects = production_effect_registry().unwrap();
+        let plan = crate::testing::drum_rack_demo::build_plan(&factory, &effects).unwrap();
+        let catalog = Arc::new(FilesystemSampleCatalog::new(&root.0).unwrap());
+        let mut harness = Harness::with_preparers(plan, factory, effects, || {
+            let sample = SamplePreparer::new(catalog.clone(), Arc::new(WavSampleDecoder)).unwrap();
+            let drum = DrumRackPreparer::with_sample(initial.clone(), sample.clone()).unwrap();
+            vec![Box::new(sample), Box::new(drum)]
+        });
+        assert_eq!(
+            harness.app.patches()[0]
+                .instrument_config()
+                .asset_references()
+                .len(),
+            16
+        );
+        let mut visited = BTreeSet::new();
+        let mut sounded = BTreeSet::new();
+        let mut polyphonic = false;
+        let mut selected = BTreeSet::new();
+        let deadline = Instant::now() + Duration::from_secs(90);
+        loop {
+            assert!(Instant::now() < deadline, "{}", harness.demo.status);
+            let running = harness
+                .demo
+                .advance(&mut harness.app, Duration::from_millis(16))
+                .unwrap();
+            let mut peak = 0.0_f32;
+            for _ in 0..3 {
+                peak = peak.max(harness.render());
+            }
+            if matches!(harness.demo.phase, Phase::Play) {
+                let position = (harness.demo.audition, harness.demo.bar);
+                visited.insert(position);
+                if peak > 0.0001 {
+                    sounded.insert(position);
+                }
+                polyphonic |= harness.observation.read_latest_on_control().active_notes() >= 3;
+                if harness.demo.controls_ready {
+                    assert_eq!(
+                        harness.app.state().interaction().active_surface(),
+                        crate::control::SurfaceId::PatchDetail
+                    );
+                    let pass = &harness.demo.plan.auditions[position.0].bars[position.1];
+                    assert_eq!(
+                        current_value(&harness.app, &pass.control).unwrap(),
+                        &pass.edit.as_ref().unwrap().value
+                    );
+                    let value = harness.app.patches()[0]
+                        .instrument_config()
+                        .value(&crate::synth::ParameterId::new(DRUM_RACK_PAD_PARAMETER_ID).unwrap())
+                        .unwrap();
+                    selected.insert(format!("{value:?}"));
+                }
+            }
+            if !running {
+                break;
+            }
+            if matches!(harness.demo.phase, Phase::Prepare) {
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        }
+        assert!(harness.demo.is_complete());
+        assert_eq!(visited.len(), 24);
+        assert_eq!(
+            sounded, visited,
+            "every pad and groove bar must produce audio"
+        );
+        assert_eq!(selected.len(), 16);
+        assert!(polyphonic, "groove must mix simultaneous pads");
+        harness.shutdown();
     }
 
     #[test]
@@ -1326,21 +1494,21 @@ mod tests {
         .unwrap();
         assert_eq!(plan.auditions.len(), 1);
         let mut harness = Harness::new(plan, factory, effects);
-        let mut arp = Arpeggio::default();
+        let mut arp = DemoPhrase::default();
         let mut bars = 0;
         let mut musical_time = Duration::ZERO;
         let mut peak = 0.0f32;
         for _ in 0..BARS {
-            assert!(!arp.advance(&mut harness.app, Duration::ZERO).unwrap());
+            assert!(!arp.advance(&mut harness.app, Duration::ZERO, None).unwrap());
             peak = peak.max(harness.render());
             for _ in 0..NOTES_PER_BAR {
-                assert!(!arp.advance(&mut harness.app, NOTE_GATE).unwrap());
+                assert!(!arp.advance(&mut harness.app, NOTE_GATE, None).unwrap());
                 harness.render();
                 let observation = harness.observation.read_latest_on_control();
                 assert_eq!(observation.active_notes(), 0);
                 musical_time += NOTE_GATE;
                 if arp
-                    .advance(&mut harness.app, NOTE_LENGTH - NOTE_GATE)
+                    .advance(&mut harness.app, NOTE_LENGTH - NOTE_GATE, None)
                     .unwrap()
                 {
                     bars += 1;
@@ -1353,16 +1521,16 @@ mod tests {
         assert_eq!(arp.note, BARS * NOTES_PER_BAR);
         assert_eq!(musical_time, Duration::from_secs(16));
         assert!(peak > 0.0001, "production Braids must sound");
-        assert!(arp.held.is_none());
+        assert!(arp.held.is_empty());
         // A stalled tick advances only one note, never replays missed notes.
-        arp.advance(&mut harness.app, Duration::ZERO).unwrap();
+        arp.advance(&mut harness.app, Duration::ZERO, None).unwrap();
         harness.render();
         let before = arp.note;
-        arp.advance(&mut harness.app, Duration::from_secs(5))
+        arp.advance(&mut harness.app, Duration::from_secs(5), None)
             .unwrap();
         harness.render();
         assert_eq!(arp.note, before + 1);
-        harness.demo.arpeggio = arp;
+        harness.demo.phrase = arp;
         harness.shutdown();
     }
 
@@ -1416,7 +1584,7 @@ mod tests {
                 .unwrap();
             harness.render();
             assert!(matches!(harness.demo.phase, Phase::Prepare));
-            assert_eq!(harness.demo.arpeggio.note, 0);
+            assert_eq!(harness.demo.phrase.note, 0);
             assert_eq!(
                 harness.observation.read_latest_on_control().active_notes(),
                 0
@@ -1473,10 +1641,10 @@ mod tests {
         let deadline = Instant::now() + Duration::from_secs(30);
         loop {
             assert!(Instant::now() < deadline, "{}", harness.demo.status);
-            let previous = (harness.demo.arpeggio.note, harness.demo.arpeggio.held);
+            let previous = (harness.demo.phrase.note, harness.demo.phrase.held.clone());
             let running = harness.demo.advance(&mut harness.app, tick).unwrap();
-            let current = (harness.demo.arpeggio.note, harness.demo.arpeggio.held);
-            if current.1.is_some() && current != previous {
+            let current = (harness.demo.phrase.note, harness.demo.phrase.held.clone());
+            if !current.1.is_empty() && current != previous {
                 note_starts.push(clock);
             }
             for _ in 0..3 {
@@ -1527,8 +1695,8 @@ mod tests {
             );
             let previous = (
                 harness.demo.audition,
-                harness.demo.arpeggio.note,
-                harness.demo.arpeggio.held,
+                harness.demo.phrase.note,
+                harness.demo.phrase.held.clone(),
             );
             let started = Instant::now();
             let running = harness
@@ -1540,10 +1708,10 @@ mod tests {
             }
             let current = (
                 harness.demo.audition,
-                harness.demo.arpeggio.note,
-                harness.demo.arpeggio.held,
+                harness.demo.phrase.note,
+                harness.demo.phrase.held.clone(),
             );
-            if current.2.is_some() && current != previous {
+            if !current.2.is_empty() && current != previous {
                 note_counts[current.0] += 1;
                 if let Some((entry, last)) = previous_start {
                     if entry == current.0 {
@@ -1587,7 +1755,7 @@ mod tests {
                     }
                 }
             } else {
-                assert!(harness.demo.arpeggio.held.is_none());
+                assert!(harness.demo.phrase.held.is_empty());
                 assert_eq!(
                     harness.observation.read_latest_on_control().active_notes(),
                     0

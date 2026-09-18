@@ -905,6 +905,8 @@ fn default_parameter_value(default: &ParameterDefault) -> Result<&ParameterValue
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CapabilitySection {
+    #[serde(default)]
+    leading_controls: bool,
     id: String,
     label: String,
     parameters: Vec<ParameterSpec>,
@@ -927,10 +929,21 @@ impl CapabilitySection {
             return Err(CapabilityError::EmptySection(id));
         }
         Ok(Self {
+            leading_controls: false,
             id,
             label,
             parameters,
         })
+    }
+
+    /// Controls selecting the displayed part precede its visualizations.
+    pub fn with_leading_controls(mut self) -> Self {
+        self.leading_controls = true;
+        self
+    }
+
+    pub const fn leading_controls(&self) -> bool {
+        self.leading_controls
     }
 
     pub fn id(&self) -> &str {
@@ -1131,6 +1144,11 @@ impl CapabilityDescriptor {
 
     pub fn default_assets(&self) -> Vec<AssetAssignment> {
         self.parameters()
+            .filter(|parameter| {
+                self.asset_requirements
+                    .iter()
+                    .any(|asset| asset.parameter_id() == parameter.id() && asset.required())
+            })
             .filter_map(|parameter| match parameter.default_value() {
                 ParameterDefault::Asset(reference) => Some(AssetAssignment::new(
                     parameter.id().clone(),
@@ -1436,10 +1454,8 @@ fn validate_dependencies(
             .iter()
             .find(|assignment| assignment.parameter_id() == spec.id())
             .expect("complete canonical assignments were built above");
-        for predicate in [spec.enabled_when(), spec.visible_when()]
-            .into_iter()
-            .flatten()
-        {
+        // Visibility selects a presentation; hidden parts retain their settings.
+        if let Some(predicate) = spec.enabled_when() {
             let satisfied = assignments.iter().any(|candidate| {
                 candidate.parameter_id() == predicate.parameter_id()
                     && candidate.value() == predicate.equals()
@@ -1701,11 +1717,11 @@ impl CapabilityRegistry {
     ) -> Result<InstrumentConfig, CapabilityError> {
         self.validate_config(source)?;
         let mut assets = source.asset_references().to_vec();
-        let assignment = assets
-            .iter_mut()
-            .find(|asset| asset.parameter_id() == id)
-            .ok_or_else(|| CapabilityError::MissingAsset(id.clone()))?;
-        *assignment = AssetAssignment::new(id.clone(), reference);
+        if let Some(assignment) = assets.iter_mut().find(|asset| asset.parameter_id() == id) {
+            *assignment = AssetAssignment::new(id.clone(), reference);
+        } else {
+            assets.push(AssetAssignment::new(id.clone(), reference));
+        }
         let descriptor = self
             .descriptor_for_assets(source.capability_id(), &assets)
             .ok_or_else(|| CapabilityError::UnknownCapability(source.capability_id().clone()))?;

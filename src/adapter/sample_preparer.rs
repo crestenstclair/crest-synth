@@ -23,12 +23,15 @@ const PITCH_BEND_RANGE_SEMITONES: f32 = 2.0;
 #[cfg(test)]
 const MIDI_BEND_CENTER: i32 = 8_192;
 
+type PreparedPcmCache = BTreeMap<(AssetFileId, u32), Arc<PreparedSamplePcm>>;
+
 /// Worker-side factory for the one-asset Sample engine.
+#[derive(Clone)]
 pub struct SamplePreparer {
     capability_id: CapabilityId,
     catalog: Arc<dyn SampleAssetCatalogPort>,
     decoder: Arc<dyn SampleDecoderPort>,
-    prepared_pcm: Mutex<BTreeMap<(AssetFileId, u32), Arc<PreparedSamplePcm>>>,
+    prepared_pcm: Arc<Mutex<PreparedPcmCache>>,
 }
 
 impl SamplePreparer {
@@ -42,7 +45,7 @@ impl SamplePreparer {
             capability_id,
             catalog,
             decoder,
-            prepared_pcm: Mutex::new(BTreeMap::new()),
+            prepared_pcm: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
@@ -1299,8 +1302,14 @@ mod tests {
         let (first_patch, _) = patch_with(6, &[]);
         let (second_patch, _) = patch_with(7, &[]);
         let first = preparer.prepare_patch(&first_patch, 48_000.0, 64).unwrap();
-        let second = preparer.prepare_patch(&second_patch, 48_000.0, 64).unwrap();
-        assert!(Arc::ptr_eq(&first.pcm, &second.pcm));
+        let shared_factory = preparer.clone();
+        let second = shared_factory
+            .prepare_patch(&second_patch, 48_000.0, 64)
+            .unwrap();
+        assert!(
+            Arc::ptr_eq(&first.pcm, &second.pcm),
+            "Sample and composite factories share resident PCM"
+        );
         assert_eq!(preparer.prepared_shared_asset_count(), 1);
     }
 

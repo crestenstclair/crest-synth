@@ -69,6 +69,7 @@ use crate::testing::demo_scene_report::{DemoCoverageGroup, DemoSceneReport, Demo
 use crate::testing::exhaustive_gui_demo::{ExhaustiveGuiDemo, ExhaustiveGuiDemoError};
 use crate::testing::full_instrument_effect_demo::{
     FullDemoError, FullDemoPlan, FullDemoSelection, FullInstrumentEffectDemo,
+    ListeningDemoSelection,
 };
 use crate::testing::midi_event_source::MidiEventSource;
 use crate::testing::{
@@ -824,7 +825,7 @@ pub struct StandaloneApplication<Boundary, Structural, Observation, Source, Wind
     config: ApplicationConfig,
     system_input_devices: bool,
     default_session_blueprint: Option<DefaultSessionBlueprint>,
-    full_demo_selection: Option<FullDemoSelection>,
+    full_demo_selection: Option<ListeningDemoSelection>,
 }
 
 impl<Boundary, Structural, Observation, Source, Window, Output>
@@ -909,7 +910,13 @@ impl<Boundary, Structural, Observation, Source, Window, Output>
     /// Runs an isolated listening tour through the normal window and audio
     /// lifetime. The composition root selects the reference and known entries to skip.
     pub fn with_full_instrument_effect_demo(mut self, selection: FullDemoSelection) -> Self {
-        self.full_demo_selection = Some(selection);
+        self.full_demo_selection = Some(ListeningDemoSelection::Catalog(selection));
+        self
+    }
+
+    /// Runs the isolated sixteen-pad listening scene through the production runtime.
+    pub fn with_drum_rack_demo(mut self) -> Self {
+        self.full_demo_selection = Some(ListeningDemoSelection::DrumRack);
         self
     }
 
@@ -1120,7 +1127,7 @@ fn prepare_production_startup<Boundary, Structural>(
     audio_config: AudioDeviceConfig,
     dialogs: Box<dyn crate::shell::SessionDialogPort>,
     default_session_blueprint: DefaultSessionBlueprint,
-    full_demo_selection: Option<FullDemoSelection>,
+    full_demo_selection: Option<ListeningDemoSelection>,
 ) -> Result<PreparedProductionStartupFor<Boundary, Structural>, ApplicationError>
 where
     Boundary: AudioBoundary,
@@ -1148,7 +1155,14 @@ where
     .map_err(DefaultSessionError::Capability)?;
     let demo_plan = full_demo_selection
         .as_ref()
-        .map(|selection| FullDemoPlan::build(&factory, &effects, selection))
+        .map(|selection| match selection {
+            ListeningDemoSelection::Catalog(selection) => {
+                FullDemoPlan::build(&factory, &effects, selection)
+            }
+            ListeningDemoSelection::DrumRack => {
+                crate::testing::drum_rack_demo::build_plan(&factory, &effects)
+            }
+        })
         .transpose()
         .map_err(ApplicationError::FullInstrumentEffectDemo)?;
     let default_session = capture_default_session(
@@ -1493,8 +1507,8 @@ where
         let audio_observation: AudioObservationCallback = Box::new(move || {
             let snapshot = observation_reader.read_latest_on_control();
             let mut runtime = observed_runtime.borrow_mut();
-            if runtime.full_demo.is_some() {
-                if let Err(error) = FullInstrumentEffectDemo::check_audio(snapshot) {
+            if let Some(demo) = runtime.full_demo.as_ref() {
+                if let Err(error) = demo.check_audio(snapshot) {
                     runtime.record_error(ApplicationError::FullInstrumentEffectDemo(error));
                 }
             }

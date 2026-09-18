@@ -197,3 +197,7 @@ test-upstream-audio: cache-guard ## Verify upstream catalog, import/restore, and
 .PHONY: full-instrument-effect-demo
 full-instrument-effect-demo: cache-guard ## Audition new instruments and effects on Braids; eight bars per entry, one voice
 	cargo run --release --bin crest-synth -- --full-instrument-effect-demo
+
+.PHONY: demo-live-drum-rack
+demo-live-drum-rack: cache-guard ## Audition all sixteen Drum Rack pads, then play an eight-bar layered groove
+	cargo run --release --bin crest-synth -- --demo-live-drum-rack

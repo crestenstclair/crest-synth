@@ -1,8 +1,7 @@
 use crate::synth::capability_id::CapabilityId;
 use crate::synth::instrument_capability::{
-    AssetAssignment, AssetReference, CapabilityError, CapabilityRegistry, InstrumentConfig,
-    ParameterAssignment, ParameterDefault, ParameterKind, ParameterUpdate, ParameterValue,
-    PatchInteraction,
+    AssetReference, CapabilityError, CapabilityRegistry, InstrumentConfig, ParameterAssignment,
+    ParameterDefault, ParameterKind, ParameterUpdate, ParameterValue, PatchInteraction,
 };
 use crate::synth::instrument_capability_provider::InstrumentCapabilityProvider;
 use crate::synth::ParameterId;
@@ -58,17 +57,14 @@ impl DescriptorDefaultConfigFactory {
         let provider = self.provider_for(capability_id, descriptor)?;
 
         let mut values = Vec::with_capacity(descriptor.parameters().count());
-        let mut assets = Vec::with_capacity(descriptor.asset_requirements().len());
+        let assets = descriptor.default_assets();
         for parameter in descriptor.parameters() {
             match parameter.default_value() {
                 ParameterDefault::Value(value) => values.push(ParameterAssignment::new(
                     parameter.id().clone(),
                     value.clone(),
                 )),
-                ParameterDefault::Asset(reference) => assets.push(AssetAssignment::new(
-                    parameter.id().clone(),
-                    reference.clone(),
-                )),
+                ParameterDefault::Asset(_) => {}
             }
         }
 

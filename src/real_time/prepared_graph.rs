@@ -302,6 +302,25 @@ impl PreparedGraph {
             })
     }
 
+    /// Complete worker-side collection for the Patch, or its active audition.
+    pub fn prepared_sample_visualizations(
+        &self,
+        patch_id: PatchId,
+    ) -> Vec<crate::synth::PreparedSampleVisualization> {
+        if let Some(visualization) = self
+            .inner
+            .audition
+            .as_ref()
+            .filter(|audition| audition.patch_id() == patch_id)
+            .and_then(PreparedAuditionSlot::prepared_sample_visualization)
+        {
+            return vec![visualization.clone()];
+        }
+        self.inner
+            .engine_rack
+            .prepared_sample_visualizations(patch_id)
+    }
+
     /// Returns the fixed replacement contract without borrowing graph-owned
     /// engine, effect, or scratch state.
     pub fn layout(&self) -> PreparedGraphLayout {

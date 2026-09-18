@@ -1636,6 +1636,7 @@
       }
     }
     var sections = "";
+    var leadingControls = "";
     var declaredSections = (detail && detail.sections) || [];
     var detailOrdinal = 0;
     for (var sectionIndex = 0; sectionIndex < declaredSections.length; sectionIndex += 1) {
@@ -1657,8 +1658,8 @@
           }
         }
       }
-      sections +=
-        '<section class="detail-section" data-detail-section="' +
+      var sectionMarkup =
+        '<section class="detail-section" data-role="detail-section" data-detail-section="' +
         escapeHtml(String(declared.id)) +
         '"><div class="detail-section-heading"><h3 class="type-label muted" data-role="detail-section-label">' +
         escapeHtml(String(declared.label)) +
@@ -1668,6 +1669,8 @@
         "</span></div>" +
         (sectionRows || markUnavailableRowHtml(String(declared.label))) +
         "</section>";
+      if (declared.leadingControls) leadingControls += sectionMarkup;
+      else sections += sectionMarkup;
     }
     if (!sections) {
       var rows = "";
@@ -1711,7 +1714,7 @@
         ? ""
         : ' data-slot-position="' + String(slotPosition) + '"') +
       ">" +
-      waveformMarkup +
+      leadingControls + waveformMarkup +
       '<header class="detail-title detail-header" data-role="detail-title">' +
       '<span class="type-label muted">' +
       escapeHtml(String((detail && detail.label) || "DETAIL")) +
@@ -1765,7 +1768,7 @@
       '<span class="type-label" data-role="detail-asset-label">' +
       escapeHtml(control ? String(control.label) : "ASSET") +
       '</span><span class="type-value" data-role="detail-asset-path">' +
-      escapeHtml(asset ? String(asset.locator) : UNAVAILABLE_MARK) +
+      escapeHtml(asset ? String(asset.locator) : "EMPTY") +
       '</span><span class="type-hint" data-role="detail-asset-status">' +
       escapeHtml(String(data.status || UNAVAILABLE)) + '</span></div>';
   }

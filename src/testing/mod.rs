@@ -1,3 +1,4 @@
+pub mod drum_rack_demo;
 pub mod full_instrument_effect_demo;
 pub mod instrument_part;
 pub(crate) mod patch_control_navigation;

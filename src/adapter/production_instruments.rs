@@ -204,7 +204,20 @@ pub fn production_instrument_providers(
         ),
     ];
     if let Some(sample) = optional_production_sample()? {
+        let initial_asset = sample
+            .capability
+            .default_config()
+            .map_err(ProductionInstrumentCompositionError::Capability)?;
+        let asset = sample
+            .capability
+            .playback_config(&initial_asset)
+            .map_err(ProductionInstrumentCompositionError::Sample)?
+            .asset_id;
         providers.push(Box::new(sample.capability));
+        providers.push(Box::new(
+            super::drum_rack_capability::DrumRackCapability::new(asset)
+                .map_err(ProductionInstrumentCompositionError::Capability)?,
+        ));
     }
     providers.extend(
         super::upstream_audio::instrument_ports()?
@@ -239,8 +252,20 @@ pub fn production_instrument_preparers(
         Box::new(BraidsPreparer::new().map_err(ProductionInstrumentCompositionError::Preparation)?),
     ];
     if let Some(sample) = optional_production_sample()? {
+        let sample_preparer = SamplePreparer::new(sample.catalog, sample.decoder)
+            .map_err(ProductionInstrumentCompositionError::Preparation)?;
+        preparers.push(Box::new(sample_preparer.clone()));
+        let initial = sample
+            .capability
+            .default_config()
+            .map_err(ProductionInstrumentCompositionError::Capability)?;
+        let asset = sample
+            .capability
+            .playback_config(&initial)
+            .map_err(ProductionInstrumentCompositionError::Sample)?
+            .asset_id;
         preparers.push(Box::new(
-            SamplePreparer::new(sample.catalog, sample.decoder)
+            super::drum_rack_preparer::DrumRackPreparer::with_sample(asset, sample_preparer)
                 .map_err(ProductionInstrumentCompositionError::Preparation)?,
         ));
     }
@@ -280,6 +305,7 @@ mod tests {
             HIDEF_CAPABILITY_ID.to_owned(),
             BRAIDS_CAPABILITY_ID.to_owned(),
             crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID.to_owned(),
+            crate::adapter::drum_rack_capability::DRUM_RACK_CAPABILITY_ID.to_owned(),
         ];
         expected.extend(
             crate::adapter::upstream_audio::instrument_ports()

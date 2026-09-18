@@ -323,6 +323,21 @@ pub struct RtPatchParameters {
 }
 
 impl RtPatchParameters {
+    /// Copy a prepared sub-instrument's controls without changing storage ownership.
+    pub(crate) fn copy_instrument_controls(
+        &mut self,
+        source: &Self,
+        values: &[f32],
+    ) -> Result<(), crate::synth::PreparedInstrumentError> {
+        if self.patch_id != source.patch_id || self.instrument.values.len() != values.len() {
+            return Err(crate::synth::PreparedInstrumentError::ScalarLayoutMismatch);
+        }
+        self.instrument.values.copy_from_slice(values);
+        self.envelope = source.envelope;
+        self.voice_limit = source.voice_limit;
+        Ok(())
+    }
+
     /// The limit an entry carries before a canonical Patch projection supplies
     /// one: the widest any installed engine declares, so an unprojected fixture
     /// entry never refuses a note the production path would have started. Every

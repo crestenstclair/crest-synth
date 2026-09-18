@@ -184,6 +184,7 @@ pub(super) fn project(
             .map(|c| c.path.clone())
             .collect();
         sections.push(SemanticSurfaceSectionViewModel {
+            leading_controls: false,
             id: "send.identity".to_owned(),
             label: "Send".to_owned(),
             control_paths: general,
@@ -198,6 +199,7 @@ pub(super) fn project(
                 .label()
                 .to_owned();
             sections.push(SemanticSurfaceSectionViewModel {
+                leading_controls: false,
                 id: format!("send.effect.{}", config.slot_id()),
                 label,
                 control_paths: paths,
@@ -206,6 +208,7 @@ pub(super) fn project(
         }
         if let Some(slot_id) = send.next_slot_id() {
             sections.push(SemanticSurfaceSectionViewModel {
+                leading_controls: false,
                 id: "send.add".to_owned(),
                 label: "Effects".to_owned(),
                 control_paths: vec![FocusPath::send(

@@ -637,6 +637,7 @@ pub struct SemanticRoutedPatch {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SemanticSurfaceSectionViewModel {
+    leading_controls: bool,
     id: String,
     label: String,
     control_paths: Vec<FocusPath>,
@@ -1080,6 +1081,7 @@ impl SemanticGraphicalViewModel {
         "surfaces[].sections[].controlSummaries[].parameterCount",
         "surfaces[].sections[].id",
         "surfaces[].sections[].label",
+        "surfaces[].sections[].leadingControls",
         "surfaces[].summary.capabilityId",
         "surfaces[].summary.activeCount",
         "surfaces[].summary.capacity",
@@ -1958,6 +1960,7 @@ fn project_save_load_settings_surface(state: &AppState) -> Vec<SemanticSurfaceVi
         label: "SAVE & LOAD".to_owned(),
         role: SemanticSurfaceRole::System,
         sections: vec![SemanticSurfaceSectionViewModel {
+            leading_controls: false,
             id: "sessionFiles".to_owned(),
             label: "Session files".to_owned(),
             control_paths: controls.iter().map(|control| control.path.clone()).collect(),
@@ -2033,6 +2036,7 @@ fn project_controller_settings_surface(state: &AppState) -> Vec<SemanticSurfaceV
         label: "CONTROLLER BUTTONS".to_owned(),
         role: SemanticSurfaceRole::System,
         sections: vec![SemanticSurfaceSectionViewModel {
+            leading_controls: false,
             id: "controllerButtons".to_owned(),
             label: "Button assignments".to_owned(),
             control_paths: controls
@@ -2154,6 +2158,7 @@ fn project_midi_device_settings_surface(
         role: SemanticSurfaceRole::System,
         controls,
         sections: vec![SemanticSurfaceSectionViewModel {
+            leading_controls: false,
             id: "availableInputs".to_owned(),
             label: "Available Inputs".to_owned(),
             control_paths,
@@ -2570,6 +2575,7 @@ fn project_patch_surfaces(
         .all(|path| controls.iter().any(|control| control.path() == path)));
     let sections = vec![
         SemanticSurfaceSectionViewModel {
+            leading_controls: false,
             id: "overview.engine".to_owned(),
             label: "Engine".to_owned(),
             control_paths: vec![engine_path.clone()],
@@ -2579,6 +2585,7 @@ fn project_patch_surfaces(
             }],
         },
         SemanticSurfaceSectionViewModel {
+            leading_controls: false,
             id: "overview.effects".to_owned(),
             label: "Post FX".to_owned(),
             control_paths: effect_paths,
@@ -3179,7 +3186,28 @@ fn project_file_browser_surface(
             visualizations = project_visualizations(
                 state,
                 &SemanticPatchSource::Created(patch),
-                descriptor.visualizations(),
+                &descriptor
+                    .visualizations()
+                    .iter()
+                    .filter(|declaration| {
+                        if let crate::synth::CapabilityVisualization::Waveform {
+                            asset_parameter_id,
+                            ..
+                        } = declaration
+                        {
+                            descriptor
+                                .parameter(asset_parameter_id)
+                                .and_then(|spec| spec.visible_when())
+                                .is_none_or(|predicate| {
+                                    patch.instrument_config().value(predicate.parameter_id())
+                                        == Some(predicate.equals())
+                                })
+                        } else {
+                            true
+                        }
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 &|id| patch.instrument_config().value(id),
                 &|id| {
                     if id == asset_parameter_id {
@@ -3351,6 +3379,7 @@ fn project_detail_structure(
             })
             .collect();
         SemanticSurfaceSectionViewModel {
+            leading_controls: false,
             id: id.to_owned(),
             label: label.to_owned(),
             control_paths,
@@ -3366,9 +3395,21 @@ fn project_detail_structure(
             let mut sections = descriptor
                 .sections()
                 .iter()
-                .map(|value| section(value.id(), value.label(), value.parameters()))
+                .map(|value| {
+                    let mut projected = section(value.id(), value.label(), value.parameters());
+                    projected.leading_controls = value.leading_controls();
+                    projected
+                })
+                .filter(|section| {
+                    section.control_paths.iter().any(|path| {
+                        controls
+                            .iter()
+                            .any(|control| control.path() == path && control.visible())
+                    })
+                })
                 .collect::<Vec<_>>();
             sections.push(SemanticSurfaceSectionViewModel {
+                leading_controls: false,
                 id: "shared.envelope".to_owned(),
                 label: "Envelope".to_owned(),
                 control_paths: controls
@@ -3386,7 +3427,28 @@ fn project_detail_structure(
             let visualizations = project_visualizations(
                 state,
                 patch,
-                descriptor.visualizations(),
+                &descriptor
+                    .visualizations()
+                    .iter()
+                    .filter(|declaration| {
+                        if let crate::synth::CapabilityVisualization::Waveform {
+                            asset_parameter_id,
+                            ..
+                        } = declaration
+                        {
+                            descriptor
+                                .parameter(asset_parameter_id)
+                                .and_then(|spec| spec.visible_when())
+                                .is_none_or(|predicate| {
+                                    patch.instrument_config().value(predicate.parameter_id())
+                                        == Some(predicate.equals())
+                                })
+                        } else {
+                            true
+                        }
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>(),
                 &|id| patch.instrument_config().value(id),
                 &|id| patch.instrument_config().asset_reference(id).cloned(),
             );
@@ -3461,6 +3523,7 @@ fn project_visualizations<'a>(
                     ..
                 } => {
                     let active_asset = asset(asset_parameter_id);
+                    let empty_asset = active_asset.is_none();
                     let created_patch_id = patch.created_patch().map(Patch::id);
                     let prepared = created_patch_id
                         .zip(active_asset.as_ref())
@@ -3515,7 +3578,9 @@ fn project_visualizations<'a>(
                             .collect(),
                         status: correlated_asset_lifecycle.map_or_else(
                             || {
-                                if prepared.is_some() {
+                                if empty_asset {
+                                    "EMPTY".to_owned()
+                                } else if prepared.is_some() {
                                     "READY".to_owned()
                                 } else {
                                     "WAVEFORM UNAVAILABLE".to_owned()
@@ -3958,11 +4023,11 @@ fn parameter_value(
     config: &crate::synth::InstrumentConfig,
 ) -> Result<SemanticControlValue, SemanticGraphicalViewModelError> {
     if spec.kind() == ParameterKind::Asset {
-        config
+        Ok(config
             .asset_reference(spec.id())
             .cloned()
             .map(SemanticControlValue::Asset)
-            .ok_or(SemanticGraphicalViewModelError::InvalidInstrumentConfig)
+            .unwrap_or_else(|| SemanticControlValue::Summary("EMPTY".to_owned())))
     } else {
         config
             .value(spec.id())
