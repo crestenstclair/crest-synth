@@ -51,11 +51,13 @@ impl MidiEventSource for FixedMidiEventSource {
         self.prepared = false;
         self.started = false;
 
-        let bytes = fs::read(FIXED_MIDI_PATH).map_err(|error| {
-            MidiSourceError::new(format!(
-                "failed to read fixed MIDI fixture {FIXED_MIDI_PATH}: {error}"
-            ))
-        })?;
+        let bytes = super::bundled_resource::path(FIXED_MIDI_PATH)
+            .and_then(fs::read)
+            .map_err(|error| {
+                MidiSourceError::new(format!(
+                    "failed to read fixed MIDI fixture {FIXED_MIDI_PATH}: {error}"
+                ))
+            })?;
         let smf = Smf::parse(&bytes).map_err(|error| {
             MidiSourceError::new(format!(
                 "fixed MIDI fixture {FIXED_MIDI_PATH} is malformed: {error}"

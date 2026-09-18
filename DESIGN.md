@@ -534,6 +534,10 @@ admission thresholds remain in source and are not product requirements.
 Worker-owned caches share active banks through weak references. The full
 upstream SoundFont is shared by prepared voices; authored capability catalogs
 remain control-side. The bundled `./sf2/HiDef.sf2` reference remains exact.
+Installed macOS applications resolve that reference and the fixed MIDI fixture
+inside `Contents/Resources`, independent of the working directory. Unbundled
+development tools retain checkout-relative lookup. Missing bundle resources fail
+explicitly rather than selecting a checkout copy.
 
 The Sample adapter uses exact `hound = 3.5.1` (Apache-2.0, no optional
 features). It accepts uncompressed RIFF/WAVE only: mono/stereo signed
@@ -1080,8 +1084,16 @@ pass. Building the bundled SDL3 library requires CMake and a C toolchain. Linux
 input builds require ALSA development headers and SDL platform dependencies;
 optional JACK is an explicit MIDI packaging choice. Windows MIDI defaults to
 WinMM; optional WinRT is also
-an explicit choice. Broader packaging remains unverified; maintain platform
-adapter boundaries without assuming a small-device target.
+an explicit choice. The current native keyboard-capture adapter explicitly rejects
+non-macOS hosts, so Linux and Windows are not runnable release targets yet.
+`scripts/build_release_macos.sh` builds native Apple Silicon or Intel macOS app
+and DMG bundles with the SoundFont, MIDI fixture, font/audio notices, and Eigen
+source. The manually dispatched `Release binaries` workflow builds both targets
+from one commit and checks the packaged production smoke path outside the checkout.
+Bundles target macOS 11 or newer; builds and smoke checks do not establish physical
+device acceptance on every OS version. Signing is ad-hoc; Developer ID signing and
+notarization remain unavailable until credentials are configured. Publish verified
+artifacts and SHA-256 checksums only after both jobs pass, tagging that exact commit.
 
 ## Change checklist
 

@@ -1,0 +1,54 @@
+name: Release binaries
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  macos:
+    name: ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    env:
+      MACOSX_DEPLOYMENT_TARGET: '11.0'
+      CARGO_INCREMENTAL: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: '1.96.0'
+          components: rustfmt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Verify native host and source formatting
+        run: |
+          test "$(rustc -vV | sed -n 's/^host: //p')" = '${{ matrix.target }}'
+          cargo fmt --all -- --check
+      - name: Build and verify installable bundles
+        run: bash scripts/build_release_macos.sh
+      - name: Resource and production runtime regression checks
+        run: |
+          cargo test --locked --release --lib bundled_resource
+          cargo test --locked --release --lib adapter::hidef_soundfont_asset
+          cargo test --locked --release --lib adapter::fixed_midi_event_source
+          cargo test --locked --release --test production_runtime_contracts
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: target/release-assets/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14
