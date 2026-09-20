@@ -1039,6 +1039,8 @@ mod tests {
         );
         assert_eq!(SurfaceId::MidiDeviceSettings.context(), None);
         assert!(SurfaceId::MidiDeviceSettings.is_system());
+        assert_eq!(SurfaceId::ControllerSettings.context(), None);
+        assert!(SurfaceId::ControllerSettings.is_system());
         assert!(SurfaceId::PatchUtility.is_persistent_side());
         assert!(SurfaceId::MixerMain.is_main());
 

@@ -16,8 +16,8 @@ name = "crest-synth-witness"
 path = "src/bin/crest_synth_witness.rs"
 
 # The webview projection witness uses harness = false because its live-gated
-# sections open a real Tauri window, which macOS
-# permits only on the main thread; the default libtest harness runs every
+# sections open a real Tauri window, which AppKit and GTK
+# require on the main thread; the default libtest harness runs every
 # test on a worker thread. The target still runs under the declared
 # `cargo test --test webview_projection_shell -- --nocapture` command.
 [[test]]
@@ -26,9 +26,9 @@ path = "tests/webview_projection_shell.rs"
 harness = false
 
 # The automated key-injection witness runs the real TauriWebviewWindow (debug
-# seam page) and synthesizes
-# NSEvents through the production local monitor, which macOS permits only on
-# the main thread — harness = false for the same reason as above. Gated on
+# seam page), with AppKit event injection or Linux XTest input through GTK.
+# Native event handling stays on the main thread — harness = false for the
+# same reason as above. Gated on
 # window availability with a typed skip that fails under
 # CREST_REQUIRE_KEY_WITNESS=1.
 [[test]]
@@ -46,7 +46,8 @@ midir = "0.11.0"
 # SDL owns gamepad discovery, hardware mappings and hotplug. Build its C library
 # statically so the app has no dependency on a machine-local SDL installation.
 sdl3 = { version = "0.20", features = ["build-from-source-static"] }
-cpal = "0.18.1"
+# Pinned upstream with Linux interrupted-poll recovery; see its provenance.
+cpal = { path = "vendor/cpal", version = "=0.18.1" }
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 rustysynth = { path = "vendor/rustysynth", version = "1.3.6" }
@@ -57,12 +58,16 @@ thiserror = "2.0"
 # Phase 7's bounded RIFF/WAVE-only decoder adapter. Exact pin, no features.
 hound = "=3.5.1"
 # Webview shell runtime — the product's sole shell behind the AppWindow port.
-# Default macOS bundle only — no tray, updater, or CLI features.
-tauri = { version = "2", features = [] }
+# Native AppKit/GTK desktop runtime; no tray, updater, or CLI features.
+tauri = "2"
 # Platform-native file and unsaved-change dialogs. It is confined to the
 # Tauri shell adapter; canonical state and lifecycle orchestration depend only
 # on the host-neutral dialog port.
 rfd = "0.15"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+# Use the same GTK runtime as Tauri for native, pre-WebKit keyboard capture.
+gtk = { version = "0.18", features = ["v3_24"] }
 
 # Rust-side native key capture under a focused WKWebView (research R-02):
 # the NSEvent local-monitor path lives in src/shell/webview/input_capture.rs.
@@ -86,6 +91,11 @@ sha2 = "0.10"
 # Value document, including f32 waveform extrema promoted to f64 by serde.
 serde_json = { version = "1.0", features = ["float_roundtrip"] }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+libc = "0.2"
+webkit2gtk = "2.0"
+cairo-rs = { version = "0.18", features = ["png"] }
+
 # Full debuginfo and per-integration-test incremental state previously allowed
 # target/ to grow far beyond the size of the source checkout. Line tables keep
 # file/line backtraces while substantially reducing artifact size. The dev
@@ -95,7 +105,10 @@ serde_json = { version = "1.0", features = ["float_roundtrip"] }
 [profile.dev]
 debug = "line-tables-only"
 
+# Native acceptance uses debug-only fault injection, but still exercises timed
+# DSP/control work. Keep assertions and those seams while optimizing execution.
 [profile.test]
+opt-level = 3
 debug = "line-tables-only"
 incremental = false
 

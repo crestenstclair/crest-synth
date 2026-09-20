@@ -865,6 +865,30 @@ fn assert_state_tree_leaf_surface_exact() -> BTreeSet<String> {
         production_capability_registry().unwrap(),
         support::globals(),
     );
+    let mut controller_state = midi_state.clone();
+    controller_state
+        .apply(AppEvent::Controller(
+            crest_synth::control::ControllerEvent::DevicesChanged {
+                devices: vec![crest_synth::control::ControllerDevice {
+                    id: 17,
+                    name: "Schema gamepad".into(),
+                }],
+            },
+        ))
+        .unwrap();
+    controller_state
+        .apply(AppEvent::Controller(
+            crest_synth::control::ControllerEvent::PreferencesLoaded {
+                result: Err(crest_synth::control::ControllerFailure::PreferenceDecode),
+            },
+        ))
+        .unwrap();
+    trees.push(
+        StateProjector::new()
+            .project_with_tree(&controller_state)
+            .unwrap()
+            .4,
+    );
     let opened = midi_state
         .apply_semantic_action(SemanticAction::OpenMidiSettings)
         .unwrap();

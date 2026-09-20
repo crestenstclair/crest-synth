@@ -324,7 +324,46 @@ fn audio_case(
     name: String,
     churn: bool,
 ) -> Measurement {
-    let graph = fixtures.graph(&state, frames, GraphRevision::INITIAL);
+    let (state, graph) = if churn {
+        // Keep the requested held-note load AND its overlapping release tails.
+        // A bank sized only for held notes correctly refuses retriggers while
+        // those tails occupy its voices. Prepare the complete workload budget
+        // through the production session restore path, without stealing voices
+        // or reducing note counts, release duration, or timing requirements.
+        let mut saved =
+            serde_json::to_value(crest_synth::control::SavedSession::capture(&state)).unwrap();
+        for (document, patch) in saved["patches"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .zip(state.patches())
+        {
+            let release_frames =
+                (f64::from(patch.envelope().release_milliseconds()) * 48.0).round() as usize;
+            let overlapping_batches = 1 + release_frames.div_ceil(8 * frames);
+            let budget = u16::try_from(voices * overlapping_batches).unwrap();
+            document["voiceLimit"] = budget.max(patch.voice_limit().value()).into();
+        }
+        let prepared =
+            crest_synth::control::SavedSession::from_json(&saved.to_string(), &fixtures.registry)
+                .unwrap()
+                .prepare_restore(
+                    fixtures.registry.clone(),
+                    fixtures.effects.clone(),
+                    &fixtures.instruments,
+                    &fixtures.effect_preparers,
+                    GraphRevision::INITIAL,
+                    48_000.0,
+                    frames,
+                )
+                .unwrap();
+        let state = prepared.state().clone();
+        let (_, graph) = prepared.into_replacement();
+        (state, graph)
+    } else {
+        let graph = fixtures.graph(&state, frames, GraphRevision::INITIAL);
+        (state, graph)
+    };
     let mut rig = Rig::new(state, graph);
     rig.notes(voices, true);
     let mut output = vec![0.0; frames * 2];
@@ -453,21 +492,36 @@ fn production_performance_matrix() {
     let profiled = std::env::var("CREST_PERFORMANCE_PROFILE").as_deref() == Ok("1");
     let fixtures = Fixtures::new();
     let mut rows = Vec::new();
+    let mut contract_failures = Vec::new();
+    // Keep each production assertion authoritative, but retain evidence from
+    // later workloads too. A failed contract never becomes a timing-only row
+    // and remains fatal even when timings are collected under a profiler.
+    let mut audio = |state, frames, voices, name: String, churn| match std::panic::catch_unwind(
+        std::panic::AssertUnwindSafe(|| {
+            audio_case(&fixtures, state, frames, voices, name.clone(), churn)
+        }),
+    ) {
+        Ok(row) => emit(row, &mut rows),
+        Err(error) => {
+            let detail = error
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| error.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic");
+            contract_failures.push(format!("{name}: {detail}"));
+        }
+    };
     // Every shipped Braids algorithm at its complete Patch-local voice capacity.
     if selected("braids") {
         for (index, model) in BRAIDS_MODELS.iter().enumerate() {
             for patches in [1, 16] {
                 let state = fixtures.state(&[BRAIDS_CAPABILITY_ID], patches, index, 0, 0);
-                emit(
-                    audio_case(
-                        &fixtures,
-                        state,
-                        256,
-                        16,
-                        format!("braids/model/{}/p{patches}", model.label),
-                        false,
-                    ),
-                    &mut rows,
+                audio(
+                    state,
+                    256,
+                    16,
+                    format!("braids/model/{}/p{patches}", model.label),
+                    false,
                 );
             }
         }
@@ -481,25 +535,20 @@ fn production_performance_matrix() {
     assert!(engines.contains(&SAMPLE_CAPABILITY_ID));
     if selected("scale") {
         for engine in &engines {
-            let capacity = fixtures
-                .registry
-                .descriptor(&CapabilityId::new(*engine).unwrap())
-                .unwrap()
-                .voice_policy()
-                .polyphony_ceiling() as usize;
+            // Configurable policies declare a representable ceiling, not the
+            // budget prepared for this workload. Saturate the actual Patch.
+            let capacity = fixtures.state(&[engine], 1, 0, 0, 0).patches()[0]
+                .voice_limit()
+                .value() as usize;
             for patches in [1, 4, 8, 16] {
                 for frames in [64, 128, 256, 512] {
                     for voices in [1, capacity] {
-                        emit(
-                            audio_case(
-                                &fixtures,
-                                fixtures.state(&[engine], patches, 0, 0, 0),
-                                frames,
-                                voices,
-                                format!("scale/{engine}/p{patches}/v{voices}/f{frames}"),
-                                false,
-                            ),
-                            &mut rows,
+                        audio(
+                            fixtures.state(&[engine], patches, 0, 0, 0),
+                            frames,
+                            voices,
+                            format!("scale/{engine}/p{patches}/v{voices}/f{frames}"),
+                            false,
                         );
                     }
                 }
@@ -509,28 +558,20 @@ fn production_performance_matrix() {
     if selected("mixed") {
         for frames in [64, 128, 256, 512] {
             for (slots, returns) in [(0, 0), (1, 0), (2, 0), (3, 0), (0, 8), (3, 8)] {
-                emit(
-                    audio_case(
-                        &fixtures,
-                        fixtures.state(&engines, 16, 0, slots, returns),
-                        frames,
-                        16,
-                        format!("mixed/p16/v16/f{frames}/slots{slots}/returns{returns}"),
-                        false,
-                    ),
-                    &mut rows,
-                );
-            }
-            emit(
-                audio_case(
-                    &fixtures,
-                    fixtures.state(&engines, 16, 0, 3, 8),
+                audio(
+                    fixtures.state(&engines, 16, 0, slots, returns),
                     frames,
                     16,
-                    format!("midi-churn/p16/v16/f{frames}/slots3/returns8"),
-                    true,
-                ),
-                &mut rows,
+                    format!("mixed/p16/v16/f{frames}/slots{slots}/returns{returns}"),
+                    false,
+                );
+            }
+            audio(
+                fixtures.state(&engines, 16, 0, 3, 8),
+                frames,
+                16,
+                format!("midi-churn/p16/v16/f{frames}/slots3/returns8"),
+                true,
             );
         }
     }
@@ -557,7 +598,7 @@ fn production_performance_matrix() {
         "cpu": std::process::Command::new("sysctl").args(["-n", "machdep.cpu.brand_string"]).output().ok().filter(|output| output.status.success()).map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()),
         "rustc": std::process::Command::new("rustc").arg("--version").output().ok().filter(|output| output.status.success()).map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()),
         "timing_scope": "offline production callback duration; excludes physical device scheduling and native webview paint",
-        "rows": rows, "failures": failures,
+        "rows": rows, "failures": failures, "contract_failures": contract_failures,
     });
     let path = std::env::var_os("CREST_PERFORMANCE_REPORT")
         .map(std::path::PathBuf::from)
@@ -570,6 +611,10 @@ fn production_performance_matrix() {
     }
     std::fs::write(&path, serde_json::to_vec_pretty(&report).unwrap()).unwrap();
     println!("CREST_PERFORMANCE_REPORT {}", path.display());
+    assert!(
+        contract_failures.is_empty(),
+        "production audio contracts failed: {contract_failures:?}; report retains all workload failures"
+    );
     assert!(
         rows.iter()
             .all(|row| row.allocations.is_none_or(|count| count == 0)

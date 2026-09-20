@@ -1836,6 +1836,28 @@ mod tests {
                 _ => None,
             })
             .unwrap();
+        // SoundFont alone has choice metadata, but cannot witness numeric
+        // ranges or the catalog's stepped/continuous display-label payloads.
+        let registry =
+            crate::adapter::production_instruments::production_capability_registry().unwrap();
+        for id in ["instrument.mutable.tides", "instrument.mda.jx10"] {
+            let mut labelled = failed.clone();
+            labelled.descriptor = Some(
+                registry
+                    .descriptor(&crate::synth::CapabilityId::new(id).unwrap())
+                    .unwrap()
+                    .clone(),
+            );
+            records.push(schema_record(
+                EventSource::Worker,
+                EventInput::AssetImported {
+                    selection: labelled,
+                },
+                EventOutcome::Accepted,
+                Vec::new(),
+                None,
+            ));
+        }
         failed.descriptor = None;
         failed.result = Err(SampleAssetError::MalformedSoundFont);
         records.push(schema_record(
@@ -2103,6 +2125,7 @@ mod tests {
         assert!(descriptor.contains(&EventSource::Worker));
         assert!(descriptor.contains(&EventSource::PhysicalMidi));
         assert!(descriptor.contains(&EventSource::System));
+        assert!(descriptor.contains(&EventSource::Controller));
         assert_ne!(EventSource::PhysicalMidi, EventSource::AutomaticMidi);
     }
 

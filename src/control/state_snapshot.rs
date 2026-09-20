@@ -120,21 +120,40 @@ impl GenerationTemplate {
 /// This is an identity fingerprint, not a security boundary.
 fn hash_bytes(bytes: &[u8]) -> u64 {
     const OFFSET_BASIS: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    let mut hash = OFFSET_BASIS;
-    for byte in bytes {
-        hash = hash.wrapping_mul(PRIME).wrapping_add(u64::from(*byte) + 1);
-    }
-
-    hash
+    polynomial_hash(bytes, OFFSET_BASIS).0
 }
 
 fn suffix_hash(bytes: &[u8]) -> (u64, u64) {
+    polynomial_hash(bytes, 0)
+}
+
+fn polynomial_hash(bytes: &[u8], mut hash: u64) -> (u64, u64) {
     const PRIME: u64 = 0x0000_0100_0000_01b3;
-    let mut hash = 0_u64;
+    const POWERS: [u64; 9] = {
+        let mut powers = [1_u64; 9];
+        let mut i = 1;
+        while i < powers.len() {
+            powers[i] = powers[i - 1].wrapping_mul(PRIME);
+            i += 1;
+        }
+        powers
+    };
     let mut factor = 1_u64;
-    for byte in bytes {
+    let mut chunks = bytes.chunks_exact(8);
+    for chunk in &mut chunks {
+        // Expand eight steps of the same polynomial modulo 2^64. Independent
+        // byte contributions avoid a multiply dependency for every JSON byte;
+        // hashes and suffix composition remain exactly platform-independent.
+        let contribution = chunk
+            .iter()
+            .zip(POWERS[..8].iter().rev())
+            .fold(0_u64, |sum, (byte, power)| {
+                sum.wrapping_add((u64::from(*byte) + 1).wrapping_mul(*power))
+            });
+        hash = hash.wrapping_mul(POWERS[8]).wrapping_add(contribution);
+        factor = factor.wrapping_mul(POWERS[8]);
+    }
+    for byte in chunks.remainder() {
         hash = hash.wrapping_mul(PRIME).wrapping_add(u64::from(*byte) + 1);
         factor = factor.wrapping_mul(PRIME);
     }
@@ -147,7 +166,30 @@ fn format_hash(hash: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::StateSnapshot;
+    use super::{hash_bytes, suffix_hash, StateSnapshot};
+
+    #[test]
+    fn batched_hash_and_suffix_match_scalar_at_every_block_boundary() {
+        let bytes = (0..4096)
+            .map(|i| ((i * 73 + 13) % 256) as u8)
+            .collect::<Vec<_>>();
+        for offset in 0..8 {
+            let mut hash = 0xcbf2_9ce4_8422_2325_u64;
+            let mut suffix = 0_u64;
+            let mut factor = 1_u64;
+            for length in 0..bytes.len() - offset {
+                let slice = &bytes[offset..offset + length];
+                assert_eq!(hash_bytes(slice), hash);
+                assert_eq!(suffix_hash(slice), (suffix, factor));
+                let value = u64::from(bytes[offset + length]) + 1;
+                hash = hash.wrapping_mul(0x0000_0100_0000_01b3).wrapping_add(value);
+                suffix = suffix
+                    .wrapping_mul(0x0000_0100_0000_01b3)
+                    .wrapping_add(value);
+                factor = factor.wrapping_mul(0x0000_0100_0000_01b3);
+            }
+        }
+    }
 
     #[test]
     fn retains_the_complete_canonical_json() {

@@ -46,7 +46,7 @@ fn require_witness() -> bool {
     std::env::var("CREST_REQUIRE_KEY_WITNESS").as_deref() == Ok("1")
 }
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn main() {
     // libtest-style arguments are accepted and ignored under harness=false.
     let _ = std::env::args();
@@ -58,6 +58,22 @@ fn main() {
         eprintln!("CREST_REQUIRE_KEY_WITNESS=1: the witness cannot run here");
         std::process::exit(1);
     }
+}
+
+#[cfg(target_os = "linux")]
+#[path = "support/input_capture_linux.rs"]
+mod linux_witness;
+
+#[cfg(target_os = "linux")]
+fn main() {
+    if std::env::var_os("DISPLAY").is_none() {
+        println!(
+            "CREST_KEY_WITNESS_SKIP no X11 display; use Xvfb for the native injection witness"
+        );
+        std::process::exit(i32::from(require_witness()));
+    }
+    std::env::set_var("GDK_BACKEND", "x11");
+    linux_witness::run();
 }
 
 #[cfg(target_os = "macos")]

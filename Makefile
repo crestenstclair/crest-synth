@@ -26,6 +26,33 @@ check: cache-guard ## Type-check all targets
 test: cache-guard ## Run all tests
 	cargo test --all-targets
 
+.PHONY: linux-shell linux-image linux-desktop test-linux
+linux-shell: ## Open this worktree's Linux development shell through Docker
+	scripts/linux/dev.sh
+
+linux-image: ## Build or refresh the native-architecture Linux development image
+	scripts/linux/dev.sh --build
+
+linux-desktop: ## Open a visible Linux desktop with the synth, terminal, and browser audio
+	scripts/linux/dev.sh --desktop
+
+test-linux: cache-guard ## Run all Linux tests and native witnesses in an isolated virtual desktop
+	scripts/linux/with-desktop.sh scripts/linux/check.sh
+
+.PHONY: test-linux-wayland
+test-linux-wayland: cache-guard ## Verify Detail, Mixer and Sample paint/resize on native Wayland
+	env -u CREST_SOUNDFONT_EVIDENCE_DIR -u CREST_WEBVIEW_CONTROLLER_WITNESS \
+	  -u CREST_WEBVIEW_PAGE_NAVIGATION_WITNESS -u CREST_WEBVIEW_OPTION_WITNESS \
+	  -u CREST_WEBVIEW_EMPTY_PATCH_WITNESS -u CREST_WEBVIEW_PERFORMANCE_WITNESS \
+	  CREST_WEBVIEW_TESTS=1 CREST_WEBVIEW_DETAIL_WITNESS=1 CREST_WEBVIEW_SAMPLE_WITNESS=1 \
+	  scripts/linux/with-desktop.sh --wayland cargo test --locked --test webview_projection_shell
+
+.PHONY: test-linux-session-native
+test-linux-session-native: cache-guard ## Verify shipping audio and session dialogs on X11 and Wayland
+	cargo build --locked --release --bin crest-synth
+	scripts/linux/with-desktop.sh python3 scripts/linux/session-smoke.py "$(or $(CARGO_TARGET_DIR),target)/release/crest-synth"
+	scripts/linux/with-desktop.sh --wayland python3 scripts/linux/session-smoke.py "$(or $(CARGO_TARGET_DIR),target)/release/crest-synth"
+
 test-session-lifecycle: cache-guard ## Run the automated New/Open/Save/Save As/close acceptance suite
 	cargo test shell::session_lifecycle --lib
 	cargo test shell::standalone_application::tests::normal_ --lib

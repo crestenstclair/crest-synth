@@ -6,6 +6,7 @@ ROOT = Path(__file__).resolve().parents[1]
 AUDIO = ROOT / 'vendor/audio'
 LICENSES = [
     'vendor/braids/stmlib/LICENSE', 'vendor/chorus/LICENSE', 'vendor/rustysynth/LICENSE.txt',
+    'vendor/cpal/LICENSE',
     'airwindows/LICENSE', 'daisysp/LICENSE', 'stk/LICENSE', 'mda/LICENSE', 'mda-deesser/LICENSE.txt',
     'msfa/COPYING', 'stmlib/LICENSE', 'nam/LICENSE', 'nam/Dependencies/AudioDSPTools/LICENSE',
     'nam/Dependencies/nlohmann/LICENSE.MIT', 'nam/Dependencies/eigen/COPYING.MPL2', 'nam/Dependencies/eigen/COPYING.BSD',

@@ -42,7 +42,17 @@ impl AudioOutput for CpalAudioOutput {
             .ok_or_else(|| AudioOutputError::new("default output device is unavailable"))?;
         let supported = select_output_config(&device)?;
         let sample_format = supported.sample_format();
-        let (stream_config, render_capacity_frames) = configure_buffer_size(&supported);
+        let requested_frames = std::env::var("CREST_AUDIO_BUFFER_FRAMES")
+            .map(Some)
+            .or_else(|error| match error {
+                std::env::VarError::NotPresent => Ok(None),
+                error => Err(AudioOutputError::new(format!(
+                    "invalid CREST_AUDIO_BUFFER_FRAMES: {error}"
+                ))),
+            })?;
+        let requested_frames = parse_buffer_frames(requested_frames.as_deref())?;
+        let (stream_config, render_capacity_frames) =
+            configure_buffer_size(&supported, requested_frames)?;
         let canonical_format = canonical_sample_format(sample_format).ok_or_else(|| {
             AudioOutputError::new(format!(
                 "unsupported default output sample format: {sample_format}"
@@ -182,16 +192,46 @@ fn is_usable_range(config: &SupportedStreamConfigRange) -> bool {
     config.channels() >= 2 && !config.sample_format().is_dsd()
 }
 
-fn configure_buffer_size(supported: &SupportedStreamConfig) -> (StreamConfig, usize) {
+fn parse_buffer_frames(value: Option<&str>) -> Result<Option<u32>, AudioOutputError> {
+    value
+        .map(|value| {
+            value
+                .parse::<u32>()
+                .ok()
+                .filter(|frames| *frames > 0)
+                .ok_or_else(|| {
+                    AudioOutputError::new(
+                        "CREST_AUDIO_BUFFER_FRAMES must be a positive frame count",
+                    )
+                })
+        })
+        .transpose()
+}
+
+fn configure_buffer_size(
+    supported: &SupportedStreamConfig,
+    requested_frames: Option<u32>,
+) -> Result<(StreamConfig, usize), AudioOutputError> {
     let mut config = supported.config();
-    match *supported.buffer_size() {
+    if let Some(frames) = requested_frames {
+        if let SupportedBufferSize::Range { min, max } = *supported.buffer_size() {
+            if !(min..=max).contains(&frames) {
+                return Err(AudioOutputError::new(format!(
+                    "requested audio buffer of {frames} frames is outside the device range {min}..={max}"
+                )));
+            }
+        }
+        config.buffer_size = BufferSize::Fixed(frames);
+        return Ok((config, frames as usize));
+    }
+    Ok(match *supported.buffer_size() {
         SupportedBufferSize::Range { min, max } => {
             let frames = PREFERRED_CALLBACK_FRAMES.clamp(min, max);
             config.buffer_size = BufferSize::Fixed(frames);
             (config, frames as usize)
         }
         SupportedBufferSize::Unknown => (config, UNKNOWN_CALLBACK_RENDER_CAPACITY),
-    }
+    })
 }
 
 fn canonical_sample_format(sample_format: SampleFormat) -> Option<AudioSampleFormat> {
@@ -357,8 +397,9 @@ fn bound_sample(sample: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        bound_sample, canonical_sample_format, choose_output_config, map_runtime_error,
-        map_stereo_samples, CpalAudioOutput, STEREO_SCRATCH_SAMPLES,
+        bound_sample, canonical_sample_format, choose_output_config, configure_buffer_size,
+        map_runtime_error, map_stereo_samples, parse_buffer_frames, CpalAudioOutput,
+        STEREO_SCRATCH_SAMPLES,
     };
     use crate::shell::audio_output::{AudioDeviceRuntimeError, AudioOutput, AudioSampleFormat};
     use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfig};
@@ -371,6 +412,23 @@ mod tests {
             SupportedBufferSize::Range { min: 128, max: 512 },
             SampleFormat::F32,
         )
+    }
+
+    #[test]
+    fn requested_buffer_is_validated_and_sizes_graph_preparation() {
+        assert_eq!(parse_buffer_frames(None).unwrap(), None);
+        assert_eq!(parse_buffer_frames(Some("512")).unwrap(), Some(512));
+        for value in ["0", "-1", "abc", "", "4294967296"] {
+            assert!(parse_buffer_frames(Some(value)).is_err());
+        }
+        let supported = config(48_000);
+        let (stream, capacity) = configure_buffer_size(&supported, Some(512)).unwrap();
+        assert_eq!(stream.buffer_size, cpal::BufferSize::Fixed(512));
+        assert_eq!(capacity, 512);
+        assert!(configure_buffer_size(&supported, Some(1024)).is_err());
+        let (stream, capacity) = configure_buffer_size(&supported, None).unwrap();
+        assert_eq!(stream.buffer_size, cpal::BufferSize::Fixed(256));
+        assert_eq!(capacity, 256);
     }
 
     #[test]
