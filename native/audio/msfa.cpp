@@ -51,7 +51,7 @@ public:
         for (size_t i=0;i<frames;++i) left[i]=right[i]=std::clamp(output_[i]/16777216.f,-1.f,1.f);
     }
 };
-CrestProcessor* make_msfa_DX7(float rate,size_t frames) { return new RateAdapter(new MsfaVoice,48000,rate,N,frames); }
+CrestProcessor* make_msfa_DX7(float rate,size_t frames) { return new RateAdapter(new MsfaVoice,48000,rate,N,frames,RateAdapter::Signal::MonoGenerator); }
 // Off-thread format adapters reuse MSFA's own unpacker and bundled patch.
 extern "C" void crest_msfa_unpack(const uint8_t* packed,uint8_t* unpacked) noexcept {
     char patch[156]; UnpackPatch(reinterpret_cast<const char*>(packed),patch);

@@ -1,5 +1,6 @@
 #include "parameter_adapter.h"
-// Load SIMD headers at global scope before FFTConvolver's namespaced includes.
+// r8brain includes SSE intrinsics at global scope. Load it before FFTConvolver,
+// whose upstream header includes xmmintrin.h inside its own namespace.
 #include "CDSPResampler.h"
 #include "fftconvolver/FFTConvolver.h"
 

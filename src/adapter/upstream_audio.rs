@@ -3,7 +3,7 @@
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::PatchId;
 use crate::real_time::{RtPatchParameters, RtPostEffectParameters};
-use crate::synth::voice_envelope_state::VoiceEnvelopeState;
+use crate::synth::voice_envelope_state::{VoiceEnvelopeStage, VoiceEnvelopeState};
 use crate::synth::*;
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr::NonNull;
@@ -14,7 +14,12 @@ extern "C" {
     fn crest_audio_id(index: usize) -> *const c_char;
     fn crest_audio_name(index: usize) -> *const c_char;
     fn crest_audio_is_instrument(index: usize) -> bool;
-    fn crest_audio_create(index: usize, rate: f32, frames: usize) -> *mut c_void;
+    fn crest_audio_create_scheduled(
+        index: usize,
+        rate: f32,
+        frames: usize,
+        phase: u32,
+    ) -> *mut c_void;
     fn crest_audio_load_sample(
         handle: *mut c_void,
         bytes: *const u8,
@@ -59,7 +64,10 @@ struct Processor {
 unsafe impl Send for Processor {}
 impl Processor {
     fn new(index: usize, rate: f32, max_frames: usize) -> Option<Self> {
-        NonNull::new(unsafe { crest_audio_create(index, rate, max_frames) })
+        Self::new_scheduled(index, rate, max_frames, 0)
+    }
+    fn new_scheduled(index: usize, rate: f32, max_frames: usize, phase: u32) -> Option<Self> {
+        NonNull::new(unsafe { crest_audio_create_scheduled(index, rate, max_frames, phase) })
             .map(|handle| Self { handle, max_frames })
     }
     fn load_ir(&mut self, decoded: &DecodedSample) -> bool {
@@ -137,6 +145,7 @@ pub(crate) fn prepare_voice_bank<P: VoiceProcessor + 'static>(
         patch_id: patch.id(),
         voices,
         scratch: vec![0.; max_frames * 2],
+        gains: vec![0.; max_frames],
         rate,
         age: 0,
         sustain: false,
@@ -921,8 +930,14 @@ impl InstrumentPreparer for UpstreamInstrument {
         voices
             .try_reserve_exact(capacity)
             .map_err(|_| InstrumentPreparationError::StorageAllocationFailed { patch_id })?;
-        for _ in 0..capacity {
-            let mut processor = Processor::new(self.index, rate, max_frames)
+        for voice in 0..capacity {
+            // Stable preparation identity spreads FFT boundaries without
+            // making output depend on unrelated instance creation or threads.
+            let phase = patch_id
+                .value()
+                .wrapping_mul(0x85eb_ca6b)
+                .wrapping_add((voice as u32).wrapping_mul(0x9e37_79b9));
+            let mut processor = Processor::new_scheduled(self.index, rate, max_frames, phase)
                 .ok_or(InstrumentPreparationError::PreparationFailed { patch_id })?;
             if let Some(data) = &patch_data {
                 if !processor.load(data) {
@@ -947,6 +962,7 @@ impl InstrumentPreparer for UpstreamInstrument {
             patch_id,
             voices,
             scratch: vec![0.0; max_frames * 2],
+            gains: vec![0.0; max_frames],
             rate,
             age: 0,
             sustain: false,
@@ -968,6 +984,7 @@ struct PreparedVoiceBank<P> {
     patch_id: PatchId,
     voices: Vec<Voice<P>>,
     scratch: Vec<f32>,
+    gains: Vec<f32>,
     rate: f32,
     age: u64,
     sustain: bool,
@@ -1026,7 +1043,10 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
             }
             MidiMessageKind::PitchBend => {
                 self.bend = (a, b);
-                for voice in &mut self.voices {
+                // Idle processors are reset and receive the current bend
+                // before their next note-on. Held and releasing voices still
+                // receive every ordered bend, including same-block events.
+                for voice in self.voices.iter_mut().filter(|v| !v.envelope.is_idle()) {
                     voice.processor.note(0xe0, a, b);
                 }
             }
@@ -1086,13 +1106,27 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
                 stereo.fill(0.0);
                 return Err(PreparedInstrumentError::RenderRejected);
             }
-            for (input, output) in scratch.chunks_exact(2).zip(stereo.chunks_exact_mut(2)) {
-                let gain = if voice.delay > 0 {
-                    voice.delay -= 1;
-                    0.0
-                } else {
-                    voice.envelope.next_gain(self.rate) * self.expression * self.pressure
-                };
+            // Sustain has no sample-domain state transition. Hoisting its
+            // constant gain also permits SIMD mixing without changing the
+            // order in which independent voices contribute to the Patch.
+            if voice.delay == 0 && voice.envelope.stage() == VoiceEnvelopeStage::Sustain {
+                let gain = voice.envelope.level() * self.expression * self.pressure;
+                for (input, output) in scratch.iter().zip(stereo.iter_mut()) {
+                    *output += input * gain;
+                }
+                continue;
+            }
+            let gains = &mut self.gains[..frames];
+            let delayed = voice.delay.min(frames);
+            voice.delay -= delayed;
+            gains[..delayed].fill(0.0);
+            voice.envelope.fill_gains(&mut gains[delayed..], self.rate);
+            for ((input, output), gain) in scratch
+                .chunks_exact(2)
+                .zip(stereo.chunks_exact_mut(2))
+                .zip(gains.iter())
+            {
+                let gain = gain * self.expression * self.pressure;
                 output[0] += input[0] * gain;
                 output[1] += input[1] * gain;
             }
@@ -1218,6 +1252,86 @@ mod tests {
     use crate::mixer::mixer_state::MixerState;
     use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::{GraphRevision, ParameterSnapshot};
+
+    #[test]
+    fn bends_reach_held_and_releasing_voices_and_replay_after_idle_reset() {
+        #[derive(Default)]
+        struct Recorder(Vec<(i32, u8, u8)>);
+        impl VoiceProcessor for Recorder {
+            fn latency(&self) -> usize {
+                0
+            }
+            fn set(&mut self, _: &[f32]) -> bool {
+                true
+            }
+            fn note(&mut self, status: i32, a: u8, b: u8) {
+                self.0.push((status, a, b));
+            }
+            fn reset(&mut self) {
+                self.0.push((-1, 0, 0));
+            }
+            fn process(&mut self, stereo: &mut [f32], _: usize) -> bool {
+                stereo.fill(1.0);
+                true
+            }
+        }
+        let id = PatchId::new(1).unwrap();
+        let params = RtPatchParameters::projected(
+            id,
+            PatchOutput::default(),
+            VoiceEnvelope::new(0.0, 0.0, 1.0, 40.0).unwrap(),
+            crate::real_time::RtInstrumentParameters::EMPTY,
+        );
+        let mut bank = PreparedVoiceBank {
+            patch_id: id,
+            voices: (0..3)
+                .map(|_| Voice {
+                    processor: Recorder::default(),
+                    envelope: VoiceEnvelopeState::IDLE,
+                    note: None,
+                    age: 0,
+                    held: false,
+                    delay: 0,
+                })
+                .collect(),
+            scratch: vec![0.0; 128],
+            gains: vec![0.0; 64],
+            rate: 48_000.0,
+            age: 0,
+            sustain: false,
+            bend: (0, 64),
+            expression: 1.0,
+            pressure: 1.0,
+        };
+        let message =
+            |kind, a, b| MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, a, b).unwrap();
+        bank.dispatch(message(MidiMessageKind::NoteOn, 60, 100), &params)
+            .unwrap();
+        bank.dispatch(message(MidiMessageKind::NoteOn, 61, 100), &params)
+            .unwrap();
+        bank.render(&mut [0.0; 128], 64, &params).unwrap();
+        bank.dispatch(message(MidiMessageKind::NoteOff, 60, 0), &params)
+            .unwrap();
+        assert!(bank.voices[0].envelope.is_releasing());
+        assert!(bank.voices[1].held);
+        for voice in &mut bank.voices {
+            voice.processor.0.clear();
+        }
+        let bends = [(0xe0, 0, 0), (0xe0, 127, 127), (0xe0, 17, 76)];
+        for &(_, a, b) in &bends {
+            bank.dispatch(message(MidiMessageKind::PitchBend, a, b), &params)
+                .unwrap();
+        }
+        assert_eq!(bank.voices[0].processor.0, bends);
+        assert_eq!(bank.voices[1].processor.0, bends);
+        assert!(bank.voices[2].processor.0.is_empty());
+        bank.dispatch(message(MidiMessageKind::NoteOn, 62, 100), &params)
+            .unwrap();
+        assert_eq!(
+            bank.voices[2].processor.0,
+            [(-1, 0, 0), (0xe0, 17, 76), (0x90, 62, 100)]
+        );
+    }
 
     #[test]
     fn every_upstream_effect_prepares_and_renders_through_its_public_port() {

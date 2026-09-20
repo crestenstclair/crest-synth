@@ -5346,8 +5346,12 @@ mod projection_enrichment_tests {
 
         let mut controller_settings = midi_settings.clone();
         controller_settings
-            .apply(AppEvent::Navigate(Direction::Right))
-            .unwrap();
+            .apply_semantic_action(SemanticAction::Navigate(Direction::Right))
+            .expect("the fixture opens Controller Settings from MIDI Settings");
+        assert_eq!(
+            controller_settings.interaction().active_surface(),
+            SurfaceId::ControllerSettings
+        );
         let mut sends = mixed_state();
         sends
             .apply(AppEvent::Send(crate::control::SendAction::Open))
@@ -5457,7 +5461,7 @@ mod projection_enrichment_tests {
                 );
             }
         }
-        // The guard is only as wide as the surfaces it saw. All five, or the
+        // The guard is only as wide as the surfaces it saw. All surfaces, or the
         // row that was reported is the only one anybody ever checks.
         assert_eq!(
             covered,

@@ -974,6 +974,9 @@ mod tests {
         let descriptor = AppEvent::surface_descriptor();
 
         assert_eq!(descriptor.len(), 57);
+        assert!(descriptor.contains(&AppEventSurfaceDescriptor::Controller {
+            event: AppEventPayloadShape::ControllerEvent,
+        }));
         for (index, entry) in descriptor.iter().enumerate() {
             assert!(
                 !descriptor[..index].contains(entry),

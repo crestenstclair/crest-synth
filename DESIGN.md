@@ -112,8 +112,9 @@ sample row and stopping on release; Start is reserved elsewhere.
 ## Product as built
 
 Crest Synth is a standalone, controller-first MIDI instrument host. The
-production composition is a Rust application using a Tauri v2/WKWebView shell
-and CPAL stereo audio output. Normal startup opens one clean, playable Sample
+production composition is a Rust application using Tauri v2 with WKWebView on
+macOS and WebKitGTK on Linux, plus CPAL stereo audio output. Normal startup
+opens one clean, playable Sample
 `INIT` document and starts a bounded repeating test MIDI pattern on channel 1:
 the catalog demo's ascending/descending major-seventh arpeggio across three
 octaves, played as eighth notes at 120 BPM with 200 ms gates.
@@ -416,6 +417,8 @@ status and are formatted/handled off callback.
   remain source-level behavior to account for when making that configurable.
 - Every engine applies the Patch-owned ADSR to independent native note voices;
   one post-stem envelope is nonconforming.
+  Repeated note-offs preserve an older voice's already-latched release rather
+  than restarting its tail when another note on the same key ends.
 - SoundFont uses one full upstream RustySynth synthesizer per prepared host
   voice, sharing an immutable parsed SoundFont. Each synthesizer admits the
   maximum overlapping regions for its selected preset. Native envelopes and
@@ -585,6 +588,30 @@ Crest maintains these adaptations because the selected sfizz repository is
 archived. sfizz currently duplicates resident samples across host voices;
 Sample admission accounts for private PCM copies separately from shared PCM.
 This remains a memory optimization opportunity.
+Delay-zero MIDI updates retain normalized event state without rewriting every
+controller buffer each block. Delayed events still flush in timestamp order.
+The embedded sfizz stage profiler is disabled; Crest owns callback observations
+and external acceptance timing, avoiding clock reads in each native voice stage.
+DaisySP caches unchanged SVF and modal coefficients and drum tone/decay
+calculations, plus unchanged string/modal excitation and damping coefficients,
+while advancing filter history, interpolation, noise, and gain every sample. Sample
+filter methods remain visible for inlining; modal coefficient preparation runs
+when controls change. Rings batches
+independent modal filters for SIMD and reuses unchanged pickup weights, retaining
+ordered modal sums. Elements reuses fixed center-pickup weights while advancing
+its side-pickup LFO, batches the same modal equations, and caches coefficients
+only after both alternating update phases agree, and accumulates four parallel
+partial sums within the existing upstream-reference error tolerance. Its bowed
+feedback and oscillator clocks are unchanged. STK BandedWG clears only the circular delay interval written
+since its last clear and returns exact zero for a cleared, unexcited plucked
+model; bowed models and nonzero tails always advance. Mesh2D computes each junction and its alternate-buffer
+outgoing waves in one pass. Native witnesses compare these paths against the
+retained upstream sources. Scalar snapshots revalidate changed values before
+applying any edits; reset invalidates the validated cache. Idle host voices receive
+the current pitch bend after reset at their next note-on; held and releasing
+voices still receive every ordered bend. Prepared voice banks fill a reusable
+envelope-gain block with scalar-equivalent stage transitions, then mix it without
+per-sample stage dispatch; each voice retains its independent release history.
 
 Catalog descriptors expose native parameters through existing generic lists.
 Parameter descriptors attach names to categorical stepped values and normalized
@@ -614,8 +641,18 @@ are bundled from `assets/licenses/UPSTREAM_AUDIO.txt`; Eigen's MPL-covered
 source ships in the adjacent `EIGEN_SOURCE.tar.gz` resource. STK's upstream patent statements
 remain documented qualifications, separate from its embedding license.
 
-Native rate/block adapters use r8brain and prepared storage. Native random
-state belongs to each prepared instance. On Darwin, a pthread key allocated
+Native rate/block adapters use r8brain and prepared storage with contiguous
+circular-buffer spans; upstream source blocks and converter clocks stay intact. Prepared FFT block
+phases derived from stable Patch/voice identity spread convolution work across
+voices while retaining the upstream
+filter, output counts, latency, and native note/control clock. Exact silence
+skips convolution; declared generators share their zero-input clock across
+channels, and mono generators convert their output once. Reset restores the
+prepared phase without priming DSP. STK renders at the prepared device rate
+using its upstream rate-dependent calculations, without a rate adapter. Its
+global rate never changes: each scoped native boundary selects the prepared
+instance's rate and random state. BandedWG delay storage follows that rate and
+the lowest supported note/bend across its presets. On Darwin, a pthread key allocated
 during preparation selects that state without first-render C++ TLS allocation.
 Current graph mixing does not compensate latency between parallel paths. Warps can use its
 built-in carrier or explicitly labeled stereo input channels; mda TalkBox
@@ -917,8 +954,15 @@ including when Shift is released first; Q/E also require release before another
 Patch step. Bare focus/edit repeats retain their existing behavior. Controller
 page gestures require release or disconnect before another activation.
 
-`make test-webview-page-navigation-native` exercises actual AppKit Q/E,
-Shift+arrows, repeats, and WASD through the production reducer and native paint.
+Linux captures physical XKB keys with a GTK key controller on the owned
+window, before WebKit dispatch. Ctrl/Alt/Super shortcuts remain native;
+held-key tracking clears on focus loss. The translator and reducer are shared
+with macOS. Linux native witnesses use XTest on an isolated X11 desktop;
+Wayland hardware input remains a separate acceptance check.
+
+`make test-webview-page-navigation-native` exercises actual AppKit or Linux
+XTest Q/E, Shift+arrows, repeats, and WASD through the production reducer and
+native paint.
 Its accepted journey includes Settings entry/return, exact Instrument/effect
 Detail origins, remembered context roots, singular focus, footer guidance,
 and owned shutdown. It does not establish an attached-gamepad handoff or broad visual parity.
@@ -976,6 +1020,16 @@ Rust and native DSP. `cargo run --bin crest-synth` remains an explicit debug
 launch; unoptimized timing is not a supported real-time performance target.
 Tour tests with real-time dispatch budgets run with `cargo test --release --lib
 full_demo_`; debug test runs skip those timing checks.
+The test profile optimizes execution while retaining debug assertions and native fault
+injection seams. `CREST_AUDIO_BUFFER_FRAMES` explicitly selects a positive device
+buffer size; unsupported requests fail instead of silently changing latency.
+Without it, the existing preferred device configuration applies. Larger buffers
+can accommodate VM scheduling at the cost of latency; graph preparation sizes
+its storage from the selected buffer before starting audio.
+The pinned CPAL source retries interrupted ALSA waits through its existing
+worker loop. Signals do not become device failures; other backend errors keep
+their typed reporting. The Linux device witness injects signals into the real
+audio worker and verifies continued callbacks without runtime failures.
 
 `make full-instrument-effect-demo` runs a sequential listening tour in the
 production window and audio runtime, focused on the new audio catalog. The
@@ -1048,6 +1102,12 @@ Fixture sizes are not product limits. Each case has independent unprofiled
 timing trials and a separate Samply diagnostic execution. The existing audio,
 note-delivery, timing and Rust callback allocation/destruction gates remain
 authoritative; profiled matrix timings do not count as timing-budget proof.
+The largest native stress cases still exceed callback budgets on current
+development hardware, particularly fixed-rate resampling and resonant models.
+These timing gaps remain unresolved; ordinary suite passes do not establish a
+complete stress-matrix pass. Rapid retrigger fixtures prepare storage for held
+notes and overlapping release tails through the production session restore
+path. Voice admission still refuses exhaustion without truncating sounding voices.
 
 Every run retains commands, build/host/source fingerprints, raw latency samples,
 per-child CPU/RSS/fault/context-switch measurements, scene observations, logs,
@@ -1094,10 +1154,10 @@ Normal startup plays the bounded test pattern on MIDI channel 1; T toggles it.
 Return opens highlighted Detail. Return on Sample/SoundFont File opens the
 in-app browser. W/S navigates; Return enters or assigns; Shift+S cancels.
 Hold Space on a Sample file to preview; SoundFont preview is unavailable.
-K with W/S/A/D edits controls; K+W opens an eligible choice. Cmd+S/Cmd+O use
-native session Save/Open dialogs. Settings · Save & Load exposes the same
-workflow with controller navigation and Return to activate. Assets use the
-in-app file page.
+K with W/S/A/D edits controls; K+W opens an eligible choice. Cmd+S/Cmd+O on
+macOS and Ctrl+S/Ctrl+O on Linux use native session Save/Open dialogs.
+Settings · Save & Load exposes the same workflow with controller navigation and
+Return to activate. Assets use the in-app file page.
 
 To choose an existing Sample library and initial asset, configure both
 `CREST_SAMPLE_LIBRARY_ROOT` (absolute root) and `CREST_SAMPLE_DEFAULT_ASSET`
@@ -1106,11 +1166,13 @@ To choose an existing Sample library and initial asset, configure both
 Native window, physical-input, and physical-audio witnesses require an
 interactive host. An unavailable environment is incomplete evidence, not a
 pass. Building the bundled SDL3 library requires CMake and a C toolchain. Linux
-input builds require ALSA development headers and SDL platform dependencies;
-optional JACK is an explicit MIDI packaging choice. Windows MIDI defaults to
-WinMM; optional WinRT is also
-an explicit choice. The current native keyboard-capture adapter explicitly rejects
-non-macOS hosts, so Linux and Windows are not runnable release targets yet.
+builds require GTK3, WebKitGTK 4.1, ALSA and SDL platform development libraries.
+Session file dialogs use the desktop portal (or Zenity); unsaved-change prompts
+require Zenity. Optional JACK is an explicit MIDI packaging choice. Windows
+MIDI defaults to WinMM; optional WinRT is also an explicit choice. Native keyboard
+capture supports macOS and Linux; Windows is not a runnable release target yet.
+Broader packaging remains unverified; maintain platform adapter boundaries
+without assuming a small-device target.
 `scripts/build_release_macos.sh` builds native Apple Silicon or Intel macOS app
 and DMG bundles with the SoundFont, MIDI fixture, font/audio notices, and Eigen
 source. The manually dispatched `Release binaries` workflow builds both targets
@@ -1120,6 +1182,82 @@ device acceptance on every OS version. Signing is ad-hoc; Developer ID signing a
 notarization remain unavailable until credentials are configured. The workflow's
 optional publish input tags the exact build commit and publishes verified artifacts
 and SHA-256 checksums only after both native jobs pass.
+
+`scripts/linux/Dockerfile` provides Ubuntu 24.04 and the pinned Rust toolchain.
+`make test-linux` runs the ordinary suite, doc tests, Clippy, Python checks,
+native DSP allocation/lock instrumentation, and native UI witnesses. Its
+virtual desktop uses Xvfb/Openbox and a PulseAudio null sink; this validates
+Linux integration without claiming physical speaker or Steam Deck acceptance.
+`make test-linux-wayland` runs the Detail, Mixer, and Sample native paint and
+resize witnesses through Weston. The compositor is nested in Xvfb to supply a
+Wayland input seat without a GPU; application GTK windows use Wayland exclusively.
+`make test-linux-session-native` builds the shipping binary and exercises audio,
+transport stop, native Save As/New/Open, exact session round trips, dirty edits,
+unsaved cancellation, Save, and owned shutdown on both window systems. AT-SPI
+observes native focus before the next shortcut, including compositor animations;
+session files, configuration, logs, and audio captures live in a fresh evidence
+directory under the selected Cargo target directory's `linux-evidence` folder.
+WebKit uses software compositing on this GPU-less desktop to avoid software-GPU
+round trips; normal application launches retain the platform rendering defaults.
+The virtual desktop defaults to an 8192-frame audio buffer to tolerate emulation
+and container scheduling; it does not measure device latency.
+
+On macOS, Docker Desktop supplies a Linux VM. `scripts/linux/dev.sh` builds the
+Ubuntu development image on first use and runs commands as the checkout owner.
+On Apple Silicon it defaults to ARM64; `--arch amd64` selects emulated x86-64
+for architecture compatibility checks. Edit source with the Mac editor as
+usual: the launcher bind-mounts this exact worktree into `/workspace`.
+
+```sh
+make linux-shell
+make linux-desktop
+# Or run commands directly from macOS:
+scripts/linux/dev.sh cargo check --locked --all-targets
+scripts/linux/dev.sh make test-linux
+scripts/linux/dev.sh make test-linux-wayland
+scripts/linux/dev.sh make test-linux-session-native
+scripts/linux/dev.sh --arch amd64 cargo test --locked --lib
+```
+
+`make linux-desktop` builds the optional Xpra image and prints a password-bearing
+localhost URL. Open it in a browser for a Linux desktop, development terminal,
+and the shipping synth; the terminal shows the release build before launch and
+returns to a shell when the app closes. Browser keyboard and mouse input reach
+the real Linux app; Control keeps its Linux meaning instead of swapping with
+Mac Command. Click the desktop to focus it. Xpra forwards the PulseAudio monitor
+to browser audio; toggle Audio off/on if the browser blocks autoplay. This adds
+streaming latency and does not measure physical device latency.
+The desktop defaults to 1024×768;
+set `CREST_LINUX_SCREEN_SIZE=1600x1000` for a larger display and use browser zoom
+or fullscreen to fit it. Automated witnesses retain their existing resolution.
+
+Each desktop gets its own random port bound to `127.0.0.1` and a fresh password.
+Keep the launcher running; closing the browser only disconnects, while Ctrl+C
+stops its container. The launcher also prints a `docker stop` command. Save
+sessions under `/workspace` to retain them in this worktree; manual app settings
+persist under the selected target directory's `linux-desktop/config` folder.
+
+Containers are disposable; source and per-worktree, per-architecture build
+caches persist on the Mac under `target/linux-arm64` and `target/linux-amd64`.
+Cargo downloads persist in named Docker volumes shared by the same user.
+`CREST_LINUX_TARGET_DIR` can select an existing cache; never share one between
+architectures or concurrent worktrees. Caches from other container mount layouts
+may need cleaning because CMake stores absolute paths. Run
+`scripts/linux/dev.sh make cache-status`
+to inspect the selected cache, or `scripts/linux/dev.sh cargo clean` to remove
+only that cache's build output. Image identity includes its Dockerfile, host
+user ID, and architecture; `make linux-image` rebuilds it explicitly.
+The launcher defaults to four CPUs, 6 GiB RAM, and two build/test workers;
+`--help` lists overrides. Docker Desktop must have enough VM resources and disk
+space for the images; its VM limits bound the container allowances.
+
+WebKit's sandbox remains enabled. Docker's default seccomp profile blocks the
+user namespace creation it needs; the development container permits those
+syscalls. Native Linux hosts must likewise permit unprivileged user namespaces.
+The automated desktops are virtual and use software rendering and monitored
+audio. Emulated x86-64 timings are functional evidence, not Steam Deck
+performance measurements. Physical controls, audio latency, and GPU behavior
+still require the target hardware.
 
 ## Change checklist
 
