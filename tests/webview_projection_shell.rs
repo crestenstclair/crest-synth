@@ -4227,6 +4227,7 @@ fn run_live_sections(
             if let Some(action) = keyboard.translate(input) {
                 let _ = key_sender.send(action);
             }
+            raw.key() != crest_synth::shell::WindowKey::Other
         })
         .expect("page witness requires production native capture")
     });

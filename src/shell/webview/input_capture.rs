@@ -300,19 +300,23 @@ mod linux;
 #[cfg(target_os = "linux")]
 pub use linux::{install_for_window, window_key_from_linux_key_code, InputCaptureHandle};
 
-/// Installs capture on the owned native window, before webview key dispatch.
+/// Installs capture before webview dispatch. The sink returns whether Linux
+/// should consume the key; false preserves native text entry. AppKit continues
+/// to pass events through its asynchronous WebKit dispatch as before.
 #[cfg(target_os = "macos")]
 pub fn install_for_window(
     _window: &tauri::WebviewWindow,
-    sink: impl FnMut(RawKeyEvent) + 'static,
+    mut sink: impl FnMut(RawKeyEvent) -> bool + 'static,
 ) -> Result<InputCaptureHandle, InputCaptureError> {
-    install(sink)
+    install(move |raw| {
+        sink(raw);
+    })
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn install_for_window(
     _window: &tauri::WebviewWindow,
-    _sink: impl FnMut(RawKeyEvent) + 'static,
+    _sink: impl FnMut(RawKeyEvent) -> bool + 'static,
 ) -> Result<(), InputCaptureError> {
     Err(InputCaptureError::UnsupportedPlatform)
 }

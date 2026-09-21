@@ -3230,6 +3230,7 @@ impl ComponentGalleryScene {
                     }
                 }
             }
+            raw.key() != crate::shell::WindowKey::Other
         })
         .map_err(|error| ComponentGalleryError::Window(format!("input capture failed: {error}")))?;
 

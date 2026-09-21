@@ -115,7 +115,7 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
 
     assert_eq!(
         registry.descriptors().len(),
-        3 + crest_synth::adapter::upstream_audio::instrument_ports()
+        4 + crest_synth::adapter::upstream_audio::instrument_ports()
             .unwrap()
             .len()
     );
@@ -124,6 +124,10 @@ fn capability_schema_is_exact_generic_and_rejected_without_fallback() {
     assert_eq!(
         registry.descriptors()[2].id().as_str(),
         crest_synth::adapter::sample_capability::SAMPLE_CAPABILITY_ID
+    );
+    assert_eq!(
+        registry.descriptors()[3].id().as_str(),
+        crest_synth::adapter::drum_rack_capability::DRUM_RACK_CAPABILITY_ID
     );
     assert_eq!(descriptor.id().as_str(), HIDEF_CAPABILITY_ID);
     assert_eq!(descriptor.label(), "HiDef SoundFont");

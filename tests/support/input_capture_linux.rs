@@ -2,7 +2,7 @@
 use crest_synth::adapter::production_instruments::{
     production_capability_registry, production_soundfont_capability,
 };
-use crest_synth::control::{AppEvent, AppState, SemanticAction, StateProjector};
+use crest_synth::control::{AppEvent, AppState, SemanticAction, SendAction, StateProjector};
 use crest_synth::kernel::{MidiChannel, PatchId};
 use crest_synth::mixer::{
     global_parameters::GlobalParameters, mix_observation::MixObservation,
@@ -59,12 +59,22 @@ pub fn run() {
         GlobalParameters::new(-3.0).unwrap(),
     );
     state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
-    let projection = StateProjector::new().project_with_shell(&state).unwrap().3;
-    let page =
-        std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("input-capture-linux-seam.html");
-    std::fs::create_dir_all(page.parent().unwrap()).unwrap();
-    std::fs::write(&page, "<!doctype html><title>Linux input witness</title>").unwrap();
-    std::env::set_var("CREST_WEBVIEW_PAGE", &page);
+    let projection = Rc::new(RefCell::new(
+        StateProjector::new().project_with_shell(&state).unwrap().3,
+    ));
+    state.apply(AppEvent::Send(SendAction::Open)).unwrap();
+    state.apply(AppEvent::Activate).unwrap();
+    assert!(state.interaction().send_name_editing());
+    let rename_projection = StateProjector::new().project_with_shell(&state).unwrap().3;
+    let initial_generation = projection.borrow().generation();
+    let rename_generation = rename_projection.generation();
+    let painted_generation = Rc::new(Cell::new(None));
+    let frame_generation = Rc::clone(&painted_generation);
+    let renamed_state = Rc::new(RefCell::new(state));
+    let input_state = Rc::clone(&renamed_state);
+    let tick_projection = Rc::clone(&projection);
+    // Exercise the shipping send-name form and its native input/IPC path.
+    std::env::remove_var("CREST_WEBVIEW_PAGE");
 
     let mut steps: Vec<(Vec<&str>, Vec<WindowInput>)> = Vec::new();
     for (name, key) in [
@@ -135,6 +145,10 @@ pub fn run() {
     // browser-selected replacement for semantic focus may be manufactured.
     steps.push((vec!["key", "ctrl+a"], vec![]));
     steps.push((
+        vec!["key", "ctrl+4"],
+        vec![WindowInput::key_down(Digit4), WindowInput::key_up(Digit4)],
+    ));
+    steps.push((
         vec!["keydown", "k", "keydown", "space"],
         vec![WindowInput::key_down(K), WindowInput::key_down(Space)],
     ));
@@ -158,10 +172,16 @@ pub fn run() {
         .run(
             Box::new(move |action| {
                 if record_input.get() {
+                    if matches!(action, SemanticAction::Send(SendAction::Rename { .. })) {
+                        input_state
+                            .borrow_mut()
+                            .apply_semantic_action(action.clone())
+                            .unwrap();
+                    }
                     recorded_actions.borrow_mut().push(action);
                 }
             }),
-            Box::new(move || projection.clone()),
+            Box::new(move || projection.borrow().clone()),
             Box::new(|| {
                 AudioObservationSnapshot::from_mix(0, 0, 0, 0, 0, 0, MixObservation::default())
             }),
@@ -187,6 +207,9 @@ pub fn run() {
                     return true;
                 }
                 if native_id.is_empty() {
+                    if painted_generation.get() != Some(initial_generation) {
+                        return true;
+                    }
                     let output = Command::new("xdotool")
                         .args([
                             "search",
@@ -246,21 +269,52 @@ pub fn run() {
                         .borrow_mut()
                         .push(reference.translate(WindowInput::key_down(D)).unwrap());
                     reference.translate(WindowInput::key_up(D));
+                } else if cursor == steps.len() + 3 {
+                    *tick_projection.borrow_mut() = rename_projection.clone();
+                } else if cursor == steps.len() + 4 {
+                    if painted_generation.get() != Some(rename_generation) {
+                        return true;
+                    }
+                    // These synth vocabulary keys must reach the focused name
+                    // field without producing navigation, performance or Edit.
+                    inject(&["key", "ctrl+a", "BackSpace"]);
+                    inject(&["type", "--clearmodifiers", "wasdqekt401"]);
+                    inject(&["key", "Return"]);
+                    tick_expected
+                        .borrow_mut()
+                        .push(SemanticAction::Send(SendAction::Rename {
+                            bus: crest_synth::mixer::bus_id::BusId::default(),
+                            name: "wasdqekt401".to_owned(),
+                        }));
                 } else {
+                    if !tick_actions.borrow().iter().any(|action| {
+                        matches!(action, SemanticAction::Send(SendAction::Rename { .. }))
+                    }) {
+                        return true;
+                    }
                     tick_recording.set(false);
                     return false;
                 }
                 cursor += 1;
                 true
             }),
-            Box::new(|_| {}),
+            Box::new(move |frame| frame_generation.set(Some(frame.generation()))),
         )
         .expect("production Linux window and input capture must run");
     assert_eq!(
         *actions.borrow(),
         *expected.borrow(),
-        "native keys arrive exactly once; repeats, shortcuts and focus loss preserve semantics"
+        "native keys arrive exactly once; text entry, repeats, shortcuts and focus loss preserve semantics"
+    );
+    assert_eq!(
+        renamed_state
+            .borrow()
+            .bus_returns()
+            .bus_return(crest_synth::mixer::bus_id::BusId::default())
+            .name(),
+        "wasdqekt401",
+        "native text input commits the exact send name through the reducer"
     );
     assert!(expected.borrow().len() > 20);
-    println!("CREST_KEY_WITNESS_PASS Linux: {script_len} native key sequences, focus loss, preview/Edit release, shortcuts and owned shutdown");
+    println!("CREST_KEY_WITNESS_PASS Linux: {script_len} native key sequences, send-name text entry, focus loss, preview/Edit release, shortcuts and owned shutdown");
 }

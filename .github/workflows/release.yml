@@ -109,7 +109,7 @@ jobs:
           PATCH and MIXER contexts, keyboard/controller/physical MIDI input, the installed instrument and effect catalog, asset browsing/import, and session save/restore. Bundled resources resolve independently of the launch working directory.
 
           ### Release limits
-          - macOS only. The current native keyboard adapter explicitly rejects Windows and Linux at startup.
+          - Packages are macOS only. Linux runs from source; Windows native keyboard capture is not implemented yet.
           - Ad-hoc signed, not Developer ID signed or notarized. macOS may require explicit approval in System Settings > Privacy & Security for a downloaded app.
           - The UI remains a functional blockout; this release does not claim complete Figma fidelity or universal hardware acceptance.
 

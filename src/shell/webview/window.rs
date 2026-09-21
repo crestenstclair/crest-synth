@@ -789,7 +789,7 @@ impl AppWindow for TauriWebviewWindow {
                     .borrow_mut()
                     .translator
                     .translate(WindowInput::focus_lost());
-                return;
+                return false;
             }
             let input = if raw.pressed() {
                 WindowInput::key_down(raw.key())
@@ -797,6 +797,7 @@ impl AppWindow for TauriWebviewWindow {
                 WindowInput::key_up(raw.key())
             };
             capture_pipeline.borrow_mut().feed(input);
+            raw.key() != crate::shell::WindowKey::Other
         })
         .map_err(|error| WindowError::from(WebviewShellError::InputCapture(error)))?;
 

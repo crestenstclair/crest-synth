@@ -955,8 +955,10 @@ Patch step. Bare focus/edit repeats retain their existing behavior. Controller
 page gestures require release or disconnect before another activation.
 
 Linux captures physical XKB keys with a GTK key controller on the owned
-window, before WebKit dispatch. Ctrl/Alt/Super shortcuts remain native;
-held-key tracking clears on focus loss. The translator and reducer are shared
+window, before WebKit dispatch. The shell decides whether capture consumes each
+key, so send-name text entry reaches WebKit without synth actions. Ctrl+4 opens
+Sends; other Ctrl/Alt/Super shortcuts remain native. Held-key tracking clears on
+focus loss. The translator and reducer are shared
 with macOS. Linux native witnesses use XTest on an isolated X11 desktop;
 Wayland hardware input remains a separate acceptance check.
 

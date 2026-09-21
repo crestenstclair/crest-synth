@@ -53,9 +53,10 @@ impl Drop for InputCaptureHandle {
     }
 }
 
+/// A true sink result consumes the key; false leaves it for native text entry.
 pub fn install_for_window(
     window: &tauri::WebviewWindow,
-    sink: impl FnMut(RawKeyEvent) + 'static,
+    sink: impl FnMut(RawKeyEvent) -> bool + 'static,
 ) -> Result<InputCaptureHandle, InputCaptureError> {
     if !gtk::is_initialized_main_thread() {
         return Err(InputCaptureError::NotMainThread);
@@ -76,13 +77,15 @@ pub fn install_for_window(
             | gtk::gdk::ModifierType::MOD1_MASK
             | gtk::gdk::ModifierType::SUPER_MASK
             | gtk::gdk::ModifierType::META_MASK;
-        if modifiers.intersects(shortcut) {
+        let send_shortcut = code == 13
+            && modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK)
+            && !modifiers.intersects(shortcut - gtk::gdk::ModifierType::CONTROL_MASK);
+        if modifiers.intersects(shortcut) && !send_shortcut {
             return false;
         }
         let key = window_key_from_linux_key_code(code);
         let repeat = !press_held.borrow_mut().insert(code);
-        press_sink.borrow_mut()(RawKeyEvent::new(key, true, repeat));
-        key != WindowKey::Other
+        press_sink.borrow_mut()(RawKeyEvent::new(key, true, repeat))
     });
     let release_held = Rc::clone(&held);
     let released = controller.connect_key_released(move |_, _, code, _| {

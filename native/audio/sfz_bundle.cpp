@@ -1,3 +1,9 @@
+// sfizz is built in Release mode by build_support/sfizz.rs. Its C++ parser
+// types must use the same NDEBUG setting here: LeakDetector adds members in
+// debug builds, making mixed definitions unsafe across the library boundary.
+#ifndef NDEBUG
+#define NDEBUG
+#endif
 #include "sfizz/parser/Parser.h"
 #include "sfizz/parser/ParserListener.h"
 #include "json.hpp"
