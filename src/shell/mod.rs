@@ -53,3 +53,6 @@ pub use standalone_application::{
     SmokeObservation, StandaloneApplication,
 };
 pub use window_input::{WindowInput, WindowInputKind, WindowKey};
+
+pub mod hosted_application;
+pub mod hosted_synth;

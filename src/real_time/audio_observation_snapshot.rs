@@ -23,6 +23,9 @@ pub struct AudioObservationSnapshot {
     /// callback shows zero refusals under a fixture that must exceed it, which
     /// is a failing predicate rather than an unnoticed absence of silence.
     voice_limit_refusals: u64,
+    scheduled_late_events: u64,
+    scheduled_max_lateness_frames: u64,
+    scheduled_queue_high_water: u64,
     last_unknown_patch_id: Option<PatchId>,
     primary_patch_id: Option<PatchId>,
     primary_patch_rms: f32,
@@ -183,6 +186,9 @@ impl AudioObservationSnapshot {
             active_notes,
             routing_failures,
             voice_limit_refusals: 0,
+            scheduled_late_events: 0,
+            scheduled_max_lateness_frames: 0,
+            scheduled_queue_high_water: 0,
             last_unknown_patch_id,
             primary_patch_id,
             primary_patch_rms,
@@ -460,6 +466,9 @@ impl AudioObservationSnapshot {
             active_notes,
             routing_failures,
             voice_limit_refusals: 0,
+            scheduled_late_events: 0,
+            scheduled_max_lateness_frames: 0,
+            scheduled_queue_high_water: 0,
             last_unknown_patch_id,
             primary_patch_id,
             primary_patch_rms,
@@ -481,10 +490,32 @@ impl AudioObservationSnapshot {
         }
     }
 
-    /// Carries the callback's saturating refusal count onto this observation.
-    ///
-    /// The count travels the same bounded path `routing_failures` uses: a fixed
-    /// numeric field on the copied latest-value observation, with no allocation,
+    /// Cumulative schedule timing and producer-sampled queue occupancy.
+    /// Lateness measures delivery frames, not device or acoustic latency.
+    #[must_use]
+    pub const fn with_schedule_metrics(
+        mut self,
+        late_events: u64,
+        max_lateness_frames: u64,
+        queue_high_water: u64,
+    ) -> Self {
+        self.scheduled_late_events = late_events;
+        self.scheduled_max_lateness_frames = max_lateness_frames;
+        self.scheduled_queue_high_water = queue_high_water;
+        self
+    }
+
+    pub const fn scheduled_late_events(self) -> u64 {
+        self.scheduled_late_events
+    }
+    pub const fn scheduled_max_lateness_frames(self) -> u64 {
+        self.scheduled_max_lateness_frames
+    }
+    pub const fn scheduled_queue_high_water(self) -> u64 {
+        self.scheduled_queue_high_water
+    }
+
+    /// Carries the callback's saturating refusal count without allocation,
     /// formatting, logging, or backpressure at the publishing site.
     #[must_use]
     pub const fn with_voice_limit_refusals(mut self, voice_limit_refusals: u64) -> Self {

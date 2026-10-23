@@ -1,32 +1,18 @@
 use anyhow::{bail, Context, Result};
 use core::alloc::{GlobalAlloc, Layout};
-use crest_synth::adapter::atomic_audio_observation::AtomicAudioObservation;
 use crest_synth::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
-use crest_synth::adapter::cpal_audio_output::CpalAudioOutput;
-use crest_synth::adapter::fixed_midi_event_source::FixedMidiEventSource;
 use crest_synth::adapter::hidef_soundfont_capability::HIDEF_CAPABILITY_ID;
-use crest_synth::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
-use crest_synth::adapter::lock_free_structural_graph_boundary::LockFreeStructuralGraphBoundary;
-use crest_synth::adapter::production_effects::{
-    production_effect_preparers, production_effect_providers,
-};
-use crest_synth::adapter::production_instruments::{
-    production_instrument_preparers, production_instrument_providers,
-};
 use crest_synth::control::app_event::AppEvent;
 use crest_synth::control::app_state::EventRejection;
 use crest_synth::control::event_record::{EmittedEvent, EventInput, EventOutcome, EventSource};
-use crest_synth::control::DefaultSessionBlueprint;
 use crest_synth::kernel::midi_message::MidiMessageKind;
 use crest_synth::mixer::global_parameters::GlobalParameters;
-use crest_synth::mixer::mixer_state::MixerState;
 use crest_synth::mixer::mixer_track_id::MixerTrackId;
 use crest_synth::mixer::mixer_track_parameters::MixerTrackParameters;
 use crest_synth::mixer::patch_output::PatchOutput;
-use crest_synth::real_time::parameter_snapshot::ParameterSnapshot;
-use crest_synth::real_time::{GraphHandoffStatus, GraphRevision};
+use crest_synth::real_time::GraphRevision;
 use crest_synth::shell::standalone_application::{
-    ApplicationConfig, DegenerateMode, LiveSceneKind, StandaloneApplication,
+    production_application, ApplicationConfig, DegenerateMode, LiveSceneKind,
 };
 use crest_synth::shell::webview::TauriWebviewWindow;
 use crest_synth::shell::window_input::WindowInput;
@@ -41,8 +27,6 @@ use serde::Serialize;
 use serde_json::Value;
 use std::alloc::System;
 use std::env;
-
-const AUDIO_COMMAND_CAPACITY: usize = 1_024;
 
 struct CallbackMeasuringAllocator;
 
@@ -105,24 +89,6 @@ fn run(options: Options) -> Result<()> {
         .transpose()?;
     let make_application = || -> Result<_> {
         let config = ApplicationConfig::default().with_test_midi_on_launch();
-        let initial_parameters =
-            ParameterSnapshot::new(0, config.global_parameters(), MixerState::default(), &[])
-                .context("failed to construct the initial audio parameter snapshot")?;
-        let boundary = LockFreeAudioBoundary::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
-        let providers = production_instrument_providers()
-            .context("failed to construct production instrument providers")?;
-        let preparers = production_instrument_preparers()
-            .context("failed to construct production instrument preparers")?;
-        let effect_providers = production_effect_providers()
-            .context("failed to construct the production effect capability providers")?;
-        let effect_preparers = production_effect_preparers()
-            .context("failed to construct the production effect preparers")?;
-        let structural = LockFreeStructuralGraphBoundary::new(
-            1,
-            1,
-            GraphHandoffStatus::with_active(GraphRevision::INITIAL),
-        )
-        .context("failed to prepare the structural graph boundary")?;
         // The webview shell is the product's one shell:
         // construction is direct, no launch flag chooses a renderer, and a
         // webview init failure is a typed startup error on the fatal path —
@@ -130,27 +96,8 @@ fn run(options: Options) -> Result<()> {
         // window: `run_live_demo_scene` composes its own webview shell
         // window (WP03).
         let window = TauriWebviewWindow::default();
-        let application = StandaloneApplication::new_with_effects(
-            boundary,
-            providers,
-            preparers,
-            effect_providers,
-            effect_preparers,
-            structural,
-            AtomicAudioObservation::default(),
-            FixedMidiEventSource::new(),
-            window,
-            CpalAudioOutput::new(),
-            config,
-        )
-        .context("failed to validate the production composition")?;
-        let default_session = DefaultSessionBlueprint::new(
-            CapabilityId::new(crest_synth::adapter::sample_capability::SAMPLE_CAPABILITY_ID)
-                .context("the production default capability identity is invalid")?,
-        );
-        Ok(application
-            .with_default_session_blueprint(default_session)
-            .with_system_input_devices())
+        production_application(window, config)
+            .context("failed to validate the production composition")
     };
 
     if options.demo_live_drum_rack {

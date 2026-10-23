@@ -44,6 +44,37 @@ impl FilesystemSoundFontCatalog {
         self.browser.list(folder, AssetKind::SoundFont)
     }
 
+    /// Original bank bytes for hashing and collection, outside the callback.
+    pub fn read_source(&self, reference: &AssetReference) -> Result<Vec<u8>, SampleAssetError> {
+        if reference.kind() != AssetKind::SoundFont {
+            return Err(SampleAssetError::MalformedSoundFont);
+        }
+        if reference.locator() == HIDEF_SOUNDFONT_PATH {
+            return read_sample_path(
+                &super::bundled_resource::path(HIDEF_SOUNDFONT_PATH)
+                    .map_err(|_| SampleAssetError::Unavailable)?,
+            );
+        }
+        let id = AssetFileId::new(reference.locator())?;
+        if id.is_external() {
+            return Err(SampleAssetError::InvalidRelativeId);
+        }
+        read_sample_path(&self.browser.resolve(id.as_str())?)
+    }
+
+    /// Admit a complete bank under its content identity. Exact preset choice
+    /// remains in the caller's configuration and is checked during restore.
+    pub fn store_source(&self, bytes: &[u8]) -> Result<AssetReference, SampleAssetError> {
+        use sha2::{Digest, Sha256};
+        HiDefSoundFontAsset::from_bytes(bytes).map_err(asset_error)?;
+        let name = format!("{:x}.sf2", Sha256::digest(bytes));
+        let id = self
+            .browser
+            .store_validated_file(Path::new(&name), bytes, "sf2")?;
+        AssetReference::new(AssetKind::SoundFont, id.as_str())
+            .map_err(|_| SampleAssetError::InvalidRelativeId)
+    }
+
     pub fn load(
         &self,
         reference: &AssetReference,

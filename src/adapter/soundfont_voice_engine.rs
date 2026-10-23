@@ -365,7 +365,9 @@ mod legacy {
                     }
                     Ok(())
                 }
-                MidiMessageKind::ProgramChange => Err(PreparedInstrumentError::DispatchRejected),
+                MidiMessageKind::ProgramChange | MidiMessageKind::PolyPressure => {
+                    Err(PreparedInstrumentError::DispatchRejected)
+                }
                 MidiMessageKind::ChannelPressure => {
                     self.pressure = f32::from(message.data1()) / 127.0;
                     Ok(())

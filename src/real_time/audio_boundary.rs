@@ -1,5 +1,9 @@
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::parameter_snapshot::ParameterSnapshot;
+use crate::real_time::scheduled_event::{
+    ScheduledEvent, ScheduledEventEpochExhausted, ScheduledEventPoll, ScheduledEventRejected,
+    ScheduledEventRejectionReason,
+};
 use core::fmt;
 
 /// Returned when the bounded command queue cannot accept another command.
@@ -48,9 +52,30 @@ pub trait ControlAudioBoundary: Send {
         self.push_command(AudioCommand::all_notes_off())
     }
 
+    /// Input replacement/loss cleans only default live input. Hosts separately
+    /// own monitor cancellation; scheduled accompaniment must remain active.
+    fn push_input_recovery_command(&mut self) -> Result<(), BoundaryFull> {
+        self.push_command(AudioCommand::ReleaseImmediateNotes)
+    }
+
     /// Whether normal commands are prevented from consuming the final slot.
     fn has_recovery_reserve(&self) -> bool {
         false
+    }
+
+    fn scheduled_epoch(&self) -> u64 {
+        0
+    }
+
+    fn push_scheduled(&mut self, event: ScheduledEvent) -> Result<(), ScheduledEventRejected> {
+        Err(ScheduledEventRejected::new(
+            event,
+            ScheduledEventRejectionReason::Unsupported,
+        ))
+    }
+
+    fn cancel_scheduled(&mut self) -> Result<u64, ScheduledEventEpochExhausted> {
+        Ok(0)
     }
 
     fn publish_parameters(&mut self, parameters: ParameterSnapshot);
@@ -62,6 +87,17 @@ pub trait ControlAudioBoundary: Send {
 /// non-blocking, and free of I/O, logging, formatting, and destruction.
 pub trait AudioThreadBoundary: Send {
     fn pop_command(&mut self) -> Option<AudioCommand>;
+
+    fn scheduled_epoch(&self) -> u64 {
+        0
+    }
+    /// Producer-sampled occupancy peak; zero for boundaries without a schedule.
+    fn scheduled_queue_high_water(&self) -> u64 {
+        0
+    }
+    fn poll_scheduled_before(&mut self, _end_frame_exclusive: u64) -> ScheduledEventPoll {
+        ScheduledEventPoll::Empty
+    }
 
     /// Exchanges a newly published snapshot with caller-owned retirement
     /// storage. Old allocations return to the producer; the callback neither

@@ -138,6 +138,16 @@ impl MixEngine {
         parameters: &ParameterSnapshot,
         output: &mut [f32],
     ) -> MixObservation {
+        self.mix_with_send_leases(patch_audio, parameters, output, None)
+    }
+
+    pub(crate) fn mix_with_send_leases(
+        &mut self,
+        patch_audio: &PatchAudioBlock,
+        parameters: &ParameterSnapshot,
+        output: &mut [f32],
+        leases: Option<&crate::real_time::SendLeases>,
+    ) -> MixObservation {
         output.fill(0.0);
         if !self.prepared {
             return MixObservation::default();
@@ -198,8 +208,14 @@ impl MixEngine {
                 let (left_pan, right_pan) = pan_gains(track_parameters.pan());
                 let left_gain = gain * left_pan;
                 let right_gain = gain * right_pan;
-                for (bus_input, send) in self.bus_inputs.iter_mut().zip(patch.sends()) {
-                    if *send == 0.0 {
+                for (index, (bus_input, base)) in
+                    self.bus_inputs.iter_mut().zip(patch.sends()).enumerate()
+                {
+                    let send = crate::mixer::bus_id::BusId::new(index as u16)
+                        .ok()
+                        .and_then(|bus| leases.and_then(|leases| leases.amount(patch_id, bus)))
+                        .unwrap_or(*base);
+                    if send == 0.0 {
                         continue;
                     }
                     for frame in 0..frame_count {

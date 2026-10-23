@@ -13,11 +13,12 @@ pub const HIDEF_SOUNDFONT_PATH: &str = "./sf2/HiDef.sf2";
 pub const SOUNDFONT_PRESET_PARAMETER_ID: &str = "soundfont.preset";
 pub const SOUNDFONT_FILE_PARAMETER_ID: &str = "soundfont.file";
 pub const HIDEF_POLYPHONY_CEILING: u16 = 64;
-pub const HIDEF_SUPPORTED_MIDI_KINDS: [MidiMessageKind; 6] = [
+pub const HIDEF_SUPPORTED_MIDI_KINDS: [MidiMessageKind; 7] = [
     MidiMessageKind::NoteOn,
     MidiMessageKind::NoteOff,
     MidiMessageKind::ControlChange,
     MidiMessageKind::ChannelPressure,
+    MidiMessageKind::PolyPressure,
     MidiMessageKind::PitchBend,
     MidiMessageKind::AllNotesOff,
 ];

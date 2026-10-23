@@ -259,6 +259,7 @@ mod witness {
     /// The raw transitions the witness monitor must observe — the script,
     /// transition for transition, through the production normalization.
     fn expected_raw() -> Vec<RawKeyEvent> {
+        let mut shift_held = false;
         script()
             .into_iter()
             .filter_map(|step| match step {
@@ -266,11 +267,19 @@ mod witness {
                     code,
                     pressed,
                     repeat,
-                } => Some(RawKeyEvent::new(
-                    window_key_from_macos_key_code(code),
-                    pressed,
-                    pressed && repeat,
-                )),
+                } => {
+                    if window_key_from_macos_key_code(code) == WindowKey::Shift {
+                        shift_held = pressed;
+                    }
+                    Some(
+                        RawKeyEvent::new(
+                            window_key_from_macos_key_code(code),
+                            pressed,
+                            pressed && repeat,
+                        )
+                        .with_shift(shift_held),
+                    )
+                }
                 Step::Grace | Step::HideWindow => None,
             })
             .collect()
@@ -345,7 +354,7 @@ mod witness {
     /// double dispatch that never happens for real key input). Shift uses the
     /// `FlagsChanged` event shape AppKit emits for the physical modifier; a
     /// synthetic KeyDown here would miss modifier-only callback regressions.
-    fn post_key(app: &NSApplication, code: u16, pressed: bool, repeat: bool) {
+    fn post_key(app: &NSApplication, code: u16, pressed: bool, repeat: bool, shift_held: bool) {
         let shift = code == code_for(WindowKey::Shift);
         let event_type = if shift {
             NSEventType::FlagsChanged
@@ -354,7 +363,7 @@ mod witness {
         } else {
             NSEventType::KeyUp
         };
-        let modifier_flags = if shift && pressed {
+        let modifier_flags = if shift_held {
             NSEventModifierFlags::Shift
         } else {
             NSEventModifierFlags::empty()
@@ -454,6 +463,7 @@ mod witness {
         let tick_count = Rc::clone(&ticks);
         let tick_timeout = Rc::clone(&timed_out);
         let tick_app = app.clone();
+        let mut shift_held = false;
         let on_tick: TickCallback = Box::new(move |_elapsed| {
             tick_count.set(tick_count.get() + 1);
             if tick_count.get() > 6_000 {
@@ -472,7 +482,12 @@ mod witness {
                     code,
                     pressed,
                     repeat,
-                } => post_key(&tick_app, code, pressed, repeat),
+                } => {
+                    if window_key_from_macos_key_code(code) == WindowKey::Shift {
+                        shift_held = pressed;
+                    }
+                    post_key(&tick_app, code, pressed, repeat, shift_held);
+                }
                 Step::HideWindow => hide_windows(&tick_app),
             }
             tick_cursor.set(at + 1);

@@ -82,6 +82,9 @@ struct AtomicObservationFields {
     /// predicate that cannot pass for reasons unrelated to whether the
     /// voice limit works.
     voice_limit_refusals: AtomicU64,
+    scheduled_late_events: AtomicU64,
+    scheduled_max_lateness_frames: AtomicU64,
+    scheduled_queue_high_water: AtomicU64,
     last_unknown_patch_id: AtomicU32,
     primary_patch_id: AtomicU32,
     primary_patch_rms: AtomicU32,
@@ -121,6 +124,9 @@ impl AtomicObservationFields {
             active_notes: AtomicU32::new(initial.active_notes()),
             routing_failures: AtomicU64::new(initial.routing_failures()),
             voice_limit_refusals: AtomicU64::new(initial.voice_limit_refusals()),
+            scheduled_late_events: AtomicU64::new(initial.scheduled_late_events()),
+            scheduled_max_lateness_frames: AtomicU64::new(initial.scheduled_max_lateness_frames()),
+            scheduled_queue_high_water: AtomicU64::new(initial.scheduled_queue_high_water()),
             last_unknown_patch_id: AtomicU32::new(
                 initial
                     .last_unknown_patch_id()
@@ -196,6 +202,12 @@ impl AtomicObservationFields {
             .store(snapshot.active_notes(), Ordering::Relaxed);
         self.routing_failures
             .store(snapshot.routing_failures(), Ordering::Relaxed);
+        self.scheduled_late_events
+            .store(snapshot.scheduled_late_events(), Ordering::Relaxed);
+        self.scheduled_max_lateness_frames
+            .store(snapshot.scheduled_max_lateness_frames(), Ordering::Relaxed);
+        self.scheduled_queue_high_water
+            .store(snapshot.scheduled_queue_high_water(), Ordering::Relaxed);
         self.voice_limit_refusals
             .store(snapshot.voice_limit_refusals(), Ordering::Relaxed);
         self.last_unknown_patch_id.store(
@@ -335,6 +347,11 @@ impl AtomicObservationFields {
                     self.clipped_samples.load(Ordering::Relaxed),
                 )
                 .with_voice_limit_refusals(self.voice_limit_refusals.load(Ordering::Relaxed))
+                .with_schedule_metrics(
+                    self.scheduled_late_events.load(Ordering::Relaxed),
+                    self.scheduled_max_lateness_frames.load(Ordering::Relaxed),
+                    self.scheduled_queue_high_water.load(Ordering::Relaxed),
+                )
                 .with_preview_observation(
                     crate::real_time::PreviewAudioObservation::from_parts(
                         self.preview_identity.load(Ordering::Relaxed),
@@ -390,6 +407,7 @@ mod tests {
                 sequence,
             ),
         )
+        .with_schedule_metrics(sequence * 3, sequence * 4, sequence * 5)
         .with_voice_limit_refusals(sequence * 2)
         .with_preview_observation(crate::real_time::PreviewAudioObservation::from_parts(
             sequence,
@@ -445,6 +463,9 @@ mod tests {
             );
             assert_eq!(latest.routing_failures(), sequence);
             assert_eq!(latest.voice_limit_refusals(), sequence * 2);
+            assert_eq!(latest.scheduled_late_events(), sequence * 3);
+            assert_eq!(latest.scheduled_max_lateness_frames(), sequence * 4);
+            assert_eq!(latest.scheduled_queue_high_water(), sequence * 5);
             assert_eq!(latest.preview_identity(), sequence);
             assert_eq!(latest.preview_playing(), sequence != 0);
             assert_eq!(

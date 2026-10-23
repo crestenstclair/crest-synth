@@ -12,12 +12,231 @@ use crate::mixer::patch_output::PatchOutput;
 use crate::real_time::{GraphPreparationError, GraphRevision, PreparedGraph, PreparedGraphBuilder};
 use crate::synth::effect_slot_id::{EffectSlotIndex, MAX_EFFECT_SLOTS};
 use crate::synth::{
-    CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer, InstrumentConfig,
-    InstrumentPreparer, Patch, PostEffectConfig, VoiceEnvelope,
+    AssetAssignment, AssetReference, CapabilityRegistry, EffectCapabilityRegistry, EffectPreparer,
+    InstrumentConfig, InstrumentPreparer, Patch, PostEffectConfig, VoiceEnvelope,
 };
 use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, HashSet};
 
 pub const SAVED_SESSION_VERSION: u32 = 4;
+pub const SOUND_DEFINITION_VERSION: u32 = 1;
+
+/// Reusable sound content, independent of where a host installs or mixes it.
+/// Identity and revision/digest belong to the host's sound library. Installation
+/// still requires complete saved-session validation and graph preparation.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SoundDefinition {
+    version: u32,
+    name: String,
+    instrument: InstrumentConfig,
+    envelope: VoiceEnvelope,
+    effects: [Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+    voice_limit: u16,
+}
+
+impl SoundDefinition {
+    pub const fn version(&self) -> u32 {
+        self.version
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub const fn instrument(&self) -> &InstrumentConfig {
+        &self.instrument
+    }
+
+    pub const fn envelope(&self) -> &VoiceEnvelope {
+        &self.envelope
+    }
+
+    /// Ordered slots preserve empty positions as well as effect configuration.
+    pub const fn effects(&self) -> &[Option<PostEffectConfig>; MAX_EFFECT_SLOTS] {
+        &self.effects
+    }
+
+    pub const fn voice_limit(&self) -> u16 {
+        self.voice_limit
+    }
+
+    /// Lists distinct instrument and effect references in first-use order.
+    /// Inventory does not resolve locators or admit their contents.
+    pub fn asset_references(&self) -> Vec<AssetReference> {
+        unique_asset_references(sound_assets(&self.instrument, &self.effects))
+    }
+
+    /// Relinks every use of each original reference in one immutable candidate.
+    /// Mappings apply simultaneously, preserving values and asset-scoped choices.
+    /// See [`SavedSession::with_relinked_assets`] for validation responsibilities.
+    pub fn with_relinked_assets(
+        &self,
+        replacements: &[(AssetReference, AssetReference)],
+    ) -> Result<Self, AssetRelinkError> {
+        let relinks = AssetRelinks::new(self.asset_references(), replacements)?;
+        let mut candidate = self.clone();
+        relinks.relink_sound(&mut candidate.instrument, &mut candidate.effects);
+        Ok(candidate)
+    }
+
+    pub fn to_json(&self) -> Result<String, SoundDefinitionError> {
+        self.validate_version()?;
+        serde_json::to_string_pretty(self).map_err(|_| SoundDefinitionError::Encode)
+    }
+
+    /// Decodes portable content. Capability and asset admission happen during
+    /// installation against the receiving Synth's registries and preparers.
+    pub fn from_json(json: &str) -> Result<Self, SoundDefinitionError> {
+        let definition: Self =
+            serde_json::from_str(json).map_err(|_| SoundDefinitionError::Decode)?;
+        definition.validate_version()?;
+        Ok(definition)
+    }
+
+    fn validate_version(&self) -> Result<(), SoundDefinitionError> {
+        if self.version != SOUND_DEFINITION_VERSION {
+            return Err(SoundDefinitionError::UnsupportedVersion(self.version));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SoundDefinitionError {
+    #[error("sound definition could not be encoded")]
+    Encode,
+    #[error("sound definition could not be decoded")]
+    Decode,
+    #[error("unsupported sound definition version {0}")]
+    UnsupportedVersion(u32),
+    #[error("sound definition target Patch {0:?} is not installed")]
+    UnknownPatch(PatchId),
+}
+
+/// A rejected relink leaves its source document unchanged. These failures
+/// describe the mapping, not filesystem availability or capability admission.
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum AssetRelinkError {
+    #[error("asset relink contains an invalid reference: {0:?}")]
+    InvalidReference(AssetReference),
+    #[error("asset relink repeats an original reference: {0:?}")]
+    DuplicateOriginal(AssetReference),
+    #[error("asset relink original reference is absent: {0:?}")]
+    UnknownOriginal(AssetReference),
+    #[error("asset relink changes asset kind from {original:?} to {replacement:?}")]
+    KindMismatch {
+        original: AssetReference,
+        replacement: AssetReference,
+    },
+}
+
+fn sound_assets<'a>(
+    instrument: &'a InstrumentConfig,
+    effects: &'a [Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+) -> impl Iterator<Item = &'a AssetAssignment> {
+    instrument.asset_references().iter().chain(
+        effects
+            .iter()
+            .flatten()
+            .flat_map(PostEffectConfig::asset_references),
+    )
+}
+
+fn unique_asset_references<'a>(
+    assignments: impl Iterator<Item = &'a AssetAssignment>,
+) -> Vec<AssetReference> {
+    let mut seen = HashSet::new();
+    assignments
+        .map(AssetAssignment::reference)
+        .filter(|reference| seen.insert(*reference))
+        .cloned()
+        .collect()
+}
+
+/// Validated simultaneous mapping shared by session and reusable-sound edits.
+struct AssetRelinks {
+    replacements: HashMap<AssetReference, AssetReference>,
+}
+
+impl AssetRelinks {
+    fn new(
+        inventory: Vec<AssetReference>,
+        replacements: &[(AssetReference, AssetReference)],
+    ) -> Result<Self, AssetRelinkError> {
+        let inventory: HashSet<_> = inventory.into_iter().collect();
+        let mut mapped = HashMap::new();
+        for (original, replacement) in replacements {
+            Self::validate_reference(original)?;
+            Self::validate_reference(replacement)?;
+            if original.kind() != replacement.kind() {
+                return Err(AssetRelinkError::KindMismatch {
+                    original: original.clone(),
+                    replacement: replacement.clone(),
+                });
+            }
+            if !inventory.contains(original) {
+                return Err(AssetRelinkError::UnknownOriginal(original.clone()));
+            }
+            if mapped
+                .insert(original.clone(), replacement.clone())
+                .is_some()
+            {
+                return Err(AssetRelinkError::DuplicateOriginal(original.clone()));
+            }
+        }
+        Ok(Self {
+            replacements: mapped,
+        })
+    }
+
+    fn validate_reference(reference: &AssetReference) -> Result<(), AssetRelinkError> {
+        // Serde can bypass constructors. AssetReference owns locator syntax;
+        // catalog-specific schemes and filesystem policy stay with resolvers.
+        AssetReference::new(reference.kind(), reference.locator())
+            .map(|_| ())
+            .map_err(|_| AssetRelinkError::InvalidReference(reference.clone()))
+    }
+
+    fn relink_assignments(&self, assignments: &[AssetAssignment]) -> Vec<AssetAssignment> {
+        assignments
+            .iter()
+            .map(|assignment| {
+                let replacement = self
+                    .replacements
+                    .get(assignment.reference())
+                    .unwrap_or_else(|| assignment.reference());
+                AssetAssignment::new(assignment.parameter_id().clone(), replacement.clone())
+            })
+            .collect()
+    }
+
+    fn relink_effect(&self, effect: &PostEffectConfig) -> PostEffectConfig {
+        PostEffectConfig::from_parts(
+            effect.slot_id(),
+            effect.capability_id().clone(),
+            effect.values().to_vec(),
+            self.relink_assignments(effect.asset_references()),
+        )
+    }
+
+    fn relink_sound(
+        &self,
+        instrument: &mut InstrumentConfig,
+        effects: &mut [Option<PostEffectConfig>; MAX_EFFECT_SLOTS],
+    ) {
+        // Ordinary bank replacement resets scoped choices. Relocation must
+        // retain them exactly for the receiving preparer's later validation.
+        *instrument = InstrumentConfig::from_parts(
+            instrument.capability_id().clone(),
+            instrument.values().to_vec(),
+            self.relink_assignments(instrument.asset_references()),
+        );
+        for effect in effects.iter_mut().flatten() {
+            *effect = self.relink_effect(effect);
+        }
+    }
+}
 
 /// Versioned control-side session state. Runtime and interaction state are
 /// absent by construction: no focus/modal/browser/request/preview, decoded
@@ -166,6 +385,95 @@ impl SavedSession {
 
     pub const fn version(&self) -> u32 {
         self.version
+    }
+
+    /// Lists distinct references in Patch order (instrument, then effect slots),
+    /// followed by return-chain order. Shared references appear only once.
+    /// Inventory does not resolve locators or admit their contents.
+    pub fn asset_references(&self) -> Vec<AssetReference> {
+        let patches = self
+            .patches
+            .iter()
+            .flat_map(|patch| sound_assets(&patch.instrument, &patch.effects));
+        let returns = self
+            .returns
+            .iter()
+            .flat_map(|bus_return| &bus_return.effects)
+            .flat_map(PostEffectConfig::asset_references);
+        unique_asset_references(patches.chain(returns))
+    }
+
+    /// Relinks every use of each original reference in one immutable candidate.
+    /// Mappings apply simultaneously; duplicate or absent originals, invalid
+    /// canonical references, and kind changes fail without modifying this value.
+    /// Unmapped assets and all non-asset content remain exact, including scoped
+    /// preset choices, effect identities/order, installation, routing, and mix.
+    ///
+    /// This checks `AssetReference` invariants only, preserving catalog-specific
+    /// locator schemes. It performs no I/O and proves neither content identity
+    /// nor path confinement. A collecting host/resolver must verify those;
+    /// `prepare_restore` or the hosted lifecycle must admit all assets and exact
+    /// choices before the candidate can replace the active session.
+    pub fn with_relinked_assets(
+        &self,
+        replacements: &[(AssetReference, AssetReference)],
+    ) -> Result<Self, AssetRelinkError> {
+        let relinks = AssetRelinks::new(self.asset_references(), replacements)?;
+        let mut candidate = self.clone();
+        for patch in &mut candidate.patches {
+            relinks.relink_sound(&mut patch.instrument, &mut patch.effects);
+        }
+        for effect in candidate
+            .returns
+            .iter_mut()
+            .flat_map(|bus| &mut bus.effects)
+        {
+            *effect = relinks.relink_effect(effect);
+        }
+        Ok(candidate)
+    }
+
+    pub fn sound_definition(
+        &self,
+        patch_id: PatchId,
+    ) -> Result<SoundDefinition, SoundDefinitionError> {
+        let patch = self
+            .patches
+            .iter()
+            .find(|patch| patch.id == patch_id.value())
+            .ok_or(SoundDefinitionError::UnknownPatch(patch_id))?;
+        Ok(SoundDefinition {
+            version: SOUND_DEFINITION_VERSION,
+            name: patch.name.clone(),
+            instrument: patch.instrument.clone(),
+            envelope: patch.envelope,
+            effects: patch.effects.clone(),
+            voice_limit: patch.voice_limit,
+        })
+    }
+
+    /// Produces a candidate, preserving installation identity, channel, output,
+    /// trim, sends, mixer, and returns. Call `prepare_restore` or the hosted
+    /// lifecycle before committing it; copying content does not admit assets.
+    pub fn with_sound_definition(
+        &self,
+        patch_id: PatchId,
+        definition: SoundDefinition,
+    ) -> Result<Self, SoundDefinitionError> {
+        definition.validate_version()?;
+        let index = self
+            .patches
+            .iter()
+            .position(|patch| patch.id == patch_id.value())
+            .ok_or(SoundDefinitionError::UnknownPatch(patch_id))?;
+        let mut candidate = self.clone();
+        let patch = &mut candidate.patches[index];
+        patch.name = definition.name;
+        patch.instrument = definition.instrument;
+        patch.envelope = definition.envelope;
+        patch.effects = definition.effects;
+        patch.voice_limit = definition.voice_limit;
+        Ok(candidate)
     }
 
     pub fn to_json(&self) -> Result<String, SavedSessionError> {
@@ -447,6 +755,13 @@ impl SavedSession {
             {
                 return Err(SavedSessionError::InvalidVoiceLimit);
             }
+            let envelope = VoiceEnvelope::new(
+                saved.envelope.attack_milliseconds(),
+                saved.envelope.decay_milliseconds(),
+                saved.envelope.sustain(),
+                saved.envelope.release_milliseconds(),
+            )
+            .map_err(|_| SavedSessionError::InvalidPatch)?;
             let mut patch = Patch::new(
                 PatchId::new(saved.id).map_err(|_| SavedSessionError::InvalidPatch)?,
                 saved.name.clone(),
@@ -454,7 +769,7 @@ impl SavedSession {
                 MidiChannel::new(saved.channel).map_err(|_| SavedSessionError::InvalidPatch)?,
                 saved.output,
             )
-            .with_envelope(saved.envelope)
+            .with_envelope(envelope)
             .with_voice_limit(saved.voice_limit)
             .map_err(|_| SavedSessionError::InvalidVoiceLimit)?
             .with_sends(saved.sends.clone())
@@ -661,6 +976,540 @@ mod tests {
         let mut state = AppState::new(registry, GlobalParameters::new(-3.0).unwrap());
         state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
         state
+    }
+
+    fn asset_effect(slot: u16, assets: &[(AssetKind, &str)]) -> PostEffectConfig {
+        use crate::synth::{EffectCapabilityId, EffectSlotId, ParameterAssignment};
+        PostEffectConfig::from_parts(
+            EffectSlotId::new(slot).unwrap(),
+            EffectCapabilityId::new("effect.test.resources").unwrap(),
+            vec![ParameterAssignment::new(
+                ParameterId::new("effect.mix").unwrap(),
+                ParameterValue::Continuous(0.375),
+            )],
+            assets
+                .iter()
+                .enumerate()
+                .map(|(index, (kind, locator))| {
+                    AssetAssignment::new(
+                        ParameterId::new(format!("effect.asset-{index}")).unwrap(),
+                        AssetReference::new(*kind, *locator).unwrap(),
+                    )
+                })
+                .collect(),
+        )
+    }
+
+    fn asset_rich_session() -> SavedSession {
+        use crate::adapter::drum_rack_capability::{pad_parameter_id, DrumRackCapability};
+        let mut saved = SavedSession::capture(&state());
+        let drum = DrumRackCapability::new(AssetFileId::new("folder/kick.wav").unwrap()).unwrap();
+        let assets = [
+            (0, "folder/kick.wav"),
+            (3, "folder/snare.wav"),
+            (9, "folder/kick.wav"),
+        ]
+        .into_iter()
+        .map(|(pad, locator)| {
+            AssetAssignment::new(
+                pad_parameter_id(pad, SAMPLE_ASSET_PARAMETER_ID),
+                AssetReference::new(AssetKind::Sample, locator).unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+        saved.patches[0].instrument = drum
+            .descriptor()
+            .create_config(drum.default_config().unwrap().values(), &assets)
+            .unwrap();
+        saved.patches[0].effects[1] = Some(asset_effect(
+            7,
+            &[(AssetKind::NeuralModel, "models/amp.nam")],
+        ));
+        saved.patches[0].effects[2] = Some(asset_effect(
+            2,
+            &[
+                (AssetKind::ImpulseResponse, "impulses/cab.wav"),
+                (AssetKind::Other, "catalog:resource/17"),
+            ],
+        ));
+        let mut second = saved.patches[0].clone();
+        second.id = 11;
+        saved.patches.push(second);
+        saved.patches[0].channel = 4;
+        saved.patches[0].output = PatchOutput::new(MixerTrackId::new(3).unwrap(), -9.0).unwrap();
+        saved.patches[0].sends[1] = 0.625;
+        saved.returns[1].name = "Resource return".to_owned();
+        saved.returns[1].return_level = 0.375;
+        saved.returns[1].effects = vec![
+            asset_effect(15, &[(AssetKind::NeuralModel, "models/amp.nam")]),
+            asset_effect(4, &[(AssetKind::ImpulseResponse, "impulses/room.wav")]),
+        ];
+        saved
+    }
+
+    #[test]
+    fn asset_inventory_covers_all_drum_pads_patch_slots_and_return_effects_once() {
+        let saved = asset_rich_session();
+        let expected = [
+            (AssetKind::Sample, "folder/kick.wav"),
+            (AssetKind::Sample, "folder/snare.wav"),
+            (AssetKind::NeuralModel, "models/amp.nam"),
+            (AssetKind::ImpulseResponse, "impulses/cab.wav"),
+            (AssetKind::Other, "catalog:resource/17"),
+            (AssetKind::ImpulseResponse, "impulses/room.wav"),
+        ]
+        .into_iter()
+        .map(|(kind, locator)| AssetReference::new(kind, locator).unwrap())
+        .collect::<Vec<_>>();
+        assert_eq!(saved.asset_references(), expected);
+        let sound = saved.sound_definition(PatchId::new(1).unwrap()).unwrap();
+        assert_eq!(sound.asset_references(), expected[..5]);
+        assert_eq!(sound.instrument().asset_references().len(), 3);
+    }
+
+    #[test]
+    fn relink_changes_only_exact_references_and_preserves_complete_saved_content() {
+        let saved = asset_rich_session();
+        let before = saved.to_json().unwrap();
+        let replacements = saved
+            .asset_references()
+            .into_iter()
+            .enumerate()
+            .map(|(index, original)| {
+                let replacement =
+                    AssetReference::new(original.kind(), format!("collected/resource-{index}"))
+                        .unwrap();
+                (original, replacement)
+            })
+            .collect::<Vec<_>>();
+        let candidate = saved.with_relinked_assets(&replacements).unwrap();
+        let expected_json = replacements
+            .iter()
+            .fold(before.clone(), |json, (old, new)| {
+                json.replace(
+                    &serde_json::to_string(old.locator()).unwrap(),
+                    &serde_json::to_string(new.locator()).unwrap(),
+                )
+            });
+        assert_eq!(candidate.to_json().unwrap(), expected_json);
+        assert_eq!(saved.to_json().unwrap(), before);
+        assert_eq!(saved.with_relinked_assets(&[]).unwrap(), saved);
+
+        let sound = saved.sound_definition(PatchId::new(1).unwrap()).unwrap();
+        let relinked_sound = sound.with_relinked_assets(&replacements[..5]).unwrap();
+        assert_eq!(
+            candidate
+                .sound_definition(PatchId::new(1).unwrap())
+                .unwrap(),
+            relinked_sound,
+        );
+        assert_eq!(sound.with_relinked_assets(&[]).unwrap(), sound);
+        assert_eq!(
+            SoundDefinition::from_json(&relinked_sound.to_json().unwrap()).unwrap(),
+            relinked_sound,
+        );
+    }
+
+    #[test]
+    fn relink_is_simultaneous_and_keys_include_asset_kind() {
+        let mut saved = asset_rich_session();
+        saved.patches[0].effects[0] =
+            Some(asset_effect(99, &[(AssetKind::Other, "folder/kick.wav")]));
+        let kick = AssetReference::new(AssetKind::Sample, "folder/kick.wav").unwrap();
+        let snare = AssetReference::new(AssetKind::Sample, "folder/snare.wav").unwrap();
+        let swapped = saved
+            .with_relinked_assets(&[(kick.clone(), snare.clone()), (snare.clone(), kick.clone())])
+            .unwrap();
+        let pad_assets = swapped.patches[0].instrument.asset_references();
+        assert_eq!(pad_assets[0].reference(), &snare);
+        assert_eq!(pad_assets[1].reference(), &kick);
+        assert_eq!(pad_assets[2].reference(), &snare);
+        assert_eq!(swapped.patches[0].effects[0], saved.patches[0].effects[0]);
+        assert_eq!(
+            swapped
+                .with_relinked_assets(&[(kick.clone(), snare.clone()), (snare, kick)])
+                .unwrap(),
+            saved,
+        );
+    }
+
+    #[test]
+    fn relink_rejects_invalid_duplicate_unknown_and_wrong_kind_mappings_atomically() {
+        let saved = SavedSession::capture(&state());
+        let sound = saved.sound_definition(PatchId::new(1).unwrap()).unwrap();
+        let original = saved.asset_references()[0].clone();
+        let target = AssetReference::new(AssetKind::Sample, "relocated/kick.wav").unwrap();
+        let unknown = AssetReference::new(AssetKind::Sample, "missing.wav").unwrap();
+        let wrong_kind = AssetReference::new(AssetKind::SoundFont, "bank.sf2").unwrap();
+        let invalid: AssetReference = serde_json::from_value(serde_json::json!({
+            "kind": "sample", "locator": "",
+        }))
+        .unwrap();
+        let cases = [
+            (
+                vec![
+                    (original.clone(), target.clone()),
+                    (original.clone(), original.clone()),
+                ],
+                AssetRelinkError::DuplicateOriginal(original.clone()),
+            ),
+            (
+                vec![
+                    (original.clone(), target.clone()),
+                    (unknown.clone(), target.clone()),
+                ],
+                AssetRelinkError::UnknownOriginal(unknown),
+            ),
+            (
+                vec![(original.clone(), wrong_kind.clone())],
+                AssetRelinkError::KindMismatch {
+                    original: original.clone(),
+                    replacement: wrong_kind,
+                },
+            ),
+            (
+                vec![(original.clone(), invalid.clone())],
+                AssetRelinkError::InvalidReference(invalid.clone()),
+            ),
+            (
+                vec![(invalid.clone(), target)],
+                AssetRelinkError::InvalidReference(invalid),
+            ),
+        ];
+        let before = saved.to_json().unwrap();
+        for (mapping, expected) in cases {
+            assert_eq!(saved.with_relinked_assets(&mapping), Err(expected.clone()));
+            assert_eq!(sound.with_relinked_assets(&mapping), Err(expected));
+        }
+        assert_eq!(saved.to_json().unwrap(), before);
+        assert_eq!(
+            saved.sound_definition(PatchId::new(1).unwrap()).unwrap(),
+            sound
+        );
+        assert_eq!(
+            saved
+                .with_relinked_assets(&[(original.clone(), original)])
+                .unwrap(),
+            saved
+        );
+    }
+
+    #[test]
+    fn relink_preserves_canonical_catalog_locator_schemes_without_admitting_them() {
+        let saved = SavedSession::capture(&state());
+        let original = saved.asset_references()[0].clone();
+        for locator in ["./sf2/HiDef.sf2", "@bundled/tone.wav", "catalog:sample/17"] {
+            let replacement = AssetReference::new(AssetKind::Sample, locator).unwrap();
+            let candidate = saved
+                .with_relinked_assets(&[(original.clone(), replacement.clone())])
+                .unwrap();
+            assert_eq!(candidate.asset_references(), vec![replacement]);
+        }
+    }
+
+    fn assert_scoped_relink_preserves_choice(
+        original_descriptor: crate::synth::CapabilityDescriptor,
+        relocated_descriptor: crate::synth::CapabilityDescriptor,
+        preset: &str,
+        choice: &str,
+    ) {
+        use crate::synth::ParameterAssignment;
+        let values = vec![ParameterAssignment::new(
+            ParameterId::new(preset).unwrap(),
+            ParameterValue::Choice(choice.to_owned()),
+        )];
+        let mut saved = SavedSession::capture(&state());
+        saved.patches[0].instrument = original_descriptor
+            .create_config(&values, &original_descriptor.default_assets())
+            .unwrap();
+        let mapping = [(
+            original_descriptor.default_assets()[0].reference().clone(),
+            relocated_descriptor.default_assets()[0].reference().clone(),
+        )];
+        let candidate = saved.with_relinked_assets(&mapping).unwrap();
+        let registry = CapabilityRegistry::new(vec![original_descriptor])
+            .unwrap()
+            .with_asset_descriptor(relocated_descriptor)
+            .unwrap();
+        registry
+            .validate_config(&candidate.patches[0].instrument)
+            .unwrap();
+        assert_eq!(
+            candidate.patches[0].instrument.values(),
+            saved.patches[0].instrument.values()
+        );
+        let sound = saved.sound_definition(PatchId::new(1).unwrap()).unwrap();
+        assert_eq!(
+            sound.with_relinked_assets(&mapping).unwrap(),
+            candidate
+                .sound_definition(PatchId::new(1).unwrap())
+                .unwrap()
+        );
+    }
+
+    #[test]
+    fn relink_preserves_nondefault_soundfont_and_dx7_presets() {
+        use crate::adapter::dx7_library::{Dx7Library, Dx7Preset, PRESET};
+        use crate::adapter::hidef_soundfont_capability::{
+            HiDefSoundFontCapability, SOUNDFONT_PRESET_PARAMETER_ID,
+        };
+        use crate::synth::{SoundFontPresetCatalog, SoundFontPresetSource};
+        let catalog = std::sync::Arc::new(
+            SoundFontPresetCatalog::from_sources([
+                SoundFontPresetSource::new(0, 0, 0, "Default", true),
+                SoundFontPresetSource::new(1, 128, 7, "Saved Kit", true),
+            ])
+            .unwrap(),
+        );
+        let original = HiDefSoundFontCapability::new(catalog.clone()).unwrap();
+        let relocated = HiDefSoundFontCapability::for_asset(
+            catalog,
+            AssetReference::new(AssetKind::SoundFont, "collected/bank.sf2").unwrap(),
+        )
+        .unwrap();
+        assert_scoped_relink_preserves_choice(
+            original.descriptor(),
+            relocated.descriptor(),
+            SOUNDFONT_PRESET_PARAMETER_ID,
+            "sf2.bank-128.program-7",
+        );
+
+        let library = Dx7Library {
+            presets: vec![
+                Dx7Preset {
+                    id: "message-0.voice-0".into(),
+                    name: "Default".into(),
+                    data: [0; 155],
+                },
+                Dx7Preset {
+                    id: "message-1.voice-17".into(),
+                    name: "Saved Voice".into(),
+                    data: [0; 155],
+                },
+            ],
+        };
+        assert_scoped_relink_preserves_choice(
+            library
+                .descriptor(AssetReference::new(AssetKind::SysEx, "bank.syx").unwrap())
+                .unwrap(),
+            library
+                .descriptor(AssetReference::new(AssetKind::SysEx, "collected/bank.syx").unwrap())
+                .unwrap(),
+            PRESET,
+            "message-1.voice-17",
+        );
+    }
+
+    #[test]
+    fn relink_defers_missing_asset_admission_to_preparation_without_changing_source() {
+        let active = state();
+        let saved = SavedSession::capture(&active);
+        let replacement = AssetReference::new(AssetKind::Sample, "missing.wav").unwrap();
+        let candidate = saved
+            .with_relinked_assets(&[(saved.asset_references()[0].clone(), replacement)])
+            .unwrap();
+        assert!(matches!(
+            candidate.prepare_restore(
+                active.capabilities().clone(),
+                active.effects().clone(),
+                &sample_preparers(Ok(vec![1]), Ok(decoded("folder/kick.wav"))),
+                &[],
+                GraphRevision::INITIAL.checked_next().unwrap(),
+                48_000.0,
+                64,
+            ),
+            Err(SavedSessionRestoreError::Preparation(_))
+        ));
+        assert_eq!(SavedSession::capture(&active), saved);
+    }
+
+    #[test]
+    fn sound_definition_round_trip_excludes_installation_and_mix() {
+        let saved = SavedSession::capture(&state());
+        let definition = saved.sound_definition(PatchId::new(1).unwrap()).unwrap();
+        let json = definition.to_json().unwrap();
+        let value: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(value.as_object().unwrap().len(), 6);
+        assert_eq!(value["version"], SOUND_DEFINITION_VERSION);
+        assert_eq!(value["name"], "Saved Sample");
+        for field in [
+            "id",
+            "channel",
+            "output",
+            "sends",
+            "mixer",
+            "masterGainDb",
+            "returns",
+        ] {
+            assert!(value.get(field).is_none(), "unexpected field {field}");
+        }
+        assert_eq!(SoundDefinition::from_json(&json).unwrap(), definition);
+        assert_eq!(
+            serde_json::from_str::<SoundDefinition>(&json).unwrap(),
+            definition
+        );
+    }
+
+    #[test]
+    fn sound_install_preserves_local_routing_mix_and_other_patches_after_preparation() {
+        use crate::adapter::chorus_capability::ChorusCapability;
+        use crate::synth::{EffectCapabilityProvider, EffectSlotId};
+
+        let active = state();
+        let target = PatchId::new(1).unwrap();
+        let provider = ChorusCapability::new().unwrap();
+        let effects = EffectCapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+        let mut saved = SavedSession::capture(&active);
+        let mut other = saved.patches[0].clone();
+        other.id = 7;
+        saved.patches.push(other.clone());
+        saved.patches[0].channel = 5;
+        saved.patches[0].output = PatchOutput::new(MixerTrackId::new(3).unwrap(), -9.0).unwrap();
+        saved.patches[0].sends[2] = 0.65;
+        saved.mixer.set_track(
+            MixerTrackId::new(3).unwrap(),
+            MixerTrackParameters::from_values(
+                -6.0,
+                0.3,
+                false,
+                true,
+                vec![0.2; saved.returns.len()],
+            )
+            .unwrap(),
+        );
+        saved.master_gain_db = -12.0;
+        saved.returns[2].name = "Local return".to_owned();
+        saved.returns[2].return_level = 0.4;
+
+        let mut definition = saved.sound_definition(target).unwrap();
+        definition.name = "Reusable sound".to_owned();
+        definition.envelope = VoiceEnvelope::new(12.0, 90.0, 0.4, 180.0).unwrap();
+        definition.voice_limit = 8;
+        definition.instrument = definition
+            .instrument
+            .with_scalar_value(
+                active
+                    .capabilities()
+                    .descriptor_for_config(&definition.instrument)
+                    .unwrap(),
+                &ParameterId::new(SAMPLE_PLAYBACK_START_PARAMETER_ID).unwrap(),
+                ParameterValue::continuous(0.5).unwrap(),
+            )
+            .unwrap();
+        definition.effects[1] = Some(
+            provider
+                .default_config(EffectSlotId::new(9).unwrap())
+                .unwrap(),
+        );
+        definition.effects[2] = Some(
+            provider
+                .default_config(EffectSlotId::new(2).unwrap())
+                .unwrap(),
+        );
+        let definition = SoundDefinition::from_json(&definition.to_json().unwrap()).unwrap();
+        let candidate = saved
+            .with_sound_definition(target, definition.clone())
+            .unwrap();
+        assert_eq!(candidate.sound_definition(target).unwrap(), definition);
+        assert_eq!(candidate.patches[0].id, saved.patches[0].id);
+        assert_eq!(candidate.patches[0].channel, 5);
+        assert_eq!(candidate.patches[0].output, saved.patches[0].output);
+        assert_eq!(candidate.patches[0].sends, saved.patches[0].sends);
+        assert_eq!(candidate.patches[1], other);
+        assert_eq!(candidate.mixer, saved.mixer);
+        assert_eq!(candidate.master_gain_db, saved.master_gain_db);
+        assert_eq!(candidate.returns, saved.returns);
+
+        let effect_preparers: Vec<Box<dyn EffectPreparer>> = vec![Box::new(
+            crate::adapter::chorus_preparer::ChorusPreparer::new().unwrap(),
+        )];
+        let prepared = candidate
+            .prepare_restore(
+                active.capabilities().clone(),
+                effects,
+                &sample_preparers(Ok(vec![1]), Ok(decoded("folder/kick.wav"))),
+                &effect_preparers,
+                GraphRevision::INITIAL.checked_next().unwrap(),
+                48_000.0,
+                64,
+            )
+            .unwrap();
+        assert_eq!(SavedSession::capture(prepared.state()), candidate);
+        assert_eq!(
+            saved.sound_definition(target).unwrap().name(),
+            "Saved Sample"
+        );
+    }
+
+    #[test]
+    fn sound_install_rejects_unknown_targets_and_unsupported_versions() {
+        let saved = SavedSession::capture(&state());
+        let target = PatchId::new(1).unwrap();
+        let missing = PatchId::new(99).unwrap();
+        let definition = saved.sound_definition(target).unwrap();
+        assert_eq!(
+            saved.sound_definition(missing),
+            Err(SoundDefinitionError::UnknownPatch(missing))
+        );
+        assert_eq!(
+            saved.with_sound_definition(missing, definition.clone()),
+            Err(SoundDefinitionError::UnknownPatch(missing))
+        );
+        let mut value = serde_json::to_value(&definition).unwrap();
+        value["version"] = 42.into();
+        assert_eq!(
+            SoundDefinition::from_json(&value.to_string()),
+            Err(SoundDefinitionError::UnsupportedVersion(42))
+        );
+        // Direct serde decoding is also checked at the installation boundary.
+        let unsupported: SoundDefinition = serde_json::from_value(value).unwrap();
+        assert_eq!(
+            saved.with_sound_definition(target, unsupported),
+            Err(SoundDefinitionError::UnsupportedVersion(42))
+        );
+        let mut value = serde_json::to_value(&definition).unwrap();
+        value["channel"] = 9.into();
+        assert_eq!(
+            SoundDefinition::from_json(&value.to_string()),
+            Err(SoundDefinitionError::Decode)
+        );
+        assert_eq!(saved.sound_definition(target).unwrap(), definition);
+    }
+
+    #[test]
+    fn invalid_sound_values_fail_canonical_candidate_preparation() {
+        use crate::adapter::chorus_capability::ChorusCapability;
+        use crate::synth::EffectSlotId;
+
+        let active = state();
+        let saved = SavedSession::capture(&active);
+        let target = PatchId::new(1).unwrap();
+        let definition = saved.sound_definition(target).unwrap();
+        let mut invalid_voice_limit = definition.clone();
+        invalid_voice_limit.voice_limit = 0;
+        let mut invalid_envelope = serde_json::to_value(&definition).unwrap();
+        invalid_envelope["envelope"]["sustain"] = 2.0.into();
+        let invalid_envelope = SoundDefinition::from_json(&invalid_envelope.to_string()).unwrap();
+        let mut unavailable_effect = definition.clone();
+        unavailable_effect.effects[0] = Some(
+            ChorusCapability::new()
+                .unwrap()
+                .default_config(EffectSlotId::new(1).unwrap())
+                .unwrap(),
+        );
+        let preparers = sample_preparers(Ok(vec![1]), Ok(decoded("folder/kick.wav")));
+        for (invalid, expected) in [
+            (invalid_voice_limit, SavedSessionError::InvalidVoiceLimit),
+            (invalid_envelope, SavedSessionError::InvalidPatch),
+            (unavailable_effect, SavedSessionError::InvalidEffect),
+        ] {
+            let candidate = saved.with_sound_definition(target, invalid).unwrap();
+            assert!(matches!(candidate.prepare_restore(
+                active.capabilities().clone(), active.effects().clone(), &preparers, &[],
+                GraphRevision::INITIAL.checked_next().unwrap(), 48_000.0, 64,
+            ), Err(SavedSessionRestoreError::Session(error)) if error == expected));
+        }
+        assert_eq!(SavedSession::capture(&active), saved);
     }
 
     #[test]

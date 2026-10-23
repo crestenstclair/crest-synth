@@ -15,13 +15,18 @@ use crate::control::text_projection::TextProjection;
 use crate::control::{
     ActiveMidiInput, ConnectMidiInput, GraphicalShellProjection, MidiActivitySnapshot,
     MidiDeviceEffect, MidiDeviceFailure, MidiDeviceWorker, MidiDeviceWorkerCommand,
-    MidiDeviceWorkerResult, MidiScanScheduler, PhysicalMidiIngress, PhysicalMidiIngressControl,
-    SampleAssetLifecycle, SemanticAction, SessionReplacementPayload, SurfaceId,
-    PHYSICAL_MIDI_DRAIN_BUDGET,
+    MidiDeviceWorkerResult, MidiScanScheduler, PhysicalMidiEvent, PhysicalMidiIngress,
+    PhysicalMidiIngressControl, SampleAssetLifecycle, SemanticAction, SessionReplacementPayload,
+    SurfaceId, PHYSICAL_MIDI_DRAIN_BUDGET,
 };
 use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::PatchId;
 use crate::real_time::audio_boundary::{BoundaryFull, ControlAudioBoundary};
+use crate::real_time::scheduled_event::{
+    ScheduledEvent, ScheduledEventEpochExhausted, ScheduledEventRejected,
+    ScheduledEventRejectionReason,
+};
+use crate::real_time::AudioCommand;
 use crate::real_time::{
     ControlStructuralGraphBoundary, GraphPreparationCorrelation, GraphPreparationRequest,
     GraphPreparationRequestError, GraphPreparationResult, GraphPreparationWorker, GraphRevision,
@@ -45,6 +50,27 @@ pub struct DispatchResult {
     accepted: StateAccepted,
     snapshot: StateSnapshot,
     boundary_full: Option<BoundaryFull>,
+    scheduled_rejection: Option<ScheduledEventRejected>,
+}
+
+/// Rejection at the validated, graph-correlated scheduled MIDI boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ScheduledEventDispatchError {
+    #[error("scheduled MIDI was rejected by the control state: {0}")]
+    Control(#[from] EventRejection),
+    #[error("scheduled MIDI targets graph {requested:?}, but the active graph is {active:?}")]
+    GraphRevision {
+        requested: GraphRevision,
+        active: GraphRevision,
+    },
+    #[error(transparent)]
+    Publication(#[from] ScheduledEventRejected),
+    #[error("scheduled event payload is not valid for this operation")]
+    InvalidPayload,
+    #[error("temporary send targets an unavailable bus")]
+    UnknownSendBus,
+    #[error(transparent)]
+    Lease(#[from] crate::real_time::SendLeaseError),
 }
 
 /// Outcome of resolving one incoming MIDI channel message against the latest
@@ -475,6 +501,31 @@ where
         &mut self,
         now_micros: u64,
     ) -> Result<MidiDeviceProgress, MidiDeviceAdvanceError> {
+        self.advance_midi_devices_with_capture(now_micros, &mut |_| false)
+    }
+
+    /// Advances the existing device owner and offers each accepted event once,
+    /// before channel fan-out. Returning true consumes default monitoring.
+    /// The callback runs on the control thread, never in the backend callback.
+    /// Consumed events still contribute to physical-input activity observations.
+    pub fn advance_midi_devices_with_capture(
+        &mut self,
+        now_micros: u64,
+        capture: &mut dyn FnMut(PhysicalMidiEvent) -> bool,
+    ) -> Result<MidiDeviceProgress, MidiDeviceAdvanceError> {
+        self.advance_midi_devices_with_packets(now_micros, &mut |packet| match packet {
+            crate::control::PhysicalMidiPacket::Performance(event) => capture(event),
+            crate::control::PhysicalMidiPacket::Transport(_) => true,
+        })
+    }
+
+    /// Offers channel and transport packets in accepted backend order. Transport
+    /// packets are host-owned and never enter the Synth reducer or renderer.
+    pub fn advance_midi_devices_with_packets(
+        &mut self,
+        now_micros: u64,
+        capture: &mut dyn FnMut(crate::control::PhysicalMidiPacket) -> bool,
+    ) -> Result<MidiDeviceProgress, MidiDeviceAdvanceError> {
         let Some(mut runtime) = self.midi_device_runtime.take() else {
             return Ok(MidiDeviceProgress::default());
         };
@@ -525,7 +576,7 @@ where
                 self.advance_midi_device_effect(&mut runtime, effect, &mut progress);
         }
 
-        self.drain_physical_midi(&mut runtime, now_micros, &mut progress);
+        self.drain_physical_midi(&mut runtime, now_micros, &mut progress, capture);
         publish_midi_activity(&mut runtime, now_micros);
         self.midi_device_runtime = Some(runtime);
         Ok(progress)
@@ -567,7 +618,7 @@ where
                 if let Some(old) = runtime.active.as_mut() {
                     old.ingress.disable();
                     old.ingress.discard_all();
-                    if self.boundary.push_recovery_command().is_err() {
+                    if self.boundary.push_input_recovery_command().is_err() {
                         self.pending_midi_device_effects
                             .push_front(MidiDeviceEffect::Activate { request });
                         return false;
@@ -609,7 +660,7 @@ where
             }
             MidiDeviceEffect::Recover { revision, .. } => {
                 disable_revision(runtime, revision);
-                if self.boundary.push_recovery_command().is_err() {
+                if self.boundary.push_input_recovery_command().is_err() {
                     self.pending_midi_device_effects.push_front(effect);
                     false
                 } else {
@@ -765,6 +816,7 @@ where
         runtime: &mut MidiDeviceRuntime,
         now_micros: u64,
         progress: &mut MidiDeviceProgress,
+        capture: &mut dyn FnMut(crate::control::PhysicalMidiPacket) -> bool,
     ) {
         let Some(active) = runtime.active.as_mut() else {
             return;
@@ -805,17 +857,29 @@ where
         }
 
         for _ in 0..PHYSICAL_MIDI_DRAIN_BUDGET {
-            let Some(event) = active.ingress.try_pop() else {
+            let Some(event) = active.ingress.try_pop_packet() else {
                 break;
             };
             if event.revision() != canonical_revision.expect("checked above") {
                 progress.stale_events += 1;
                 continue;
             }
+            if let crate::control::PhysicalMidiPacket::Transport(_) = event {
+                progress.drained_events += 1;
+                capture(event);
+                continue;
+            }
+            let crate::control::PhysicalMidiPacket::Performance(event) = event else {
+                unreachable!()
+            };
+            let event = event.received_on_control(now_micros);
             progress.drained_events += 1;
             runtime.accepted_count = runtime.accepted_count.saturating_add(1);
             runtime.last_event = Some(event);
             runtime.last_control_receipt_micros = now_micros;
+            if capture(crate::control::PhysicalMidiPacket::Performance(event)) {
+                continue;
+            }
             match self.dispatch_midi_from(event.message(), EventSource::PhysicalMidi) {
                 Ok(result) if result.boundary_full().is_none() => {}
                 Ok(_) => {
@@ -843,6 +907,12 @@ where
                 }
             }
         }
+    }
+
+    /// Exact reducer-acknowledged device identity for physical capture context.
+    /// The event's revision must match this identity before a host associates it.
+    pub fn active_midi_input_identity(&self) -> Option<&crate::control::MidiActiveInputIdentity> {
+        self.state.midi_input().active()
     }
 
     /// Latest decimated activity only when its revision is still canonical.
@@ -1089,7 +1159,7 @@ where
         source: EventSource,
     ) -> Result<DispatchResult, EventRejection> {
         let event = AppEvent::from_semantic_action(action.clone());
-        self.dispatch_internal(event, source, Some(action))
+        self.dispatch_internal(event, source, Some(action), None, None)
     }
 
     /// Applies one sourced event and publishes effects only after complete acceptance.
@@ -1098,7 +1168,139 @@ where
         event: AppEvent,
         source: EventSource,
     ) -> Result<DispatchResult, EventRejection> {
-        self.dispatch_internal(event, source, None)
+        self.dispatch_internal(event, source, None, None, None)
+    }
+
+    /// Validates scheduled MIDI through the normal reducer and publishes only
+    /// to the timed queue. A full queue remains an explicit failed delivery;
+    /// it never falls back to an immediate attack.
+    pub fn dispatch_scheduled_midi_from(
+        &mut self,
+        event: ScheduledEvent,
+        source: EventSource,
+    ) -> Result<DispatchResult, ScheduledEventDispatchError> {
+        let active = self.active_audio_graph_revision();
+        if event.graph_revision() != active {
+            return Err(ScheduledEventDispatchError::GraphRevision {
+                requested: event.graph_revision(),
+                active,
+            });
+        }
+        let current_epoch = self.scheduled_epoch();
+        if event.epoch() != current_epoch {
+            return Err(ScheduledEventRejected::new(
+                event,
+                ScheduledEventRejectionReason::StaleEpoch { current_epoch },
+            )
+            .into());
+        }
+        let result = self.dispatch_internal(
+            AppEvent::Midi {
+                patch_id: event.patch_id(),
+                message: event
+                    .message()
+                    .ok_or(ScheduledEventDispatchError::InvalidPayload)?,
+            },
+            source,
+            None,
+            Some(event),
+            match event.payload() {
+                crate::real_time::scheduled_event::ScheduledPayload::InitializedVoice {
+                    voice,
+                    initial,
+                } => Some(AudioCommand::InitializedVoice {
+                    source: crate::synth::MidiSource::Scheduled,
+                    patch_id: event.patch_id(),
+                    voice,
+                    initial,
+                }),
+                crate::real_time::scheduled_event::ScheduledPayload::Midi {
+                    voice: Some(voice),
+                    scope,
+                    message,
+                } => Some(AudioCommand::VoiceMidi {
+                    source: crate::synth::MidiSource::Scheduled,
+                    patch_id: event.patch_id(),
+                    voice,
+                    scope,
+                    message,
+                }),
+                _ => None,
+            },
+        )?;
+        if let Some(rejection) = result.scheduled_rejection {
+            return Err(rejection.into());
+        }
+        Ok(result)
+    }
+
+    /// Effective render controls never edit saved Patch or mixer state. They
+    /// share the timed event queue, graph fence and cancellation epoch with notes.
+    pub fn dispatch_scheduled_send(
+        &mut self,
+        event: ScheduledEvent,
+    ) -> Result<(), ScheduledEventDispatchError> {
+        use crate::real_time::scheduled_event::ScheduledPayload;
+        if self.session_replacement_pending() {
+            return Err(EventRejection::StructuralEditBusy.into());
+        }
+        let active = self.active_audio_graph_revision();
+        if event.graph_revision() != active {
+            return Err(ScheduledEventDispatchError::GraphRevision {
+                requested: event.graph_revision(),
+                active,
+            });
+        }
+        let current_epoch = self.scheduled_epoch();
+        if event.epoch() != current_epoch {
+            return Err(ScheduledEventRejected::new(
+                event,
+                ScheduledEventRejectionReason::StaleEpoch { current_epoch },
+            )
+            .into());
+        }
+        let patch = self
+            .current_parameters
+            .patches()
+            .iter()
+            .find(|p| p.patch_id() == Some(event.patch_id()))
+            .ok_or(EventRejection::UnknownPatch)?;
+        match event.payload() {
+            ScheduledPayload::SendLease(lease) => {
+                if lease.bus().index() >= patch.sends().len() {
+                    return Err(ScheduledEventDispatchError::UnknownSendBus);
+                }
+                if lease.end_frame() <= event.absolute_frame() {
+                    return Err(crate::real_time::SendLeaseError::AlreadyExpired {
+                        end_frame: lease.end_frame(),
+                        current_frame: event.absolute_frame(),
+                    }
+                    .into());
+                }
+            }
+            ScheduledPayload::EndSendLease(_) => {}
+            _ => return Err(ScheduledEventDispatchError::InvalidPayload),
+        }
+        self.boundary.push_scheduled(event)?;
+        Ok(())
+    }
+
+    /// The callback-acknowledged graph, including during a pending activation.
+    pub fn active_audio_graph_revision(&self) -> GraphRevision {
+        self.engine_graph_handoff_status()
+            .and_then(|status| status.active_revision())
+            .unwrap_or_else(|| self.graph_revision())
+    }
+
+    /// Current generation of the cancellable scheduled MIDI transport.
+    pub fn scheduled_epoch(&self) -> u64 {
+        self.boundary.scheduled_epoch()
+    }
+
+    /// Invalidates queued scheduled events and releases their owned notes at
+    /// the next audio block without silencing unrelated live input.
+    pub fn cancel_scheduled_midi(&mut self) -> Result<u64, ScheduledEventEpochExhausted> {
+        self.boundary.cancel_scheduled()
     }
 
     /// Fans one normalized MIDI message out to every current channel
@@ -1148,11 +1350,86 @@ where
         })
     }
 
+    /// Host-owned immediate MIDI uses the same reducer and journal validation.
+    pub fn dispatch_midi_for_source(
+        &mut self,
+        patch_id: PatchId,
+        message: MidiMessage,
+        source: crate::synth::MidiSource,
+    ) -> Result<DispatchResult, EventRejection> {
+        self.dispatch_internal(
+            AppEvent::Midi { patch_id, message },
+            EventSource::AutomaticMidi,
+            None,
+            None,
+            Some(AudioCommand::OwnedMidi {
+                source,
+                patch_id,
+                message,
+            }),
+        )
+    }
+    /// Exact articulation ownership uses the same reducer/journal as raw MIDI.
+    pub fn dispatch_voice_for_source(
+        &mut self,
+        patch_id: PatchId,
+        message: MidiMessage,
+        source: crate::synth::MidiSource,
+        voice: crate::synth::MidiVoiceId,
+        scope: crate::synth::MidiExpressionScope,
+    ) -> Result<DispatchResult, EventRejection> {
+        self.dispatch_internal(
+            AppEvent::Midi { patch_id, message },
+            EventSource::AutomaticMidi,
+            None,
+            None,
+            Some(AudioCommand::VoiceMidi {
+                source,
+                patch_id,
+                voice,
+                scope,
+                message,
+            }),
+        )
+    }
+    pub fn dispatch_initialized_voice_for_source(
+        &mut self,
+        patch_id: PatchId,
+        source: crate::synth::MidiSource,
+        voice: crate::synth::MidiVoiceId,
+        initial: crate::synth::OwnedVoiceInitialization,
+    ) -> Result<DispatchResult, EventRejection> {
+        self.dispatch_internal(
+            AppEvent::Midi {
+                patch_id,
+                message: initial.message(),
+            },
+            EventSource::AutomaticMidi,
+            None,
+            None,
+            Some(AudioCommand::InitializedVoice {
+                source,
+                patch_id,
+                voice,
+                initial,
+            }),
+        )
+    }
+    pub fn cancel_midi_source(
+        &mut self,
+        patch_id: PatchId,
+        source: crate::synth::MidiSource,
+    ) -> Result<(), BoundaryFull> {
+        self.boundary
+            .push_command(AudioCommand::ReleaseSource { source, patch_id })
+    }
     fn dispatch_internal(
         &mut self,
         event: AppEvent,
         source: EventSource,
         semantic_action: Option<SemanticAction>,
+        scheduled: Option<ScheduledEvent>,
+        midi_command: Option<AudioCommand>,
     ) -> Result<DispatchResult, EventRejection> {
         if self.session_replacement_pending()
             && matches!(
@@ -1228,7 +1505,13 @@ where
                     .expect("an accepted AppState must produce coherent projections")
             };
         let accepted = outcome.accepted();
-        let audio_command = outcome.audio_command().copied();
+        let audio_command = outcome.audio_command().copied().map(|command| {
+            if matches!(command, AudioCommand::PatchMidi { .. }) {
+                midi_command.unwrap_or(command)
+            } else {
+                command
+            }
+        });
         let engine_selection_effect = outcome.engine_selection_effect().cloned();
         let midi_device_effects = outcome.midi_device_effects().to_vec();
         let record_sequence = self.event_log.next_sequence();
@@ -1281,8 +1564,14 @@ where
             self.boundary
                 .publish_parameters(self.last_published_parameters.clone());
         }
-        let boundary_full =
-            audio_command.and_then(|command| self.boundary.push_command(command).err());
+        let (boundary_full, scheduled_rejection) = if let Some(event) = scheduled {
+            (None, self.boundary.push_scheduled(event).err())
+        } else {
+            (
+                audio_command.and_then(|command| self.boundary.push_command(command).err()),
+                None,
+            )
+        };
         self.current_snapshot = snapshot.clone();
         self.current_patch_page = patch_page;
         self.current_text = text;
@@ -1305,6 +1594,7 @@ where
             accepted,
             snapshot,
             boundary_full,
+            scheduled_rejection,
         })
     }
 
@@ -4427,6 +4717,167 @@ mod tests {
         app_loop.shutdown_engine_selection_on_control().unwrap();
     }
 
+    fn loop_with_active_physical_input() -> (
+        AppLoop<TestBoundary>,
+        Arc<Mutex<BoundaryObservations>>,
+        FakeMidiWorkerHandle,
+    ) {
+        let (mut app_loop, observations) = loop_with_observations();
+        let identity = MidiInputDeviceId::new("midir-v1", "capture-a").unwrap();
+        let descriptor = MidiInputDescriptor::new(identity.clone(), "Capture A", None).unwrap();
+        let (worker, handle) = FakeMidiWorker::new(descriptor);
+        app_loop.configure_midi_devices(worker).unwrap();
+        app_loop.advance_midi_devices(0).unwrap();
+        app_loop.advance_midi_devices(1).unwrap();
+        app_loop
+            .dispatch_from(
+                AppEvent::MidiInputConnectRequested {
+                    identity: identity.clone(),
+                },
+                EventSource::Keyboard,
+            )
+            .unwrap();
+        app_loop.advance_midi_devices(2).unwrap();
+        app_loop.advance_midi_devices(3).unwrap();
+        (app_loop, observations, handle)
+    }
+
+    #[test]
+    fn hosted_transport_preserves_ingress_order_without_synth_dispatch() {
+        let (mut app_loop, observations, handle) = loop_with_active_physical_input();
+        let packets: &[&[u8]] = &[&[0xfa], &[0xf8], &[0x90, 60, 99], &[0xf2, 3, 0], &[0xfc]];
+        for (index, packet) in packets.iter().enumerate() {
+            assert_eq!(
+                handle.receive_raw(100 + index as u64, packet),
+                PhysicalMidiIngressOutcome::Accepted
+            );
+        }
+        let mut captured = Vec::new();
+        let progress = app_loop
+            .advance_midi_devices_with_packets(34_000, &mut |packet| {
+                captured.push(match packet {
+                    crate::control::PhysicalMidiPacket::Performance(event) => {
+                        event.raw_bytes().to_vec()
+                    }
+                    crate::control::PhysicalMidiPacket::Transport(event) => {
+                        event.raw_bytes().to_vec()
+                    }
+                });
+                false
+            })
+            .unwrap();
+        assert_eq!(progress.drained_events(), packets.len());
+        assert_eq!(captured, packets);
+        assert_eq!(
+            observations
+                .lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| matches!(command, AudioCommand::PatchMidi { .. }))
+                .count(),
+            1
+        );
+        app_loop.shutdown_midi_devices_on_control().unwrap();
+    }
+
+    #[test]
+    fn physical_capture_preserves_raw_timing_and_can_consume_monitoring_once() {
+        let (mut app_loop, observations, handle) = loop_with_active_physical_input();
+        let active = app_loop.active_midi_input_identity().unwrap().clone();
+        assert_eq!(active.identity().identity(), "capture-a");
+        let packets = [
+            [0x90, 60, 0],
+            [0xb0, 120, 37],
+            [0xb0, 123, 99],
+            [0xa0, 60, 23],
+            [0x90, 61, 100],
+        ];
+        for (index, packet) in packets.iter().enumerate() {
+            assert_eq!(
+                handle.receive_raw(100 + index as u64, packet),
+                PhysicalMidiIngressOutcome::Accepted
+            );
+        }
+        let mut captured = Vec::new();
+        let progress = app_loop
+            .advance_midi_devices_with_capture(34_000, &mut |event| {
+                captured.push(event);
+                event.message().kind() != MidiMessageKind::NoteOn
+            })
+            .unwrap();
+        assert_eq!(progress.drained_events(), 5);
+        assert_eq!(captured.len(), 5);
+        for (index, event) in captured.iter().enumerate() {
+            assert_eq!(event.raw_bytes(), &packets[index]);
+            assert_eq!(event.revision(), active.revision());
+            assert_eq!(event.timestamp_micros(), 100 + index as u64);
+            assert_eq!(event.control_receipt_micros(), Some(34_000));
+        }
+        assert_eq!(captured[0].message().kind(), MidiMessageKind::NoteOff);
+        assert_eq!(captured[1].message().kind(), MidiMessageKind::AllNotesOff);
+        assert_eq!(captured[2].message().kind(), MidiMessageKind::AllNotesOff);
+        assert_eq!(captured[3].message().kind(), MidiMessageKind::PolyPressure);
+        let activity = app_loop.current_midi_activity().unwrap();
+        assert_eq!(activity.accepted_count(), 5);
+        assert_eq!(activity.last_event(), captured.last().copied());
+        assert_eq!(
+            observations
+                .lock()
+                .unwrap()
+                .commands
+                .iter()
+                .filter(|command| { matches!(command, AudioCommand::PatchMidi { .. }) })
+                .count(),
+            1
+        );
+        assert_eq!(
+            app_loop
+                .event_log_ref()
+                .records()
+                .iter()
+                .filter(|record| { record.source() == EventSource::PhysicalMidi })
+                .count(),
+            1
+        );
+        app_loop.shutdown_midi_devices_on_control().unwrap();
+    }
+
+    #[test]
+    fn physical_capture_never_receives_a_retired_connection_revision() {
+        let (mut app_loop, _, handle) = loop_with_active_physical_input();
+        let identity = app_loop
+            .active_midi_input_identity()
+            .unwrap()
+            .identity()
+            .clone();
+        assert_eq!(
+            handle.receive_raw(100, &[0x90, 60, 100]),
+            PhysicalMidiIngressOutcome::Accepted
+        );
+        app_loop
+            .dispatch_from(
+                AppEvent::MidiInputDisconnectRequested { identity },
+                EventSource::Keyboard,
+            )
+            .unwrap();
+        assert!(app_loop.active_midi_input_identity().is_none());
+        // Exercise the drain before queued retirement work closes the handle:
+        // reducer acknowledgement alone must prevent stale capture delivery.
+        let mut runtime = app_loop.midi_device_runtime.take().unwrap();
+        let mut progress = super::MidiDeviceProgress::default();
+        let mut captured = 0;
+        app_loop.drain_physical_midi(&mut runtime, 34_000, &mut progress, &mut |_| {
+            captured += 1;
+            true
+        });
+        assert_eq!(captured, 0);
+        assert_eq!(progress.stale_events(), 1);
+        assert_eq!(progress.drained_events(), 0);
+        app_loop.midi_device_runtime = Some(runtime);
+        app_loop.shutdown_midi_devices_on_control().unwrap();
+    }
+
     #[test]
     fn physical_worker_activation_and_bounded_drain_use_the_production_fan_out() {
         let (mut app_loop, observations) = loop_with_observations();
@@ -4541,7 +4992,7 @@ mod tests {
             .lock()
             .unwrap()
             .commands
-            .contains(&AudioCommand::AllNotesOff));
+            .contains(&AudioCommand::ReleaseImmediateNotes));
         assert!(app_loop
             .state()
             .midi_input()

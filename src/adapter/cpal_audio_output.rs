@@ -1,7 +1,8 @@
 use crate::real_time::callback_safety::CallbackSafetyScope;
 use crate::shell::audio_output::{
-    AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
-    AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
+    AudioClockDomain, AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback,
+    AudioFrameClock, AudioFrameClockBoundary, AudioFrameClockWriter, AudioOutput, AudioOutputError,
+    AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{
@@ -30,6 +31,7 @@ pub struct CpalNegotiatedAudioOutput {
     sample_format: SampleFormat,
     stream_config: StreamConfig,
     config: AudioDeviceConfig,
+    clock_domain: AudioClockDomain,
 }
 
 impl AudioOutput for CpalAudioOutput {
@@ -71,6 +73,7 @@ impl AudioOutput for CpalAudioOutput {
             sample_format,
             stream_config,
             config,
+            clock_domain: audio_clock_domain(&host),
         })
     }
 }
@@ -85,19 +88,68 @@ impl NegotiatedAudioOutput for CpalNegotiatedAudioOutput {
         render: AudioRenderCallback,
         on_runtime_error: AudioDeviceStatusCallback,
     ) -> Result<AudioStream, AudioOutputError> {
+        let (clock_writer, clock_reader) = AudioFrameClockBoundary::create_pair();
+        let clock = CpalFrameClock {
+            writer: clock_writer,
+            domain: self.clock_domain,
+            sample_rate: self.stream_config.sample_rate,
+            frame_start: 0,
+        };
         let stream = build_stream(
             &self.device,
             self.sample_format,
             self.stream_config,
             render,
             on_runtime_error,
+            clock,
         )?;
         stream.play().map_err(|error| {
             AudioOutputError::new(format!(
                 "failed to start the default PCM output stream: {error}"
             ))
         })?;
-        Ok(AudioStream::new(stream))
+        Ok(AudioStream::with_clock(stream, clock_reader))
+    }
+}
+
+fn audio_clock_domain(host: &cpal::Host) -> AudioClockDomain {
+    #[cfg(target_os = "macos")]
+    if host.id() == cpal::HostId::CoreAudio {
+        return AudioClockDomain::CoreAudioHost;
+    }
+    let _ = host;
+    AudioClockDomain::Unknown
+}
+
+/// The adapter and renderer start at the same frame zero and account for the
+/// same complete device frames, even when format conversion splits a buffer.
+struct CpalFrameClock {
+    writer: AudioFrameClockWriter,
+    domain: AudioClockDomain,
+    sample_rate: u32,
+    frame_start: u64,
+}
+
+impl CpalFrameClock {
+    fn publish_buffer(&mut self, timestamp: cpal::OutputStreamTimestamp, frame_count: usize) {
+        let clock = u64::try_from(timestamp.callback.as_nanos() / 1_000)
+            .ok()
+            .zip(u64::try_from(timestamp.playback.as_nanos() / 1_000).ok())
+            .and_then(|(callback, playback)| {
+                AudioFrameClock::new(
+                    self.frame_start,
+                    callback,
+                    playback,
+                    self.sample_rate,
+                    self.domain,
+                )
+            });
+        if let Some(clock) = clock {
+            self.writer.publish_from_callback(clock);
+        } else {
+            self.writer.clear_from_callback();
+        }
+        self.frame_start = self.frame_start.saturating_add(frame_count as u64);
     }
 }
 
@@ -258,24 +310,49 @@ fn build_stream(
     config: StreamConfig,
     render: AudioRenderCallback,
     on_runtime_error: AudioDeviceStatusCallback,
+    clock: CpalFrameClock,
 ) -> Result<Stream, AudioOutputError> {
     let channels = usize::from(config.channels);
     match sample_format {
         SampleFormat::F32 if channels == 2 => {
-            build_native_stereo_stream(device, config, render, on_runtime_error)
+            build_native_stereo_stream(device, config, render, on_runtime_error, clock)
         }
-        SampleFormat::F32 => build_mapped_stream::<f32>(device, config, render, on_runtime_error),
-        SampleFormat::F64 => build_mapped_stream::<f64>(device, config, render, on_runtime_error),
-        SampleFormat::I8 => build_mapped_stream::<i8>(device, config, render, on_runtime_error),
-        SampleFormat::I16 => build_mapped_stream::<i16>(device, config, render, on_runtime_error),
-        SampleFormat::I24 => build_mapped_stream::<I24>(device, config, render, on_runtime_error),
-        SampleFormat::I32 => build_mapped_stream::<i32>(device, config, render, on_runtime_error),
-        SampleFormat::I64 => build_mapped_stream::<i64>(device, config, render, on_runtime_error),
-        SampleFormat::U8 => build_mapped_stream::<u8>(device, config, render, on_runtime_error),
-        SampleFormat::U16 => build_mapped_stream::<u16>(device, config, render, on_runtime_error),
-        SampleFormat::U24 => build_mapped_stream::<U24>(device, config, render, on_runtime_error),
-        SampleFormat::U32 => build_mapped_stream::<u32>(device, config, render, on_runtime_error),
-        SampleFormat::U64 => build_mapped_stream::<u64>(device, config, render, on_runtime_error),
+        SampleFormat::F32 => {
+            build_mapped_stream::<f32>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::F64 => {
+            build_mapped_stream::<f64>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::I8 => {
+            build_mapped_stream::<i8>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::I16 => {
+            build_mapped_stream::<i16>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::I24 => {
+            build_mapped_stream::<I24>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::I32 => {
+            build_mapped_stream::<i32>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::I64 => {
+            build_mapped_stream::<i64>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::U8 => {
+            build_mapped_stream::<u8>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::U16 => {
+            build_mapped_stream::<u16>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::U24 => {
+            build_mapped_stream::<U24>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::U32 => {
+            build_mapped_stream::<u32>(device, config, render, on_runtime_error, clock)
+        }
+        SampleFormat::U64 => {
+            build_mapped_stream::<u64>(device, config, render, on_runtime_error, clock)
+        }
         unsupported => Err(AudioOutputError::new(format!(
             "unsupported default output sample format: {unsupported}"
         ))),
@@ -287,13 +364,15 @@ fn build_native_stereo_stream(
     config: StreamConfig,
     mut render: AudioRenderCallback,
     mut on_runtime_error: AudioDeviceStatusCallback,
+    mut clock: CpalFrameClock,
 ) -> Result<Stream, AudioOutputError> {
     device
         .build_output_stream(
             config,
-            move |device_buffer: &mut [f32], _| {
+            move |device_buffer: &mut [f32], info| {
                 let _callback_scope = CallbackSafetyScope::enter();
                 render(device_buffer);
+                clock.publish_buffer(info.timestamp(), device_buffer.len() / 2);
             },
             move |error| {
                 let _callback_scope = CallbackSafetyScope::enter();
@@ -313,6 +392,7 @@ fn build_mapped_stream<Sample>(
     config: StreamConfig,
     mut render: AudioRenderCallback,
     mut on_runtime_error: AudioDeviceStatusCallback,
+    mut clock: CpalFrameClock,
 ) -> Result<Stream, AudioOutputError>
 where
     Sample: SizedSample + FromSample<f32> + Send + 'static,
@@ -325,7 +405,7 @@ where
     device
         .build_output_stream(
             config,
-            move |device_buffer: &mut [Sample], _| {
+            move |device_buffer: &mut [Sample], info| {
                 let _callback_scope = CallbackSafetyScope::enter();
                 for device_chunk in device_buffer.chunks_mut(device_chunk_samples) {
                     let frame_count = device_chunk.len() / channels;
@@ -334,6 +414,7 @@ where
                     render(render_buffer);
                     map_stereo_samples(render_buffer, device_chunk, channels, silence);
                 }
+                clock.publish_buffer(info.timestamp(), device_buffer.len() / channels);
             },
             move |error| {
                 let _callback_scope = CallbackSafetyScope::enter();
@@ -399,11 +480,71 @@ mod tests {
     use super::{
         bound_sample, canonical_sample_format, choose_output_config, configure_buffer_size,
         map_runtime_error, map_stereo_samples, parse_buffer_frames, CpalAudioOutput,
-        STEREO_SCRATCH_SAMPLES,
+        CpalFrameClock, STEREO_SCRATCH_SAMPLES,
     };
-    use crate::shell::audio_output::{AudioDeviceRuntimeError, AudioOutput, AudioSampleFormat};
-    use cpal::{ErrorKind, SampleFormat, SupportedBufferSize, SupportedStreamConfig};
+    use crate::shell::audio_output::{
+        AudioClockDomain, AudioDeviceRuntimeError, AudioFrameClockBoundary, AudioOutput,
+        AudioSampleFormat,
+    };
+    use cpal::{
+        ErrorKind, OutputStreamTimestamp, SampleFormat, StreamInstant, SupportedBufferSize,
+        SupportedStreamConfig,
+    };
     use std::cell::Cell;
+
+    fn timestamp(callback_micros: u64, playback_micros: u64) -> OutputStreamTimestamp {
+        OutputStreamTimestamp {
+            callback: StreamInstant::from_micros(callback_micros),
+            playback: StreamInstant::from_micros(playback_micros),
+        }
+    }
+
+    #[test]
+    fn frame_clock_counts_whole_device_buffers_across_conversion_chunks() {
+        let (writer, reader) = AudioFrameClockBoundary::create_pair();
+        let mut clock = CpalFrameClock {
+            writer,
+            domain: AudioClockDomain::CoreAudioHost,
+            sample_rate: 48_000,
+            frame_start: 0,
+        };
+        clock.publish_buffer(timestamp(1_000_000, 1_010_000), 128);
+        let first = reader.read_latest_on_control().unwrap();
+        assert_eq!(first.frame_start(), 0);
+        assert_eq!(first.callback_micros(), 1_000_000);
+        assert_eq!(first.playback_micros(), 1_010_000);
+        assert_eq!(first.sample_rate(), 48_000);
+
+        // A large mapped device buffer can require several scratch render calls.
+        // It still has only one backend timestamp, marking its first frame.
+        let large_buffer_frames = STEREO_SCRATCH_SAMPLES / 2 * 3 + 7;
+        clock.publish_buffer(timestamp(1_002_666, 1_012_666), large_buffer_frames);
+        assert_eq!(reader.read_latest_on_control().unwrap().frame_start(), 128);
+        clock.publish_buffer(timestamp(2_000_000, 2_010_000), 256);
+        assert_eq!(
+            reader.read_latest_on_control().unwrap().frame_start(),
+            128 + large_buffer_frames as u64,
+        );
+    }
+
+    #[test]
+    fn invalid_device_timestamp_clears_correlation_without_resetting_frame_count() {
+        let (writer, reader) = AudioFrameClockBoundary::create_pair();
+        let mut clock = CpalFrameClock {
+            writer,
+            domain: AudioClockDomain::CoreAudioHost,
+            sample_rate: 48_000,
+            frame_start: 0,
+        };
+        clock.publish_buffer(timestamp(1_000, 2_000), 128);
+        assert!(reader.read_latest_on_control().is_some());
+        clock.publish_buffer(timestamp(3_000, 2_000), 256);
+        assert_eq!(reader.read_latest_on_control(), None);
+        clock.publish_buffer(timestamp(4_000, 5_000), 128);
+        let recovered = reader.read_latest_on_control().unwrap();
+        assert_eq!(recovered.frame_start(), 384);
+        assert_eq!(recovered.frame_at_midi_timestamp(5_000), Some(384));
+    }
 
     fn config(sample_rate: u32) -> SupportedStreamConfig {
         SupportedStreamConfig::new(

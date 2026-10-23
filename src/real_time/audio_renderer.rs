@@ -1,5 +1,7 @@
-use crate::kernel::midi_message::MidiMessageKind;
+use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
+use crate::mixer::mix_observation::MixObservation;
+use crate::mixer::track_meter::TrackMeter;
 use crate::real_time::audio_boundary::AudioThreadBoundary;
 use crate::real_time::audio_command::AudioCommand;
 use crate::real_time::audio_observation::{CallbackAudioObservation, DiscardAudioObservation};
@@ -8,9 +10,12 @@ use crate::real_time::graph_handoff_status::GraphHandoffStatus;
 use crate::real_time::graph_revision::GraphRevision;
 use crate::real_time::parameter_snapshot::MAX_ACTIVE_PATCHES;
 use crate::real_time::prepared_engine_rack::RackDispatchError;
-use crate::real_time::prepared_graph::PreparedGraph;
+use crate::real_time::prepared_graph::{PreparedGraph, PreviewAudioObservation};
+use crate::real_time::scheduled_event::{ScheduledEvent, ScheduledEventPoll, ScheduledPayload};
 use crate::real_time::structural_graph_boundary::AudioStructuralGraphBoundary;
 use crate::real_time::PatchEffectObservation;
+use crate::real_time::{SendLeaseError, SendLeases};
+use crate::synth::prepared_instrument::{MidiSource, PreparedInstrumentError};
 
 /// Default ordered-command budget per audio block. A producer can
 /// refill an SPSC queue while it is drained, so queue capacity alone does not
@@ -32,13 +37,19 @@ pub struct AudioRenderer<Boundary, Structural, Observation = DiscardAudioObserva
     candidate_parameters: crate::real_time::parameter_snapshot::ParameterSnapshot,
     candidate_pending: bool,
     handoff_status: GraphHandoffStatus,
-    active_notes: ActiveNoteObservation,
+    active_notes: SourceNoteObservation,
+    scheduled_patches: [Option<PatchId>; MAX_ACTIVE_PATCHES],
+    scheduled_epoch: u64,
+    send_leases: SendLeases,
+    pending_scheduled: Option<ScheduledEvent>,
     rendered_blocks: u64,
     rendered_frames: u64,
     max_commands_per_block: usize,
     commands_consumed: u64,
     routing_failures: u64,
     voice_limit_refusals: u64,
+    scheduled_late_events: u64,
+    scheduled_max_lateness_frames: u64,
     last_unknown_patch_id: Option<PatchId>,
 }
 
@@ -77,6 +88,7 @@ where
     ) -> Self {
         let parameters = initial_graph.initial_parameters().clone();
         let handoff_status = GraphHandoffStatus::with_active(initial_graph.revision());
+        let scheduled_epoch = boundary.scheduled_epoch();
         structural.publish_status_on_audio(handoff_status);
         Self {
             boundary,
@@ -88,13 +100,23 @@ where
             candidate_pending: false,
             parameters,
             handoff_status,
-            active_notes: ActiveNoteObservation::new(),
+            active_notes: SourceNoteObservation::new(),
+            scheduled_patches: [None; MAX_ACTIVE_PATCHES],
+            scheduled_epoch,
+            send_leases: SendLeases::new(
+                core::num::NonZeroUsize::new(DEFAULT_AUDIO_COMMANDS_PER_BLOCK)
+                    .expect("positive default budget"),
+            )
+            .expect("send lease storage allocation"),
+            pending_scheduled: None,
             rendered_blocks: 0,
             rendered_frames: 0,
             max_commands_per_block: DEFAULT_AUDIO_COMMANDS_PER_BLOCK,
             commands_consumed: 0,
             routing_failures: 0,
             voice_limit_refusals: 0,
+            scheduled_late_events: 0,
+            scheduled_max_lateness_frames: 0,
             last_unknown_patch_id: None,
         }
     }
@@ -105,6 +127,15 @@ where
     pub fn with_command_budget(mut self, commands: core::num::NonZeroUsize) -> Self {
         self.max_commands_per_block = commands.get();
         self
+    }
+
+    /// Configures overlap admission before starting the device. Storage never grows in render.
+    pub fn with_send_lease_capacity(
+        mut self,
+        capacity: core::num::NonZeroUsize,
+    ) -> Result<Self, SendLeaseError> {
+        self.send_leases = SendLeases::new(capacity)?;
+        Ok(self)
     }
 
     /// Applies structural ownership only at block start, drains ready commands,
@@ -124,7 +155,29 @@ where
 
     fn render_bounded_block(&mut self, interleaved_stereo: &mut [f32]) {
         self.apply_structural_handoff();
+        self.select_latest_parameters();
+        let epoch = self.boundary.scheduled_epoch();
+        if epoch != self.scheduled_epoch {
+            self.release_scheduled_notes();
+            self.scheduled_epoch = epoch;
+        }
+        let remaining_commands = self.drain_immediate_commands();
+        let frame_count = interleaved_stereo.len() / 2;
+        if frame_count == 0 {
+            return;
+        }
+        let mut observation = None;
+        if !self.render_scheduled_block(interleaved_stereo, remaining_commands, &mut observation) {
+            interleaved_stereo.fill(0.0);
+            self.publish_failed_block(frame_count);
+            return;
+        }
+        if let Some(observation) = observation {
+            self.publish_rendered_block(observation);
+        }
+    }
 
+    fn select_latest_parameters(&mut self) {
         // Select the newest compatible complete projection before command
         // delivery so note-on/note-off latching observes this generation.
         self.candidate_pending |= self
@@ -145,75 +198,63 @@ where
             self.handoff_status.record_incompatible_snapshot();
         }
         self.structural.publish_status_on_audio(self.handoff_status);
+    }
 
-        for _ in 0..self.max_commands_per_block {
+    fn drain_immediate_commands(&mut self) -> usize {
+        let mut remaining = self.max_commands_per_block;
+        while remaining > 0 {
             let Some(command) = self.boundary.pop_command() else {
                 break;
             };
+            remaining -= 1;
             self.commands_consumed = self.commands_consumed.saturating_add(1);
             match command {
                 AudioCommand::PatchMidi { patch_id, message } => {
-                    let matching_parameters = self.parameters.patch(patch_id);
-                    // Voice-limit enforcement, ahead of dispatch.
-                    //
-                    // One fixed integer comparison between the Patch's
-                    // snapshot-carried limit and the note count the active-note
-                    // observer already maintains: no scan that grows with
-                    // polyphony, no allocation, no branch on capability. A Patch
-                    // already sounding its limit does not start the note — the
-                    // instrument is never told, and no note bit is set. Nothing
-                    // is stolen, truncated, or ended: ending a latched voice
-                    // here is exactly the destruction the callback contract
-                    // forbids, so the arriving note is refused instead.
-                    //
-                    // Only a sounding note-on is subject to this. Note-off,
-                    // all-notes-off, and every other message fall straight
-                    // through, because a limit that could swallow a note-off
-                    // would strand a latched voice. An identity the snapshot
-                    // does not carry is not tested here at all, so the routing
-                    // failure below stays the one report for it.
-                    if matches!(
-                        message.kind(),
-                        MidiMessageKind::NoteOn | MidiMessageKind::NoteOff
-                    ) && !self
+                    self.dispatch_patch_midi(MidiSource::Immediate, patch_id, message);
+                }
+                AudioCommand::InitializedVoice {
+                    source,
+                    patch_id,
+                    voice,
+                    initial,
+                } => {
+                    self.dispatch_initialized_voice(source, patch_id, voice, initial);
+                }
+                AudioCommand::VoiceMidi {
+                    source,
+                    patch_id,
+                    voice,
+                    scope,
+                    message,
+                } => {
+                    self.dispatch_scoped_voice_midi(source, Some(voice), scope, patch_id, message);
+                }
+                AudioCommand::OwnedMidi {
+                    source,
+                    patch_id,
+                    message,
+                } => {
+                    self.dispatch_patch_midi(source, patch_id, message);
+                }
+                AudioCommand::ReleaseSource { source, patch_id } => {
+                    if self
                         .active_graph
                         .callback_parts_mut()
                         .0
-                        .accepts_note(patch_id, message.data1())
+                        .all_notes_off_for_source(source, patch_id)
+                        .is_ok()
                     {
-                        continue;
-                    }
-                    if let Some(parameters) = matching_parameters {
-                        if starts_a_note(message)
-                            && self.active_notes.count_patch(patch_id)
-                                >= parameters.voice_limit().active_note_ceiling()
-                        {
-                            self.voice_limit_refusals = self.voice_limit_refusals.saturating_add(1);
-                            continue;
-                        }
-                    }
-                    let dispatch_result = matching_parameters.map(|parameters| {
-                        let (rack, _, _) = self.active_graph.callback_parts_mut();
-                        rack.dispatch(patch_id, message, parameters)
-                    });
-                    match dispatch_result {
-                        Some(Ok(())) => {
-                            self.active_notes.observe_patch_message(patch_id, message);
-                        }
-                        None | Some(Err(RackDispatchError::UnknownPatch { .. })) => {
-                            self.routing_failures = self.routing_failures.saturating_add(1);
-                            self.last_unknown_patch_id = Some(patch_id);
-                        }
-                        Some(Err(
-                            RackDispatchError::Instrument { .. }
-                            | RackDispatchError::ParameterLayoutMismatch { .. },
-                        )) => {}
+                        self.active_notes.clear_source_patch(source, patch_id);
+                    } else {
+                        self.routing_failures = self.routing_failures.saturating_add(1);
                     }
                 }
+                AudioCommand::ReleaseImmediateNotes => self.release_immediate_notes(),
                 AudioCommand::AllNotesOff => {
-                    let (rack, _, _) = self.active_graph.callback_parts_mut();
-                    rack.all_notes_off();
+                    self.active_graph.callback_parts_mut().0.all_notes_off();
                     self.active_notes.clear_all();
+                    self.scheduled_patches.fill(None);
+                    self.send_leases.clear();
                 }
                 AudioCommand::PreviewStart {
                     patch_id,
@@ -233,87 +274,419 @@ where
                 }
             }
         }
+        remaining
+    }
 
-        let frame_count = interleaved_stereo.len() / 2;
-        if frame_count == 0 {
-            return;
+    /// Both delivery lanes share the exact same admission and routing rules.
+    fn dispatch_patch_midi(
+        &mut self,
+        source: MidiSource,
+        patch_id: PatchId,
+        message: MidiMessage,
+    ) -> bool {
+        self.dispatch_voice_midi(source, None, patch_id, message)
+    }
+    fn dispatch_voice_midi(
+        &mut self,
+        source: MidiSource,
+        voice: Option<crate::synth::MidiVoiceId>,
+        patch_id: PatchId,
+        message: MidiMessage,
+    ) -> bool {
+        self.dispatch_scoped_voice_midi(
+            source,
+            voice,
+            crate::synth::MidiExpressionScope::Member,
+            patch_id,
+            message,
+        )
+    }
+    fn dispatch_scoped_voice_midi(
+        &mut self,
+        source: MidiSource,
+        voice: Option<crate::synth::MidiVoiceId>,
+        scope: crate::synth::MidiExpressionScope,
+        patch_id: PatchId,
+        message: MidiMessage,
+    ) -> bool {
+        self.dispatch_owned_delivery(source, voice, scope, patch_id, message, None)
+    }
+    fn dispatch_initialized_voice(
+        &mut self,
+        source: MidiSource,
+        patch_id: PatchId,
+        voice: crate::synth::MidiVoiceId,
+        initial: crate::synth::OwnedVoiceInitialization,
+    ) -> bool {
+        self.dispatch_owned_delivery(
+            source,
+            Some(voice),
+            crate::synth::MidiExpressionScope::Member,
+            patch_id,
+            initial.message(),
+            Some(initial),
+        )
+    }
+    fn dispatch_owned_delivery(
+        &mut self,
+        source: MidiSource,
+        voice: Option<crate::synth::MidiVoiceId>,
+        scope: crate::synth::MidiExpressionScope,
+        patch_id: PatchId,
+        message: MidiMessage,
+        initial: Option<crate::synth::OwnedVoiceInitialization>,
+    ) -> bool {
+        let matching_parameters = self.parameters.patch(patch_id);
+        if matches!(
+            message.kind(),
+            MidiMessageKind::NoteOn | MidiMessageKind::NoteOff
+        ) && !self
+            .active_graph
+            .callback_parts_mut()
+            .0
+            .accepts_note(patch_id, message.data1())
+        {
+            return false;
         }
+        // A zero-velocity note-on is a release and must never be refused by
+        // note admission. Refusing a new voice never steals an existing one.
+        if let Some(parameters) = matching_parameters {
+            if starts_a_note(message)
+                && self.observed_note_count(patch_id)
+                    >= parameters.voice_limit().active_note_ceiling()
+            {
+                self.voice_limit_refusals = self.voice_limit_refusals.saturating_add(1);
+                return false;
+            }
+        }
+        let result = matching_parameters.map(|parameters| {
+            let rack = self.active_graph.callback_parts_mut().0;
+            match (voice, initial) {
+                (Some(voice), Some(initial)) => rack
+                    .dispatch_initialized_voice_from(source, voice, patch_id, initial, parameters),
+                _ => rack.dispatch_scoped_voice_from(
+                    source, voice, scope, patch_id, message, parameters,
+                ),
+            }
+        });
+        match result {
+            Some(Ok(())) => {
+                self.active_notes
+                    .observe_patch_message(source, patch_id, message);
+                if source == MidiSource::Scheduled {
+                    self.mark_scheduled_patch(patch_id);
+                }
+                true
+            }
+            None | Some(Err(RackDispatchError::UnknownPatch { .. })) => {
+                self.routing_failures = self.routing_failures.saturating_add(1);
+                self.last_unknown_patch_id = Some(patch_id);
+                false
+            }
+            Some(Err(RackDispatchError::Instrument {
+                source: PreparedInstrumentError::UnsupportedMidiSource { .. },
+                ..
+            })) => {
+                self.routing_failures = self.routing_failures.saturating_add(1);
+                false
+            }
+            Some(Err(
+                RackDispatchError::Instrument { .. }
+                | RackDispatchError::ParameterLayoutMismatch { .. },
+            )) => {
+                self.routing_failures = self.routing_failures.saturating_add(1);
+                false
+            }
+        }
+    }
 
+    fn observed_note_count(&self, patch_id: PatchId) -> u32 {
+        self.active_graph
+            .engine_rack()
+            .active_note_count(patch_id)
+            .unwrap_or_else(|| self.active_notes.count_patch(patch_id))
+    }
+    fn observed_note_total(&self) -> u32 {
+        self.parameters
+            .patches()
+            .iter()
+            .filter_map(|p| p.patch_id())
+            .map(|id| self.observed_note_count(id))
+            .fold(0, u32::saturating_add)
+    }
+    fn render_scheduled_block(
+        &mut self,
+        output: &mut [f32],
+        command_budget: usize,
+        observation: &mut Option<RenderedSegment>,
+    ) -> bool {
+        let end_frame = self
+            .rendered_frames
+            .saturating_add((output.len() / 2) as u64);
+        let mut rendered_samples = 0;
+        for _ in 0..command_budget {
+            let polled = self.pending_scheduled.take().map_or_else(
+                || self.boundary.poll_scheduled_before(end_frame),
+                ScheduledEventPoll::Ready,
+            );
+            let event = match polled {
+                ScheduledEventPoll::Empty | ScheduledEventPoll::Future { .. } => break,
+                ScheduledEventPoll::Stale => {
+                    self.commands_consumed = self.commands_consumed.saturating_add(1);
+                    continue;
+                }
+                ScheduledEventPoll::Ready(event) => event,
+            };
+            // If cancellation races a block, preserve a newly admitted event
+            // until the next block performs old-epoch note cleanup.
+            let epoch = self.boundary.scheduled_epoch();
+            if epoch != self.scheduled_epoch && event.epoch() == epoch {
+                self.pending_scheduled = Some(event);
+                break;
+            }
+            self.commands_consumed = self.commands_consumed.saturating_add(1);
+            if event.epoch() != self.scheduled_epoch || event.epoch() != epoch {
+                continue;
+            }
+            if event.graph_revision() != self.active_graph.revision() {
+                self.routing_failures = self.routing_failures.saturating_add(1);
+                continue;
+            }
+            let offset = event
+                .absolute_frame()
+                .saturating_sub(self.rendered_frames)
+                .min((output.len() / 2) as u64) as usize
+                * 2;
+            let offset = offset.max(rendered_samples);
+            if !self.append_rendered_segment(
+                &mut output[rendered_samples..offset],
+                self.rendered_frames + (rendered_samples / 2) as u64,
+                observation,
+            ) {
+                return false;
+            }
+            rendered_samples = offset;
+            let delivered_frame = self.rendered_frames.saturating_add((offset / 2) as u64);
+            let lateness = delivered_frame.saturating_sub(event.absolute_frame());
+            if lateness > 0 {
+                self.scheduled_late_events = self.scheduled_late_events.saturating_add(1);
+                self.scheduled_max_lateness_frames =
+                    self.scheduled_max_lateness_frames.max(lateness);
+            }
+            match event.payload() {
+                ScheduledPayload::InitializedVoice { voice, initial } => {
+                    self.dispatch_initialized_voice(
+                        MidiSource::Scheduled,
+                        event.patch_id(),
+                        voice,
+                        initial,
+                    );
+                }
+                ScheduledPayload::Midi {
+                    message,
+                    voice,
+                    scope,
+                } => {
+                    self.dispatch_scoped_voice_midi(
+                        MidiSource::Scheduled,
+                        voice,
+                        scope,
+                        event.patch_id(),
+                        message,
+                    );
+                }
+                ScheduledPayload::EndSendLease(id) => {
+                    self.send_leases.end(event.patch_id(), id);
+                }
+                ScheduledPayload::SendLease(lease) => {
+                    let target = self
+                        .parameters
+                        .patches()
+                        .iter()
+                        .find(|p| p.patch_id() == Some(event.patch_id()));
+                    let at = self.rendered_frames + (offset / 2) as u64;
+                    if target.is_none_or(|p| lease.bus().index() >= p.sends().len())
+                        || self.send_leases.begin(event.patch_id(), lease, at).is_err()
+                    {
+                        self.routing_failures = self.routing_failures.saturating_add(1);
+                    }
+                }
+            }
+        }
+        self.append_rendered_segment(
+            &mut output[rendered_samples..],
+            self.rendered_frames + (rendered_samples / 2) as u64,
+            observation,
+        )
+    }
+
+    fn append_rendered_segment(
+        &mut self,
+        output: &mut [f32],
+        mut at: u64,
+        observation: &mut Option<RenderedSegment>,
+    ) -> bool {
+        let mut offset = 0;
+        // Every extra segment expires at least one admitted lease. Cleanup is
+        // independent of the incoming command budget and cannot be starved.
+        while offset < output.len() {
+            self.send_leases.expire(at);
+            let remaining = (output.len() - offset) / 2;
+            let frames = self.send_leases.next_expiry().map_or(remaining, |end| {
+                remaining.min(usize::try_from(end.saturating_sub(at)).unwrap_or(usize::MAX))
+            });
+            if frames == 0 {
+                return false;
+            }
+            let end = offset + frames * 2;
+            let Some(segment) = self.render_segment(&mut output[offset..end]) else {
+                return false;
+            };
+            match observation {
+                Some(previous) => previous.append(segment),
+                None => *observation = Some(segment),
+            }
+            offset = end;
+            at = at.saturating_add(frames as u64);
+        }
+        self.send_leases.expire(at);
+        true
+    }
+
+    fn render_segment(&mut self, output: &mut [f32]) -> Option<RenderedSegment> {
+        let frame_count = output.len() / 2;
         let parameters = &self.parameters;
         let mut effect_observations = [PatchEffectObservation::EMPTY; MAX_ACTIVE_PATCHES];
         {
             let (rack, patch_audio, _) = self.active_graph.callback_parts_mut();
-            if patch_audio.begin_render(parameters, frame_count).is_err() {
-                return;
-            }
-            if rack.render(patch_audio, parameters).is_err() {
-                interleaved_stereo.fill(0.0);
-                self.publish_failed_block(frame_count);
-                return;
-            }
+            patch_audio.begin_render(parameters, frame_count).ok()?;
+            rack.render(patch_audio, parameters).ok()?;
         }
-        let preview_observation = self.active_graph.render_audition(frame_count);
-        let (primary_patch_id, primary_patch_rms, patch_effect, mix) = {
-            let (_, effect_rack, patch_audio, mixer) =
-                self.active_graph.callback_parts_with_effects_mut();
-            if effect_rack
-                .process(patch_audio, parameters, &mut effect_observations)
-                .is_err()
-            {
-                interleaved_stereo.fill(0.0);
-                self.publish_failed_block(frame_count);
-                return;
-            }
-            let primary = patch_audio.stems().first();
-            let primary_patch_id = primary.and_then(|stem| stem.patch_id());
-            let primary_patch_rms = primary.map_or(0.0, |stem| {
-                let samples = stem.samples();
-                if samples.is_empty() {
-                    0.0
-                } else {
-                    let energy = samples.iter().fold(0.0_f64, |sum, sample| {
-                        sum + f64::from(*sample) * f64::from(*sample)
-                    });
-                    (energy / samples.len() as f64).sqrt() as f32
-                }
+        let preview = self.active_graph.render_audition(frame_count);
+        let (_, effect_rack, patch_audio, mixer) =
+            self.active_graph.callback_parts_with_effects_mut();
+        effect_rack
+            .process(patch_audio, parameters, &mut effect_observations)
+            .ok()?;
+        let primary = patch_audio.stems().first();
+        let primary_patch_id = primary.and_then(|stem| stem.patch_id());
+        let primary_patch_rms = primary.map_or(0.0, |stem| {
+            let samples = stem.samples();
+            let energy = samples.iter().fold(0.0_f64, |sum, sample| {
+                sum + f64::from(*sample) * f64::from(*sample)
             });
-            let patch_effect = effect_observations
-                .iter()
-                .copied()
-                .find(|observation| observation.patch_id().is_some())
-                .unwrap_or(PatchEffectObservation::EMPTY);
-            (
-                primary_patch_id,
-                primary_patch_rms,
-                patch_effect,
-                mixer.mix(patch_audio, parameters, interleaved_stereo),
-            )
-        };
+            (energy / samples.len().max(1) as f64).sqrt() as f32
+        });
+        let patch_effect = effect_observations
+            .iter()
+            .copied()
+            .find(|value| value.patch_id().is_some())
+            .unwrap_or(PatchEffectObservation::EMPTY);
+        Some(RenderedSegment {
+            frames: frame_count,
+            primary_patch_id,
+            primary_patch_rms,
+            patch_effect,
+            mix: mixer.mix_with_send_leases(
+                patch_audio,
+                parameters,
+                output,
+                Some(&self.send_leases),
+            ),
+            preview,
+        })
+    }
 
+    fn publish_rendered_block(&mut self, observation: RenderedSegment) {
         self.rendered_blocks = self.rendered_blocks.saturating_add(1);
-        self.rendered_frames = self.rendered_frames.saturating_add(frame_count as u64);
-        let primary_active_notes =
-            primary_patch_id.map_or(0, |patch_id| self.active_notes.count_patch(patch_id));
+        self.rendered_frames = self
+            .rendered_frames
+            .saturating_add(observation.frames as u64);
+        let primary_active_notes = observation
+            .primary_patch_id
+            .map_or(0, |patch_id| self.observed_note_count(patch_id));
         self.observation.publish_from_callback(
             AudioObservationSnapshot::from_mix_with_graph_routing_primary_and_effect(
                 self.rendered_blocks,
                 self.rendered_blocks,
                 self.rendered_frames,
-                parameters.generation(),
+                self.parameters.generation(),
                 self.active_graph.revision(),
                 self.commands_consumed,
-                self.active_notes.count(),
+                self.observed_note_total(),
                 self.routing_failures,
                 self.last_unknown_patch_id,
-                primary_patch_id,
-                primary_patch_rms,
+                observation.primary_patch_id,
+                observation.primary_patch_rms,
                 primary_active_notes,
-                patch_effect,
-                mix,
+                observation.patch_effect,
+                observation.mix,
             )
             .with_voice_limit_refusals(self.voice_limit_refusals)
-            .with_preview_observation(preview_observation),
+            .with_schedule_metrics(
+                self.scheduled_late_events,
+                self.scheduled_max_lateness_frames,
+                self.boundary.scheduled_queue_high_water(),
+            )
+            .with_preview_observation(observation.preview),
         );
+    }
+
+    fn mark_scheduled_patch(&mut self, patch_id: PatchId) {
+        if self.scheduled_patches.contains(&Some(patch_id)) {
+            return;
+        }
+        if let Some(slot) = self
+            .scheduled_patches
+            .iter_mut()
+            .find(|slot| slot.is_none())
+        {
+            *slot = Some(patch_id);
+        }
+    }
+
+    /// Physical input loss must not invalidate the host's queued owned expression.
+    fn release_immediate_notes(&mut self) {
+        for patch in self.parameters.patches() {
+            let Some(patch_id) = patch.patch_id() else {
+                continue;
+            };
+            if self
+                .active_graph
+                .callback_parts_mut()
+                .0
+                .all_notes_off_for_source(MidiSource::Immediate, patch_id)
+                .is_ok()
+            {
+                self.active_notes
+                    .clear_source_patch(MidiSource::Immediate, patch_id);
+            } else {
+                self.routing_failures = self.routing_failures.saturating_add(1);
+            }
+        }
+    }
+
+    /// Source-aware cleanup reaches held and sustained voices directly. Only
+    /// touched Patches are visited; unrelated legacy instruments never receive
+    /// an unsupported source operation. Prepared voice capacity bounds the work.
+    fn release_scheduled_notes(&mut self) {
+        self.send_leases.clear();
+        for index in 0..MAX_ACTIVE_PATCHES {
+            let Some(patch_id) = self.scheduled_patches[index].take() else {
+                continue;
+            };
+            let result = self
+                .active_graph
+                .callback_parts_mut()
+                .0
+                .all_notes_off_for_source(MidiSource::Scheduled, patch_id);
+            match result {
+                Ok(()) => self
+                    .active_notes
+                    .clear_source_patch(MidiSource::Scheduled, patch_id),
+                Err(_) => self.routing_failures = self.routing_failures.saturating_add(1),
+            }
+        }
     }
 
     fn publish_failed_block(&mut self, frame_count: usize) {
@@ -328,12 +701,17 @@ where
                 self.parameters.generation(),
                 self.active_graph.revision(),
                 self.commands_consumed,
-                self.active_notes.count(),
+                self.observed_note_total(),
                 self.routing_failures,
                 self.last_unknown_patch_id,
                 crate::mixer::mix_observation::MixObservation::default(),
             )
-            .with_voice_limit_refusals(self.voice_limit_refusals),
+            .with_voice_limit_refusals(self.voice_limit_refusals)
+            .with_schedule_metrics(
+                self.scheduled_late_events,
+                self.scheduled_max_lateness_frames,
+                self.boundary.scheduled_queue_high_water(),
+            ),
         );
     }
 
@@ -388,6 +766,9 @@ where
         };
 
         let replacement_revision = replacement.revision();
+        // Old-revision note-offs will not be delivered into the new graph.
+        // Release their owned notes before any live instances carry over.
+        self.release_scheduled_notes();
         replacement.exchange_initial_parameters_on_audio(&mut self.parameters);
         // Voice carry-over: before the graphs exchange, move every
         // still-live prepared instance the declared delta leaves unchanged
@@ -432,43 +813,177 @@ where
     }
 }
 
+/// Segment measurements combine into one device-block observation. Peaks use
+/// maxima; RMS values combine by frame-weighted energy, never by averaging RMS.
+struct RenderedSegment {
+    frames: usize,
+    primary_patch_id: Option<PatchId>,
+    primary_patch_rms: f32,
+    patch_effect: PatchEffectObservation,
+    mix: MixObservation,
+    preview: PreviewAudioObservation,
+}
+
+impl RenderedSegment {
+    fn append(&mut self, next: Self) {
+        let weighted = |first, second| weighted_rms(first, self.frames, second, next.frames);
+        self.primary_patch_rms = weighted(self.primary_patch_rms, next.primary_patch_rms);
+        self.patch_effect = PatchEffectObservation::from_parts(
+            self.patch_effect.patch_id(),
+            weighted(self.patch_effect.input_rms(), next.patch_effect.input_rms()),
+            weighted(
+                self.patch_effect.output_rms(),
+                next.patch_effect.output_rms(),
+            ),
+            weighted(
+                self.patch_effect.difference_rms(),
+                next.patch_effect.difference_rms(),
+            ),
+            weighted(self.patch_effect.side_rms(), next.patch_effect.side_rms()),
+        );
+        self.mix = merge_mix_observations(self.mix, self.frames, next.mix, next.frames);
+        self.preview = next.preview;
+        self.frames += next.frames;
+    }
+}
+
+fn weighted_rms(first: f32, first_frames: usize, second: f32, second_frames: usize) -> f32 {
+    let first_energy = f64::from(first).powi(2) * first_frames as f64;
+    let second_energy = f64::from(second).powi(2) * second_frames as f64;
+    ((first_energy + second_energy) / (first_frames + second_frames) as f64).sqrt() as f32
+}
+
+fn merge_mix_observations(
+    first: MixObservation,
+    first_frames: usize,
+    second: MixObservation,
+    second_frames: usize,
+) -> MixObservation {
+    let weighted = |a, b| weighted_rms(a, first_frames, b, second_frames);
+    let first_tracks = first.tracks();
+    let second_tracks = second.tracks();
+    let tracks = std::array::from_fn(|index| {
+        let a = first_tracks[index];
+        let b = second_tracks[index];
+        TrackMeter::new(
+            a.left_peak().max(b.left_peak()),
+            a.right_peak().max(b.right_peak()),
+            weighted(a.rms(), b.rms()),
+        )
+        .unwrap_or_default()
+    });
+    let first_inputs = first.bus_input_rms_all();
+    let second_inputs = second.bus_input_rms_all();
+    let inputs = std::array::from_fn(|index| weighted(first_inputs[index], second_inputs[index]));
+    let first_outputs = first.bus_output_rms_all();
+    let second_outputs = second.bus_output_rms_all();
+    let outputs =
+        std::array::from_fn(|index| weighted(first_outputs[index], second_outputs[index]));
+    MixObservation::measured(
+        tracks,
+        first.left_peak().max(second.left_peak()),
+        first.right_peak().max(second.right_peak()),
+        weighted(first.output_rms(), second.output_rms()),
+        inputs,
+        outputs,
+        weighted(first.wet_output_rms(), second.wet_output_rms()),
+        first
+            .non_finite_samples()
+            .saturating_add(second.non_finite_samples()),
+        first
+            .clipped_samples()
+            .saturating_add(second.clipped_samples()),
+    )
+}
+
+/// Active note observations and admission count each transport lane separately,
+/// so a scheduled release of a shared pitch cannot clear a live note's bit.
+struct SourceNoteObservation {
+    sources: [ActiveNoteObservation; MidiSource::COUNT],
+}
+
+impl SourceNoteObservation {
+    const fn new() -> Self {
+        Self {
+            sources: [const { ActiveNoteObservation::new() }; MidiSource::COUNT],
+        }
+    }
+
+    fn observe_patch_message(
+        &mut self,
+        source: MidiSource,
+        patch_id: PatchId,
+        message: MidiMessage,
+    ) {
+        self.sources[source.index()].observe_patch_message(patch_id, message);
+    }
+
+    fn clear_all(&mut self) {
+        for source in &mut self.sources {
+            source.clear_all();
+        }
+    }
+
+    fn clear_patch(&mut self, patch_id: PatchId) {
+        for source in &mut self.sources {
+            source.clear_patch(patch_id);
+        }
+    }
+
+    fn clear_source_patch(&mut self, source: MidiSource, patch_id: PatchId) {
+        self.sources[source.index()].clear_patch(patch_id);
+    }
+
+    #[cfg(test)]
+    fn count(&self) -> u32 {
+        self.sources
+            .iter()
+            .fold(0, |sum: u32, source| sum.saturating_add(source.count()))
+    }
+
+    fn count_patch(&self, patch_id: PatchId) -> u32 {
+        self.sources.iter().fold(0, |sum: u32, source| {
+            sum.saturating_add(source.count_patch(patch_id))
+        })
+    }
+}
+
 #[derive(Clone, Copy)]
 struct PatchNoteBits {
     patch_id: Option<PatchId>,
-    low: u64,
-    high: u64,
+    low: [u64; 16],
+    high: [u64; 16],
 }
 
 impl PatchNoteBits {
     const EMPTY: Self = Self {
         patch_id: None,
-        low: 0,
-        high: 0,
+        low: [0; 16],
+        high: [0; 16],
     };
 
-    fn set(&mut self, note: u8) {
+    fn set(&mut self, channel: usize, note: u8) {
         if note < 64 {
-            self.low |= 1_u64 << note;
+            self.low[channel] |= 1_u64 << note;
         } else {
-            self.high |= 1_u64 << (note - 64);
+            self.high[channel] |= 1_u64 << (note - 64);
         }
     }
 
-    fn clear(&mut self, note: u8) {
+    fn clear(&mut self, channel: usize, note: u8) {
         if note < 64 {
-            self.low &= !(1_u64 << note);
+            self.low[channel] &= !(1_u64 << note);
         } else {
-            self.high &= !(1_u64 << (note - 64));
+            self.high[channel] &= !(1_u64 << (note - 64));
         }
-    }
-
-    fn clear_all(&mut self) {
-        self.low = 0;
-        self.high = 0;
     }
 
     fn count(self) -> u32 {
-        self.low.count_ones().saturating_add(self.high.count_ones())
+        self.low
+            .iter()
+            .chain(&self.high)
+            .map(|bits| bits.count_ones())
+            .sum()
     }
 }
 
@@ -488,9 +1003,14 @@ impl ActiveNoteObservation {
         patch_id: PatchId,
         message: crate::kernel::midi_message::MidiMessage,
     ) {
-        if message.kind() == MidiMessageKind::AllNotesOff {
+        if message.kind() == MidiMessageKind::AllNotesOff
+            || (message.kind() == MidiMessageKind::ControlChange
+                && matches!(message.data1(), 120 | 123))
+        {
             if let Some(patch) = self.patch_mut(patch_id, false) {
-                patch.clear_all();
+                let channel = usize::from(message.channel().value());
+                patch.low[channel] = 0;
+                patch.high[channel] = 0;
             }
             return;
         }
@@ -499,17 +1019,21 @@ impl ActiveNoteObservation {
         match message.kind() {
             MidiMessageKind::NoteOn if message.data2() > 0 => {
                 if let Some(patch) = self.patch_mut(patch_id, true) {
-                    patch.set(note);
+                    patch.set(usize::from(message.channel().value()), note);
                 }
             }
             MidiMessageKind::NoteOn | MidiMessageKind::NoteOff => {
                 if let Some(patch) = self.patch_mut(patch_id, false) {
-                    patch.clear(note);
+                    patch.clear(usize::from(message.channel().value()), note);
+                    if patch.count() == 0 {
+                        *patch = PatchNoteBits::EMPTY;
+                    }
                 }
             }
             MidiMessageKind::ControlChange
             | MidiMessageKind::ProgramChange
             | MidiMessageKind::ChannelPressure
+            | MidiMessageKind::PolyPressure
             | MidiMessageKind::PitchBend
             | MidiMessageKind::AllNotesOff => {}
         }
@@ -535,19 +1059,18 @@ impl ActiveNoteObservation {
     }
 
     fn clear_all(&mut self) {
-        for patch in &mut self.patches {
-            patch.clear_all();
-        }
+        self.patches.fill(PatchNoteBits::EMPTY);
     }
 
     /// Clears only one Patch's observed notes with bounded work — the
     /// carry-over swap path uses this when exactly one engine restarted.
     fn clear_patch(&mut self, patch_id: PatchId) {
         if let Some(patch) = self.patch_mut(patch_id, false) {
-            patch.clear_all();
+            *patch = PatchNoteBits::EMPTY;
         }
     }
 
+    #[cfg(test)]
     fn count(&self) -> u32 {
         self.patches
             .iter()
@@ -564,7 +1087,7 @@ impl ActiveNoteObservation {
 
 #[cfg(test)]
 mod tests {
-    use super::{ActiveNoteObservation, AudioRenderer};
+    use super::{ActiveNoteObservation, AudioRenderer, SourceNoteObservation};
     use crate::adapter::braids_capability::BRAIDS_CAPABILITY_ID;
     use crate::adapter::hidef_soundfont_capability::{
         HiDefSoundFontCapability, HIDEF_CAPABILITY_ID,
@@ -599,6 +1122,7 @@ mod tests {
     use crate::synth::capability_id::CapabilityId;
     use crate::synth::instrument_preparer::{InstrumentPreparationError, InstrumentPreparer};
     use crate::synth::patch::Patch;
+    use crate::synth::prepared_instrument::MidiSource;
     use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
     use crate::synth::sound_font_instrument::SoundFontInstrument;
     use crate::synth::{DescriptorDefaultConfigFactory, PreparedAudition};
@@ -1785,6 +2309,52 @@ mod tests {
         notes.observe_patch_message(patch, midi(MidiMessageKind::NoteOn));
         notes.observe_patch_message(patch, midi(MidiMessageKind::AllNotesOff));
         assert_eq!(notes.count(), 0);
+    }
+
+    #[test]
+    fn source_observations_count_shared_pitches_and_recycle_graph_identities() {
+        let mut notes = SourceNoteObservation::new();
+        let patch = PatchId::new(3).unwrap();
+        for source in [MidiSource::Immediate, MidiSource::Scheduled] {
+            notes.observe_patch_message(source, patch, midi(MidiMessageKind::NoteOn));
+        }
+        assert_eq!(notes.count_patch(patch), 2);
+        notes.observe_patch_message(MidiSource::Scheduled, patch, midi(MidiMessageKind::NoteOff));
+        assert_eq!(notes.count_patch(patch), 1);
+        notes.clear_source_patch(MidiSource::Scheduled, patch);
+        assert_eq!(notes.count(), 1);
+        notes.clear_all();
+        for id in 1..=(MAX_ACTIVE_PATCHES as u32 * 2) {
+            let patch = PatchId::new(id).unwrap();
+            notes.observe_patch_message(
+                MidiSource::Scheduled,
+                patch,
+                midi(MidiMessageKind::NoteOn),
+            );
+            assert_eq!(notes.count(), 1);
+            notes.clear_source_patch(MidiSource::Scheduled, patch);
+        }
+        assert_eq!(notes.count(), 0);
+    }
+
+    #[test]
+    fn unsupported_scheduled_source_reports_failure_without_dispatch_or_allocation() {
+        let fixture = Fixture::new();
+        let patch = fixture.patches[0].id();
+        let boundary = fixture.boundary(fixture.parameters(1, 1), &[]);
+        let mut renderer = AudioRenderer::new(boundary, TestStructural::new(), fixture.graph(1, 1));
+        begin_memory_count();
+        let accepted = renderer.dispatch_patch_midi(
+            MidiSource::Scheduled,
+            patch,
+            midi(MidiMessageKind::NoteOn),
+        );
+        let memory = finish_memory_count();
+        assert!(!accepted);
+        assert_eq!(memory, (0, 0));
+        assert_eq!(renderer.routing_failures, 1);
+        assert_eq!(renderer.active_notes.count(), 0);
+        assert_eq!(fixture.first_dispatches.load(Ordering::Relaxed), 0);
     }
 
     #[test]

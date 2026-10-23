@@ -6,6 +6,7 @@ use crate::kernel::midi_message::MidiMessage;
 use crate::kernel::midi_message::MidiMessageKind;
 use crate::kernel::patch_id::PatchId;
 use crate::real_time::parameter_snapshot::RtPatchParameters;
+use crate::synth::prepared_instrument::MidiSource;
 use crate::synth::{
     prepare_sample_pcm, AssetFileId, AssetReference, CapabilityId, InstrumentConfig,
     InstrumentPreparationError, InstrumentPreparer, ParameterId, Patch, PreparedAssetFootprint,
@@ -271,6 +272,27 @@ impl PreparedInstrument for UpstreamSampleInstrument {
     ) -> Result<(), PreparedInstrumentError> {
         self.inner.dispatch(message, params)
     }
+    fn active_note_count(&self) -> Option<u32> {
+        self.inner.active_note_count()
+    }
+    fn dispatch_voice_from(
+        &mut self,
+        source: MidiSource,
+        voice: Option<crate::synth::MidiVoiceId>,
+        message: MidiMessage,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        self.inner
+            .dispatch_voice_from(source, voice, message, params)
+    }
+    fn dispatch_from(
+        &mut self,
+        source: MidiSource,
+        message: MidiMessage,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        self.inner.dispatch_from(source, message, params)
+    }
     fn render(
         &mut self,
         audio: &mut [f32],
@@ -282,6 +304,9 @@ impl PreparedInstrument for UpstreamSampleInstrument {
     }
     fn all_notes_off(&mut self) {
         self.inner.all_notes_off()
+    }
+    fn all_notes_off_from(&mut self, source: MidiSource) -> Result<(), PreparedInstrumentError> {
+        self.inner.all_notes_off_from(source)
     }
     fn prepared_asset_footprint(&self) -> Option<&PreparedAssetFootprint> {
         Some(&self.footprint)
@@ -678,9 +703,11 @@ impl PreparedInstrument for PreparedSampleInstrument {
                 self.clear_all();
                 Ok(())
             }
-            MidiMessageKind::ProgramChange => Err(PreparedInstrumentError::UnsupportedMidiKind {
-                kind: MidiMessageKind::ProgramChange,
-            }),
+            MidiMessageKind::ProgramChange | MidiMessageKind::PolyPressure => {
+                Err(PreparedInstrumentError::UnsupportedMidiKind {
+                    kind: message.kind(),
+                })
+            }
         }
     }
 
@@ -1016,6 +1043,78 @@ mod tests {
             .unwrap()
             .prepare_patch(patch, 48_000.0, max_frames)
             .unwrap()
+    }
+
+    #[test]
+    fn production_sample_source_cancellation_preserves_live_same_pitch() {
+        let fixture = Arc::new(fixture(1, vec![0.25; 4096]));
+        let preparer = SamplePreparer::new(fixture.clone(), fixture).unwrap();
+        let (patch, provider) = patch_with(1, &[]);
+        let parameters = rt(&patch, &provider, VoiceEnvelope::DEFAULT);
+        let mut reference = preparer.prepare(&patch, 48_000.0, 128).unwrap();
+        let mut mixed = preparer.prepare(&patch, 48_000.0, 128).unwrap();
+        let note_on = message(MidiMessageKind::NoteOn, 60, 100);
+        reference.dispatch(note_on, &parameters).unwrap();
+        mixed.dispatch(note_on, &parameters).unwrap();
+        mixed
+            .dispatch_from(MidiSource::Scheduled, note_on, &parameters)
+            .unwrap();
+        let mut live = [0.0; 256];
+        let mut both = [0.0; 256];
+        reference.render(&mut live, 128, &parameters).unwrap();
+        mixed.render(&mut both, 128, &parameters).unwrap();
+        assert!(both
+            .iter()
+            .zip(live)
+            .any(|(mixed, live)| mixed.abs() > live.abs() + 0.0001));
+
+        mixed
+            .dispatch_from(
+                MidiSource::Scheduled,
+                message(MidiMessageKind::ControlChange, 64, 127),
+                &parameters,
+            )
+            .unwrap();
+        mixed
+            .dispatch_from(
+                MidiSource::Scheduled,
+                message(MidiMessageKind::NoteOff, 60, 0),
+                &parameters,
+            )
+            .unwrap();
+        mixed.all_notes_off_from(MidiSource::Scheduled).unwrap();
+        reference.render(&mut live, 128, &parameters).unwrap();
+        mixed.render(&mut both, 128, &parameters).unwrap();
+        assert!(live.iter().any(|sample| sample.abs() > 0.0001));
+        assert!(both
+            .iter()
+            .zip(live)
+            .all(|(mixed, live)| (*mixed - live).abs() < 0.000001));
+        mixed.all_notes_off();
+        mixed.render(&mut both, 128, &parameters).unwrap();
+        assert!(both.iter().all(|sample| *sample == 0.0));
+    }
+
+    #[test]
+    fn legacy_sample_fixture_rejects_scheduled_ownership_explicitly() {
+        let (patch, provider) = patch_with(1, &[]);
+        let parameters = rt(&patch, &provider, VoiceEnvelope::DEFAULT);
+        let mut sample = prepared(&patch, fixture(1, vec![0.25; 16]), 8);
+        let unsupported = PreparedInstrumentError::UnsupportedMidiSource {
+            source: MidiSource::Scheduled,
+        };
+        assert_eq!(
+            sample.dispatch_from(
+                MidiSource::Scheduled,
+                message(MidiMessageKind::NoteOn, 60, 100),
+                &parameters
+            ),
+            Err(unsupported)
+        );
+        assert_eq!(
+            sample.all_notes_off_from(MidiSource::Scheduled),
+            Err(unsupported)
+        );
     }
 
     #[test]

@@ -21,11 +21,12 @@ pub const SAMPLE_CROSSFADE_PARAMETER_ID: &str = "sample.crossfade-ms";
 pub const SAMPLE_LOOP_OFF_CHOICE_ID: &str = "sample.loop.off";
 pub const SAMPLE_LOOP_FORWARD_CHOICE_ID: &str = "sample.loop.forward";
 
-pub const SAMPLE_SUPPORTED_MIDI_KINDS: [MidiMessageKind; 6] = [
+pub const SAMPLE_SUPPORTED_MIDI_KINDS: [MidiMessageKind; 7] = [
     MidiMessageKind::NoteOn,
     MidiMessageKind::NoteOff,
     MidiMessageKind::ControlChange,
     MidiMessageKind::ChannelPressure,
+    MidiMessageKind::PolyPressure,
     MidiMessageKind::PitchBend,
     MidiMessageKind::AllNotesOff,
 ];

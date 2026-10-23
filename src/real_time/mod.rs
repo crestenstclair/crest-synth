@@ -56,3 +56,7 @@ pub use structural_graph_coordinator::{
     CoordinatorProgress, GraphPublicationError, GraphPublicationFailure, GraphStageOutcome,
     StructuralGraphCoordinator,
 };
+
+pub mod scheduled_event;
+pub mod send_leases;
+pub use send_leases::{SendLease, SendLeaseError, SendLeaseId, SendLeases};

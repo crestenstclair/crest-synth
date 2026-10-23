@@ -1314,7 +1314,13 @@ where
                 })
             }
             AudioCommand::AllNotesOff => Some(AudioCommand::AllNotesOff),
-            AudioCommand::PreviewStart { .. } | AudioCommand::PreviewStop { .. } => Some(command),
+            AudioCommand::PreviewStart { .. }
+            | AudioCommand::PreviewStop { .. }
+            | AudioCommand::InitializedVoice { .. }
+            | AudioCommand::VoiceMidi { .. }
+            | AudioCommand::OwnedMidi { .. }
+            | AudioCommand::ReleaseSource { .. }
+            | AudioCommand::ReleaseImmediateNotes => Some(command),
         }
     }
 

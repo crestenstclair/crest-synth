@@ -50,6 +50,9 @@ impl FilesystemFileBrowser {
         let import_root = self.library.join("Imported");
         std::fs::create_dir_all(&import_root).map_err(|_| SampleAssetError::Unavailable)?;
         self.resolve("Imported")?;
+        std::fs::File::open(&self.library)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| SampleAssetError::Unavailable)?;
         let stem = source
             .file_stem()
             .and_then(|stem| stem.to_str())
@@ -72,6 +75,9 @@ impl FilesystemFileBrowser {
                         let _ = std::fs::remove_file(path);
                         return Err(SampleAssetError::Unavailable);
                     }
+                    std::fs::File::open(&import_root)
+                        .and_then(|directory| directory.sync_all())
+                        .map_err(|_| SampleAssetError::Unavailable)?;
                     return Ok(id);
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {

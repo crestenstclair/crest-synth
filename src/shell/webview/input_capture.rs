@@ -25,15 +25,15 @@ use core::fmt;
 ///
 /// `key` is normalized to the canonical window-boundary vocabulary
 /// ([`WindowKey`]) here, inside the platform module, so no platform key code
-/// leaks past this boundary. Shift chords need no separate representation:
-/// the macOS virtual key code identifies the physical key regardless of held
-/// modifiers, so Shift+W arrives as `W` — the same normalization the retired native
-/// path performs.
+/// leaks past this boundary. The optional Shift snapshot lets the window
+/// reconcile a held modifier when focus changes or an input source sends a
+/// chord without a separate modifier transition.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct RawKeyEvent {
     key: WindowKey,
     pressed: bool,
     repeat: bool,
+    shift: Option<bool>,
 }
 
 impl RawKeyEvent {
@@ -43,7 +43,18 @@ impl RawKeyEvent {
             key,
             pressed,
             repeat,
+            shift: None,
         }
+    }
+
+    /// Attaches the native event's aggregate Shift state (either physical key).
+    pub const fn with_shift(mut self, held: bool) -> Self {
+        self.shift = Some(held);
+        self
+    }
+
+    pub const fn shift(&self) -> Option<bool> {
+        self.shift
     }
 
     /// The normalized key identity.
@@ -122,7 +133,7 @@ pub const fn window_key_from_macos_key_code(key_code: u16) -> WindowKey {
         0 | 123 => WindowKey::A,
         2 | 124 => WindowKey::D,
         40 => WindowKey::K,
-        56 => WindowKey::Shift,
+        56 | 60 => WindowKey::Shift,
         36 => WindowKey::Return,
         49 => WindowKey::Space,
         17 => WindowKey::T,
@@ -241,7 +252,7 @@ mod platform {
             let pressed = match event_type {
                 NSEventType::KeyDown => true,
                 NSEventType::KeyUp => false,
-                NSEventType::FlagsChanged if observed.keyCode() == 56 => observed
+                NSEventType::FlagsChanged if matches!(observed.keyCode(), 56 | 60) => observed
                     .modifierFlags()
                     .contains(NSEventModifierFlags(1 << 17)),
                 _ => return event.as_ptr(),
@@ -271,7 +282,8 @@ mod platform {
                 // Objective-C callback and the process must abort because the
                 // callback cannot unwind. Modifier transitions never repeat.
                 repeat_for_event(event_type, || observed.isARepeat()),
-            );
+            )
+            .with_shift(flags.contains(NSEventModifierFlags::Shift));
             (sink.borrow_mut())(raw);
             // Pass the event through untouched.
             event.as_ptr()
@@ -346,7 +358,7 @@ mod tests {
                 .count();
             let expected = if matches!(
                 key,
-                WindowKey::W | WindowKey::S | WindowKey::A | WindowKey::D
+                WindowKey::W | WindowKey::S | WindowKey::A | WindowKey::D | WindowKey::Shift
             ) {
                 2
             } else {
@@ -361,9 +373,9 @@ mod tests {
 
     #[test]
     fn unmapped_key_codes_normalize_to_other() {
-        // kVK_ANSI_G (5) and right Shift (60) are outside the vocabulary.
+        // kVK_ANSI_G (5) is outside the vocabulary.
         assert_eq!(window_key_from_macos_key_code(5), WindowKey::Other);
-        assert_eq!(window_key_from_macos_key_code(60), WindowKey::Other);
+        assert_eq!(window_key_from_macos_key_code(60), WindowKey::Shift);
     }
 
     #[test]

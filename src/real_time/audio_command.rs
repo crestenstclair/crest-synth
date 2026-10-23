@@ -12,10 +12,37 @@ pub enum AudioCommand {
         patch_id: PatchId,
         message: MidiMessage,
     },
+    /// Delivers MIDI with independent note/controller ownership.
+    OwnedMidi {
+        source: crate::synth::MidiSource,
+        patch_id: PatchId,
+        message: MidiMessage,
+    },
+    /// Immediate attack-owned expression, including isolated monitoring.
+    VoiceMidi {
+        source: crate::synth::MidiSource,
+        patch_id: PatchId,
+        voice: crate::synth::MidiVoiceId,
+        scope: crate::synth::MidiExpressionScope,
+        message: MidiMessage,
+    },
+    InitializedVoice {
+        source: crate::synth::MidiSource,
+        patch_id: PatchId,
+        voice: crate::synth::MidiVoiceId,
+        initial: crate::synth::OwnedVoiceInitialization,
+    },
+    ReleaseSource {
+        source: crate::synth::MidiSource,
+        patch_id: PatchId,
+    },
     /// Starts the exact graph-prepared audition for one origin Patch.
     PreviewStart { patch_id: PatchId, audition_id: u64 },
     /// Releases the exact graph-prepared audition with its prepared de-click.
     PreviewStop { patch_id: PatchId, audition_id: u64 },
+    /// Releases default live-input voices across Patches without touching
+    /// Scheduled/Monitor ownership, send leases or their expression.
+    ReleaseImmediateNotes,
     /// Requests bounded recovery by silencing every active note.
     AllNotesOff,
 }
@@ -49,9 +76,13 @@ impl AudioCommand {
     pub const fn patch_id(self) -> Option<PatchId> {
         match self {
             Self::PatchMidi { patch_id, .. }
+            | Self::InitializedVoice { patch_id, .. }
+            | Self::VoiceMidi { patch_id, .. }
+            | Self::OwnedMidi { patch_id, .. }
+            | Self::ReleaseSource { patch_id, .. }
             | Self::PreviewStart { patch_id, .. }
             | Self::PreviewStop { patch_id, .. } => Some(patch_id),
-            Self::AllNotesOff => None,
+            Self::ReleaseImmediateNotes | Self::AllNotesOff => None,
         }
     }
 
@@ -60,15 +91,28 @@ impl AudioCommand {
             Self::PreviewStart { audition_id, .. } | Self::PreviewStop { audition_id, .. } => {
                 Some(audition_id)
             }
-            Self::PatchMidi { .. } | Self::AllNotesOff => None,
+            Self::InitializedVoice { .. }
+            | Self::PatchMidi { .. }
+            | Self::VoiceMidi { .. }
+            | Self::OwnedMidi { .. }
+            | Self::ReleaseSource { .. }
+            | Self::ReleaseImmediateNotes
+            | Self::AllNotesOff => None,
         }
     }
 
     /// Returns the normalized MIDI payload for a patch MIDI command.
     pub const fn message(self) -> Option<MidiMessage> {
         match self {
-            Self::PatchMidi { message, .. } => Some(message),
-            Self::PreviewStart { .. } | Self::PreviewStop { .. } | Self::AllNotesOff => None,
+            Self::InitializedVoice { initial, .. } => Some(initial.message()),
+            Self::PatchMidi { message, .. }
+            | Self::VoiceMidi { message, .. }
+            | Self::OwnedMidi { message, .. } => Some(message),
+            Self::PreviewStart { .. }
+            | Self::PreviewStop { .. }
+            | Self::ReleaseSource { .. }
+            | Self::ReleaseImmediateNotes
+            | Self::AllNotesOff => None,
         }
     }
 }

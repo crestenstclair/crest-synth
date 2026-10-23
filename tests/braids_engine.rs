@@ -180,6 +180,163 @@ fn finish_memory_count() -> (usize, usize) {
     (ALLOCATIONS.with(Cell::get), DEALLOCATIONS.with(Cell::get))
 }
 
+#[test]
+fn owned_expression_render_and_cleanup_allocate_and_destroy_nothing() {
+    const CHILD: &str = "CREST_BRAIDS_OWNED_EXPRESSION_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        // Native lifecycle counters are process-wide. Isolate this witness
+        // from the production stress test's simultaneous bank destruction.
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "owned_expression_render_and_cleanup_allocate_and_destroy_nothing",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            child.status.success(),
+            "{}\n{}",
+            String::from_utf8_lossy(&child.stdout),
+            String::from_utf8_lossy(&child.stderr)
+        );
+        assert!(String::from_utf8_lossy(&child.stdout).contains("1 passed"));
+        return;
+    }
+    prove_owned_expression_callback_safety();
+}
+
+fn prove_owned_expression_callback_safety() {
+    use crest_synth::synth::{
+        MidiExpressionScope::{Master, Member},
+        MidiSource, MidiVoiceId,
+    };
+    use MidiMessageKind::{ChannelPressure, ControlChange as Cc, NoteOff, NoteOn, PitchBend};
+    let patch = braids_patch(1, 1);
+    let parameters = RtPatchParameters::projected(
+        patch.id(),
+        PatchOutput::default(),
+        VoiceEnvelope::new(0.0, 0.0, 1.0, 10.0).unwrap(),
+        RtInstrumentParameters::new(&[3.0, 0.5, 0.5]).unwrap(),
+    );
+    let mut prepared = BraidsPreparer::new()
+        .unwrap()
+        .prepare(&patch, SAMPLE_RATE, 64)
+        .unwrap();
+    let first = Some(MidiVoiceId::new(1).unwrap());
+    let second = Some(MidiVoiceId::new(2).unwrap());
+    let scheduled = MidiSource::Scheduled;
+    let monitor = MidiSource::Monitor;
+    let events = [
+        (scheduled, first, NoteOn, 60, 100, true),
+        (scheduled, first, Cc, 101, 0, true),
+        (scheduled, first, Cc, 100, 0, true),
+        (scheduled, first, Cc, 6, 48, true),
+        (scheduled, first, Cc, 38, 50, true),
+        (scheduled, first, PitchBend, 127, 127, true),
+        (scheduled, first, Cc, 74, 120, true),
+        (scheduled, first, Cc, 64, 127, true),
+        (scheduled, first, NoteOff, 60, 0, true),
+        (scheduled, second, NoteOn, 60, 100, true),
+        (scheduled, second, Cc, 64, 0, true),
+        (scheduled, second, PitchBend, 0, 32, true),
+        (scheduled, second, Cc, 74, 15, true),
+        (monitor, first, NoteOn, 60, 100, true),
+        (monitor, first, Cc, 64, 127, true),
+        (monitor, first, NoteOff, 60, 0, true),
+        (scheduled, None, Cc, 64, 0, true),
+        (scheduled, first, Cc, 38, 60, true),
+        (scheduled, first, Cc, 38, 100, false),
+        (scheduled, first, Cc, 6, 100, false),
+        (scheduled, first, PitchBend, 0, 0, true),
+        (scheduled, second, NoteOff, 60, 0, true),
+        (scheduled, first, Cc, 64, 0, true),
+    ]
+    .map(|(source, id, kind, data1, data2, accepted)| {
+        (
+            source,
+            id,
+            note(patch.channel(), kind, data1, data2),
+            accepted,
+        )
+    });
+    let scoped_events = [
+        (scheduled, 1, Member, NoteOn, 60, 100, true),
+        (scheduled, 1, Member, Cc, 101, 0, true),
+        (scheduled, 1, Member, Cc, 100, 0, true),
+        (scheduled, 1, Member, Cc, 6, 48, true),
+        (scheduled, 1, Member, PitchBend, 0, 96, true),
+        (scheduled, 1, Master, Cc, 101, 0, true),
+        (scheduled, 1, Master, Cc, 100, 0, true),
+        (scheduled, 1, Master, Cc, 6, 12, true),
+        (scheduled, 1, Master, PitchBend, 0, 32, true),
+        (scheduled, 1, Master, ChannelPressure, 64, 0, true),
+        (scheduled, 1, Member, ChannelPressure, 32, 0, true),
+        (scheduled, 1, Master, Cc, 64, 127, true),
+        (scheduled, 1, Member, NoteOff, 60, 0, true),
+        (scheduled, 2, Member, NoteOn, 60, 100, true),
+        (scheduled, 1, Member, Cc, 64, 0, true),
+        (scheduled, 2, Master, Cc, 101, 0, true),
+        (scheduled, 2, Master, Cc, 100, 0, true),
+        (scheduled, 2, Master, Cc, 6, 100, true),
+        (scheduled, 2, Master, PitchBend, 0, 96, true),
+        (scheduled, 2, Member, PitchBend, 127, 127, true),
+        (scheduled, 2, Master, PitchBend, 127, 127, false),
+        (scheduled, 2, Master, Cc, 74, 10, false),
+        (scheduled, 2, Master, NoteOff, 60, 0, false),
+        (monitor, 1, Master, Cc, 64, 127, true),
+        (monitor, 1, Member, Cc, 64, 0, true),
+        (scheduled, 1, Master, Cc, 64, 0, true),
+    ]
+    .map(|(source, id, scope, kind, data1, data2, accepted)| {
+        (
+            source,
+            MidiVoiceId::new(id).unwrap(),
+            scope,
+            note(patch.channel(), kind, data1, data2),
+            accepted,
+        )
+    });
+    let mut output = [0.0_f32; 128];
+    let native_before = braids_lifecycle_counts();
+    let mut correct = true;
+    begin_memory_count();
+    for (source, id, event, accepted) in events {
+        correct &= prepared
+            .dispatch_voice_from(source, id, event, &parameters)
+            .is_ok()
+            == accepted;
+        correct &= prepared.render(&mut output, 64, &parameters).is_ok();
+        correct &= finite(&output) && sounding(&output);
+    }
+    correct &= prepared.all_notes_off_from(scheduled).is_ok();
+    for (source, id, scope, event, accepted) in scoped_events {
+        correct &= prepared
+            .dispatch_scoped_voice_from(source, id, scope, event, &parameters)
+            .is_ok()
+            == accepted;
+        correct &= prepared.render(&mut output, 64, &parameters).is_ok();
+        correct &= finite(&output) && sounding(&output);
+    }
+    correct &= prepared.all_notes_off_from(scheduled).is_ok();
+    correct &= prepared.active_note_count() == Some(1);
+    correct &= prepared.render(&mut output, 64, &parameters).is_ok();
+    correct &= finite(&output) && sounding(&output);
+    correct &= prepared.all_notes_off_from(monitor).is_ok();
+    correct &= prepared.render(&mut output, 64, &parameters).is_ok();
+    correct &= output.iter().all(|sample| *sample == 0.0);
+    let memory = finish_memory_count();
+    let native_after = braids_lifecycle_counts();
+    assert!(
+        correct,
+        "owned dispatch, render, or isolated cleanup failed"
+    );
+    assert_eq!(memory, (0, 0));
+    assert_eq!(native_after.created, native_before.created);
+    assert_eq!(native_after.destroyed, native_before.destroyed);
+}
+
 #[derive(Serialize)]
 struct BraidsObservation {
     upstream_revision: &'static str,

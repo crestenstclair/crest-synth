@@ -73,6 +73,10 @@ def metadata(manifest, args):
                                   or k.startswith("CARGO_PROFILE_")}},
         "profiler_spec": manifest["profiler"], "repetitions": args.repetitions,
         "profiling_required": not args.timings_only,
+        "invocation": sys.argv,
+        "concurrent_load_note": getattr(args, "concurrent_load_note", "not controlled or measured"),
+        "soak": {"seconds": getattr(args, "soak_seconds", None),
+                 "voices_per_patch": getattr(args, "soak_voices_per_patch", None)},
     }
 
 
@@ -159,6 +163,10 @@ def validate_execution(case, result, directory, profiled):
             result["matrix"] = read_matrix(directory / "matrix.json", profiled)
             if not profiled:
                 errors += [f"timing budget failed: {row['name']}" for row in result["matrix"]["rows"] if not row["passed"]]
+            workload = result["matrix"].get("concurrent_workload") or {}
+            strict = workload.get("strict_tracker_target")
+            if strict is not None and not strict.get("passed", False):
+                errors.append("strict Tracker callback execution target failed (70% p99, zero deadline misses, zero Rust allocations/deallocations)")
         except (OSError, ValueError, KeyError, TypeError) as error:
             errors.append(f"invalid matrix evidence: {error}")
     return errors
@@ -247,12 +255,23 @@ def run_suite(args, manifest):
         raise RuntimeError("Samply suite resource accounting requires macOS or Linux (os.wait4)")
     groups = args.group or ([] if args.case else ["headless"])
     cases = select_cases(manifest, groups, args.case)
+    if getattr(args, "soak_seconds", None) is not None:
+        if args.soak_seconds <= 0 or not 1 <= args.soak_voices_per_patch <= 92:
+            raise ValueError("soak requires positive seconds and 1..92 voices per Patch (fixture MIDI pitches 36..127)")
+        if not args.timings_only or args.repetitions != 1 or [case["id"] for case in cases] != ["stress.concurrent"]:
+            raise ValueError("soak requires --case stress.concurrent --repetitions 1 --timings-only")
+        case = dict(cases[0])
+        case["env"] = {**case.get("env", {}), "CREST_PERFORMANCE_SOAK_SECONDS": str(args.soak_seconds),
+                       "CREST_PERFORMANCE_SOAK_VOICES": str(args.soak_voices_per_patch)}
+        case["timeout_seconds"] = args.soak_seconds + 120
+        cases = [case]
     identifier = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     directory = OUTPUT / "runs" / identifier
     directory.mkdir(parents=True)
     run = {"schema_version": 2, "id": identifier, "status": "running", "errors": [],
            "metadata": metadata(manifest, args), "cases": []}
     write_json(directory / "workloads.json", manifest)
+    write_json(directory / "run.json", run)
     try:
         if not args.timings_only:
             if not PROFILER.is_file():
@@ -298,6 +317,16 @@ def run_suite(args, manifest):
         run["status"] = "failed"
         run["errors"].append(str(error) or "interrupted")
     finally:
+        try:
+            run["metadata"]["source_after"] = {"revision": capture(["git", "rev-parse", "HEAD"]),
+                                                "dirty": bool(capture(["git", "status", "--porcelain"])),
+                                                "source_sha256": source_fingerprint()}
+            run["metadata"]["source_changed_during_run"] = any(
+                run["metadata"][key] != run["metadata"]["source_after"][key]
+                for key in ("revision", "dirty", "source_sha256"))
+        except (OSError, RuntimeError, KeyError) as error:
+            run["errors"].append(f"could not fingerprint sources after run: {error}")
+            run["status"] = "failed"
         render_report(run, directory)
         write_json(OUTPUT / "latest-suite.json", {"run": str(directory / "run.json"), "report": str(directory / "report.html")})
         print(f"{run['status'].upper()}: {directory / 'report.html'}", flush=True)
@@ -318,6 +347,9 @@ def main():
     run.add_argument("--timings-only", action="store_true", help="Explicitly omit profiling; result is not a complete suite pass")
     run.add_argument("--baseline", help="Prior compatible run.json; regressions fail the run")
     run.add_argument("--regression-percent", type=float, default=20)
+    run.add_argument("--soak-seconds", type=int, help="Continuous unprofiled stress.concurrent duration; never repeats/restarts the fixture")
+    run.add_argument("--soak-voices-per-patch", type=int, default=4, help="Explicit held-note request per each of 16 Synth Patches during soak; actual active counts are recorded")
+    run.add_argument("--concurrent-load-note", default="not controlled or measured", help="Describe other machine activity; timings are not isolated-host certification")
     args = parser.parse_args()
     manifest = json.loads(MANIFEST.read_text())
     if args.command == "list":

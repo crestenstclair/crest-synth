@@ -2,6 +2,7 @@ use crate::control::{
     AppLoop, SavedSession, SessionCandidateFailure, SessionCandidateRequest,
     SessionCandidateResult, SessionCandidateSource, SessionCandidateToken, SessionCandidateWorker,
 };
+use crate::kernel::PatchId;
 use crate::real_time::{ControlAudioBoundary, WorkerShutdownError};
 use crate::shell::{
     DocumentIdentity, SessionContentToken, SessionDialogFailure, SessionDialogPort,
@@ -168,6 +169,8 @@ pub enum SessionLifecycleCause {
     File(SessionFileFailure),
     #[error("session candidate failed: {0}")]
     Candidate(SessionCandidateFailure),
+    #[error("restored sound is missing required Patch {0}")]
+    MissingRequiredPatch(PatchId),
     #[error("prepared graph handoff failed: {0}")]
     Structural(crate::control::StructuralAdvanceError),
     #[error("session save failed: {0}")]
@@ -254,6 +257,7 @@ struct OutstandingDialog {
 struct CandidateContext {
     token: SessionCandidateToken,
     identity: DocumentIdentity,
+    required_patches: Vec<PatchId>,
 }
 
 #[derive(Clone, Debug)]
@@ -608,6 +612,20 @@ impl SessionLifecycleCoordinator {
     where
         Boundary: ControlAudioBoundary,
     {
+        self.submit_candidate_requiring_patches(operation, identity, source, Vec::new(), app)
+    }
+
+    fn submit_candidate_requiring_patches<Boundary>(
+        &mut self,
+        operation: SessionOperation,
+        identity: DocumentIdentity,
+        source: SessionCandidateSource,
+        required_patches: Vec<PatchId>,
+        app: &AppLoop<Boundary>,
+    ) -> Result<(), SessionLifecycleError>
+    where
+        Boundary: ControlAudioBoundary,
+    {
         self.operation = Some(operation);
         self.stage = SessionLifecycleStage::PreparingCandidate;
         let token = self.next_candidate_token(operation)?;
@@ -627,7 +645,11 @@ impl SessionLifecycleCoordinator {
                     SessionLifecycleCause::WorkerBusy,
                 )
             })?;
-        self.candidate = Some(CandidateContext { token, identity });
+        self.candidate = Some(CandidateContext {
+            token,
+            identity,
+            required_patches,
+        });
         Ok(())
     }
 
@@ -653,6 +675,52 @@ impl SessionLifecycleCoordinator {
         Ok(())
     }
 
+    /// Restore an already authorized composite document through the existing worker.
+    /// The caller publishes its corresponding document only after Ready is observed.
+    pub fn request_host_restore<Boundary: ControlAudioBoundary>(
+        &mut self,
+        saved: SavedSession,
+        app: &AppLoop<Boundary>,
+    ) -> Result<(), SessionLifecycleError> {
+        self.ensure_idle(SessionOperation::Open)?;
+        self.failure = None;
+        self.submit_candidate(
+            SessionOperation::Open,
+            DocumentIdentity::Untitled,
+            SessionCandidateSource::Default(Box::new(saved)),
+            app,
+        )
+    }
+
+    /// Restores encoded host sound content using the existing worker's decoder
+    /// and registries. No capability or preparer ownership escapes to the host.
+    pub fn request_host_restore_json<Boundary: ControlAudioBoundary>(
+        &mut self,
+        bytes: Vec<u8>,
+        app: &AppLoop<Boundary>,
+    ) -> Result<(), SessionLifecycleError> {
+        self.request_host_restore_json_requiring_patches(bytes, Vec::new(), app)
+    }
+
+    /// Validates composite-document Patch references against the worker's
+    /// prepared candidate before staging either audio or product replacement.
+    pub fn request_host_restore_json_requiring_patches<Boundary: ControlAudioBoundary>(
+        &mut self,
+        bytes: Vec<u8>,
+        required_patches: Vec<PatchId>,
+        app: &AppLoop<Boundary>,
+    ) -> Result<(), SessionLifecycleError> {
+        self.ensure_idle(SessionOperation::Open)?;
+        self.failure = None;
+        self.submit_candidate_requiring_patches(
+            SessionOperation::Open,
+            DocumentIdentity::Untitled,
+            SessionCandidateSource::OpenedBytes(bytes),
+            required_patches,
+            app,
+        )
+    }
+
     pub fn advance<Boundary>(
         &mut self,
         app: &mut AppLoop<Boundary>,
@@ -666,6 +734,14 @@ impl SessionLifecycleCoordinator {
         while let Some(action) = app.take_session_file_action() {
             let _ = self.request(action, app);
         }
+        self.advance_hosted(app)
+    }
+
+    /// Advances worker and graph ownership; composite hosts route file intents themselves.
+    pub fn advance_hosted<Boundary: ControlAudioBoundary>(
+        &mut self,
+        app: &mut AppLoop<Boundary>,
+    ) -> Result<SessionLifecycleProgress, SessionLifecycleError> {
         let mut progress = SessionLifecycleProgress::default();
         if let Some(result) = self.dialogs.try_poll() {
             progress.dialog_completed = true;
@@ -818,6 +894,19 @@ impl SessionLifecycleCoordinator {
             SessionCandidateResult::Prepared {
                 saved, prepared, ..
             } => {
+                if let Some(missing) = context.required_patches.iter().copied().find(|required| {
+                    !prepared
+                        .state()
+                        .patches()
+                        .iter()
+                        .any(|patch| patch.id() == *required)
+                }) {
+                    return Err(self.fail(
+                        self.operation.unwrap_or(SessionOperation::Open),
+                        SessionLifecycleStage::PreparingCandidate,
+                        SessionLifecycleCause::MissingRequiredPatch(missing),
+                    ));
+                }
                 self.stage = SessionLifecycleStage::StagingGraph;
                 let (replacement, graph) = (*prepared).into_replacement();
                 app.stage_session_replacement(replacement, graph)
@@ -1650,6 +1739,312 @@ mod tests {
             SessionDocumentMarker::Error
         );
         render(&mut renderer);
+    }
+
+    #[test]
+    fn host_restore_busy_preserves_existing_candidate_and_activation() {
+        let (mut app, mut renderer, mut lifecycle, _, submissions, baseline, _) = harness([]);
+        let (_, target_state) = braids_state(-12.0);
+        let target = SavedSession::capture(&target_state);
+        lifecycle
+            .request_host_restore(target.clone(), &app)
+            .unwrap();
+        let token = lifecycle.candidate.as_ref().unwrap().token;
+
+        let error = lifecycle
+            .request_host_restore(baseline.clone(), &app)
+            .unwrap_err();
+        assert_eq!(error.cause(), &SessionLifecycleCause::Busy);
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::PreparingCandidate);
+        assert_eq!(lifecycle.operation(), Some(SessionOperation::Open));
+        assert_eq!(lifecycle.candidate.as_ref().unwrap().token, token);
+        assert_eq!(lifecycle.failure(), None);
+        assert_eq!(submissions.load(Ordering::SeqCst), 1);
+        assert_eq!(app.capture_saved_session(), baseline);
+
+        lifecycle.advance_hosted(&mut app).unwrap();
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::ActivatingGraph);
+        let error = lifecycle.request_host_restore(baseline, &app).unwrap_err();
+        assert_eq!(error.cause(), &SessionLifecycleCause::Busy);
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::ActivatingGraph);
+        assert_eq!(lifecycle.activation.as_ref().unwrap().saved, target);
+        assert_eq!(lifecycle.failure(), None);
+        assert_eq!(submissions.load(Ordering::SeqCst), 1);
+
+        render(&mut renderer);
+        assert!(lifecycle
+            .advance_hosted(&mut app)
+            .unwrap()
+            .graph_committed());
+        assert_eq!(app.capture_saved_session(), target);
+    }
+
+    #[test]
+    fn host_restore_reports_ready_only_after_render_graph_acknowledgement() {
+        use crate::shell::hosted_synth::{HostedSynthControl, HostedSynthError};
+
+        let (mut app, mut renderer, mut lifecycle, _, _, baseline, _) = harness([]);
+        let (_, target_state) = braids_state(-9.0);
+        let target = SavedSession::capture(&target_state);
+        {
+            let mut synth = HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle);
+            synth.request_restore(target.clone()).unwrap();
+            assert!(!synth.replacement_status().unwrap());
+            assert!(matches!(
+                synth.capture_saved_session(),
+                Err(HostedSynthError::CaptureBusy)
+            ));
+            assert!(matches!(
+                synth.dispatch_action(
+                    crate::control::SemanticAction::Adjust(Direction::Down),
+                    crate::control::EventSource::Keyboard
+                ),
+                Err(HostedSynthError::EditsBlocked)
+            ));
+        }
+        lifecycle.advance_hosted(&mut app).unwrap();
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::ActivatingGraph);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert_eq!(app.capture_saved_session(), baseline);
+        assert!(!lifecycle
+            .advance_hosted(&mut app)
+            .unwrap()
+            .graph_committed());
+        assert!(
+            !HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle)
+                .replacement_status()
+                .unwrap()
+        );
+
+        render(&mut renderer);
+        assert_ne!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert_eq!(
+            app.capture_saved_session(),
+            baseline,
+            "audio activation still needs control acknowledgement"
+        );
+        assert!(
+            !HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle)
+                .replacement_status()
+                .unwrap()
+        );
+        assert!(lifecycle
+            .advance_hosted(&mut app)
+            .unwrap()
+            .graph_committed());
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::Ready);
+        assert_eq!(lifecycle.document().clean_baseline(), &target);
+        let synth = HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle);
+        assert!(synth.replacement_status().unwrap());
+        assert_eq!(synth.capture_saved_session().unwrap(), target);
+    }
+
+    #[test]
+    fn host_restore_candidate_failure_preserves_prior_sound_and_accepts_retry() {
+        use crate::adapter::sample_capability::SampleCapability;
+        use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
+        use crate::shell::hosted_synth::{HostedSynthControl, HostedSynthError};
+        use crate::synth::AssetFileId;
+
+        let (mut app, mut renderer, mut lifecycle, _, _, baseline, _) = harness([]);
+        let prior_document = lifecycle.document().clone();
+        let provider = SampleCapability::new(AssetFileId::new("unavailable.wav").unwrap()).unwrap();
+        let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+        let mut candidate = AppState::new(registry, GlobalParameters::new(0.0).unwrap());
+        candidate
+            .apply(AppEvent::InstallPatches(vec![Patch::new(
+                PatchId::new(1).unwrap(),
+                "Unavailable".into(),
+                provider.default_config().unwrap(),
+                MidiChannel::new(0).unwrap(),
+                PatchOutput::default(),
+            )]))
+            .unwrap();
+        let note = MidiMessage::try_new(
+            MidiChannel::new(0).unwrap(),
+            MidiMessageKind::NoteOn,
+            60,
+            100,
+        )
+        .unwrap();
+        app.dispatch(AppEvent::Midi {
+            patch_id: PatchId::new(1).unwrap(),
+            message: note,
+        })
+        .unwrap();
+        render(&mut renderer);
+        let prior_focus = app.state().interaction().clone();
+
+        HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle)
+            .request_restore_json(
+                SavedSession::capture(&candidate)
+                    .to_json()
+                    .unwrap()
+                    .into_bytes(),
+            )
+            .unwrap();
+        let error = lifecycle.advance_hosted(&mut app).unwrap_err();
+        assert!(matches!(error.cause(), SessionLifecycleCause::Candidate(_)));
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::Failed);
+        assert_eq!(lifecycle.document(), &prior_document);
+        assert_eq!(app.capture_saved_session(), baseline);
+        assert_eq!(app.state().interaction(), &prior_focus);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        render(&mut renderer);
+        assert!(renderer.active_patch_audio().stems()[0]
+            .samples()
+            .iter()
+            .any(|sample| sample.abs() > f32::EPSILON));
+        assert!(matches!(
+            HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle).replacement_status(),
+            Err(HostedSynthError::Lifecycle(_))
+        ));
+
+        let (_, target_state) = braids_state(-6.0);
+        let target = SavedSession::capture(&target_state);
+        HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle)
+            .request_restore_json(target.to_json().unwrap().into_bytes())
+            .unwrap();
+        assert_eq!(lifecycle.failure(), None);
+        lifecycle.advance_hosted(&mut app).unwrap();
+        render(&mut renderer);
+        assert!(lifecycle
+            .advance_hosted(&mut app)
+            .unwrap()
+            .graph_committed());
+        assert_eq!(app.capture_saved_session(), target);
+    }
+
+    #[test]
+    fn host_restore_required_patches_validate_candidate_before_staging_and_allow_retry() {
+        use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
+        use crate::shell::hosted_synth::{HostedSynthControl, HostedSynthError};
+
+        let (mut app, mut renderer, mut lifecycle, _, submissions, baseline, _) = harness([]);
+        let prior_document = lifecycle.document().clone();
+        let current_id = PatchId::new(1).unwrap();
+        let candidate_id = PatchId::new(7).unwrap();
+        let provider = BraidsCapability::new().unwrap();
+        let registry = CapabilityRegistry::new(vec![provider.descriptor()]).unwrap();
+        let mut target_state = AppState::new(registry, GlobalParameters::new(-9.0).unwrap());
+        target_state
+            .apply(AppEvent::InstallPatches(vec![Patch::new(
+                candidate_id,
+                "Replacement".into(),
+                provider.default_config().unwrap(),
+                MidiChannel::new(0).unwrap(),
+                PatchOutput::default(),
+            )]))
+            .unwrap();
+        let target = SavedSession::capture(&target_state);
+        let bytes = target.to_json().unwrap().into_bytes();
+        app.dispatch(AppEvent::Midi {
+            patch_id: current_id,
+            message: MidiMessage::try_new(
+                MidiChannel::new(0).unwrap(),
+                MidiMessageKind::NoteOn,
+                60,
+                100,
+            )
+            .unwrap(),
+        })
+        .unwrap();
+        render(&mut renderer);
+        let prior_focus = app.state().interaction().clone();
+
+        // This ID exists in the active graph, but not in the prepared candidate.
+        HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle)
+            .request_restore_json_requiring_patches(bytes.clone(), vec![current_id])
+            .unwrap();
+        assert_eq!(submissions.load(Ordering::SeqCst), 1);
+        let error = lifecycle.advance_hosted(&mut app).unwrap_err();
+        assert_eq!(
+            error.cause(),
+            &SessionLifecycleCause::MissingRequiredPatch(current_id)
+        );
+        assert_eq!(error.stage(), SessionLifecycleStage::PreparingCandidate);
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::Failed);
+        assert_eq!(lifecycle.document(), &prior_document);
+        assert_eq!(app.capture_saved_session(), baseline);
+        assert_eq!(app.state().interaction(), &prior_focus);
+        assert!(!app.session_replacement_pending());
+        assert!(matches!(
+            HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle).replacement_status(),
+            Err(HostedSynthError::Lifecycle(_))
+        ));
+        render(&mut renderer);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert!(renderer.active_patch_audio().stems()[0]
+            .samples()
+            .iter()
+            .any(|sample| sample.abs() > f32::EPSILON));
+
+        // Required IDs may belong only to the candidate; commit still waits for audio.
+        HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle)
+            .request_restore_json_requiring_patches(bytes, vec![candidate_id])
+            .unwrap();
+        assert_eq!(lifecycle.failure(), None);
+        lifecycle.advance_hosted(&mut app).unwrap();
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::ActivatingGraph);
+        assert_eq!(app.capture_saved_session(), baseline);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        render(&mut renderer);
+        assert!(lifecycle
+            .advance_hosted(&mut app)
+            .unwrap()
+            .graph_committed());
+        assert_eq!(app.capture_saved_session(), target);
+        assert_eq!(lifecycle.document().clean_baseline(), &target);
+    }
+
+    #[test]
+    fn host_restore_busy_cannot_replace_candidate_patch_requirements() {
+        let (mut app, mut renderer, mut lifecycle, _, submissions, baseline, _) = harness([]);
+        let required = PatchId::new(1).unwrap();
+        let bytes = baseline.to_json().unwrap().into_bytes();
+        lifecycle
+            .request_host_restore_json_requiring_patches(bytes.clone(), vec![required], &app)
+            .unwrap();
+        let token = lifecycle.candidate.as_ref().unwrap().token;
+        let error = lifecycle
+            .request_host_restore_json_requiring_patches(
+                bytes,
+                vec![PatchId::new(7).unwrap()],
+                &app,
+            )
+            .unwrap_err();
+        assert_eq!(error.cause(), &SessionLifecycleCause::Busy);
+        let context = lifecycle.candidate.as_ref().unwrap();
+        assert_eq!(context.token, token);
+        assert_eq!(context.required_patches, [required]);
+        assert_eq!(submissions.load(Ordering::SeqCst), 1);
+        assert_eq!(lifecycle.failure(), None);
+        lifecycle.advance_hosted(&mut app).unwrap();
+        render(&mut renderer);
+        assert!(lifecycle
+            .advance_hosted(&mut app)
+            .unwrap()
+            .graph_committed());
+    }
+
+    #[test]
+    fn host_restore_json_decode_failure_is_worker_owned_and_preserves_sound() {
+        use crate::shell::hosted_synth::HostedSynthControl;
+
+        let (mut app, renderer, mut lifecycle, _, submissions, baseline, _) = harness([]);
+        HostedSynthControl::with_lifecycle(&mut app, &mut lifecycle)
+            .request_restore_json(vec![0xff])
+            .unwrap();
+        assert_eq!(lifecycle.stage(), SessionLifecycleStage::PreparingCandidate);
+        assert_eq!(submissions.load(Ordering::SeqCst), 1);
+        let error = lifecycle.advance_hosted(&mut app).unwrap_err();
+        assert_eq!(
+            error.cause(),
+            &SessionLifecycleCause::Candidate(SessionCandidateFailure::DecodeEncoding)
+        );
+        assert_eq!(app.capture_saved_session(), baseline);
+        assert_eq!(renderer.active_revision(), GraphRevision::INITIAL);
+        assert!(!app.session_replacement_pending());
     }
 
     #[test]

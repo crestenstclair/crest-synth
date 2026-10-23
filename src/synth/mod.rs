@@ -87,3 +87,7 @@ pub use voice_limit::{
     VoiceLimit, VoiceLimitDescriptor, VoiceLimitError, ENGINE_MANAGED_POLYPHONY_CEILING,
     VOICE_LIMIT_FIELD,
 };
+
+pub use prepared_instrument::{
+    MidiExpressionScope, MidiSource, MidiVoiceId, OwnedExpressionState, OwnedVoiceInitialization,
+};

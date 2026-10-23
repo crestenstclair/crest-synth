@@ -1292,6 +1292,9 @@ fn action_presentation(
         }
         SemanticAction::OpenRelated => ("Open related", None),
         SemanticAction::OpenMidiSettings => ("Open Settings", Some("Shift+Space / Shift+Start")),
+        SemanticAction::Activate if surface == SurfaceId::PatchMain => {
+            ("Open Detail", Some("Return"))
+        }
         SemanticAction::Activate => ("Choose", Some("Return")),
         SemanticAction::PreviewStart => ("Preview", Some("hold Space")),
         SemanticAction::ToggleTestMidi => ("Toggle test MIDI", Some("T")),
@@ -1302,7 +1305,9 @@ fn action_presentation(
         SemanticAction::SetReturnOccupancy { .. } => ("Set return occupancy", None),
         SemanticAction::EnterSurface(SurfaceId::PatchUtility) => ("Open Utility", Some("D")),
         SemanticAction::EnterSurface(SurfaceId::Sends) => ("Sends", Some("Ctrl+4")),
-        SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", Some("Return")),
+        // Return is bound to Activate, which resolves the current surface.
+        // This compatibility action must not advertise a second key binding.
+        SemanticAction::EnterSurface(SurfaceId::PatchDetail) => ("Open Detail", None),
         SemanticAction::EnterSurface(SurfaceId::PatchChoice)
         | SemanticAction::EnterSurface(SurfaceId::FileBrowser) => ("Unavailable surface", None),
         SemanticAction::EnterSurface(SurfaceId::MixerInspector) => ("Open Inspector", None),
@@ -1322,6 +1327,50 @@ mod tests {
     use super::SemanticResolver;
     use crate::control::{FocusPath, PatchControlId};
     use crate::kernel::PatchId;
+
+    #[test]
+    fn overview_return_hint_matches_detail_activation_without_duplicate_binding() {
+        use crate::control::{AppEvent, AppState, SemanticAction, SurfaceId};
+        let mut state = AppState::new_with_effects(
+            crate::adapter::production_instruments::production_capability_registry().unwrap(),
+            crate::adapter::production_effects::production_effect_registry().unwrap(),
+            crate::mixer::global_parameters::GlobalParameters::new(0.0).unwrap(),
+        );
+        let patch = crate::synth::Patch::new(
+            PatchId::new(1).unwrap(),
+            "Test".into(),
+            crate::adapter::braids_capability::BraidsCapability::new()
+                .unwrap()
+                .default_config()
+                .unwrap(),
+            crate::kernel::MidiChannel::new(0).unwrap(),
+            crate::mixer::patch_output::PatchOutput::to_track(
+                crate::mixer::mixer_track_id::MixerTrackId::new(0).unwrap(),
+            ),
+        );
+        state.apply(AppEvent::InstallPatches(vec![patch])).unwrap();
+        state
+            .apply_semantic_action(SemanticAction::SelectContext(
+                crate::control::TopLevelContext::Patch,
+            ))
+            .unwrap();
+        let actions = SemanticResolver::new(&state).valid_actions();
+        let returns: Vec<_> = actions
+            .iter()
+            .filter(|action| action.hint() == Some("Return"))
+            .collect();
+        assert_eq!(
+            returns.len(),
+            1,
+            "one physical Return binding has one action guide"
+        );
+        assert_eq!(returns[0].action(), &SemanticAction::Activate);
+        assert_eq!(returns[0].label(), "Open Detail");
+        state
+            .apply_semantic_action(SemanticAction::Activate)
+            .unwrap();
+        assert_eq!(state.interaction().active_surface(), SurfaceId::PatchDetail);
+    }
 
     #[test]
     fn gapped_chain_resolves_overview_rows_per_position() {

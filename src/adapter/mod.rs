@@ -23,6 +23,7 @@ pub mod hidef_soundfont_preparer;
 pub mod lock_free_audio_boundary;
 pub mod lock_free_structural_graph_boundary;
 pub mod midir_input_device;
+pub mod portable_assets;
 pub mod production_effects;
 pub mod production_instruments;
 pub mod reverb_capability;
@@ -44,3 +45,5 @@ pub mod model_assets;
 pub mod sfz_library;
 
 mod rustysynth_voice;
+
+pub mod scheduled_event_boundary;

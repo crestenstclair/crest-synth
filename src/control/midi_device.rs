@@ -1023,9 +1023,14 @@ pub struct PhysicalMidiEvent {
     revision: MidiConnectionRevision,
     timestamp_micros: u64,
     message: MidiMessage,
+    raw: [u8; 3],
+    raw_len: u8,
+    control_receipt_micros: Option<u64>,
 }
 
 impl PhysicalMidiEvent {
+    /// Creates a synthetic event without claiming an original wire packet or
+    /// a control receipt time. Physical ingress retains both forms separately.
     pub const fn new(
         revision: MidiConnectionRevision,
         timestamp_micros: u64,
@@ -1035,19 +1040,123 @@ impl PhysicalMidiEvent {
             revision,
             timestamp_micros,
             message,
+            raw: [0; 3],
+            raw_len: 0,
+            control_receipt_micros: None,
         }
+    }
+
+    fn from_raw(
+        revision: MidiConnectionRevision,
+        timestamp_micros: u64,
+        raw: &[u8],
+    ) -> Result<Self, (bool, MidiMessageDiagnosticClass)> {
+        let message = normalize_raw_midi(raw)?;
+        let (raw, raw_len) = match raw {
+            [status, first] => ([*status, *first, 0], 2),
+            [status, first, second] => ([*status, *first, *second], 3),
+            _ => return Err((false, MidiMessageDiagnosticClass::InvalidLength)),
+        };
+        Ok(Self {
+            raw,
+            raw_len,
+            ..Self::new(revision, timestamp_micros, message)
+        })
     }
 
     pub const fn revision(self) -> MidiConnectionRevision {
         self.revision
     }
 
+    /// Backend timestamp in microseconds. Its clock origin belongs to this
+    /// connection revision; it is not an audio-frame or application-clock time.
     pub const fn timestamp_micros(self) -> u64 {
         self.timestamp_micros
     }
 
     pub const fn message(self) -> MidiMessage {
         self.message
+    }
+
+    /// Exact original channel packet, including status and unmodified data.
+    /// Synthetic events created with `new` return an empty slice.
+    pub fn raw_bytes(&self) -> &[u8] {
+        &self.raw[..usize::from(self.raw_len)]
+    }
+
+    /// Application control-clock receipt time, populated only after the active
+    /// connection revision has been accepted by the control-side drain.
+    pub const fn control_receipt_micros(self) -> Option<u64> {
+        self.control_receipt_micros
+    }
+
+    pub(crate) const fn received_on_control(mut self, now_micros: u64) -> Self {
+        self.control_receipt_micros = Some(now_micros);
+        self
+    }
+}
+
+/// Clock/transport packets remain distinct from instrument channel messages.
+/// The backend timestamp and connection revision share physical ingress order.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PhysicalMidiTransportEvent {
+    revision: MidiConnectionRevision,
+    timestamp_micros: u64,
+    raw: [u8; 3],
+    len: u8,
+}
+impl PhysicalMidiTransportEvent {
+    pub const fn revision(self) -> MidiConnectionRevision {
+        self.revision
+    }
+    pub const fn timestamp_micros(self) -> u64 {
+        self.timestamp_micros
+    }
+    pub fn raw_bytes(&self) -> &[u8] {
+        &self.raw[..usize::from(self.len)]
+    }
+}
+
+/// One bounded, ordered ingress preserves transport/performance interleaving.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PhysicalMidiPacket {
+    Performance(PhysicalMidiEvent),
+    Transport(PhysicalMidiTransportEvent),
+}
+impl PhysicalMidiPacket {
+    pub const fn revision(self) -> MidiConnectionRevision {
+        match self {
+            Self::Performance(event) => event.revision(),
+            Self::Transport(event) => event.revision(),
+        }
+    }
+    fn from_raw(
+        revision: MidiConnectionRevision,
+        timestamp_micros: u64,
+        raw: &[u8],
+    ) -> Result<Self, (bool, MidiMessageDiagnosticClass)> {
+        let length = match raw.first() {
+            Some(0xf8 | 0xfa | 0xfb | 0xfc) => 1,
+            Some(0xf2) => 3,
+            _ => {
+                return PhysicalMidiEvent::from_raw(revision, timestamp_micros, raw)
+                    .map(Self::Performance)
+            }
+        };
+        if raw.len() != length {
+            return Err((false, MidiMessageDiagnosticClass::InvalidLength));
+        }
+        if raw[1..].iter().any(|byte| *byte > 127) {
+            return Err((false, MidiMessageDiagnosticClass::InvalidData));
+        }
+        let mut bytes = [0; 3];
+        bytes[..length].copy_from_slice(raw);
+        Ok(Self::Transport(PhysicalMidiTransportEvent {
+            revision,
+            timestamp_micros,
+            raw: bytes,
+            len: length as u8,
+        }))
     }
 }
 
@@ -1185,7 +1294,7 @@ pub enum PhysicalMidiIngressOutcome {
 /// Control-owned consumer/gate for exactly one candidate connection.
 pub struct PhysicalMidiIngressControl {
     revision: MidiConnectionRevision,
-    consumer: rtrb::Consumer<PhysicalMidiEvent>,
+    consumer: rtrb::Consumer<PhysicalMidiPacket>,
     shared: Arc<MidiIngressShared>,
 }
 
@@ -1206,7 +1315,16 @@ impl PhysicalMidiIngressControl {
         self.shared.enabled.load(Ordering::Acquire)
     }
 
+    /// Legacy channel-only consumer. Clock packets are skipped, never sent to DSP.
     pub fn try_pop(&mut self) -> Option<PhysicalMidiEvent> {
+        while let Some(packet) = self.try_pop_packet() {
+            if let PhysicalMidiPacket::Performance(event) = packet {
+                return Some(event);
+            }
+        }
+        None
+    }
+    pub fn try_pop_packet(&mut self) -> Option<PhysicalMidiPacket> {
         self.consumer.pop().ok()
     }
 
@@ -1250,7 +1368,7 @@ impl fmt::Debug for PhysicalMidiIngressControl {
 /// Opaque producer/gate ownership passed into one platform connection.
 pub struct PhysicalMidiIngress {
     revision: MidiConnectionRevision,
-    producer: Option<rtrb::Producer<PhysicalMidiEvent>>,
+    producer: Option<rtrb::Producer<PhysicalMidiPacket>>,
     shared: Arc<MidiIngressShared>,
     backend: Option<Box<dyn Any + Send>>,
 }
@@ -1323,8 +1441,8 @@ impl PhysicalMidiIngress {
             self.shared.inactive.fetch_add(1, Ordering::Relaxed);
             return PhysicalMidiIngressOutcome::Inactive;
         };
-        let message = match normalize_raw_midi(raw) {
-            Ok(message) => message,
+        let event = match PhysicalMidiPacket::from_raw(self.revision, timestamp_micros, raw) {
+            Ok(event) => event,
             Err((false, class)) => {
                 self.shared.malformed.fetch_add(1, Ordering::Relaxed);
                 self.shared
@@ -1340,7 +1458,6 @@ impl PhysicalMidiIngress {
                 return PhysicalMidiIngressOutcome::Unsupported(class);
             }
         };
-        let event = PhysicalMidiEvent::new(self.revision, timestamp_micros, message);
         match producer.push(event) {
             Ok(()) => PhysicalMidiIngressOutcome::Accepted,
             Err(rtrb::PushError::Full(_event)) => {
@@ -1400,8 +1517,8 @@ fn normalize_raw_midi(raw: &[u8]) -> Result<MidiMessage, (bool, MidiMessageDiagn
         midly::MidiMessage::NoteOn { key, vel } => {
             (MidiMessageKind::NoteOn, key.as_int(), vel.as_int())
         }
-        midly::MidiMessage::Aftertouch { .. } => {
-            return Err((true, MidiMessageDiagnosticClass::PolyphonicPressure))
+        midly::MidiMessage::Aftertouch { key, vel } => {
+            (MidiMessageKind::PolyPressure, key.as_int(), vel.as_int())
         }
         midly::MidiMessage::Controller {
             controller,
@@ -1722,9 +1839,9 @@ mod tests {
         assert!(!needs_drop::<MidiCallbackDiagnostics>());
         assert!(!needs_drop::<MidiActivitySnapshot>());
         assert_eq!(size_of::<MidiMessage>(), 4);
-        assert_eq!(size_of::<PhysicalMidiEvent>(), 24);
+        assert_eq!(size_of::<PhysicalMidiEvent>(), 40);
         assert!(size_of::<MidiCallbackDiagnostics>() <= 40);
-        assert!(size_of::<MidiActivitySnapshot>() <= 104);
+        assert!(size_of::<MidiActivitySnapshot>() <= 120);
     }
 
     #[derive(Debug)]
@@ -1844,6 +1961,16 @@ mod tests {
                 .unwrap(),
             ),
             (
+                &[0xa9, 60, 23][..],
+                MidiMessage::try_new(
+                    MidiChannel::new(9).unwrap(),
+                    MidiMessageKind::PolyPressure,
+                    60,
+                    23,
+                )
+                .unwrap(),
+            ),
+            (
                 &[0xb3, 0x01, 0x7f][..],
                 MidiMessage::try_new(
                     MidiChannel::new(3).unwrap(),
@@ -1901,7 +2028,65 @@ mod tests {
             assert_eq!(event.revision(), revision);
             assert_eq!(event.timestamp_micros(), timestamp as u64);
             assert_eq!(event.message(), expected);
+            assert_eq!(event.raw_bytes(), raw);
+            assert_eq!(event.control_receipt_micros(), None);
         }
+    }
+
+    #[test]
+    fn transport_and_performance_share_order_revision_and_capacity() {
+        let (mut ingress, mut control) =
+            PhysicalMidiIngress::bounded(MidiConnectionRevision::FIRST);
+        control.enable();
+        let packets: &[&[u8]] = &[
+            &[0xfa],
+            &[0xf8],
+            &[0x90, 60, 99],
+            &[0xf2, 127, 127],
+            &[0xfb],
+            &[0xfc],
+        ];
+        for (index, raw) in packets.iter().enumerate() {
+            assert_eq!(
+                ingress.receive_raw(index as u64, raw),
+                PhysicalMidiIngressOutcome::Accepted
+            );
+        }
+        for (index, raw) in packets.iter().enumerate() {
+            let packet = control.try_pop_packet().unwrap();
+            assert_eq!(packet.revision(), MidiConnectionRevision::FIRST);
+            match packet {
+                PhysicalMidiPacket::Performance(event) => {
+                    assert_eq!(event.raw_bytes(), *raw);
+                    assert_eq!(event.timestamp_micros(), index as u64);
+                }
+                PhysicalMidiPacket::Transport(event) => {
+                    assert_eq!(event.raw_bytes(), *raw);
+                    assert_eq!(event.timestamp_micros(), index as u64);
+                }
+            }
+        }
+        assert!(!needs_drop::<PhysicalMidiPacket>());
+        assert!(matches!(
+            ingress.receive_raw(8, &[0xf2, 128, 0]),
+            PhysicalMidiIngressOutcome::Malformed(_)
+        ));
+        assert!(matches!(
+            ingress.receive_raw(9, &[0xf8, 0]),
+            PhysicalMidiIngressOutcome::Malformed(_)
+        ));
+        for _ in 0..PHYSICAL_MIDI_QUEUE_CAPACITY {
+            assert_eq!(
+                ingress.receive_raw(10, &[0xf8]),
+                PhysicalMidiIngressOutcome::Accepted
+            );
+        }
+        assert_eq!(
+            ingress.receive_raw(11, &[0x80, 60, 0]),
+            PhysicalMidiIngressOutcome::CapacityFailure
+        );
+        assert!(!control.is_enabled());
+        assert_eq!(control.overflow_epoch(), 1);
     }
 
     #[test]
@@ -1927,12 +2112,8 @@ mod tests {
             );
         }
         for (raw, class) in [
-            (
-                &[0xa0, 60, 1][..],
-                MidiMessageDiagnosticClass::PolyphonicPressure,
-            ),
             (&[0xf1, 1][..], MidiMessageDiagnosticClass::SystemCommon),
-            (&[0xf8][..], MidiMessageDiagnosticClass::SystemRealtime),
+            (&[0xfe][..], MidiMessageDiagnosticClass::SystemRealtime),
         ] {
             assert_eq!(
                 ingress.receive_raw(0, raw),
@@ -1949,7 +2130,7 @@ mod tests {
         let diagnostics = control.diagnostics();
         assert_eq!(diagnostics.inactive, 1);
         assert_eq!(diagnostics.malformed, 4);
-        assert_eq!(diagnostics.unsupported, 4);
+        assert_eq!(diagnostics.unsupported, 3);
     }
 
     #[test]
@@ -2005,6 +2186,9 @@ mod tests {
         )
         .unwrap();
         let event = PhysicalMidiEvent::new(MidiConnectionRevision::FIRST, 12, message);
+        assert!(event.raw_bytes().is_empty());
+        assert_eq!(event.control_receipt_micros(), None);
+        assert!(!std::mem::needs_drop::<PhysicalMidiEvent>());
         let snapshot = MidiActivitySnapshot::new(
             MidiConnectionRevision::FIRST,
             1,

@@ -2324,6 +2324,7 @@ fn midi_messages(channel: MidiChannel, kinds: &[MidiMessageKind]) -> Vec<MidiMes
             MidiMessageKind::ChannelPressure => midi_message(channel, *kind, 70, 0),
             MidiMessageKind::PitchBend => midi_message(channel, *kind, 0, 64),
             MidiMessageKind::AllNotesOff => MidiMessage::all_notes_off(channel),
+            MidiMessageKind::PolyPressure => midi_message(channel, *kind, 60, 70),
         })
         .collect()
 }
@@ -2942,6 +2943,7 @@ fn midi_kind_identifier(kind: MidiMessageKind) -> &'static str {
         MidiMessageKind::ChannelPressure => "channelPressure",
         MidiMessageKind::PitchBend => "pitchBend",
         MidiMessageKind::AllNotesOff => "allNotesOff",
+        MidiMessageKind::PolyPressure => "polyPressure",
     }
 }
 
@@ -3136,7 +3138,7 @@ mod tests {
         );
         assert_eq!(
             crate::kernel::midi_message::MidiMessageKind::surface_descriptor().len(),
-            7
+            8
         );
         assert_eq!(PatchOutput::surface_descriptor().len(), 2);
         assert_eq!(MixerTrackParameters::surface_descriptor().len(), 4);

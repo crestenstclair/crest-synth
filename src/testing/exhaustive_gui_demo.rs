@@ -340,11 +340,16 @@ where
                         .push_recovery_command(*command)
                         .map_err(ExhaustiveGuiDemoError::AudioBoundaryFull)?;
                     match command {
-                        AudioCommand::PatchMidi { .. } => {
+                        AudioCommand::PatchMidi { .. }
+                        | AudioCommand::InitializedVoice { .. }
+                        | AudioCommand::VoiceMidi { .. }
+                        | AudioCommand::OwnedMidi { .. } => {
                             run.observed
                                 .insert("effect.emitted.audioCommand.patchMidi".to_owned());
                         }
-                        AudioCommand::AllNotesOff => {
+                        AudioCommand::AllNotesOff
+                        | AudioCommand::ReleaseImmediateNotes
+                        | AudioCommand::ReleaseSource { .. } => {
                             run.observed
                                 .insert("effect.emitted.audioCommand.allNotesOff".to_owned());
                         }
@@ -1731,10 +1736,15 @@ fn observe_records<'a>(
                     observed.insert("effect.emitted.parameterSnapshotPublished".to_owned());
                 }
                 EmittedEvent::AudioCommand { effect } => match effect {
-                    AudioEffect::PatchMidi { .. } => {
+                    AudioEffect::PatchMidi { .. }
+                    | AudioEffect::InitializedVoice { .. }
+                    | AudioEffect::VoiceMidi { .. }
+                    | AudioEffect::OwnedMidi { .. } => {
                         observed.insert("effect.emitted.audioCommand.patchMidi".to_owned());
                     }
-                    AudioEffect::AllNotesOff => {
+                    AudioEffect::AllNotesOff
+                    | AudioEffect::ReleaseImmediateNotes
+                    | AudioEffect::ReleaseSource { .. } => {
                         observed.insert("effect.emitted.audioCommand.allNotesOff".to_owned());
                     }
                     AudioEffect::PreviewStart { .. } => {
@@ -2245,6 +2255,7 @@ const fn midi_kind_identifier(kind: MidiKind) -> &'static str {
         MidiKind::ChannelPressure => "channelPressure",
         MidiKind::PitchBend => "pitchBend",
         MidiKind::AllNotesOff => "allNotesOff",
+        MidiKind::PolyPressure => "polyPressure",
     }
 }
 

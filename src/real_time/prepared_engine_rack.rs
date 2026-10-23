@@ -5,7 +5,7 @@ use crate::real_time::parameter_snapshot::{
 };
 use crate::real_time::patch_audio_block::PatchAudioBlock;
 use crate::real_time::prepared_graph::PositionCapabilityIdentity;
-use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
+use crate::synth::prepared_instrument::{MidiSource, PreparedInstrument, PreparedInstrumentError};
 use core::fmt;
 
 pub(crate) struct PreparedEngineSlot {
@@ -163,6 +163,45 @@ impl PreparedEngineRack {
         message: MidiMessage,
         parameters: &RtPatchParameters,
     ) -> Result<(), RackDispatchError> {
+        self.dispatch_from(MidiSource::Immediate, patch_id, message, parameters)
+    }
+
+    /// Routes one source-owned message without changing the other MIDI lane.
+    pub fn dispatch_from(
+        &mut self,
+        midi_source: MidiSource,
+        patch_id: PatchId,
+        message: MidiMessage,
+        parameters: &RtPatchParameters,
+    ) -> Result<(), RackDispatchError> {
+        self.dispatch_voice_from(midi_source, None, patch_id, message, parameters)
+    }
+    pub fn dispatch_voice_from(
+        &mut self,
+        midi_source: MidiSource,
+        voice: Option<crate::synth::MidiVoiceId>,
+        patch_id: PatchId,
+        message: MidiMessage,
+        parameters: &RtPatchParameters,
+    ) -> Result<(), RackDispatchError> {
+        self.dispatch_scoped_voice_from(
+            midi_source,
+            voice,
+            crate::synth::MidiExpressionScope::Member,
+            patch_id,
+            message,
+            parameters,
+        )
+    }
+    pub fn dispatch_scoped_voice_from(
+        &mut self,
+        midi_source: MidiSource,
+        voice: Option<crate::synth::MidiVoiceId>,
+        scope: crate::synth::MidiExpressionScope,
+        patch_id: PatchId,
+        message: MidiMessage,
+        parameters: &RtPatchParameters,
+    ) -> Result<(), RackDispatchError> {
         let Some(slot) = self.find_slot_mut(patch_id) else {
             return Err(RackDispatchError::UnknownPatch { patch_id });
         };
@@ -171,9 +210,49 @@ impl PreparedEngineRack {
         {
             return Err(RackDispatchError::ParameterLayoutMismatch { patch_id });
         }
+        let result = match voice {
+            Some(voice) => slot.instrument.dispatch_scoped_voice_from(
+                midi_source,
+                voice,
+                scope,
+                message,
+                parameters,
+            ),
+            None if scope == crate::synth::MidiExpressionScope::Member => slot
+                .instrument
+                .dispatch_from(midi_source, message, parameters),
+            None => Err(PreparedInstrumentError::UnsupportedExpressionScope),
+        };
+        result.map_err(|source| RackDispatchError::Instrument { patch_id, source })
+    }
+
+    pub fn dispatch_initialized_voice_from(
+        &mut self,
+        source: MidiSource,
+        voice: crate::synth::MidiVoiceId,
+        patch_id: PatchId,
+        initial: crate::synth::OwnedVoiceInitialization,
+        parameters: &RtPatchParameters,
+    ) -> Result<(), RackDispatchError> {
+        let slot = self
+            .find_slot_mut(patch_id)
+            .ok_or(RackDispatchError::UnknownPatch { patch_id })?;
+        if parameters.patch_id() != Some(patch_id)
+            || parameters.instrument().count() != slot.scalar_count
+        {
+            return Err(RackDispatchError::ParameterLayoutMismatch { patch_id });
+        }
         slot.instrument
-            .dispatch(message, parameters)
+            .dispatch_initialized_voice_from(source, voice, initial, parameters)
             .map_err(|source| RackDispatchError::Instrument { patch_id, source })
+    }
+
+    pub fn active_note_count(&self, patch_id: PatchId) -> Option<u32> {
+        self.slots
+            .iter()
+            .flatten()
+            .find(|slot| slot.patch_id == patch_id)
+            .and_then(|slot| slot.instrument.active_note_count())
     }
 
     /// Silences only the slot with the exact Patch identity.
@@ -183,6 +262,21 @@ impl PreparedEngineRack {
         };
         slot.instrument.all_notes_off();
         Ok(())
+    }
+
+    /// Silences one delivery lane in one exact Patch, including sustained
+    /// voices. Unsupported source ownership remains a typed dispatch failure.
+    pub fn all_notes_off_for_source(
+        &mut self,
+        midi_source: MidiSource,
+        patch_id: PatchId,
+    ) -> Result<(), RackDispatchError> {
+        let Some(slot) = self.find_slot_mut(patch_id) else {
+            return Err(RackDispatchError::UnknownPatch { patch_id });
+        };
+        slot.instrument
+            .all_notes_off_from(midi_source)
+            .map_err(|source| RackDispatchError::Instrument { patch_id, source })
     }
 
     /// Silences every active instrument with work bounded by `MAX_ACTIVE_PATCHES`.
@@ -416,7 +510,9 @@ mod tests {
     use crate::real_time::patch_audio_block::PatchAudioBlock;
     use crate::real_time::prepared_graph::PositionCapabilityIdentity;
     use crate::synth::capability_id::CapabilityId;
-    use crate::synth::prepared_instrument::{PreparedInstrument, PreparedInstrumentError};
+    use crate::synth::prepared_instrument::{
+        MidiSource, PreparedInstrument, PreparedInstrumentError,
+    };
 
     const FRAMES: usize = 8;
 
@@ -491,6 +587,33 @@ mod tests {
 
     fn rendered_fill(rack: &mut PreparedEngineRack) -> f32 {
         rendered_fills(rack)[0]
+    }
+
+    #[test]
+    fn source_dispatch_and_cleanup_preserve_explicit_unsupported_failures() {
+        let mut rack = rack(0.25, "instrument.alpha");
+        let patch_id = PatchId::new(1).unwrap();
+        let parameters = RtPatchParameters::new(patch_id, PatchOutput::default());
+        let message = MidiMessage::all_notes_off(crate::kernel::MidiChannel::new(0).unwrap());
+        let expected = RackDispatchError::Instrument {
+            patch_id,
+            source: PreparedInstrumentError::UnsupportedMidiSource {
+                source: MidiSource::Scheduled,
+            },
+        };
+        assert_eq!(
+            rack.dispatch_from(MidiSource::Scheduled, patch_id, message, &parameters),
+            Err(expected)
+        );
+        assert_eq!(
+            rack.all_notes_off_for_source(MidiSource::Scheduled, patch_id),
+            Err(expected)
+        );
+        assert_eq!(rack.dispatch(patch_id, message, &parameters), Ok(()));
+        assert_eq!(
+            rack.all_notes_off_for_source(MidiSource::Immediate, patch_id),
+            Ok(())
+        );
     }
 
     /// A candidate agreeing on Patch identity and scalar layout but carrying

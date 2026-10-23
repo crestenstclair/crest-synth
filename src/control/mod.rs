@@ -72,9 +72,10 @@ pub use midi_device::{
     MidiInputRowState, MidiInputScanId, MidiInputScanState, MidiInputState, MidiInputStatusMarker,
     MidiInputTransport, MidiMessageDiagnosticClass, MidiPreferredInput, MidiStaleOperation,
     MidiTransportCapacityStage, PhysicalMidiEvent, PhysicalMidiIngress, PhysicalMidiIngressControl,
-    PhysicalMidiIngressOutcome, MAX_MIDI_DEVICE_ID_BYTES, MAX_MIDI_DISPLAY_NAME_BYTES,
-    MAX_MIDI_IDENTITY_SCHEMA_BYTES, MAX_MIDI_PORT_FACT_BYTES, MIDI_INPUT_PREFERENCE_VERSION,
-    PHYSICAL_MIDI_DRAIN_BUDGET, PHYSICAL_MIDI_QUEUE_CAPACITY,
+    PhysicalMidiIngressOutcome, PhysicalMidiPacket, PhysicalMidiTransportEvent,
+    MAX_MIDI_DEVICE_ID_BYTES, MAX_MIDI_DISPLAY_NAME_BYTES, MAX_MIDI_IDENTITY_SCHEMA_BYTES,
+    MAX_MIDI_PORT_FACT_BYTES, MIDI_INPUT_PREFERENCE_VERSION, PHYSICAL_MIDI_DRAIN_BUDGET,
+    PHYSICAL_MIDI_QUEUE_CAPACITY,
 };
 pub use midi_device_worker::{
     MidiDeviceWorker, MidiDeviceWorkerBusy, MidiDeviceWorkerBusyReason, MidiDeviceWorkerCommand,

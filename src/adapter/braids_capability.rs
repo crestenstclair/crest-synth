@@ -14,11 +14,12 @@ pub const BRAIDS_TIMBRE_PARAMETER_ID: &str = "braids.timbre";
 pub const BRAIDS_COLOR_PARAMETER_ID: &str = "braids.color";
 pub const BRAIDS_FIXED_VOICES: u16 = 16;
 
-pub const BRAIDS_SUPPORTED_MIDI_KINDS: [MidiMessageKind; 6] = [
+pub const BRAIDS_SUPPORTED_MIDI_KINDS: [MidiMessageKind; 7] = [
     MidiMessageKind::NoteOn,
     MidiMessageKind::NoteOff,
     MidiMessageKind::ControlChange,
     MidiMessageKind::ChannelPressure,
+    MidiMessageKind::PolyPressure,
     MidiMessageKind::PitchBend,
     MidiMessageKind::AllNotesOff,
 ];

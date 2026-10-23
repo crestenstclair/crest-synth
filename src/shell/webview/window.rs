@@ -51,6 +51,7 @@ use crate::shell::app_window::{
 use crate::shell::density::RepresentativeViewport;
 use crate::shell::keyboard_input_translator::KeyboardInputTranslator;
 use crate::shell::webview::frame_stream::QualifyingFrameStream;
+use crate::shell::webview::host_presentation::HostPresentation;
 use crate::shell::webview::meter_channel::{MeterChannel, METER_EVENT};
 use crate::shell::webview::projection_channel::{
     ForwardedAck, ProjectionChannel, PAINTED_EVENT, PROJECTION_EVENT, READY_EVENT,
@@ -371,6 +372,7 @@ pub struct TauriWebviewWindow {
     title: String,
     frames: QualifyingFrameStream,
     dialogs: NativeSessionDialogBridge,
+    host: Option<HostPresentation>,
 }
 
 impl TauriWebviewWindow {
@@ -380,7 +382,13 @@ impl TauriWebviewWindow {
             title: title.into(),
             frames: QualifyingFrameStream::new(),
             dialogs: NativeSessionDialogBridge::default(),
+            host: None,
         }
+    }
+
+    pub fn with_host(mut self, host: HostPresentation) -> Self {
+        self.host = Some(host);
+        self
     }
 
     /// Returns the native window title.
@@ -439,10 +447,35 @@ fn resolve_page_source() -> Result<String, WebviewShellError> {
 struct KeyPipeline {
     translator: KeyboardInputTranslator,
     on_input: AppInputCallback,
+    host_input: Option<Rc<dyn Fn(WindowInput) -> bool>>,
 }
 
 impl KeyPipeline {
+    /// Reconciles native modifier snapshots before delivering the key once.
+    fn feed_raw(&mut self, raw: input_capture::RawKeyEvent) {
+        if let Some(held) = raw.shift() {
+            if raw.key() != crate::shell::WindowKey::Shift {
+                self.feed(if held {
+                    WindowInput::key_down(crate::shell::WindowKey::Shift)
+                } else {
+                    WindowInput::key_up(crate::shell::WindowKey::Shift)
+                });
+            }
+        }
+        self.feed(if raw.pressed() {
+            WindowInput::key_down(raw.key())
+        } else {
+            WindowInput::key_up(raw.key())
+        });
+    }
+
     fn feed(&mut self, input: WindowInput) {
+        if self.host_input.as_ref().is_some_and(|route| route(input)) {
+            if let Some(cleanup) = self.translator.translate(WindowInput::focus_lost()) {
+                (self.on_input)(cleanup);
+            }
+            return;
+        }
         if let Some(action) = self.translator.translate(input) {
             let release_edit = input.kind() == crate::shell::WindowInputKind::FocusLost
                 && action == crate::control::SemanticAction::PreviewStop;
@@ -631,7 +664,24 @@ impl AppWindow for TauriWebviewWindow {
         // before any runtime, monitor, or window exists (FR-007). The
         // debug-only override lives inside `resolve_page_source`; release
         // builds serve the embedded page unconditionally.
-        let page = resolve_page_source().map_err(WindowError::from)?;
+        let mut page = resolve_page_source().map_err(WindowError::from)?;
+        let host = self.host.clone();
+        let host_assets = host.as_ref().map(|host| host.page);
+        if let Some(assets) = host_assets {
+            page = page
+                .replace(
+                    "</head>",
+                    r#"<link rel="stylesheet" href="host.css"></head>"#,
+                )
+                .replace("<body>", r#"<body><div id="synth-root">"#)
+                .replace(
+                    r#"  <script src="page.js"></script>"#,
+                    &format!(
+                        r#"</div>{}<script src="page.js"></script><script src="host.js"></script>"#,
+                        assets.markup
+                    ),
+                );
+        }
 
         // `ShellFrameObservation` is post-paint evidence: the page paints
         // the five declared shell regions and echoes each rendered
@@ -650,15 +700,40 @@ impl AppWindow for TauriWebviewWindow {
         let pipeline = Rc::new(RefCell::new(KeyPipeline {
             translator: KeyboardInputTranslator::new(),
             on_input,
+            host_input: host.as_ref().map(|host| Rc::clone(&host.input)),
         }));
 
         let app = tauri::Builder::default()
             .register_uri_scheme_protocol("crest", move |_context, request| {
+                if let Some(assets) = host_assets {
+                    let extra = match request.uri().path() {
+                        "/host.css" => Some(("text/css; charset=utf-8", assets.stylesheet)),
+                        "/host.js" => Some(("text/javascript; charset=utf-8", assets.script)),
+                        _ => None,
+                    };
+                    if let Some((mime, content)) = extra {
+                        return tauri::http::Response::builder()
+                            .header("Content-Type", mime)
+                            .body(content.as_bytes().to_vec())
+                            .expect("static asset response");
+                    }
+                }
                 protocol_response(request.uri().path(), &page)
             })
             .build(crate::shell::webview::tauri_context())
             .map_err(|error| WindowError::from(WebviewShellError::RuntimeUnavailable(error)))?;
 
+        let (host_sender, host_events) = mpsc::sync_channel::<serde_json::Value>(256);
+        if host.is_some() {
+            app.listen_any("crest://host-input", move |event| {
+                if event.payload().len() <= 65536 {
+                    if let Ok(value) = serde_json::from_str(event.payload()) {
+                        let _ = host_sender.try_send(value);
+                    }
+                }
+            });
+        }
+        let product_title = self.title.clone();
         let menu_specs = native_file_menu_items();
         let menu_new = tauri::menu::MenuItem::with_id(
             &app,
@@ -787,16 +862,10 @@ impl AppWindow for TauriWebviewWindow {
                 // Retire held performance keys without dispatching text edits.
                 capture_pipeline
                     .borrow_mut()
-                    .translator
-                    .translate(WindowInput::focus_lost());
+                    .feed(WindowInput::focus_lost());
                 return false;
             }
-            let input = if raw.pressed() {
-                WindowInput::key_down(raw.key())
-            } else {
-                WindowInput::key_up(raw.key())
-            };
-            capture_pipeline.borrow_mut().feed(input);
+            capture_pipeline.borrow_mut().feed_raw(raw);
             raw.key() != crate::shell::WindowKey::Other
         })
         .map_err(|error| WindowError::from(WebviewShellError::InputCapture(error)))?;
@@ -822,6 +891,8 @@ impl AppWindow for TauriWebviewWindow {
         let dialogs = self.dialogs.clone();
         let mut last_document_title = None::<String>;
         let mut last_page_document = None::<SessionDocumentProjection>;
+        let mut last_host_document = None::<serde_json::Value>;
+        let mut synth_was_visible = host.is_none();
 
         // The first runtime failure while the window still lives — a
         // transport emit, a rejected painted ack, a page render failure, or
@@ -915,6 +986,14 @@ impl AppWindow for TauriWebviewWindow {
                         }
                     }
                 }
+                if let Some(host) = &host {
+                    for _ in 0..256 {
+                        let Ok(event) = host_events.try_recv() else {
+                            break;
+                        };
+                        (host.event)(event);
+                    }
+                }
                 while let Ok(action) = send_name_events.try_recv() {
                     (loop_pipeline.borrow_mut().on_input)(crate::control::SemanticAction::Send(
                         action,
@@ -943,7 +1022,8 @@ impl AppWindow for TauriWebviewWindow {
                 last_tick = now;
                 if on_tick(elapsed) {
                     let document = document_projection();
-                    let title = native_document_title(&document);
+                    let title = native_document_title(&document)
+                        .replace("— crest-synth —", &format!("— {product_title} —"));
                     if last_document_title.as_ref() != Some(&title) {
                         if let Some(window) = handle.get_webview_window(WINDOW_LABEL) {
                             if let Err(error) = window.set_title(&title) {
@@ -978,30 +1058,56 @@ impl AppWindow for TauriWebviewWindow {
                     // Port invariant: each interactive frame advances the
                     // injected control-side tick and then requests the
                     // current immutable projection.
+                    let host_view = host.as_ref().map(|host| (host.projection)());
+                    if let Some(view) = &host_view {
+                        if last_host_document.as_ref() != Some(&view.document) {
+                            if let Err(error) =
+                                handle.emit("crest://host-projection", &view.document)
+                            {
+                                loop_runtime_error.borrow_mut().get_or_insert_with(|| {
+                                    WindowError::new(format!("host projection failed: {error}"))
+                                });
+                                close_requested = true;
+                                close_window_once_with_retry(handle, &loop_runtime_error);
+                                return;
+                            }
+                            last_host_document = Some(view.document.clone());
+                        }
+                    }
+                    let synth_visible = host_view.as_ref().is_none_or(|view| view.synth_visible);
+                    if synth_visible && !synth_was_visible {
+                        projection_channel = ProjectionChannel::new();
+                    }
+                    synth_was_visible = synth_visible;
                     let projection_for_page = projection();
                     text_entry_active.set(
-                        projection_for_page
-                            .semantic_model()
-                            .surfaces()
-                            .iter()
-                            .any(|surface| {
-                                matches!(
-                                    surface.summary(),
-                                    crate::control::SemanticSurfaceSummary::Sends {
-                                        editing_name: true,
-                                        ..
-                                    }
-                                )
-                            }),
+                        host_view.as_ref().is_some_and(|view| view.text_entry)
+                            || projection_for_page.semantic_model().surfaces().iter().any(
+                                |surface| {
+                                    matches!(
+                                        surface.summary(),
+                                        crate::control::SemanticSurfaceSummary::Sends {
+                                            editing_name: true,
+                                            ..
+                                        }
+                                    )
+                                },
+                            ),
                     );
                     // WP03 projection transport: generation-gated push of
                     // the serde serialization of this projection's embedded
                     // SemanticGraphicalViewModel. A failure while the window
                     // lives is typed: record the first, close once, surface
                     // it after the loop.
-                    if let Err(error) = projection_channel.push(&projection_for_page, |document| {
-                        handle.emit(PROJECTION_EVENT, document)
-                    }) {
+                    if let Err(error) = if synth_visible {
+                        projection_channel
+                            .push(&projection_for_page, |document| {
+                                handle.emit(PROJECTION_EVENT, document)
+                            })
+                            .map(|_| ())
+                    } else {
+                        Ok(())
+                    } {
                         loop_runtime_error
                             .borrow_mut()
                             .get_or_insert(WindowError::from(error));
@@ -1065,6 +1171,60 @@ mod tests {
     };
 
     #[test]
+    fn native_modifier_snapshots_recover_missing_edges_and_follow_host_handoff() {
+        use crate::control::{Direction, SemanticAction};
+        use crate::shell::webview::input_capture::RawKeyEvent;
+        use crate::shell::{KeyboardInputTranslator, WindowInput, WindowKey};
+        use std::{
+            cell::{Cell, RefCell},
+            rc::Rc,
+        };
+        let actions = Rc::new(RefCell::new(Vec::new()));
+        let observed = actions.clone();
+        let hosted = Rc::new(Cell::new(true));
+        let routed = hosted.clone();
+        let host_shift = Rc::new(Cell::new(false));
+        let shift = host_shift.clone();
+        let mut pipeline = super::KeyPipeline {
+            translator: KeyboardInputTranslator::new(),
+            on_input: Box::new(move |action| observed.borrow_mut().push(action)),
+            host_input: Some(Rc::new(move |input| {
+                if input.key() == WindowKey::Shift {
+                    shift.set(input == WindowInput::key_down(WindowKey::Shift));
+                }
+                routed.get()
+            })),
+        };
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::W, true, false).with_shift(true));
+        assert!(host_shift.get(), "host must receive Shift before the chord");
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::W, false, false).with_shift(true));
+        // The held modifier crosses to Synth without another FlagsChanged edge.
+        hosted.set(false);
+        actions.borrow_mut().clear();
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::D, true, false).with_shift(true));
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::D, true, true).with_shift(true));
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::D, false, false).with_shift(true));
+        assert_eq!(
+            *actions.borrow(),
+            vec![SemanticAction::NavigatePage(Direction::Right)]
+        );
+        pipeline.feed(WindowInput::focus_lost());
+        actions.borrow_mut().clear();
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::W, true, false).with_shift(true));
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::W, false, false).with_shift(true));
+        // A missing release edge must not leave the next bare key shifted.
+        pipeline.feed_raw(RawKeyEvent::new(WindowKey::S, true, false).with_shift(false));
+        assert_eq!(
+            *actions.borrow(),
+            vec![
+                SemanticAction::NavigatePage(Direction::Up),
+                SemanticAction::Navigate(Direction::Down),
+            ]
+        );
+        assert!(!host_shift.get());
+    }
+
+    #[test]
     fn focus_loss_releases_preview_and_edit_through_the_native_input_pipeline() {
         use crate::control::{InteractionMode, SemanticAction};
         use crate::shell::{KeyboardInputTranslator, WindowInput, WindowKey};
@@ -1072,6 +1232,7 @@ mod tests {
         let actions = Rc::new(RefCell::new(Vec::new()));
         let observed = actions.clone();
         let mut pipeline = super::KeyPipeline {
+            host_input: None,
             translator: KeyboardInputTranslator::new(),
             on_input: Box::new(move |action| observed.borrow_mut().push(action)),
         };

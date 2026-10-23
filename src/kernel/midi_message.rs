@@ -16,10 +16,11 @@ pub enum MidiMessageKind {
     ChannelPressure,
     PitchBend,
     AllNotesOff,
+    PolyPressure,
 }
 
 impl MidiMessageKind {
-    pub const ALL: [Self; 7] = [
+    pub const ALL: [Self; 8] = [
         Self::NoteOn,
         Self::NoteOff,
         Self::ControlChange,
@@ -27,6 +28,7 @@ impl MidiMessageKind {
         Self::ChannelPressure,
         Self::PitchBend,
         Self::AllNotesOff,
+        Self::PolyPressure,
     ];
 
     pub const fn surface_descriptor() -> &'static [Self] {

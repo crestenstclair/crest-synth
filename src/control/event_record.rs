@@ -104,6 +104,7 @@ pub enum MidiKind {
     ChannelPressure,
     PitchBend,
     AllNotesOff,
+    PolyPressure,
 }
 
 impl From<MidiMessageKind> for MidiKind {
@@ -116,6 +117,7 @@ impl From<MidiMessageKind> for MidiKind {
             MidiMessageKind::ChannelPressure => Self::ChannelPressure,
             MidiMessageKind::PitchBend => Self::PitchBend,
             MidiMessageKind::AllNotesOff => Self::AllNotesOff,
+            MidiMessageKind::PolyPressure => Self::PolyPressure,
         }
     }
 }
@@ -776,6 +778,29 @@ impl EventInput {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum AudioEffect {
+    ReleaseImmediateNotes,
+    InitializedVoice {
+        source: crate::synth::MidiSource,
+        patch_id: u32,
+        voice: u64,
+        initial: crate::synth::OwnedVoiceInitialization,
+    },
+    VoiceMidi {
+        source: crate::synth::MidiSource,
+        patch_id: u32,
+        voice: u64,
+        scope: crate::synth::MidiExpressionScope,
+        message: MidiInput,
+    },
+    OwnedMidi {
+        source: crate::synth::MidiSource,
+        patch_id: u32,
+        message: MidiInput,
+    },
+    ReleaseSource {
+        source: crate::synth::MidiSource,
+        patch_id: u32,
+    },
     PatchMidi {
         #[serde(rename = "patchId")]
         patch_id: u32,
@@ -799,6 +824,44 @@ pub enum AudioEffect {
 impl From<AudioCommand> for AudioEffect {
     fn from(command: AudioCommand) -> Self {
         match command {
+            AudioCommand::ReleaseImmediateNotes => Self::ReleaseImmediateNotes,
+            AudioCommand::InitializedVoice {
+                source,
+                patch_id,
+                voice,
+                initial,
+            } => Self::InitializedVoice {
+                source,
+                patch_id: patch_id.value(),
+                voice: voice.get(),
+                initial,
+            },
+            AudioCommand::VoiceMidi {
+                source,
+                patch_id,
+                voice,
+                scope,
+                message,
+            } => Self::VoiceMidi {
+                source,
+                patch_id: patch_id.value(),
+                voice: voice.get(),
+                scope,
+                message: message.into(),
+            },
+            AudioCommand::OwnedMidi {
+                source,
+                patch_id,
+                message,
+            } => Self::OwnedMidi {
+                source,
+                patch_id: patch_id.value(),
+                message: message.into(),
+            },
+            AudioCommand::ReleaseSource { source, patch_id } => Self::ReleaseSource {
+                source,
+                patch_id: patch_id.value(),
+            },
             AudioCommand::PatchMidi { patch_id, message } => Self::PatchMidi {
                 patch_id: patch_id.value(),
                 message: message.into(),

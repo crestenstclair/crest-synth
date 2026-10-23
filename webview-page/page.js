@@ -4171,6 +4171,13 @@
         // after this frame has painted, carrying the document's own identity
         // with post-paint region evidence.
         window.requestAnimationFrame(function () {
+          // A hosted page can be hidden after render but before this callback.
+          // That frame was not painted; zero-sized hidden bounds are not evidence.
+          // Re-entry republishes the current Synth projection through the host.
+          var hostedRoot = window.document.getElementById("synth-root");
+          if (hostedRoot && hostedRoot.hidden) {
+            return;
+          }
           tauri.event
             .emit(PAINTED_EVENT, paintedEvidence(model))
             .catch(function (error) {

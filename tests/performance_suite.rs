@@ -97,6 +97,13 @@ struct Measurement {
     passed: bool,
 }
 impl Measurement {
+    fn tracker_callback_target_passed(&self) -> bool {
+        self.p99_us < self.deadline_us * 0.7
+            && self.deadline_misses == 0
+            && self.allocations == Some(0)
+            && self.deallocations == Some(0)
+    }
+
     fn new(
         name: impl Into<String>,
         mut times: Vec<Duration>,
@@ -469,6 +476,34 @@ fn performance_gate_rejects_slow_or_allocating_substitutes() {
     );
     assert!(!Measurement::new("allocation", good.clone(), deadline, deadline, Some((1, 0))).passed);
     assert!(!Measurement::new("destruction", good, deadline, deadline, Some((0, 1))).passed);
+
+    let strict = Measurement::new(
+        "strict",
+        vec![Duration::from_millis(1); 100],
+        deadline,
+        deadline,
+        Some((0, 0)),
+    );
+    assert!(strict.tracker_callback_target_passed());
+    let mut one_miss = vec![Duration::from_millis(1); 100];
+    one_miss.push(Duration::from_millis(6));
+    let missed = Measurement::new(
+        "one miss",
+        one_miss,
+        deadline,
+        deadline.mul_f64(0.8),
+        Some((0, 0)),
+    );
+    assert!(missed.passed, "existing Synth allowance remains unchanged");
+    assert!(!missed.tracker_callback_target_passed());
+    assert!(!Measurement::new(
+        "headroom",
+        vec![Duration::from_micros(3500); 100],
+        deadline,
+        deadline.mul_f64(0.8),
+        Some((0, 0))
+    )
+    .tracker_callback_target_passed());
 }
 
 #[test]
@@ -582,9 +617,8 @@ fn production_performance_matrix() {
     if selected("graph") {
         graph_swap_case(&fixtures, &mut rows);
     }
-    if selected("concurrent") {
-        concurrent_worker_case(&fixtures, &mut rows);
-    }
+    let concurrent_workload =
+        selected("concurrent").then(|| concurrent_worker_case(&fixtures, &mut rows));
     assert!(!rows.is_empty());
     let failures = rows
         .iter()
@@ -599,6 +633,7 @@ fn production_performance_matrix() {
         "rustc": std::process::Command::new("rustc").arg("--version").output().ok().filter(|output| output.status.success()).map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned()),
         "timing_scope": "offline production callback duration; excludes physical device scheduling and native webview paint",
         "rows": rows, "failures": failures, "contract_failures": contract_failures,
+        "concurrent_workload": concurrent_workload,
     });
     let path = std::env::var_os("CREST_PERFORMANCE_REPORT")
         .map(std::path::PathBuf::from)
@@ -615,6 +650,8 @@ fn production_performance_matrix() {
         contract_failures.is_empty(),
         "production audio contracts failed: {contract_failures:?}; report retains all workload failures"
     );
+    assert!(concurrent_workload.as_ref().is_none_or(|evidence| evidence["contracts_passed"] == true),
+        "concurrent production audio contracts failed; report retains actual admission and recovery counters");
     assert!(
         rows.iter()
             .all(|row| row.allocations.is_none_or(|count| count == 0)
@@ -624,6 +661,13 @@ fn production_performance_matrix() {
     assert!(
         profiled || failures.is_empty(),
         "performance budgets failed: {failures:?}; report contains every workload"
+    );
+    assert!(
+        concurrent_workload
+            .as_ref()
+            .and_then(|evidence| evidence["strict_tracker_target"]["passed"].as_bool())
+            .unwrap_or(true),
+        "strict Tracker callback execution target failed; see retained matrix evidence"
     );
 }
 
@@ -762,10 +806,45 @@ fn graph_swap_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
     );
 }
 
-fn concurrent_worker_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
+fn concurrent_worker_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) -> serde_json::Value {
     use crest_synth::adapter::threaded_graph_preparation_worker::ThreadedGraphPreparationWorker;
     use crest_synth::shell::audio_output::{AudioDeviceConfig, AudioSampleFormat};
     use std::sync::atomic::{AtomicBool, Ordering};
+    struct StopOnDrop<'a>(&'a AtomicBool);
+    impl Drop for StopOnDrop<'_> {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let soak_seconds = std::env::var("CREST_PERFORMANCE_SOAK_SECONDS")
+        .ok()
+        .map(|value| {
+            let seconds: u32 = value
+                .parse()
+                .expect("soak duration must be a positive integer");
+            assert!(seconds > 0);
+            assert_ne!(
+                std::env::var("CREST_PERFORMANCE_PROFILE").as_deref(),
+                Ok("1"),
+                "soak timings must be unprofiled"
+            );
+            seconds
+        });
+    let voices = if soak_seconds.is_some() {
+        let value = std::env::var("CREST_PERFORMANCE_SOAK_VOICES")
+            .expect("soak requires an explicit voice workload");
+        let voices: u8 = value.parse().expect("soak voices must be an integer");
+        assert!(
+            (1..=92).contains(&voices),
+            "fixture pitches 36..127 admit 1..92 voices per Patch"
+        );
+        voices
+    } else {
+        16
+    };
+    let requested_duration = soak_seconds.map(|seconds| Duration::from_secs(u64::from(seconds)));
+    let watchdog = requested_duration.unwrap_or(Duration::from_secs(40)) + Duration::from_secs(60);
+    let max_blocks = (watchdog.as_secs() * 48_000).div_ceil(256) as usize + 64;
     let engines = fixtures
         .registry
         .descriptors()
@@ -773,6 +852,11 @@ fn concurrent_worker_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
         .map(|descriptor| descriptor.id().as_str())
         .collect::<Vec<_>>();
     let state = fixtures.state(&engines, 16, 0, 3, 8);
+    let patches: Vec<_> = state.patches().iter().map(|patch| {
+        assert!(patch.voice_limit().value() >= u16::from(voices), "declared workload exceeds prepared Patch capacity");
+        serde_json::json!({ "id": patch.id(), "engine": patch.instrument_config().capability_id(), "voice_limit": patch.voice_limit().value() })
+    }).collect();
+    let declared_held_voices = usize::from(voices) * patches.len();
     let graph = fixtures.graph(&state, 256, GraphRevision::INITIAL);
     let parameters = graph.initial_parameters().clone();
     let (control, audio) = LockFreeAudioBoundary::new(4096, parameters).into_handles();
@@ -806,7 +890,7 @@ fn concurrent_worker_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
     )
     .unwrap();
     let mut renderer = AudioRenderer::with_observation(audio, structural_audio, graph, writer);
-    for note in 36..52 {
+    for note in 36..36 + voices {
         assert!(app
             .dispatch_midi_from(
                 message(MidiMessageKind::NoteOn, note, 96),
@@ -826,133 +910,235 @@ fn concurrent_worker_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
     let mut worker_times = Vec::new();
     let mut requested = None;
     let mut swaps = 0;
-    let mut recovered_notes = false;
-    let audio_row = std::thread::scope(|scope| {
-        let stop = &stop;
-        let render_thread = scope.spawn(move || {
-            let deadline = Duration::from_secs_f64(256.0 / 48_000.0);
-            let mut output = [0.0; 512];
-            let mut times = Vec::with_capacity(8192);
-            let mut memory = (0, 0);
-            let mut peak = 0.0_f32;
-            let mut stopped_blocks = 0;
-            for _ in 0..8192 {
-                let (elapsed, counts) = measure_render(&mut renderer, &mut output);
-                times.push(elapsed);
-                memory.0 += counts.0;
-                memory.1 += counts.1;
-                peak = output
-                    .iter()
-                    .fold(peak, |peak, sample| peak.max(sample.abs()));
-                if stop.load(Ordering::Acquire) {
-                    stopped_blocks += 1;
-                    if stopped_blocks >= 64 {
-                        break;
+    let mut requests = 0;
+    let started = Instant::now();
+    let mut ticks = 0;
+    let mut next_progress = Duration::from_secs(30);
+    let mut final_audio_observation = None;
+    let audio_observation = observation.clone();
+    let (audio_row, audio_wall, active_histogram, active_audio_blocks) = std::thread::scope(
+        |scope| {
+            let stop = &stop;
+            let _stop_on_exit = StopOnDrop(stop);
+            let render_thread = scope.spawn(move || {
+                let deadline = Duration::from_secs_f64(256.0 / 48_000.0);
+                let mut output = [0.0; 512];
+                let mut times = Vec::with_capacity(max_blocks);
+                let mut memory = (0, 0);
+                let mut peak = 0.0_f32;
+                let mut stopped_blocks = 0;
+                let mut active_histogram = vec![0_u64; declared_held_voices + 1];
+                let mut active_audio_blocks = 0_u64;
+                let audio_started = Instant::now();
+                for block in 0..max_blocks {
+                    let (elapsed, counts) = measure_render(&mut renderer, &mut output);
+                    times.push(elapsed);
+                    memory.0 += counts.0;
+                    memory.1 += counts.1;
+                    peak = output
+                        .iter()
+                        .fold(peak, |peak, sample| peak.max(sample.abs()));
+                    if stop.load(Ordering::Acquire) {
+                        stopped_blocks += 1;
+                        if stopped_blocks >= 64 {
+                            break;
+                        }
+                    } else {
+                        let active =
+                            audio_observation.read_latest_on_control().active_notes() as usize;
+                        *active_histogram
+                            .get_mut(active)
+                            .expect("observed voices exceed the explicitly requested workload") +=
+                            1;
+                        active_audio_blocks += 1;
                     }
+                    // Host cadence is simulated outside the measured callback.
+                    // OS wakeup jitter is not counted as DSP execution time.
+                    let next = Duration::from_secs_f64((block + 1) as f64 * 256.0 / 48_000.0);
+                    if let Some(remaining) = next.checked_sub(audio_started.elapsed()) {
+                        std::thread::sleep(remaining);
+                    }
+                    assert!(
+                        audio_started.elapsed() < watchdog,
+                        "audio workload watchdog expired"
+                    );
                 }
-                // Host cadence is simulated outside the measured callback.
-                // OS wakeup jitter is not counted as DSP execution time.
-                if let Some(remaining) = deadline.checked_sub(elapsed) {
-                    std::thread::sleep(remaining);
+                assert!(
+                    stopped_blocks >= 64,
+                    "control/worker soak exceeded its bounded duration"
+                );
+                assert!(peak > 1e-6);
+                (
+                    Measurement::new(
+                        "concurrent/callback/p16/slots3/returns8",
+                        times,
+                        deadline,
+                        deadline.mul_f64(0.8),
+                        Some(memory),
+                    ),
+                    audio_started.elapsed(),
+                    active_histogram,
+                    active_audio_blocks,
+                )
+            });
+            loop {
+                if requested_duration.map_or(ticks >= 256, |duration| {
+                    started.elapsed() >= duration && requested.is_none()
+                }) {
+                    break;
                 }
+                assert!(
+                    started.elapsed() < watchdog,
+                    "control workload watchdog expired"
+                );
+                let tick = ticks;
+                let start = Instant::now();
+                // Do not begin an activation in the final half-second; complete
+                // all accepted requests before normal shutdown and evidence capture.
+                let request_allowed = requested_duration.is_none_or(|duration| {
+                    started.elapsed() + Duration::from_millis(512) < duration
+                });
+                if tick % 32 == 0 && request_allowed {
+                    assert!(
+                        requested.is_none(),
+                        "previous worker request failed to finish in 32 ticks"
+                    );
+                    let entry = if tick % 64 == 0 {
+                        None
+                    } else {
+                        Some(fixtures.effects.descriptors()[0].id().clone())
+                    };
+                    app.dispatch(AppEvent::SetSlotOccupancy {
+                        patch_id: PatchId::new(1).unwrap(),
+                        slot: EffectSlotIndex::ALL[0],
+                        entry,
+                    })
+                    .unwrap();
+                    request_times.push(start.elapsed());
+                    requested = Some(Instant::now());
+                    requests += 1;
+                }
+                let stage_start = Instant::now();
+                let progress = app.advance_structural().unwrap();
+                advance_times.push(stage_start.elapsed());
+                if progress.activation_acknowledged().is_some() {
+                    let stage_start = Instant::now();
+                    swaps += 1;
+                    worker_times.push(requested.take().unwrap().elapsed());
+                    // Graph replacement may reset voices; explicitly retrigger
+                    // through the reducer, preserving live-load evidence.
+                    for note in 36..36 + voices {
+                        for kind in [MidiMessageKind::NoteOff, MidiMessageKind::NoteOn] {
+                            assert!(app
+                                .dispatch_midi_from(
+                                    message(kind, note, 96),
+                                    EventSource::AutomaticMidi
+                                )
+                                .unwrap()
+                                .boundary_full()
+                                .is_none());
+                        }
+                    }
+                    retrigger_times.push(stage_start.elapsed());
+                }
+                let stage_start = Instant::now();
+                for index in 0..8 {
+                    assert!(app
+                        .dispatch_midi_from(
+                            message(MidiMessageKind::PitchBend, ((tick + index) % 128) as u8, 64),
+                            EventSource::AutomaticMidi
+                        )
+                        .unwrap()
+                        .boundary_full()
+                        .is_none());
+                }
+                midi_times.push(stage_start.elapsed());
+                let stage_start = Instant::now();
+                std::hint::black_box(
+                    serde_json::to_vec(app.current_graphical_shell().semantic_model()).unwrap(),
+                );
+                serialization_times.push(stage_start.elapsed());
+                tick_times.push(start.elapsed());
+                ticks += 1;
+                if requested_duration.is_some() && started.elapsed() >= next_progress {
+                    let observed = observation.read_latest_on_control();
+                    println!(
+                        "CREST_SOAK_PROGRESS {}",
+                        serde_json::json!({
+                            "wall_seconds": started.elapsed().as_secs_f64(), "control_ticks": ticks,
+                            "graph_activations": swaps, "active_notes": observed.active_notes(),
+                            "rendered_frames": observed.rendered_frames(), "routing_failures": observed.routing_failures(),
+                            "voice_limit_refusals": observed.voice_limit_refusals(), "non_finite_samples": observed.non_finite_samples()
+                        })
+                    );
+                    next_progress += Duration::from_secs(30);
+                }
+                std::thread::sleep(Duration::from_millis(16));
+            }
+            assert!(requested.is_none());
+            assert_eq!(swaps, requests, "all admitted graph changes must activate");
+            if requested_duration.is_none() {
+                assert_eq!(swaps, 8);
             }
             assert!(
-                stopped_blocks >= 64,
-                "control/worker soak exceeded its bounded duration"
+                swaps > 0,
+                "concurrent workload must exercise graph preparation"
             );
-            assert!(peak > 1e-6);
-            Measurement::new(
-                "concurrent/callback/p16/slots3/returns8",
-                times,
-                deadline,
-                deadline.mul_f64(0.8),
-                Some(memory),
-            )
-        });
-        for tick in 0..256 {
-            let start = Instant::now();
-            if tick % 32 == 0 {
-                assert!(
-                    requested.is_none(),
-                    "previous worker request failed to finish in 32 ticks"
-                );
-                let entry = if tick % 64 == 0 {
-                    None
-                } else {
-                    Some(fixtures.effects.descriptors()[0].id().clone())
-                };
-                app.dispatch(AppEvent::SetSlotOccupancy {
-                    patch_id: PatchId::new(1).unwrap(),
-                    slot: EffectSlotIndex::ALL[0],
-                    entry,
-                })
-                .unwrap();
-                request_times.push(start.elapsed());
-                requested = Some(Instant::now());
-            }
-            let stage_start = Instant::now();
-            let progress = app.advance_structural().unwrap();
-            advance_times.push(stage_start.elapsed());
-            if progress.activation_acknowledged().is_some() {
-                let stage_start = Instant::now();
-                swaps += 1;
-                worker_times.push(requested.take().unwrap().elapsed());
-                // Graph replacement may reset voices; explicitly retrigger
-                // through the reducer, preserving live-load evidence.
-                for note in 36..52 {
-                    for kind in [MidiMessageKind::NoteOff, MidiMessageKind::NoteOn] {
-                        assert!(app
-                            .dispatch_midi_from(message(kind, note, 96), EventSource::AutomaticMidi)
-                            .unwrap()
-                            .boundary_full()
-                            .is_none());
-                    }
-                }
-                retrigger_times.push(stage_start.elapsed());
-            }
-            let stage_start = Instant::now();
-            for index in 0..8 {
+            for note in 36..36 + voices {
                 assert!(app
                     .dispatch_midi_from(
-                        message(MidiMessageKind::PitchBend, ((tick + index) % 128) as u8, 64),
+                        message(MidiMessageKind::NoteOff, note, 0),
                         EventSource::AutomaticMidi
                     )
                     .unwrap()
                     .boundary_full()
                     .is_none());
             }
-            midi_times.push(stage_start.elapsed());
-            let stage_start = Instant::now();
-            std::hint::black_box(
-                serde_json::to_vec(app.current_graphical_shell().semantic_model()).unwrap(),
-            );
-            serialization_times.push(stage_start.elapsed());
-            tick_times.push(start.elapsed());
-            std::thread::sleep(Duration::from_millis(16));
-        }
-        assert!(requested.is_none());
-        assert_eq!(swaps, 8);
-        for note in 36..52 {
-            assert!(app
-                .dispatch_midi_from(
-                    message(MidiMessageKind::NoteOff, note, 0),
-                    EventSource::AutomaticMidi
-                )
-                .unwrap()
-                .boundary_full()
-                .is_none());
-        }
-        stop.store(true, Ordering::Release);
-        let row = render_thread.join().unwrap();
-        let final_observation = observation.read_latest_on_control();
-        assert_eq!(final_observation.routing_failures(), 0);
-        assert_eq!(final_observation.non_finite_samples(), 0);
-        assert_eq!(final_observation.voice_limit_refusals(), 0);
-        recovered_notes = final_observation.active_notes() == 0;
-        row
-    });
-    assert!(recovered_notes);
+            stop.store(true, Ordering::Release);
+            let row = render_thread.join().unwrap();
+            let final_observation = observation.read_latest_on_control();
+            final_audio_observation = Some(final_observation);
+            row
+        },
+    );
     app.shutdown_engine_selection_on_control().unwrap();
+    let final_observation = final_audio_observation.unwrap();
+    let contracts_passed = final_observation.routing_failures() == 0
+        && final_observation.non_finite_samples() == 0
+        && final_observation.voice_limit_refusals() == 0
+        && final_observation.active_notes() == 0;
+    let completed_duration = requested_duration.is_none_or(|duration| audio_wall >= duration);
+    let strict_target = soak_seconds.map(|seconds| serde_json::json!({
+        "requested_seconds": seconds, "completed_requested_duration": completed_duration,
+        "thirty_minutes_observed": seconds >= 1800 && audio_wall >= Duration::from_secs(1800),
+        "p99_budget_us": audio_row.deadline_us * 0.7,
+        "p99_us": audio_row.p99_us, "deadline_misses": audio_row.deadline_misses,
+        "required_deadline_misses": 0, "rust_allocations": audio_row.allocations,
+        "rust_deallocations": audio_row.deallocations,
+        "passed": completed_duration && contracts_passed && audio_row.tracker_callback_target_passed(),
+        "scope": "headless callback execution only; not physical device deadlines or the complete Tracker release gate"
+    }));
+    let evidence = serde_json::json!({
+        "requested_seconds": soak_seconds, "wall_seconds": audio_wall.as_secs_f64(),
+        "contracts_passed": contracts_passed,
+        "sample_rate": 48000, "block_frames": 256, "patches": patches,
+        "requested_held_voices_per_patch": voices, "requested_held_voices_total": declared_held_voices,
+        "active_notes_histogram_by_count": active_histogram,
+        "observed_active_notes_max": active_histogram.iter().rposition(|count| *count > 0),
+        "active_audio_blocks": active_audio_blocks,
+        "blocks_at_requested_held_voices": active_histogram[declared_held_voices],
+        "persistent_full_voice_load": active_histogram[declared_held_voices] == active_audio_blocks,
+        "graph_requests": requests, "graph_activations": swaps, "control_ticks": ticks,
+        "rendered_frames": final_observation.rendered_frames(), "rendered_blocks": final_observation.rendered_blocks(),
+        "nominal_rendered_seconds": final_observation.rendered_frames() as f64 / 48000.0,
+        "commands_consumed": final_observation.commands_consumed(),
+        "routing_failures": final_observation.routing_failures(), "voice_limit_refusals": final_observation.voice_limit_refusals(),
+        "non_finite_samples": final_observation.non_finite_samples(), "final_active_notes": final_observation.active_notes(),
+        "queue_high_water": null, "scheduled_late_events": null,
+        "unmeasured": ["queue occupancy (not exposed by this seam)", "scheduled event lateness (immediate MIDI workload)", "native C/C++ allocation", "CPAL/device scheduling", "physical MIDI latency", "Tracker tracks", "painted UI"],
+        "voice_scope": "actual native active-note observations; graph replacement resets voices before reducer-driven retrigger; one-shot engines may finish earlier",
+        "strict_tracker_target": strict_target,
+    });
     emit(audio_row, rows);
     for (stage, times) in [
         ("request", request_times),
@@ -992,6 +1178,7 @@ fn concurrent_worker_case(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {
         ),
         rows,
     );
+    evidence
 }
 
 fn control_stage_cases(fixtures: &Fixtures, rows: &mut Vec<Measurement>) {

@@ -80,6 +80,9 @@ incompatible revisions. Nothing silently substitutes a capability or asset.
 
 The footer is the sole visual action-guide owner. Numeric presentation uses
 projected ranges, steps, and units rather than arbitrary decimal precision.
+PATCH Overview labels Return as opening Detail. The compatibility Detail action
+does not advertise a duplicate Return binding; registry choices retain their
+own confirmation guide.
 The envelope SVG uses descriptor-linked durations with a stable `log1p` display
 scale; sustain has level, not duration. Reflow changes presentation only.
 
@@ -237,6 +240,22 @@ The code is organized around hexagonal boundaries:
 - tests drive the same reducer, projection, preparation, and render seams used
   by the standalone binary.
 
+`production_application` is the shared composition root for the standalone binary
+and a hosted application. `ApplicationHost` contributes its own document,
+projection, input and transport without replacing Synth's native pages, reducer,
+device authority or renderer. `HostedSynthControl` exposes validated operations,
+installed Patch identities, saved sound capture and correlated candidate restore;
+it does not expose mutable state, preparation workers or raw queues. Required
+Patch identities are checked before a replacement graph is staged, so a rejected
+host document leaves the prior sound and focus active.
+Hosted global page navigation is idempotent and exits hidden settings/modal
+sessions through the same semantic actions, including preview/capture cleanup.
+The facade exposes the active input's canonical discovery descriptor for host
+labels; pending candidates and saved preferences never impersonate an active input.
+If the host hides Synth before its pending animation-frame acknowledgment, the
+page emits no painted evidence for that hidden frame. Re-entry republishes the
+current projection. Visible-frame identity and geometry validation remain strict.
+
 There is one canonical public type per concept. Private transport values may
 exist inside adapters, but duplicate public `Patch`, `MidiEvent`, `Parameter`,
 focus, asset, or routing models are forbidden.
@@ -320,11 +339,48 @@ Different real-time data has different transport semantics:
 
 | Data | Transport | Rule |
 | --- | --- | --- |
-| Notes, expression, preview, bounded commands | fixed-capacity SPSC event ring | ordered, block-relative offsets |
+| Immediate MIDI, preview, bounded commands | fixed-capacity SPSC event ring | bounded block-start delivery |
+| Scheduled MIDI and temporary controls | separate fixed-capacity ordered event ring | absolute stereo frames; exact render offsets, graph revision and cancellation epoch |
 | Scalar parameters | triple-buffered `ParameterSnapshot` | latest compatible complete snapshot wins |
 | Structural changes | ownership-transfer queue of prepared graphs/assets | swap at block boundary; retire off-thread |
 | Meters and RT health | atomics/latest `AudioObservationSnapshot` | decimated and polled by UI |
 | Physical MIDI activity | latest compatible control-side snapshot | exact active revision, decimated to at most 30 Hz |
+
+Scheduled deliveries retain future entries and share one per-block work budget
+with immediate commands. The renderer splits at event sample offsets. Cancellation
+invalidates old epochs at consumption and releases only Scheduled voices. Native
+voice banks distinguish Immediate, Scheduled and Monitor sources, MIDI channels,
+and optional attack identities; this protects overlapping same-pitch attacks and
+owned expression. Raw channel controls remain channel-wide. Braids exposes an
+engine-specific owned-expression profile: independent member/master raw14 bend
+and RPN0 ranges add before exact native pitch admission, pressure gains multiply,
+member CC74 is absolute, and scoped pedals combine without reviving released
+voices. Unsupported engines and controls reject explicitly. A fixed-size
+initialized-voice command carries the attack and both complete dimensions as one
+budgeted callback operation; no partial initialization can render between packets.
+The host owns MPE source/zone interpretation, allocation and musical lifetimes.
+These native witnesses do not certify a physical MPE controller or endpoint.
+Audio observations retain cumulative late-event count, maximum delivery lateness
+in frames, and producer-sampled scheduled queue occupancy peak. Canceled or
+wrong-graph events do not count as delivered late. Concurrent consumption can
+make the sampled queue peak lower than its instantaneous maximum; these metrics
+do not measure device or acoustic latency.
+
+Temporary send leases use configurable preallocated storage. The newest active
+lease wins per Patch and bus; the mixer reads the current scalar baseline when no
+lease applies, so manual saved edits remain visible after expiry. Fixed-frame
+leases expire even when the command budget is exhausted. Hosts with musical
+deadlines schedule an explicit owned end after tempo conversion. Publication or
+capacity failure is visible and requires cancellation; Stop and graph replacement
+clear leases without touching saved sends or killing return-effect tails.
+
+CPAL publishes a bounded atomic audio clock correlated to callback and playback
+host timestamps. Physical capture retains original MIDI bytes, polyphonic key
+pressure, backend timestamp and connection revision before default monitoring.
+On macOS, the host can map CoreMIDI timestamps against CoreAudio playback time;
+unknown clock domains reject correlation. Allocation audits and native rendering
+witnesses cover these paths; physical end-to-end latency remains a separate
+measurement.
 
 Graph-status and audio-observation snapshots have one callback writer. Their
 versioned atomic payloads use a release fence after marking a write in progress
@@ -340,6 +396,11 @@ The renderer admits a configurable command budget per block, leaving excess
 events queued in order so a concurrent producer cannot prolong the callback.
 
 Each physical MIDI candidate owns a separate preallocated `rtrb` SPSC ingress,
+and switching or losing that input releases only Immediate voices. Scheduled
+accompaniment and host-owned monitoring remain independently owned. One reserved
+recovery marker coalesces input cleanup and global panic, with global recovery
+always taking precedence. The callback resolves the requested scope without
+allocating or changing the event budget. Each connection also retains its
 immutable connection revision, atomic enable gate, and fixed diagnostic
 counters. The midir callback performs bounded status-byte classification and
 normalizes only supported channel messages through `midly`; it never owns or
@@ -352,9 +413,10 @@ overflow epoch, revision); it never mutates or serializes into product state.
 Connection preparation, discovery, retirement, and preference I/O run on one
 bounded device worker. A candidate ingress stays disabled until matching
 reducer acknowledgement. Switch, disconnect, loss, ingress overflow, audio
-command saturation, and shutdown disable/discard ingress before global
-all-notes-off recovery; the audio command ring reserves one slot for that
-coalesced recovery command. Backend handles move to the device worker for
+command saturation, and shutdown disable/discard ingress before recovery.
+Input changes release Immediate voices; whole-subsystem shutdown uses global
+all-notes-off. The audio command ring reserves one slot for the coalesced
+recovery command. Backend handles move to the device worker for
 consuming close/destruction, including shutdown-owned and stale prepared
 handles.
 
@@ -550,7 +612,10 @@ upstream SoundFont is shared by prepared voices; authored capability catalogs
 remain control-side. The bundled `./sf2/HiDef.sf2` reference remains exact.
 Installed macOS applications resolve that reference and the fixed MIDI fixture
 inside `Contents/Resources`, independent of the working directory. Unbundled
-development tools retain checkout-relative lookup. Missing bundle resources fail
+development tools resolve built-in assets from Synth's compile-time source root,
+including dependency hosts launched from another working directory. This adapter
+accepts only relative built-in identities without parent traversal; imported
+asset paths retain their separate catalog resolution. Missing bundle resources fail
 explicitly rather than selecting a checkout copy.
 
 The Sample adapter uses exact `hound = 3.5.1` (Apache-2.0, no optional
@@ -736,6 +801,14 @@ selected pad. Optional asset rows show EMPTY and open the same correlated
 browser before their first assignment. Newly appended Sample Patches
 retain the summary supplied by their topology preparation.
 
+`SoundDefinition` is the canonical reusable sound payload: instrument configuration,
+envelope, ordered effects and voice limit, separate from installed Patch identity,
+channel, output, trim, sends and global mixer/returns. Capture and installation
+reuse native validation and the complete candidate/session lifecycle. A host can
+pin immutable definitions without reverse-engineering private saved-Patch JSON.
+These definitions still reference installed assets; a portable hashed asset
+resolver and package collection are not yet implemented.
+
 Saved state is versioned and stores canonical control state and stable relative
 asset references. It never stores decoded PCM, absolute library roots, browser
 or preview sessions, document paths, dialog or dirty state, prepared graphs, or
@@ -843,6 +916,11 @@ Overview entry resolves Instrument or effect subject by Patch and slot identity;
 duplicate effect capabilities remain distinct, and empty effect slots reject
 Detail entry unchanged. Context movement restores each remembered valid root
 or exposes the existing deterministic focus repair.
+On macOS both Shift keys normalize identically. Every native key carries its
+aggregate Shift snapshot, which the window reconciles before routing to either
+the host or Synth. Chords remain correct across focus and host handoff even when
+the input source omits a separate modifier edge. Text entry clears held input
+through the same focus-loss path for both owners.
 
 Q/E reuse canonical `SelectPatch` order and admission. Both Patch cycling and
 page navigation leave saved capture, dirty state, routes, subscriptions, and
@@ -899,7 +977,10 @@ ships no controller-specific mapping overrides. SDL is built from pinned source
 and linked statically, without initializing its video or audio subsystems or
 replacing Tauri's event loop. Standard button edges pass through the existing
 controller translator into semantic actions with Controller provenance. Trigger
-axes use press/release hysteresis for Patch cycling; sticks remain inactive.
+axes use press/release hysteresis for Patch cycling. Normalized signed stick motion
+is available through `HostControllerInput::Axis`; a hosted application owns its
+dead zones, editing semantics, repeats, and release cleanup. Standalone Synth
+continues to leave stick motion inactive.
 Each connected controller has independent transient holds; repeats cannot
 duplicate an edge. Connection and SDL remapping suppress existing holds until
 release. Remapping cancels capture; initialization/open failures are explicit
@@ -917,8 +998,8 @@ cycling, and Settings entry. One normalized layout applies to all connected
 gamepads. Defaults use D-pad navigation, South for Edit, left shoulder for Shift,
 Start for preview, triggers for Patch cycling, and North for Settings. Select's
 reserved product meaning remains unavailable. Only backend-mapped standard
-buttons participate; analog stick movement and unmapped vendor buttons are not
-controller inputs. Legacy C/Z assignments remain readable and explicitly ask for
+buttons participate; analog stick movement has no standalone semantic binding; hosted applications
+may consume the normalized axis boundary. Unmapped vendor buttons remain unavailable. Legacy C/Z assignments remain readable and explicitly ask for
 reassignment, since SDL has no corresponding standard buttons. Gamepads remain
 active while the synth runs in the background.
 

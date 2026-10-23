@@ -7,6 +7,7 @@ use crate::control::{
     EventSource, InteractionMode, SemanticAction, SurfaceId,
 };
 use crate::real_time::{BoundaryFull, ControlAudioBoundary};
+use crate::shell::hosted_application::{HostControllerAxis, HostControllerInput};
 use crate::shell::{ControllerGesture, ControllerInput, ControllerInputTranslator};
 use sdl3::event::Event;
 use sdl3::gamepad::{Axis, Button, Gamepad};
@@ -43,6 +44,16 @@ const TRIGGERS: [(Axis, ControllerButton); 2] = [
     (Axis::TriggerLeft, ControllerButton::LeftTrigger),
     (Axis::TriggerRight, ControllerButton::RightTrigger),
 ];
+
+fn host_stick_axis(axis: Axis) -> Option<HostControllerAxis> {
+    match axis {
+        Axis::LeftX => Some(HostControllerAxis::LeftX),
+        Axis::LeftY => Some(HostControllerAxis::LeftY),
+        Axis::RightX => Some(HostControllerAxis::RightX),
+        Axis::RightY => Some(HostControllerAxis::RightY),
+        _ => None,
+    }
+}
 
 // All SDL objects stay on the control thread. Close handles before the event
 // pump and subsystems; never initialize SDL video/audio or replace Tauri's loop.
@@ -540,6 +551,7 @@ pub(crate) struct GamepadRuntime {
     inputs: GamepadInputs,
     published_devices: Vec<ControllerDevice>,
     input_context: Option<(ControllerBindings, Option<ControllerRole>, bool)>,
+    host_has_input: bool,
 }
 
 impl GamepadRuntime {
@@ -555,14 +567,30 @@ impl GamepadRuntime {
             inputs: GamepadInputs::default(),
             published_devices: Vec::new(),
             input_context: None,
+            host_has_input: false,
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn advance<Boundary: ControlAudioBoundary>(
         &mut self,
         app_loop: &mut AppLoop<Boundary>,
         persisted_edits_blocked: bool,
     ) -> Result<(), BoundaryFull> {
+        self.advance_hosted(app_loop, persisted_edits_blocked, false, &mut |_, _| false)
+    }
+
+    pub(crate) fn advance_hosted<Boundary: ControlAudioBoundary>(
+        &mut self,
+        app_loop: &mut AppLoop<Boundary>,
+        persisted_edits_blocked: bool,
+        host_has_input: bool,
+        route: &mut dyn FnMut(HostControllerInput, &ControllerBindings) -> bool,
+    ) -> Result<(), BoundaryFull> {
+        if self.host_has_input != host_has_input {
+            self.inputs.quarantine(app_loop)?;
+            self.host_has_input = host_has_input;
+        }
         self.publish_failure(app_loop)?;
         // At most the initial load and one save can be awaiting consumption.
         for _ in 0..2 {
@@ -606,6 +634,12 @@ impl GamepadRuntime {
                     self.synchronize_devices(app_loop)?;
                 }
                 Event::GamepadRemoved { which, .. } => {
+                    route(
+                        HostControllerInput::Disconnected {
+                            device: which.raw() as usize,
+                        },
+                        app_loop.state().controller().bindings(),
+                    );
                     if let Some(backend) = self.backend.as_mut() {
                         backend.devices.remove(&which);
                     }
@@ -613,6 +647,10 @@ impl GamepadRuntime {
                 }
                 Event::GamepadRemapped { which, .. } => {
                     let id = which.raw() as usize;
+                    route(
+                        HostControllerInput::Disconnected { device: id },
+                        app_loop.state().controller().bindings(),
+                    );
                     if self.inputs.devices.contains_key(&id) {
                         self.inputs.disconnect(app_loop, id)?;
                         if app_loop.state().controller().capture().is_some() {
@@ -632,6 +670,15 @@ impl GamepadRuntime {
                     ..
                 } => {
                     if let Some(button) = button(native) {
+                        if route(
+                            HostControllerInput::Pressed {
+                                device: which.raw() as usize,
+                                button,
+                            },
+                            app_loop.state().controller().bindings(),
+                        ) {
+                            continue;
+                        }
                         self.inputs.press(
                             app_loop,
                             which.raw() as usize,
@@ -646,6 +693,15 @@ impl GamepadRuntime {
                     ..
                 } => {
                     if let Some(button) = button(native) {
+                        if route(
+                            HostControllerInput::Released {
+                                device: which.raw() as usize,
+                                button,
+                            },
+                            app_loop.state().controller().bindings(),
+                        ) {
+                            continue;
+                        }
                         self.inputs.release(
                             app_loop,
                             which.raw() as usize,
@@ -658,19 +714,48 @@ impl GamepadRuntime {
                     which, axis, value, ..
                 } => {
                     let id = which.raw() as usize;
+                    if let Some(axis) = host_stick_axis(axis) {
+                        route(
+                            HostControllerInput::Axis {
+                                device: id,
+                                axis,
+                                value,
+                            },
+                            app_loop.state().controller().bindings(),
+                        );
+                        continue;
+                    }
                     if let Some((_, button)) = TRIGGERS.iter().find(|(trigger, _)| *trigger == axis)
                     {
                         if value >= TRIGGER_PRESS {
+                            if route(
+                                HostControllerInput::Pressed {
+                                    device: id,
+                                    button: *button,
+                                },
+                                app_loop.state().controller().bindings(),
+                            ) {
+                                continue;
+                            }
                             self.inputs
                                 .press(app_loop, id, *button, persisted_edits_blocked)?;
                         } else if value <= TRIGGER_RELEASE {
+                            if route(
+                                HostControllerInput::Released {
+                                    device: id,
+                                    button: *button,
+                                },
+                                app_loop.state().controller().bindings(),
+                            ) {
+                                continue;
+                            }
                             self.inputs
                                 .release(app_loop, id, *button, persisted_edits_blocked)?;
                         }
                     }
                 }
-                // SDL owns hats, layouts and hardware quirks. Stick motion and
-                // controls outside Crest's canonical buttons have no action.
+                // SDL owns hats, layouts and hardware quirks. Unmapped controls
+                // have no standalone action; stick semantics belong to hosts.
                 _ => {}
             }
             // A press can enter/exit capture or change bindings. Apply its new
@@ -1542,6 +1627,7 @@ mod tests {
             inputs: GamepadInputs::default(),
             published_devices: Vec::new(),
             input_context: None,
+            host_has_input: false,
         };
         let snapshots = Arc::new(AtomicUsize::new(0));
         let mut app = AppLoop::new(
@@ -1638,6 +1724,34 @@ mod tests {
         pad.set_virtual_axis(Axis::LeftX as u32, i16::MAX).unwrap();
         tick(&mut runtime, &mut app);
         assert_eq!(app.state().generation(), generation);
+        assert_eq!(snapshots.load(Ordering::Relaxed), initial_snapshots);
+
+        // Hosts receive canonical stick axes through the same SDL pump. Their
+        // consumption never changes standalone reducer state or audio scalars.
+        let mut axes = Vec::new();
+        for (native, canonical) in [
+            (Axis::LeftX, HostControllerAxis::LeftX),
+            (Axis::LeftY, HostControllerAxis::LeftY),
+            (Axis::RightX, HostControllerAxis::RightX),
+            (Axis::RightY, HostControllerAxis::RightY),
+        ] {
+            pad.set_virtual_axis(native as u32, -20_000).unwrap();
+            joysticks.update();
+            for _ in 0..4 {
+                runtime
+                    .advance_hosted(&mut app, false, true, &mut |input, _| {
+                        if let HostControllerInput::Axis { axis, value, .. } = input {
+                            axes.push((axis, value));
+                        }
+                        true
+                    })
+                    .unwrap();
+            }
+            assert!(axes.contains(&(canonical, -20_000)));
+            pad.set_virtual_axis(native as u32, 0).unwrap();
+            joysticks.update();
+        }
+        tick(&mut runtime, &mut app);
         assert_eq!(snapshots.load(Ordering::Relaxed), initial_snapshots);
 
         // Trigger thresholds are evaluated after SDL normalizes raw axes.

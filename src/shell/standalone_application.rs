@@ -1,3 +1,16 @@
+use crate::adapter::atomic_audio_observation::AtomicAudioObservation;
+use crate::adapter::cpal_audio_output::CpalAudioOutput;
+use crate::adapter::fixed_midi_event_source::FixedMidiEventSource;
+use crate::adapter::lock_free_audio_boundary::LockFreeAudioBoundary;
+use crate::adapter::lock_free_structural_graph_boundary::{
+    LockFreeStructuralGraphBoundary, StructuralBoundaryConfigurationError,
+};
+use crate::adapter::production_effects::{
+    production_effect_preparers, production_effect_providers, ProductionEffectCompositionError,
+};
+use crate::adapter::production_instruments::{
+    production_instrument_preparers, production_instrument_providers,
+};
 use crate::adapter::threaded_graph_preparation_worker::{
     ThreadedGraphPreparationWorker, ThreadedGraphPreparationWorkerError,
 };
@@ -18,6 +31,7 @@ use crate::kernel::midi_channel::MidiChannel;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::patch_id::PatchId;
 use crate::mixer::global_parameters::GlobalParameters;
+use crate::mixer::mixer_state::MixerState;
 use crate::mixer::mixer_track_id::MixerTrackId;
 use crate::mixer::mixer_track_parameters::MixerTrackParameters;
 use crate::real_time::audio_boundary::{
@@ -36,6 +50,7 @@ use crate::real_time::prepared_graph_builder::{GraphPreparationError, PreparedGr
 use crate::real_time::structural_graph_boundary::{
     AudioStructuralGraphBoundary, StructuralGraphBoundary,
 };
+use crate::real_time::GraphHandoffStatus;
 use crate::shell::app_window::{
     AppInputCallback, AppWindow, AudioObservationCallback, FrameObservationCallback,
     MidiActivityObservationCallback, ProjectionCallback, SessionCommand, SessionCommandCallback,
@@ -46,6 +61,8 @@ use crate::shell::audio_output::{
     AudioDeviceConfig, AudioDeviceRuntimeError, AudioDeviceStatusCallback, AudioOutput,
     AudioOutputError, AudioRenderCallback, AudioSampleFormat, AudioStream, NegotiatedAudioOutput,
 };
+use crate::shell::hosted_application::{ApplicationHost, HostClock};
+use crate::shell::hosted_synth::HostedSynthControl;
 use crate::shell::webview::TauriWebviewWindow;
 use crate::shell::{
     SessionFilePort, SessionLifecycleCoordinator, SessionLifecycleError, StandardSessionFileSystem,
@@ -88,6 +105,7 @@ use std::time::Duration;
 /// The one SoundFont loaded by the standalone application.
 pub const STANDALONE_SOUNDFONT_PATH: &str = "./sf2/HiDef.sf2";
 
+const AUDIO_COMMAND_CAPACITY: usize = 1_024;
 const SMOKE_TICK_COUNT: usize = 256;
 const SMOKE_TICK_DURATION: Duration = Duration::from_millis(20);
 const LIVE_EVENT_LOG_CAPACITY: usize = 65_536;
@@ -472,6 +490,8 @@ pub enum ApplicationError {
     ProductionInstrumentComposition(
         crate::adapter::production_instruments::ProductionInstrumentCompositionError,
     ),
+    ProductionEffectComposition(ProductionEffectCompositionError),
+    StructuralBoundaryConfiguration(StructuralBoundaryConfigurationError),
     EffectComposition(EffectCompositionError),
     /// The declared default bus-return occupancy failed to compose at the
     /// production root; startup aborts instead of substituting silent
@@ -527,6 +547,12 @@ impl fmt::Display for ApplicationError {
             }
             Self::ProductionInstrumentComposition(error) => {
                 write!(formatter, "production instrument composition failed: {error}")
+            }
+            Self::ProductionEffectComposition(error) => {
+                write!(formatter, "production effect composition failed: {error}")
+            }
+            Self::StructuralBoundaryConfiguration(error) => {
+                write!(formatter, "structural graph boundary setup failed: {error}")
             }
             Self::EffectComposition(error) => {
                 write!(formatter, "effect composition failed: {error}")
@@ -618,6 +644,8 @@ impl std::error::Error for ApplicationError {
             Self::Capability(error) => Some(error),
             Self::InstrumentComposition(error) => Some(error),
             Self::ProductionInstrumentComposition(error) => Some(error),
+            Self::ProductionEffectComposition(error) => Some(error),
+            Self::StructuralBoundaryConfiguration(error) => Some(error),
             Self::EffectComposition(error) => Some(error),
             Self::DefaultBusReturns(error) => Some(error),
             Self::SampleCatalog(error) => Some(error),
@@ -826,6 +854,68 @@ pub struct StandaloneApplication<Boundary, Structural, Observation, Source, Wind
     system_input_devices: bool,
     default_session_blueprint: Option<DefaultSessionBlueprint>,
     full_demo_selection: Option<ListeningDemoSelection>,
+}
+
+/// The complete production runtime with a caller-owned window adapter.
+pub type ProductionApplication<Window> = StandaloneApplication<
+    LockFreeAudioBoundary,
+    LockFreeStructuralGraphBoundary,
+    AtomicAudioObservation,
+    FixedMidiEventSource,
+    Window,
+    CpalAudioOutput,
+>;
+
+/// Loads the complete production catalogs and prepares the normal runtime.
+///
+/// Both the standalone binary and embedding hosts use this composition so
+/// instruments, effects, device support, and the canonical Sample default
+/// cannot drift. Audio and window startup happen only when `run` is called;
+/// the supplied configuration decides whether the test pattern starts playing.
+pub fn production_application<Window: AppWindow>(
+    window: Window,
+    config: ApplicationConfig,
+) -> Result<ProductionApplication<Window>, ApplicationError> {
+    let initial_parameters =
+        ParameterSnapshot::new(0, config.global_parameters(), MixerState::default(), &[])
+            .map_err(StateProjectionError::ParameterSnapshot)?;
+    let boundary = LockFreeAudioBoundary::new(AUDIO_COMMAND_CAPACITY, initial_parameters);
+    let providers = production_instrument_providers()
+        .map_err(ApplicationError::ProductionInstrumentComposition)?;
+    let preparers = production_instrument_preparers()
+        .map_err(ApplicationError::ProductionInstrumentComposition)?;
+    let effect_providers =
+        production_effect_providers().map_err(ApplicationError::ProductionEffectComposition)?;
+    let effect_preparers =
+        production_effect_preparers().map_err(ApplicationError::ProductionEffectComposition)?;
+    let structural = LockFreeStructuralGraphBoundary::new(
+        1,
+        1,
+        GraphHandoffStatus::with_active(GraphRevision::INITIAL),
+    )
+    .map_err(ApplicationError::StructuralBoundaryConfiguration)?;
+    let application = StandaloneApplication::new_with_effects(
+        boundary,
+        providers,
+        preparers,
+        effect_providers,
+        effect_preparers,
+        structural,
+        AtomicAudioObservation::default(),
+        FixedMidiEventSource::new(),
+        window,
+        CpalAudioOutput::new(),
+        config,
+    )?;
+    let default_capability =
+        crate::synth::CapabilityId::new(crate::adapter::sample_capability::SAMPLE_CAPABILITY_ID)
+            .map_err(|error| {
+                CapabilityError::InvalidMetadataIdentifier(error.value().to_owned())
+            })?;
+    let default_session = DefaultSessionBlueprint::new(default_capability);
+    Ok(application
+        .with_default_session_blueprint(default_session)
+        .with_system_input_devices())
 }
 
 impl<Boundary, Structural, Observation, Source, Window, Output>
@@ -1418,6 +1508,20 @@ where
     /// deliberately dropped without preparation, start, or polling; explicit
     /// demo and witness methods retain fixture behavior.
     pub fn run(self) -> Result<(), ApplicationError> {
+        self.run_composed(None)
+    }
+
+    pub fn run_with_host(
+        self,
+        host: impl ApplicationHost<Boundary::ControlHandle>,
+    ) -> Result<(), ApplicationError> {
+        self.run_composed(Some(Box::new(host)))
+    }
+
+    fn run_composed(
+        self,
+        host: Option<Box<dyn ApplicationHost<Boundary::ControlHandle>>>,
+    ) -> Result<(), ApplicationError> {
         let Self {
             boundary,
             instruments,
@@ -1482,6 +1586,10 @@ where
         let audio_stream: AudioStream = negotiated_audio.start(render, on_runtime_error)?;
 
         let runtime = Rc::new(RefCell::new(ControlRuntime {
+            host,
+            sample_rate: device_config.sample_rate() as u32,
+            latest_audio: Default::default(),
+            audio_clock: audio_stream.clock_reader(),
             test_midi: crate::shell::test_midi::TestMidiPattern::default(),
             file_library: crate::shell::file_library::FileLibraryRuntime::new(
                 crate::adapter::production_instruments::production_sample_catalog()
@@ -1507,6 +1615,7 @@ where
         let audio_observation: AudioObservationCallback = Box::new(move || {
             let snapshot = observation_reader.read_latest_on_control();
             let mut runtime = observed_runtime.borrow_mut();
+            runtime.latest_audio = snapshot;
             if let Some(demo) = runtime.full_demo.as_ref() {
                 if let Err(error) = demo.check_audio(snapshot) {
                     runtime.record_error(ApplicationError::FullInstrumentEffectDemo(error));
@@ -2471,6 +2580,10 @@ struct ControlRuntime<Boundary>
 where
     Boundary: ControlAudioBoundary,
 {
+    host: Option<Box<dyn ApplicationHost<Boundary>>>,
+    sample_rate: u32,
+    latest_audio: crate::real_time::AudioObservationSnapshot,
+    audio_clock: Option<crate::shell::audio_output::AudioFrameClockReader>,
     test_midi: crate::shell::test_midi::TestMidiPattern,
     file_library: crate::shell::file_library::FileLibraryRuntime,
     gamepad: Option<crate::shell::gamepad::GamepadRuntime>,
@@ -2501,6 +2614,13 @@ where
     Box::new(move |event| {
         let mut runtime = runtime.borrow_mut();
         if runtime.error.is_some() || runtime.full_demo.is_some() {
+            return;
+        }
+        if runtime
+            .host
+            .as_mut()
+            .is_some_and(|host| host.action(event.clone()))
+        {
             return;
         }
         if runtime.lifecycle.persisted_edits_blocked() && event.may_change_saved_session() {
@@ -2544,6 +2664,9 @@ where
 {
     Box::new(move || {
         let runtime = runtime.borrow();
+        if let Some(host) = &runtime.host {
+            return host.document();
+        }
         if let Some(demo) = &runtime.full_demo {
             return demo.document();
         }
@@ -2577,8 +2700,15 @@ where
             app_loop,
             lifecycle,
             close_requested,
+            host,
             ..
         } = &mut *runtime;
+        if let Some(host) = host {
+            return host.session_command(
+                &mut HostedSynthControl::with_lifecycle(app_loop, lifecycle),
+                command,
+            );
+        }
         let result = lifecycle.request(command, app_loop);
         if result.is_err() {
             return false;
@@ -2630,6 +2760,10 @@ where
             lifecycle,
             full_demo,
             device_status: _,
+            host,
+            sample_rate,
+            latest_audio,
+            audio_clock,
             gamepad,
             file_library,
             test_midi,
@@ -2650,7 +2784,17 @@ where
             };
         }
         if let Some(gamepad) = gamepad {
-            if let Err(failure) = gamepad.advance(app_loop, lifecycle.persisted_edits_blocked()) {
+            let owns_input = host.as_ref().is_some_and(|host| host.owns_input());
+            let mut route = |input, bindings: &crate::control::ControllerBindings| {
+                host.as_mut()
+                    .is_some_and(|host| host.controller_input(input, bindings))
+            };
+            if let Err(failure) = gamepad.advance_hosted(
+                app_loop,
+                lifecycle.persisted_edits_blocked(),
+                owns_input,
+                &mut route,
+            ) {
                 *error = Some(failure.into());
                 return false;
             }
@@ -2660,7 +2804,12 @@ where
             return false;
         }
         let session_was_pending = app_loop.session_replacement_pending();
-        match lifecycle.advance(app_loop) {
+        let lifecycle_progress = if host.is_some() {
+            lifecycle.advance_hosted(app_loop)
+        } else {
+            lifecycle.advance(app_loop)
+        };
+        match lifecycle_progress {
             Ok(progress) if progress.close_approved() => {
                 *close_requested = true;
                 return false;
@@ -2675,13 +2824,51 @@ where
         }
         let elapsed_micros = u64::try_from(elapsed.as_micros()).unwrap_or(u64::MAX);
         *midi_clock_micros = midi_clock_micros.saturating_add(elapsed_micros);
-        if let Err(failure) = app_loop.advance_midi_devices(*midi_clock_micros) {
+        let host_clock = HostClock {
+            elapsed,
+            control_micros: *midi_clock_micros,
+            sample_rate: *sample_rate,
+            audio: *latest_audio,
+            audio_clock: audio_clock
+                .as_ref()
+                .and_then(|reader| reader.read_latest_on_control()),
+        };
+        let mut capture = |packet| match packet {
+            crate::control::PhysicalMidiPacket::Performance(event) => host
+                .as_mut()
+                .is_some_and(|host| host.midi_input(event, host_clock)),
+            crate::control::PhysicalMidiPacket::Transport(event) => {
+                if let Some(host) = host.as_mut() {
+                    host.midi_transport(event, host_clock);
+                }
+                true
+            }
+        };
+        if let Err(failure) =
+            app_loop.advance_midi_devices_with_packets(*midi_clock_micros, &mut capture)
+        {
             *error = Some(failure.into());
             return false;
         }
         if let Err(failure) = test_midi.advance(app_loop, elapsed) {
             *error = Some(failure.into());
             return false;
+        }
+        if let Some(host) = host {
+            while let Some(command) = app_loop.take_session_file_action() {
+                if host.session_command(
+                    &mut HostedSynthControl::with_lifecycle(app_loop, lifecycle),
+                    command,
+                ) && command == SessionCommand::Close
+                {
+                    *close_requested = true;
+                }
+            }
+            host.tick(
+                &mut HostedSynthControl::with_lifecycle(app_loop, lifecycle),
+                host_clock,
+            );
+            *close_requested |= host.take_close_request();
         }
         error.is_none() && !*close_requested
     })

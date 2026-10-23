@@ -1,13 +1,16 @@
 //! Shared ownership and capability adapters for the vendored upstream DSP catalog.
 //! All metadata, instances, voices, and scratch are prepared off callback.
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
-use crate::kernel::PatchId;
+use crate::kernel::{MidiChannel, PatchId};
 use crate::real_time::{RtPatchParameters, RtPostEffectParameters};
+use crate::synth::prepared_instrument::{MidiSource, MidiVoiceId};
 use crate::synth::voice_envelope_state::{VoiceEnvelopeStage, VoiceEnvelopeState};
 use crate::synth::*;
 use std::ffi::{c_char, c_void, CStr};
 use std::ptr::NonNull;
 use std::sync::OnceLock;
+
+const MIDI_CHANNEL_COUNT: usize = MidiChannel::MAX as usize + 1;
 
 extern "C" {
     fn crest_audio_count() -> usize;
@@ -134,6 +137,12 @@ pub(crate) fn prepare_voice_bank<P: VoiceProcessor + 'static>(
     for _ in 0..patch.voice_limit().value() {
         voices.push(Voice {
             processor: create()?,
+            source: MidiSource::Immediate,
+            voice_id: None,
+            expression: 1.0,
+            pressure: 1.0,
+            channel: patch.channel(),
+            key_pressure: 1.0,
             envelope: VoiceEnvelopeState::IDLE,
             note: None,
             age: 0,
@@ -148,10 +157,7 @@ pub(crate) fn prepare_voice_bank<P: VoiceProcessor + 'static>(
         gains: vec![0.; max_frames],
         rate,
         age: 0,
-        sustain: false,
-        bend: (0, 64),
-        expression: 1.,
-        pressure: 1.,
+        controls: [[SourceMidiControls::DEFAULT; MIDI_CHANNEL_COUNT]; MidiSource::COUNT],
     }))
 }
 impl Drop for Processor {
@@ -623,6 +629,7 @@ fn build_catalog() -> Result<Catalog, CatalogError> {
                     MidiMessageKind::ControlChange,
                     MidiMessageKind::PitchBend,
                     MidiMessageKind::ChannelPressure,
+                    MidiMessageKind::PolyPressure,
                     MidiMessageKind::AllNotesOff,
                 ],
             )
@@ -951,6 +958,12 @@ impl InstrumentPreparer for UpstreamInstrument {
             }
             voices.push(Voice {
                 processor,
+                source: MidiSource::Immediate,
+                voice_id: None,
+                expression: 1.0,
+                pressure: 1.0,
+                channel: patch.channel(),
+                key_pressure: 1.0,
                 envelope: VoiceEnvelopeState::IDLE,
                 note: None,
                 age: 0,
@@ -965,20 +978,36 @@ impl InstrumentPreparer for UpstreamInstrument {
             gains: vec![0.0; max_frames],
             rate,
             age: 0,
-            sustain: false,
-            bend: (0, 64),
-            expression: 1.0,
-            pressure: 1.0,
+            controls: [[SourceMidiControls::DEFAULT; MIDI_CHANNEL_COUNT]; MidiSource::COUNT],
         }))
     }
 }
 struct Voice<P> {
     processor: P,
+    source: MidiSource,
+    voice_id: Option<MidiVoiceId>,
+    channel: MidiChannel,
+    expression: f32,
+    pressure: f32,
+    key_pressure: f32,
     envelope: VoiceEnvelopeState,
     note: Option<u8>,
     age: u64,
     held: bool,
     delay: usize,
+}
+
+impl<P> Voice<P> {
+    fn belongs_to(
+        &self,
+        source: MidiSource,
+        voice_id: Option<MidiVoiceId>,
+        channel: MidiChannel,
+    ) -> bool {
+        self.source == source
+            && self.channel == channel
+            && voice_id.is_none_or(|id| self.voice_id == Some(id))
+    }
 }
 struct PreparedVoiceBank<P> {
     patch_id: PatchId,
@@ -987,17 +1016,189 @@ struct PreparedVoiceBank<P> {
     gains: Vec<f32>,
     rate: f32,
     age: u64,
+    controls: [[SourceMidiControls; MIDI_CHANNEL_COUNT]; MidiSource::COUNT],
+}
+
+#[derive(Clone, Copy)]
+struct SourceMidiControls {
     sustain: bool,
     bend: (u8, u8),
     expression: f32,
     pressure: f32,
 }
+
+impl SourceMidiControls {
+    const DEFAULT: Self = Self {
+        sustain: false,
+        bend: (0, 64),
+        expression: 1.0,
+        pressure: 1.0,
+    };
+}
+
+impl<P: VoiceProcessor> PreparedVoiceBank<P> {
+    fn start_note(
+        &mut self,
+        source: MidiSource,
+        voice_id: Option<MidiVoiceId>,
+        channel: MidiChannel,
+        note: u8,
+        velocity: u8,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        let voice = self
+            .voices
+            .iter_mut()
+            .find(|voice| voice.envelope.is_idle())
+            .ok_or(PreparedInstrumentError::DispatchRejected)?;
+        let controls = self.controls[source.index()][usize::from(channel.value())];
+        // Reassignment reuses the existing native processor. Reset first,
+        // then restore the new owner's controls; no old source state survives.
+        voice.processor.reset();
+        if !voice.processor.set(params.instrument().values()) {
+            return Err(PreparedInstrumentError::DispatchRejected);
+        }
+        voice.processor.note(0xe0, controls.bend.0, controls.bend.1);
+        voice.processor.note(0x90, note, velocity);
+        voice.source = source;
+        voice.voice_id = voice_id;
+        voice.channel = channel;
+        voice.expression = controls.expression;
+        voice.pressure = controls.pressure;
+        voice.key_pressure = 1.0;
+        voice.delay = voice.processor.latency();
+        voice.envelope.note_on(*params.envelope(), self.rate);
+        self.age = self.age.wrapping_add(1);
+        voice.age = self.age;
+        voice.note = Some(note);
+        voice.held = true;
+        Ok(())
+    }
+
+    fn release_note(
+        &mut self,
+        source: MidiSource,
+        voice_id: Option<MidiVoiceId>,
+        channel: MidiChannel,
+        note: u8,
+        params: &RtPatchParameters,
+    ) {
+        for voice in self.voices.iter_mut().filter(|voice| {
+            voice.belongs_to(source, voice_id, channel) && voice.note == Some(note) && voice.held
+        }) {
+            voice.held = false;
+            if !self.controls[source.index()][usize::from(channel.value())].sustain {
+                voice
+                    .envelope
+                    .note_off(params.envelope().release_milliseconds(), self.rate);
+                voice.processor.note(0x80, note, 0);
+            }
+        }
+    }
+
+    fn set_sustain(
+        &mut self,
+        source: MidiSource,
+        channel: MidiChannel,
+        enabled: bool,
+        params: &RtPatchParameters,
+    ) {
+        self.controls[source.index()][usize::from(channel.value())].sustain = enabled;
+        if enabled {
+            return;
+        }
+        for voice in self
+            .voices
+            .iter_mut()
+            .filter(|voice| voice.source == source && voice.channel == channel && !voice.held)
+        {
+            voice
+                .envelope
+                .note_off(params.envelope().release_milliseconds(), self.rate);
+            if let Some(note) = voice.note {
+                voice.processor.note(0x80, note, 0);
+            }
+        }
+    }
+
+    fn set_bend(
+        &mut self,
+        source: MidiSource,
+        voice_id: Option<MidiVoiceId>,
+        channel: MidiChannel,
+        a: u8,
+        b: u8,
+    ) {
+        if voice_id.is_none() {
+            self.controls[source.index()][usize::from(channel.value())].bend = (a, b);
+        }
+        // Idle voices reset at allocation; every held/releasing matching
+        // voice receives ordered bends without affecting other source/channels.
+        for voice in self.voices.iter_mut().filter(|voice| {
+            voice.belongs_to(source, voice_id, channel) && !voice.envelope.is_idle()
+        }) {
+            voice.processor.note(0xe0, a, b);
+        }
+    }
+
+    fn silence_channel(&mut self, source: MidiSource, channel: MidiChannel) {
+        for voice in self
+            .voices
+            .iter_mut()
+            .filter(|voice| voice.source == source && voice.channel == channel)
+        {
+            voice.envelope = VoiceEnvelopeState::IDLE;
+            voice.note = None;
+            voice.voice_id = None;
+            voice.held = false;
+            voice.processor.reset();
+        }
+        self.controls[source.index()][usize::from(channel.value())].sustain = false;
+    }
+}
+
 impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
     fn patch_id(&self) -> PatchId {
         self.patch_id
     }
+
+    fn active_note_count(&self) -> Option<u32> {
+        Some(
+            self.voices
+                .iter()
+                .filter(|voice| {
+                    voice.note.is_some()
+                        && !voice.envelope.is_idle()
+                        && (voice.held
+                            || (!voice.envelope.is_releasing()
+                                && self.controls[voice.source.index()]
+                                    [usize::from(voice.channel.value())]
+                                .sustain))
+                })
+                .count() as u32,
+        )
+    }
     fn dispatch(
         &mut self,
+        message: MidiMessage,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        self.dispatch_from(MidiSource::Immediate, message, params)
+    }
+
+    fn dispatch_from(
+        &mut self,
+        source: MidiSource,
+        message: MidiMessage,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        self.dispatch_voice_from(source, None, message, params)
+    }
+
+    fn dispatch_voice_from(
+        &mut self,
+        source: MidiSource,
+        voice_id: Option<MidiVoiceId>,
         message: MidiMessage,
         params: &RtPatchParameters,
     ) -> Result<(), PreparedInstrumentError> {
@@ -1006,76 +1207,63 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
         }
         let a = message.data1();
         let b = message.data2();
+        let channel = message.channel();
         match message.kind() {
             MidiMessageKind::NoteOn if b > 0 => {
-                let voice = self
-                    .voices
-                    .iter_mut()
-                    .find(|v| v.envelope.is_idle())
-                    .ok_or(PreparedInstrumentError::DispatchRejected)?;
-                voice.processor.reset();
-                if !voice.processor.set(params.instrument().values()) {
-                    return Err(PreparedInstrumentError::DispatchRejected);
-                }
-                voice.processor.note(0xe0, self.bend.0, self.bend.1);
-                voice.processor.note(0x90, a, b);
-                voice.delay = voice.processor.latency();
-                voice.envelope.note_on(*params.envelope(), self.rate);
-                self.age = self.age.wrapping_add(1);
-                voice.age = self.age;
-                voice.note = Some(a);
-                voice.held = true;
+                self.start_note(source, voice_id, channel, a, b, params)?
             }
             MidiMessageKind::NoteOn | MidiMessageKind::NoteOff => {
-                for voice in self
-                    .voices
-                    .iter_mut()
-                    .filter(|v| v.note == Some(a) && v.held)
-                {
-                    voice.held = false;
-                    if !self.sustain {
-                        voice
-                            .envelope
-                            .note_off(params.envelope().release_milliseconds(), self.rate);
-                        voice.processor.note(0x80, a, 0);
-                    }
-                }
+                self.release_note(source, voice_id, channel, a, params)
             }
-            MidiMessageKind::PitchBend => {
-                self.bend = (a, b);
-                // Idle processors are reset and receive the current bend
-                // before their next note-on. Held and releasing voices still
-                // receive every ordered bend, including same-block events.
-                for voice in self.voices.iter_mut().filter(|v| !v.envelope.is_idle()) {
-                    voice.processor.note(0xe0, a, b);
+            MidiMessageKind::PitchBend => self.set_bend(source, voice_id, channel, a, b),
+            MidiMessageKind::PolyPressure => {
+                for voice in &mut self.voices {
+                    if voice.belongs_to(source, voice_id, channel) && voice.note == Some(a) {
+                        voice.key_pressure = f32::from(b) / 127.0;
+                    }
                 }
             }
             MidiMessageKind::ChannelPressure => {
-                self.pressure = f32::from(a) / 127.0;
+                let pressure = f32::from(a) / 127.0;
+                if voice_id.is_none() {
+                    self.controls[source.index()][usize::from(channel.value())].pressure = pressure;
+                }
+                for voice in self
+                    .voices
+                    .iter_mut()
+                    .filter(|voice| voice.belongs_to(source, voice_id, channel))
+                {
+                    voice.pressure = pressure;
+                }
             }
             MidiMessageKind::ControlChange => match a {
-                64 => {
-                    self.sustain = b >= 64;
-                    if !self.sustain {
-                        for voice in self.voices.iter_mut().filter(|v| !v.held) {
-                            voice
-                                .envelope
-                                .note_off(params.envelope().release_milliseconds(), self.rate);
-                            if let Some(note) = voice.note {
-                                voice.processor.note(0x80, note, 0);
-                            }
-                        }
+                64 if voice_id.is_none() => self.set_sustain(source, channel, b >= 64, params),
+                7 | 11 => {
+                    let expression = f32::from(b) / 127.0;
+                    if voice_id.is_none() {
+                        self.controls[source.index()][usize::from(channel.value())].expression =
+                            expression;
+                    }
+                    for voice in self
+                        .voices
+                        .iter_mut()
+                        .filter(|voice| voice.belongs_to(source, voice_id, channel))
+                    {
+                        voice.expression = expression;
                     }
                 }
-                7 | 11 => {
-                    self.expression = f32::from(b) / 127.0;
-                }
-                120 | 123 => self.all_notes_off(),
+                120 | 123 if voice_id.is_none() => self.silence_channel(source, channel),
+                // There is no shared native CC74/timbre mapping. Tagged
+                // unsupported controls must not silently modify a whole channel.
+                _ if voice_id.is_some() => return Err(PreparedInstrumentError::DispatchRejected),
                 // Native controls belong to capability parameters. Bank and
                 // channel-mode CCs must not bypass asset or voice ownership.
                 _ => {}
             },
-            MidiMessageKind::AllNotesOff => self.all_notes_off(),
+            MidiMessageKind::AllNotesOff if voice_id.is_none() => {
+                self.silence_channel(source, channel)
+            }
+            MidiMessageKind::AllNotesOff => return Err(PreparedInstrumentError::DispatchRejected),
             MidiMessageKind::ProgramChange => {
                 return Err(PreparedInstrumentError::DispatchRejected)
             }
@@ -1110,7 +1298,8 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
             // constant gain also permits SIMD mixing without changing the
             // order in which independent voices contribute to the Patch.
             if voice.delay == 0 && voice.envelope.stage() == VoiceEnvelopeStage::Sustain {
-                let gain = voice.envelope.level() * self.expression * self.pressure;
+                let gain =
+                    voice.envelope.level() * voice.expression * voice.pressure * voice.key_pressure;
                 for (input, output) in scratch.iter().zip(stereo.iter_mut()) {
                     *output += input * gain;
                 }
@@ -1126,7 +1315,7 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
                 .zip(stereo.chunks_exact_mut(2))
                 .zip(gains.iter())
             {
-                let gain = gain * self.expression * self.pressure;
+                let gain = gain * voice.expression * voice.pressure * voice.key_pressure;
                 output[0] += input[0] * gain;
                 output[1] += input[1] * gain;
             }
@@ -1138,10 +1327,31 @@ impl<P: VoiceProcessor> PreparedInstrument for PreparedVoiceBank<P> {
         for voice in &mut self.voices {
             voice.envelope = VoiceEnvelopeState::IDLE;
             voice.note = None;
+            voice.voice_id = None;
             voice.held = false;
             voice.processor.reset();
         }
-        self.sustain = false;
+        for controls in self.controls.iter_mut().flatten() {
+            controls.sustain = false;
+        }
+    }
+
+    fn all_notes_off_from(&mut self, source: MidiSource) -> Result<(), PreparedInstrumentError> {
+        for voice in self
+            .voices
+            .iter_mut()
+            .filter(|voice| voice.source == source)
+        {
+            voice.envelope = VoiceEnvelopeState::IDLE;
+            voice.note = None;
+            voice.voice_id = None;
+            voice.held = false;
+            voice.processor.reset();
+        }
+        for controls in &mut self.controls[source.index()] {
+            controls.sustain = false;
+        }
+        Ok(())
     }
 }
 
@@ -1253,6 +1463,448 @@ mod tests {
     use crate::mixer::patch_output::PatchOutput;
     use crate::real_time::{GraphRevision, ParameterSnapshot};
 
+    #[derive(Default)]
+    struct SourceProbeProcessor {
+        bend: (u8, u8),
+        resets: u32,
+        releases: u32,
+    }
+
+    impl VoiceProcessor for SourceProbeProcessor {
+        fn latency(&self) -> usize {
+            0
+        }
+        fn set(&mut self, _: &[f32]) -> bool {
+            true
+        }
+        fn note(&mut self, status: i32, a: u8, b: u8) {
+            match status {
+                0xe0 => self.bend = (a, b),
+                0x80 => self.releases += 1,
+                _ => {}
+            }
+        }
+        fn reset(&mut self) {
+            self.bend = (0, 64);
+            self.resets += 1;
+        }
+        fn process(&mut self, audio: &mut [f32], _: usize) -> bool {
+            audio.fill(1.0);
+            true
+        }
+    }
+
+    fn source_bank() -> (PreparedVoiceBank<SourceProbeProcessor>, RtPatchParameters) {
+        let patch_id = PatchId::new(1).unwrap();
+        let parameters = RtPatchParameters::projected(
+            patch_id,
+            PatchOutput::default(),
+            VoiceEnvelope::new(0.0, 0.0, 1.0, 40.0).unwrap(),
+            crate::real_time::RtInstrumentParameters::EMPTY,
+        );
+        let bank = PreparedVoiceBank {
+            patch_id,
+            voices: (0..4)
+                .map(|_| Voice {
+                    processor: SourceProbeProcessor::default(),
+                    source: MidiSource::Immediate,
+                    voice_id: None,
+                    expression: 1.0,
+                    pressure: 1.0,
+                    channel: MidiChannel::new(0).unwrap(),
+                    key_pressure: 1.0,
+                    envelope: VoiceEnvelopeState::IDLE,
+                    note: None,
+                    age: 0,
+                    held: false,
+                    delay: 0,
+                })
+                .collect(),
+            scratch: vec![0.0; 128],
+            gains: vec![0.0; 64],
+            rate: 48_000.0,
+            age: 0,
+            controls: [[SourceMidiControls::DEFAULT; MIDI_CHANNEL_COUNT]; MidiSource::COUNT],
+        };
+        (bank, parameters)
+    }
+
+    fn source_message(kind: MidiMessageKind, a: u8, b: u8) -> MidiMessage {
+        MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, a, b).unwrap()
+    }
+
+    #[test]
+    fn identified_same_pitch_notes_release_independently_and_monitor_cancel_is_local() {
+        let (mut bank, parameters) = source_bank();
+        let first = MidiVoiceId::new(1).unwrap();
+        let second = MidiVoiceId::new(2).unwrap();
+        for (source, id) in [
+            (MidiSource::Scheduled, first),
+            (MidiSource::Scheduled, second),
+            (MidiSource::Monitor, first),
+            (MidiSource::Immediate, first),
+        ] {
+            bank.dispatch_voice_from(
+                source,
+                Some(id),
+                source_message(MidiMessageKind::NoteOn, 60, 100),
+                &parameters,
+            )
+            .unwrap();
+        }
+        // Wrong pitch and unknown identity cannot release either overlap.
+        for (id, pitch) in [(first, 61), (MidiVoiceId::new(99).unwrap(), 60)] {
+            bank.dispatch_voice_from(
+                MidiSource::Scheduled,
+                Some(id),
+                source_message(MidiMessageKind::NoteOff, pitch, 0),
+                &parameters,
+            )
+            .unwrap();
+        }
+        assert!(bank.voices.iter().all(|voice| voice.held));
+        bank.dispatch_voice_from(
+            MidiSource::Scheduled,
+            Some(first),
+            source_message(MidiMessageKind::NoteOff, 60, 0),
+            &parameters,
+        )
+        .unwrap();
+        assert!(!bank.voices[0].held);
+        assert!(bank.voices[1..].iter().all(|voice| voice.held));
+        let mut output = [0.0; 128];
+        for _ in 0..32 {
+            bank.render(&mut output, 64, &parameters).unwrap();
+        }
+        assert!(output.iter().all(|sample| *sample == 3.0));
+        bank.all_notes_off_from(MidiSource::Monitor).unwrap();
+        bank.render(&mut output, 64, &parameters).unwrap();
+        assert!(output.iter().all(|sample| *sample == 2.0));
+        assert!(bank.voices[1].held);
+        assert!(bank.voices[3].held);
+        bank.all_notes_off_from(MidiSource::Scheduled).unwrap();
+        bank.render(&mut output, 64, &parameters).unwrap();
+        assert!(output.iter().all(|sample| *sample == 1.0));
+    }
+
+    #[test]
+    fn identified_expression_does_not_change_other_notes_or_channel_defaults() {
+        let (mut bank, parameters) = source_bank();
+        let first = MidiVoiceId::new(1).unwrap();
+        let second = MidiVoiceId::new(2).unwrap();
+        for (source, id) in [
+            (MidiSource::Scheduled, first),
+            (MidiSource::Scheduled, second),
+            (MidiSource::Monitor, first),
+        ] {
+            bank.dispatch_voice_from(
+                source,
+                Some(id),
+                source_message(MidiMessageKind::NoteOn, 60, 100),
+                &parameters,
+            )
+            .unwrap();
+        }
+        for event in [
+            source_message(MidiMessageKind::PitchBend, 127, 127),
+            source_message(MidiMessageKind::ChannelPressure, 64, 0),
+            source_message(MidiMessageKind::PolyPressure, 60, 32),
+            source_message(MidiMessageKind::ControlChange, 11, 80),
+        ] {
+            bank.dispatch_voice_from(MidiSource::Scheduled, Some(first), event, &parameters)
+                .unwrap();
+        }
+        assert_eq!(bank.voices[0].processor.bend, (127, 127));
+        assert_eq!(bank.voices[1].processor.bend, (0, 64));
+        assert_eq!(bank.voices[2].processor.bend, (0, 64));
+        let mut output = [0.0; 128];
+        bank.render(&mut output, 64, &parameters).unwrap();
+        let expected = 2.0 + (64.0 / 127.0) * (32.0 / 127.0) * (80.0 / 127.0);
+        assert!(output
+            .iter()
+            .all(|sample| (*sample - expected).abs() < 1e-6));
+        for controller in [64, 74, 123] {
+            assert_eq!(
+                bank.dispatch_voice_from(
+                    MidiSource::Scheduled,
+                    Some(first),
+                    source_message(MidiMessageKind::ControlChange, controller, 0),
+                    &parameters
+                ),
+                Err(PreparedInstrumentError::DispatchRejected)
+            );
+        }
+        bank.dispatch_voice_from(
+            MidiSource::Scheduled,
+            Some(MidiVoiceId::new(3).unwrap()),
+            source_message(MidiMessageKind::NoteOn, 60, 100),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.voices[3].processor.bend, (0, 64));
+        assert_eq!(bank.voices[3].expression, 1.0);
+        assert_eq!(bank.voices[3].pressure, 1.0);
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::ChannelPressure, 90, 0),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.voices[0].pressure, 90.0 / 127.0);
+        assert_eq!(bank.voices[1].pressure, 90.0 / 127.0);
+        assert_eq!(bank.voices[2].pressure, 1.0);
+        assert_eq!(bank.voices[3].pressure, 90.0 / 127.0);
+        // Untagged MIDI keeps the established release-all-same-pitch policy.
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::NoteOff, 60, 0),
+            &parameters,
+        )
+        .unwrap();
+        assert!(!bank.voices[0].held && !bank.voices[1].held && !bank.voices[3].held);
+        assert!(bank.voices[2].held);
+    }
+
+    #[test]
+    fn identified_sustain_count_keeps_overlap_and_excludes_earlier_release_tail() {
+        let (mut bank, parameters) = source_bank();
+        let first = MidiVoiceId::new(1).unwrap();
+        let second = MidiVoiceId::new(2).unwrap();
+        for id in [first, second] {
+            bank.dispatch_voice_from(
+                MidiSource::Scheduled,
+                Some(id),
+                source_message(MidiMessageKind::NoteOn, 60, 100),
+                &parameters,
+            )
+            .unwrap();
+        }
+        assert_eq!(bank.active_note_count(), Some(2));
+        let off = source_message(MidiMessageKind::NoteOff, 60, 0);
+        bank.dispatch_voice_from(MidiSource::Scheduled, Some(first), off, &parameters)
+            .unwrap();
+        assert_eq!(bank.active_note_count(), Some(1));
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::ControlChange, 64, 127),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.active_note_count(), Some(1));
+        bank.dispatch_voice_from(MidiSource::Scheduled, Some(second), off, &parameters)
+            .unwrap();
+        assert_eq!(bank.active_note_count(), Some(1));
+        assert!(!bank.voices[1].held && !bank.voices[1].envelope.is_releasing());
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::ControlChange, 64, 0),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.active_note_count(), Some(0));
+    }
+
+    #[test]
+    fn source_ownership_isolates_same_pitch_release_sustain_and_cancellation() {
+        let (mut bank, parameters) = source_bank();
+        let note_on = source_message(MidiMessageKind::NoteOn, 60, 100);
+        bank.dispatch(note_on, &parameters).unwrap();
+        bank.dispatch_from(MidiSource::Scheduled, note_on, &parameters)
+            .unwrap();
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::ControlChange, 64, 127),
+            &parameters,
+        )
+        .unwrap();
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::NoteOff, 60, 0),
+            &parameters,
+        )
+        .unwrap();
+        assert!(bank.voices[0].held);
+        assert!(!bank.voices[1].held);
+        assert!(!bank.voices[1].envelope.is_releasing());
+        bank.dispatch(
+            source_message(MidiMessageKind::ControlChange, 64, 0),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.voices[1].processor.releases, 0);
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::ControlChange, 64, 0),
+            &parameters,
+        )
+        .unwrap();
+        assert!(bank.voices[1].envelope.is_releasing());
+        assert_eq!(bank.voices[0].processor.releases, 0);
+        let live_resets = bank.voices[0].processor.resets;
+        bank.all_notes_off_from(MidiSource::Scheduled).unwrap();
+        assert!(bank.voices[1].envelope.is_idle());
+        assert!(bank.voices[0].held);
+        assert_eq!(bank.voices[0].processor.resets, live_resets);
+        let mut output = [0.0; 128];
+        bank.render(&mut output, 64, &parameters).unwrap();
+        assert!(output.iter().all(|sample| *sample == 1.0));
+    }
+
+    #[test]
+    fn source_controls_follow_owned_voices_and_restore_on_slot_reassignment() {
+        let (mut bank, parameters) = source_bank();
+        bank.dispatch(
+            source_message(MidiMessageKind::PitchBend, 0, 60),
+            &parameters,
+        )
+        .unwrap();
+        for message in [
+            source_message(MidiMessageKind::PitchBend, 17, 76),
+            source_message(MidiMessageKind::ControlChange, 11, 32),
+            source_message(MidiMessageKind::ChannelPressure, 64, 0),
+        ] {
+            bank.dispatch_from(MidiSource::Scheduled, message, &parameters)
+                .unwrap();
+        }
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::NoteOn, 60, 100),
+            &parameters,
+        )
+        .unwrap();
+        bank.dispatch(
+            source_message(MidiMessageKind::NoteOn, 60, 100),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.voices[0].processor.bend, (17, 76));
+        assert_eq!(bank.voices[1].processor.bend, (0, 60));
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            source_message(MidiMessageKind::PitchBend, 100, 10),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.voices[0].processor.bend, (100, 10));
+        assert_eq!(bank.voices[1].processor.bend, (0, 60));
+        let mut output = [0.0; 128];
+        bank.render(&mut output, 64, &parameters).unwrap();
+        let expected = 1.0 + (32.0 / 127.0) * (64.0 / 127.0);
+        assert!(output
+            .iter()
+            .all(|sample| (*sample - expected).abs() < 1e-7));
+        bank.all_notes_off_from(MidiSource::Scheduled).unwrap();
+        bank.dispatch(
+            source_message(MidiMessageKind::NoteOn, 62, 100),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.voices[0].source, MidiSource::Immediate);
+        assert_eq!(bank.voices[0].processor.bend, (0, 60));
+        assert_eq!(bank.voices.len(), 4);
+        bank.render(&mut output, 64, &parameters).unwrap();
+        assert!(output.iter().all(|sample| *sample == 2.0));
+    }
+
+    #[test]
+    fn channel_bends_replay_on_admission_and_stay_with_owned_voices() {
+        let (mut bank, parameters) = source_bank();
+        let message = |channel, kind, a, b| {
+            MidiMessage::try_new(MidiChannel::new(channel).unwrap(), kind, a, b).unwrap()
+        };
+        for (channel, bend) in [(2, (17, 76)), (15, (0, 60))] {
+            bank.dispatch_from(
+                MidiSource::Scheduled,
+                message(channel, MidiMessageKind::PitchBend, bend.0, bend.1),
+                &parameters,
+            )
+            .unwrap();
+            bank.dispatch_from(
+                MidiSource::Scheduled,
+                message(channel, MidiMessageKind::NoteOn, 60, 100),
+                &parameters,
+            )
+            .unwrap();
+        }
+        bank.dispatch(message(2, MidiMessageKind::NoteOn, 60, 100), &parameters)
+            .unwrap();
+        assert_eq!(bank.voices[0].processor.bend, (17, 76));
+        assert_eq!(bank.voices[1].processor.bend, (0, 60));
+        assert_eq!(bank.voices[2].processor.bend, (0, 64));
+
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            message(2, MidiMessageKind::NoteOff, 60, 0),
+            &parameters,
+        )
+        .unwrap();
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            message(2, MidiMessageKind::PitchBend, 127, 127),
+            &parameters,
+        )
+        .unwrap();
+        assert!(bank.voices[0].envelope.is_releasing());
+        assert!(bank.voices[1].held);
+        assert!(bank.voices[2].held);
+        assert_eq!(bank.voices[0].processor.bend, (127, 127));
+        assert_eq!(bank.voices[1].processor.bend, (0, 60));
+        assert_eq!(bank.voices[2].processor.bend, (0, 64));
+
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            message(2, MidiMessageKind::AllNotesOff, 0, 0),
+            &parameters,
+        )
+        .unwrap();
+        bank.dispatch_from(
+            MidiSource::Scheduled,
+            message(15, MidiMessageKind::NoteOn, 62, 100),
+            &parameters,
+        )
+        .unwrap();
+        assert_eq!(bank.voices[0].channel.value(), 15);
+        assert_eq!(bank.voices[0].processor.bend, (0, 60));
+        assert_eq!(bank.voices.len(), 4);
+    }
+
+    #[test]
+    fn source_cancellation_stops_sustained_notes_without_clearing_other_source_state() {
+        let (mut bank, parameters) = source_bank();
+        for source in MidiSource::ALL {
+            bank.dispatch_from(
+                source,
+                source_message(MidiMessageKind::ControlChange, 64, 127),
+                &parameters,
+            )
+            .unwrap();
+            bank.dispatch_from(
+                source,
+                source_message(MidiMessageKind::NoteOn, 60, 100),
+                &parameters,
+            )
+            .unwrap();
+            bank.dispatch_from(
+                source,
+                source_message(MidiMessageKind::NoteOff, 60, 0),
+                &parameters,
+            )
+            .unwrap();
+        }
+        bank.all_notes_off_from(MidiSource::Scheduled).unwrap();
+        assert!(bank.controls[MidiSource::Immediate.index()][0].sustain);
+        assert!(!bank.controls[MidiSource::Scheduled.index()][0].sustain);
+        assert!(!bank.voices[0].envelope.is_idle());
+        assert!(bank.voices[1].envelope.is_idle());
+        bank.all_notes_off();
+        assert!(bank.voices.iter().all(|voice| voice.envelope.is_idle()));
+        assert!(bank
+            .controls
+            .iter()
+            .flatten()
+            .all(|controls| !controls.sustain));
+    }
+
     #[test]
     fn bends_reach_held_and_releasing_voices_and_replay_after_idle_reset() {
         #[derive(Default)]
@@ -1287,6 +1939,12 @@ mod tests {
             voices: (0..3)
                 .map(|_| Voice {
                     processor: Recorder::default(),
+                    source: MidiSource::Immediate,
+                    voice_id: None,
+                    expression: 1.0,
+                    pressure: 1.0,
+                    channel: MidiChannel::new(0).unwrap(),
+                    key_pressure: 1.0,
                     envelope: VoiceEnvelopeState::IDLE,
                     note: None,
                     age: 0,
@@ -1298,10 +1956,7 @@ mod tests {
             gains: vec![0.0; 64],
             rate: 48_000.0,
             age: 0,
-            sustain: false,
-            bend: (0, 64),
-            expression: 1.0,
-            pressure: 1.0,
+            controls: [[SourceMidiControls::DEFAULT; MIDI_CHANNEL_COUNT]; MidiSource::COUNT],
         };
         let message =
             |kind, a, b| MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, a, b).unwrap();

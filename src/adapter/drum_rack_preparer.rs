@@ -5,6 +5,7 @@ use super::sample_preparer::SamplePreparer;
 use crate::kernel::midi_message::{MidiMessage, MidiMessageKind};
 use crate::kernel::PatchId;
 use crate::real_time::parameter_snapshot::{RtInstrumentParameters, RtPatchParameters};
+use crate::synth::prepared_instrument::MidiSource;
 use crate::synth::*;
 use std::sync::Arc;
 
@@ -201,6 +202,30 @@ impl PreparedInstrument for PreparedDrumRack {
         message: MidiMessage,
         params: &RtPatchParameters,
     ) -> Result<(), PreparedInstrumentError> {
+        self.dispatch_from(MidiSource::Immediate, message, params)
+    }
+    fn dispatch_from(
+        &mut self,
+        source: MidiSource,
+        message: MidiMessage,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
+        self.dispatch_voice_from(source, None, message, params)
+    }
+    fn active_note_count(&self) -> Option<u32> {
+        self.pads.iter().flatten().try_fold(0u32, |sum, pad| {
+            pad.instrument
+                .active_note_count()
+                .map(|count| sum.saturating_add(count))
+        })
+    }
+    fn dispatch_voice_from(
+        &mut self,
+        source: MidiSource,
+        voice: Option<crate::synth::MidiVoiceId>,
+        message: MidiMessage,
+        params: &RtPatchParameters,
+    ) -> Result<(), PreparedInstrumentError> {
         if params.patch_id() != Some(self.patch_id) {
             return Err(PreparedInstrumentError::DispatchRejected);
         }
@@ -209,7 +234,7 @@ impl PreparedInstrument for PreparedDrumRack {
         }
         if matches!(
             message.kind(),
-            MidiMessageKind::NoteOn | MidiMessageKind::NoteOff
+            MidiMessageKind::NoteOn | MidiMessageKind::NoteOff | MidiMessageKind::PolyPressure
         ) {
             let Some(pad) = message
                 .data1()
@@ -224,11 +249,13 @@ impl PreparedInstrument for PreparedDrumRack {
             let mapped =
                 MidiMessage::try_new(message.channel(), message.kind(), 60, message.data2())
                     .map_err(|_| PreparedInstrumentError::DispatchRejected)?;
-            pad.instrument.dispatch(mapped, &pad.parameters)
+            pad.instrument
+                .dispatch_voice_from(source, voice, mapped, &pad.parameters)
         } else {
             for pad in self.pads.iter_mut().flatten() {
                 pad.sync(params)?;
-                pad.instrument.dispatch(message, &pad.parameters)?;
+                pad.instrument
+                    .dispatch_voice_from(source, voice, message, &pad.parameters)?;
             }
             Ok(())
         }
@@ -263,10 +290,180 @@ impl PreparedInstrument for PreparedDrumRack {
             pad.instrument.all_notes_off();
         }
     }
+    fn all_notes_off_from(&mut self, source: MidiSource) -> Result<(), PreparedInstrumentError> {
+        for pad in self.pads.iter_mut().flatten() {
+            pad.instrument.all_notes_off_from(source)?;
+        }
+        Ok(())
+    }
     fn prepared_asset_footprints(&self) -> Vec<&PreparedAssetFootprint> {
         self.footprints.iter().collect()
     }
     fn prepared_sample_visualizations(&self) -> Vec<PreparedSampleVisualization> {
         self.visualizations.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::kernel::MidiChannel;
+    use crate::mixer::patch_output::PatchOutput;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct PadState {
+        active: [bool; MidiSource::COUNT],
+        delivered: Vec<(MidiSource, MidiMessage)>,
+    }
+
+    struct ProbePad {
+        patch: PatchId,
+        state: Arc<Mutex<PadState>>,
+    }
+
+    impl PreparedInstrument for ProbePad {
+        fn patch_id(&self) -> PatchId {
+            self.patch
+        }
+
+        fn dispatch(
+            &mut self,
+            message: MidiMessage,
+            parameters: &RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
+            self.dispatch_from(MidiSource::Immediate, message, parameters)
+        }
+
+        fn dispatch_from(
+            &mut self,
+            source: MidiSource,
+            message: MidiMessage,
+            _: &RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
+            let mut state = self.state.lock().unwrap();
+            state.delivered.push((source, message));
+            match message.kind() {
+                MidiMessageKind::NoteOn => state.active[source.index()] = true,
+                MidiMessageKind::NoteOff | MidiMessageKind::AllNotesOff => {
+                    state.active[source.index()] = false
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+
+        fn render(
+            &mut self,
+            output: &mut [f32],
+            _: usize,
+            _: &RtPatchParameters,
+        ) -> Result<(), PreparedInstrumentError> {
+            output.fill(
+                self.state
+                    .lock()
+                    .unwrap()
+                    .active
+                    .iter()
+                    .filter(|active| **active)
+                    .count() as f32,
+            );
+            Ok(())
+        }
+
+        fn all_notes_off(&mut self) {
+            self.state.lock().unwrap().active.fill(false);
+        }
+
+        fn all_notes_off_from(
+            &mut self,
+            source: MidiSource,
+        ) -> Result<(), PreparedInstrumentError> {
+            self.state.lock().unwrap().active[source.index()] = false;
+            Ok(())
+        }
+    }
+
+    fn prepared_pad(id: PatchId, state: Arc<Mutex<PadState>>) -> PreparedPad {
+        PreparedPad {
+            instrument: Box::new(ProbePad { patch: id, state }),
+            parameters: RtPatchParameters::new(id, PatchOutput::default()),
+            scalar_offset: 1,
+            scalar_count: 0,
+        }
+    }
+
+    fn message(kind: MidiMessageKind, data1: u8, data2: u8) -> MidiMessage {
+        MidiMessage::try_new(MidiChannel::new(0).unwrap(), kind, data1, data2).unwrap()
+    }
+
+    #[test]
+    fn source_ownership_survives_pad_mapping_control_broadcast_and_cancel() {
+        let id = PatchId::new(1).unwrap();
+        let first = Arc::new(Mutex::new(PadState::default()));
+        let third = Arc::new(Mutex::new(PadState::default()));
+        let mut rack = PreparedDrumRack {
+            patch_id: id,
+            pads: vec![
+                Some(prepared_pad(id, first.clone())),
+                None,
+                Some(prepared_pad(id, third.clone())),
+            ],
+            scratch: vec![0.0; 8],
+            scalar_count: 1,
+            footprints: Vec::new(),
+            visualizations: Vec::new(),
+        };
+        let parameters = RtPatchParameters::projected(
+            id,
+            PatchOutput::default(),
+            VoiceEnvelope::DEFAULT,
+            RtInstrumentParameters::new(&[0.0]).unwrap(),
+        );
+        let first_note = message(MidiMessageKind::NoteOn, DRUM_RACK_FIRST_NOTE, 100);
+        rack.dispatch(first_note, &parameters).unwrap();
+        rack.dispatch_from(MidiSource::Scheduled, first_note, &parameters)
+            .unwrap();
+        rack.dispatch_from(
+            MidiSource::Scheduled,
+            message(MidiMessageKind::NoteOn, DRUM_RACK_FIRST_NOTE + 2, 100),
+            &parameters,
+        )
+        .unwrap();
+        assert!(first
+            .lock()
+            .unwrap()
+            .delivered
+            .iter()
+            .all(|(_, message)| message.data1() == 60));
+        assert!(third
+            .lock()
+            .unwrap()
+            .delivered
+            .iter()
+            .all(|(source, message)| *source == MidiSource::Scheduled && message.data1() == 60));
+        let sustain = message(MidiMessageKind::ControlChange, 64, 127);
+        rack.dispatch_from(MidiSource::Scheduled, sustain, &parameters)
+            .unwrap();
+        assert_eq!(
+            first.lock().unwrap().delivered.last(),
+            Some(&(MidiSource::Scheduled, sustain))
+        );
+        assert_eq!(
+            third.lock().unwrap().delivered.last(),
+            Some(&(MidiSource::Scheduled, sustain))
+        );
+        let mut audio = [0.0; 8];
+        rack.render(&mut audio, 4, &parameters).unwrap();
+        assert_eq!(audio, [3.0; 8]);
+        rack.all_notes_off_from(MidiSource::Scheduled).unwrap();
+        rack.render(&mut audio, 4, &parameters).unwrap();
+        assert_eq!(
+            audio, [1.0; 8],
+            "live same-pad note must survive scheduled cancellation"
+        );
+        rack.all_notes_off();
+        rack.render(&mut audio, 4, &parameters).unwrap();
+        assert_eq!(audio, [0.0; 8]);
     }
 }
